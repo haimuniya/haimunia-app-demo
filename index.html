@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>האימוניה — קהילה (תצוגה מקדימה)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#F2F5FA; --surface:#FFFFFF; --surface2:#E9EFF8; --border:#D6DFEC;
+    --chalk:#1C2536; --steel:#68748C; --energy:#C94B29; --brass:#A6702E;
+    --green:#2E7A48; --blue:#2E5AA8; --red:#B23A2C;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#152342; --surface:#1F3057; --surface2:#2A3D6B; --border:#425481;
+      --chalk:#F2ECE1; --steel:#8891A6; --energy:#E85D3D; --brass:#E8B98A;
+      --green:#4B9B5F; --blue:#3E6FD9; --red:#D8453C;
+    }
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; padding:0; }
+  body{
+    background:var(--bg); color:var(--chalk);
+    font-family:'Rubik', -apple-system, sans-serif;
+    direction:rtl; font-size:15px; line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+  }
+  .mono{ font-family:'JetBrains Mono', ui-monospace, monospace; font-variant-numeric:tabular-nums; direction:ltr; unicode-bidi:isolate; }
+  h2{ margin:0; font-weight:800; font-size:20px; }
+
+  .banner{
+    background:color-mix(in srgb, var(--brass) 14%, var(--surface));
+    border-bottom:1px solid var(--border);
+    padding:8px 16px; text-align:center; font-size:12.5px; color:var(--steel);
+  }
+  .banner b{ color:var(--chalk); }
+
+  header{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:14px 18px; border-bottom:1px solid var(--border); background:var(--surface);
+  }
+  .brand{ font-weight:800; font-size:16px; }
+  .brand span{ color:var(--energy); }
+  #whoWrap{ display:flex; align-items:center; gap:10px; font-size:12.5px; color:var(--steel); }
+  #signOutBtn{
+    border:1px solid var(--border); background:none; color:var(--steel);
+    border-radius:8px; padding:5px 10px; font-size:12px; font-family:inherit; cursor:pointer;
+  }
+
+  nav#nav{ display:flex; gap:4px; padding:8px 14px; background:var(--surface); border-bottom:1px solid var(--border); }
+  .navbtn{
+    flex:1; display:flex; align-items:center; justify-content:center; gap:6px;
+    border:none; background:none; color:var(--steel); font-family:inherit; font-size:13px; font-weight:600;
+    padding:9px 6px; border-radius:10px; cursor:pointer;
+  }
+  .navbtn.active{ background:var(--surface2); color:var(--energy); }
+
+  main{ max-width:480px; margin:0 auto; padding:22px 16px 60px; }
+  .section-head{ margin-bottom:16px; }
+  .section-head p{ margin:4px 0 0; color:var(--steel); font-size:13px; }
+  .loading{ text-align:center; padding:40px 0; color:var(--steel); }
+  .empty{ text-align:center; padding:32px 0; color:var(--steel); font-size:14px; }
+
+  /* ---- auth ---- */
+  .auth-card{
+    max-width:380px; margin:40px auto 0; background:var(--surface); border:1px solid var(--border);
+    border-radius:16px; padding:28px 24px; text-align:center;
+  }
+  .auth-icon{ color:var(--energy); display:flex; justify-content:center; margin-bottom:10px; }
+  .auth-card h2{ margin-bottom:6px; }
+  .auth-sub{ color:var(--steel); font-size:13px; margin-bottom:20px; }
+  .field{ display:flex; flex-direction:column; gap:5px; text-align:right; margin-bottom:12px; }
+  .field span{ font-size:12.5px; font-weight:700; color:var(--steel); }
+  .field input{
+    border:1px solid var(--border); background:var(--bg); color:var(--chalk); border-radius:10px;
+    padding:11px 12px; font-size:14px; font-family:inherit;
+  }
+  .auth-error{ color:var(--red); font-size:12.5px; margin-bottom:10px; text-align:right; }
+  .btn-primary{
+    width:100%; background:var(--energy); color:#fff; border:none; border-radius:10px;
+    padding:12px; font-weight:700; font-size:14.5px; font-family:inherit; cursor:pointer; margin-top:4px;
+  }
+  .btn-primary:disabled{ opacity:.6; }
+  .auth-hint{ margin-top:16px; font-size:11.5px; color:var(--steel); }
+
+  /* ---- leaderboard ---- */
+  .chips{ display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
+  .chip{
+    border:1px solid var(--border); background:var(--surface); color:var(--steel);
+    border-radius:100px; padding:7px 14px; font-size:13px; font-weight:600; font-family:inherit; cursor:pointer;
+  }
+  .chip.active{ background:var(--energy); border-color:var(--energy); color:#fff; }
+  .lb-list{ display:flex; flex-direction:column; gap:6px; }
+  .lb-row{
+    display:flex; align-items:center; gap:12px; background:var(--surface); border:1px solid var(--border);
+    border-radius:10px; padding:11px 14px;
+  }
+  .lb-row.me{ border-color:var(--energy); background:color-mix(in srgb, var(--energy) 6%, var(--surface)); }
+  .lb-rank{ color:var(--steel); font-weight:700; width:20px; }
+  .lb-name{ flex:1; font-weight:600; }
+  .lb-score{ font-weight:700; color:var(--brass); }
+
+  /* ---- wall ---- */
+  .feed-list{ display:flex; flex-direction:column; gap:10px; }
+  .feed-item{ display:flex; gap:12px; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px 14px; }
+  .feed-avatar{
+    flex:none; width:36px; height:36px; border-radius:50%; background:var(--surface2); color:var(--energy);
+    display:flex; align-items:center; justify-content:center; font-weight:800; font-size:15px;
+  }
+  .feed-line{ font-size:14px; }
+  .feed-value{ color:var(--brass); font-weight:700; font-size:14px; margin-top:2px; }
+  .feed-time{ color:var(--steel); font-size:11.5px; margin-top:2px; }
+
+  /* ---- coach ---- */
+  .coach-list{ display:flex; flex-direction:column; gap:6px; }
+  .coach-row{
+    display:flex; align-items:center; gap:10px; background:var(--surface); border:1px solid var(--border);
+    border-radius:10px; padding:11px 14px; font-size:13.5px;
+  }
+  .coach-row.stale{ border-color:color-mix(in srgb, var(--red) 40%, var(--border)); background:color-mix(in srgb, var(--red) 6%, var(--surface)); }
+  .coach-name{ flex:1; font-weight:600; }
+  .coach-meta{ color:var(--steel); font-size:12px; }
+  .coach-last{ color:var(--steel); font-size:12px; min-width:64px; text-align:left; }
+  .coach-row.stale .coach-last{ color:var(--red); font-weight:700; }
+</style>
+</head>
+<body>
+
+<div class="banner">🔧 <b>תצוגה מקדימה</b> — נתוני דמה בלבד, לא מחובר לאפליקציה החיה או לנתוני מתאמנים אמיתיים</div>
+
+<header>
+  <div class="brand">האימוניה <span>קהילה</span></div>
+  <div id="whoWrap" style="display:none;">
+    <span id="whoami"></span>
+    <button id="signOutBtn" data-action="sign-out">יציאה</button>
+  </div>
+</header>
+
+<nav id="nav" style="display:none;">
+  <button class="navbtn" data-tab="leaderboard">לוח מובילים</button>
+  <button class="navbtn" data-tab="wall">קיר קהילה</button>
+  <button class="navbtn" data-tab="coach">לוח מאמן</button>
+</nav>
+
+<main><div id="app"></div></main>
+
+<script src="app.js"></script>
+</body>
+</html>
