@@ -1,167 +1,620 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>האימוניה — קהילה (תצוגה מקדימה)</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<meta charset="UTF-8" />
+<!-- Stamps data-theme on <html> before first paint, from a stored choice.
+     Must be a separate file, not an inline <script> — script-src 'self'
+     below has no 'unsafe-inline'. Runs synchronously so there's no flash. -->
+<script src="./theme-init.js"></script>
+
+<!--
+  Content Security Policy. Defence in depth: even if a string escape is ever
+  missed, an injected <script> or a remote beacon has nowhere to go.
+  'unsafe-inline' appears in style-src only, for the inline style="" attributes
+  used throughout the markup — there is no inline <script> anywhere.
+
+  Fonts are self-hosted (./assets/fonts/, see the @font-face block below), so
+  there is no third-party entry in font-src/style-src at all — the app makes
+  zero network requests to any origin but its own.
+  frame-ancestors / X-Frame-Options are ignored in <meta>; set them as real
+  response headers on the host if you can.
+-->
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'self';
+  script-src 'self';
+  style-src 'self' 'unsafe-inline';
+  font-src 'self';
+  img-src 'self' data: blob:;
+  connect-src 'self' https://*.supabase.co wss://*.supabase.co;
+  manifest-src 'self';
+  worker-src 'self';
+  object-src 'none';
+  base-uri 'none';
+  form-action 'none';
+  frame-ancestors 'none'" />
+<meta name="referrer" content="no-referrer" />
+
+<!-- Pinch-zoom is deliberately NOT blocked: user-scalable=no fails WCAG 1.4.4
+     and modern iOS ignores it anyway. Accidental double-tap zoom is suppressed
+     in app.js instead, which leaves intentional zoom working. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>האימוניה</title>
+<meta name="theme-color" content="#152342" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="האימוניה" />
+<link rel="manifest" href="./manifest.json" />
+<link rel="apple-touch-icon" href="./icon-192.png" />
+<link rel="icon" href="./icon-192.png" />
 <style>
+  /* Self-hosted fonts. Each weight ships as two subset files (latin + hebrew)
+     so the browser only downloads what a given piece of text needs — the
+     unicode-range values are copied verbatim from Google's own CSS2 API
+     response for these families/weights. No network dependency, no SRI
+     problem, works fully offline once precached (see ASSETS in sw.js). */
+  @font-face{ font-family:'Rubik'; font-style:normal; font-weight:400; font-display:swap; src:url('./assets/fonts/rubik-400-latin.woff2') format('woff2'); unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+  @font-face{ font-family:'Rubik'; font-style:normal; font-weight:400; font-display:swap; src:url('./assets/fonts/rubik-400-hebrew.woff2') format('woff2'); unicode-range:U+0307-0308,U+0590-05FF,U+200C-2010,U+20AA,U+25CC,U+FB1D-FB4F; }
+  @font-face{ font-family:'Rubik'; font-style:normal; font-weight:600; font-display:swap; src:url('./assets/fonts/rubik-600-latin.woff2') format('woff2'); unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+  @font-face{ font-family:'Rubik'; font-style:normal; font-weight:600; font-display:swap; src:url('./assets/fonts/rubik-600-hebrew.woff2') format('woff2'); unicode-range:U+0307-0308,U+0590-05FF,U+200C-2010,U+20AA,U+25CC,U+FB1D-FB4F; }
+  @font-face{ font-family:'Rubik'; font-style:normal; font-weight:700; font-display:swap; src:url('./assets/fonts/rubik-700-latin.woff2') format('woff2'); unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+  @font-face{ font-family:'Rubik'; font-style:normal; font-weight:700; font-display:swap; src:url('./assets/fonts/rubik-700-hebrew.woff2') format('woff2'); unicode-range:U+0307-0308,U+0590-05FF,U+200C-2010,U+20AA,U+25CC,U+FB1D-FB4F; }
+  @font-face{ font-family:'Rubik'; font-style:normal; font-weight:800; font-display:swap; src:url('./assets/fonts/rubik-800-latin.woff2') format('woff2'); unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+  @font-face{ font-family:'Rubik'; font-style:normal; font-weight:800; font-display:swap; src:url('./assets/fonts/rubik-800-hebrew.woff2') format('woff2'); unicode-range:U+0307-0308,U+0590-05FF,U+200C-2010,U+20AA,U+25CC,U+FB1D-FB4F; }
+  @font-face{ font-family:'Rubik'; font-style:normal; font-weight:900; font-display:swap; src:url('./assets/fonts/rubik-900-latin.woff2') format('woff2'); unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+  @font-face{ font-family:'Rubik'; font-style:normal; font-weight:900; font-display:swap; src:url('./assets/fonts/rubik-900-hebrew.woff2') format('woff2'); unicode-range:U+0307-0308,U+0590-05FF,U+200C-2010,U+20AA,U+25CC,U+FB1D-FB4F; }
+  @font-face{ font-family:'JetBrains Mono'; font-style:normal; font-weight:500; font-display:swap; src:url('./assets/fonts/jbmono-500-latin.woff2') format('woff2'); unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+  @font-face{ font-family:'JetBrains Mono'; font-style:normal; font-weight:700; font-display:swap; src:url('./assets/fonts/jbmono-700-latin.woff2') format('woff2'); unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+  @font-face{ font-family:'Anton'; font-style:normal; font-weight:400; font-display:swap; src:url('./assets/fonts/anton-400-latin.woff2') format('woff2'); unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+</style>
+<style>
+  /* Theme tokens, light-first: bare :root is the light palette (the CSS-spec
+     baseline for an un-stamped document). Dark is layered on twice — once for
+     prefers-color-scheme (auto mode) and once for the explicit data-theme
+     stamp (light/dark chosen in the footer) — so the toggle always wins over
+     the OS setting. theme-init.js stamps data-theme="dark" by default so
+     existing users keep today's look until they opt into something else. */
   :root{
     --bg:#F2F5FA; --surface:#FFFFFF; --surface2:#E9EFF8; --border:#D6DFEC;
-    --chalk:#1C2536; --steel:#68748C; --energy:#C94B29; --brass:#A6702E;
-    --green:#2E7A48; --blue:#2E5AA8; --red:#B23A2C;
+    --chalk:#1C2536; --steel:#68748C; --red:#C2392C; --blue:#2E5AA8;
+    --yellow:#B07E12; --green:#2E7A48; --purple:#7A4FC2; --brass:#A6702E;
+    --teal:#1E7D76;
+    --energy:#C94B29;
+    --color-scheme:light;
+    --stripe-a:var(--energy); --stripe-b:#22345C;
+    --stripe:repeating-linear-gradient(135deg, var(--stripe-a) 0 14px, var(--stripe-b) 14px 28px);
   }
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
       --bg:#152342; --surface:#1F3057; --surface2:#2A3D6B; --border:#425481;
-      --chalk:#F2ECE1; --steel:#8891A6; --energy:#E85D3D; --brass:#E8B98A;
-      --green:#4B9B5F; --blue:#3E6FD9; --red:#D8453C;
+      --chalk:#F2ECE1; --steel:#8891A6; --red:#D8453C; --blue:#3E6FD9;
+      --yellow:#E0B23C; --green:#4B9B5F; --purple:#9B6FD9; --brass:#E8B98A;
+      --teal:#3FA7A0;
+      --energy:#E85D3D;
+      --color-scheme:dark;
+      --stripe-a:var(--energy); --stripe-b:#ffffff;
     }
   }
-  *{ box-sizing:border-box; }
-  html,body{ margin:0; padding:0; }
-  body{
-    background:var(--bg); color:var(--chalk);
-    font-family:'Rubik', -apple-system, sans-serif;
-    direction:rtl; font-size:15px; line-height:1.55;
-    -webkit-font-smoothing:antialiased;
+  :root[data-theme="dark"]{
+    --bg:#152342; --surface:#1F3057; --surface2:#2A3D6B; --border:#425481;
+    --chalk:#F2ECE1; --steel:#8891A6; --red:#D8453C; --blue:#3E6FD9;
+    --yellow:#E0B23C; --green:#4B9B5F; --purple:#9B6FD9; --brass:#E8B98A;
+    --teal:#3FA7A0;
+    --energy:#E85D3D;
+    --color-scheme:dark;
+    --stripe-a:var(--energy); --stripe-b:#ffffff;
   }
-  .mono{ font-family:'JetBrains Mono', ui-monospace, monospace; font-variant-numeric:tabular-nums; direction:ltr; unicode-bidi:isolate; }
-  h2{ margin:0; font-weight:800; font-size:20px; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html,body{ margin:0; padding:0; background:var(--bg); color:var(--chalk); font-family:'Rubik',sans-serif; overscroll-behavior-y:contain; touch-action:pan-y; overflow-x:hidden; width:100%; }
+  body{ min-height:100dvh; }
+  button, input, textarea { font-family:inherit; }
+  button{ background:none; border:none; color:inherit; cursor:pointer; padding:0; }
+  input{ font-size:16px; }
+  html[data-text-scale="large"]{ zoom:1.12; }
+  button:focus-visible, input:focus-visible { outline:2px solid var(--brass); outline-offset:2px; }
+  .mono{ font-family:'JetBrains Mono',monospace; direction:ltr; unicode-bidi:isolate; }
+  .flex{ display:flex; }
+  .col{ flex-direction:column; }
+  .items-center{ align-items:center; }
+  .justify-between{ justify-content:space-between; }
+  .justify-center{ justify-content:center; }
+  .flex-1{ flex:1; }
+  .gap-6{ gap:6px; } .gap-8{ gap:8px; } .gap-10{ gap:10px; }
+  .wrap{ flex-wrap:wrap; }
+  #app{ max-width:480px; margin:0 auto; padding: calc(env(safe-area-inset-top,0px) + 20px) 16px calc(env(safe-area-inset-bottom,0px) + 100px); overflow-x:hidden; }
+  .header{ display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:14px; }
+  .header-logo{ height:46px; width:auto; display:block; }
+  .brand-stripe{ height:6px; border-radius:4px; background-image:var(--stripe); margin-bottom:18px; }
+  .tabbar{ display:flex; background:var(--surface); border-radius:14px; padding:4px; margin-bottom:20px; border:1px solid var(--border); gap:2px; }
+  .tabbtn{ flex:1; min-width:0; padding:10px 0; border-radius:10px; font-weight:700; font-size:12.5px; color:var(--steel); border:1px solid transparent; transition:all .15s; white-space:nowrap; }
+  .tabbtn.active{ background:var(--surface2); color:var(--chalk); border-color:var(--border); box-shadow:inset 0 -2px 0 var(--energy); }
+  .card{ background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 14px; }
+  .exercise-select{ width:100%; display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:14px 16px; margin-bottom:12px; }
+  .dot{ width:8px; height:8px; border-radius:999px; flex-shrink:0; }
+  .stat-row{ display:flex; gap:8px; margin-bottom:16px; }
+  .stat-card{ flex:1; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:10px 12px; }
+  .stat-label{ color:var(--steel); font-size:11px; font-weight:600; }
+  .stat-value{ font-weight:800; font-size:16px; }
+  .bar-wrap{ background:var(--surface); border:1px solid var(--border); border-radius:18px; margin-bottom:16px; position:relative; overflow:hidden; transition:border-color .3s; }
+  .bar-wrap.pr{ border-color:var(--brass); animation:pop .4s ease; }
+  .pr-flash{ position:absolute; inset:0; background-image:var(--stripe); display:flex; align-items:center; justify-content:center; gap:6px; color:#fff; font-weight:800; font-size:14px; z-index:1; text-shadow:0 1px 3px rgba(0,0,0,.5); }
+  @keyframes pop{ 0%{transform:scale(1);} 40%{transform:scale(1.04);} 100%{transform:scale(1);} }
+  .barbell{ display:flex; flex-direction:column; align-items:center; gap:10px; padding:14px 0; }
+  .bar-row{ display:flex; align-items:center; height:78px; }
+  .plate{ border-radius:3px; border:1px solid rgba(0,0,0,.35); box-shadow:inset 0 0 0 1px rgba(255,255,255,.08); flex-shrink:0; transition:all .2s; }
+  .collar{ width:10px; height:10px; border-radius:2px; background:#4a4d54; flex-shrink:0; }
+  .sleeve{ width:46px; height:8px; background:#5a5e66; border-radius:2px; flex-shrink:0; }
+  .bar-center{ width:64px; height:20px; display:flex; align-items:center; justify-content:center; background:var(--surface2); border:1px solid var(--border); border-radius:6px; font-weight:700; font-size:13px; color:var(--brass); flex-shrink:0; direction:ltr; unicode-bidi:isolate; }
+  .bar-caption{ color:var(--steel); font-size:11px; }
+  .steppers{ display:flex; gap:8px; margin-bottom:16px; }
+  .stepper{ flex:1 1 0; min-width:0; display:flex; flex-direction:column; align-items:center; gap:4px; }
+  .stepper-label{ color:var(--steel); font-size:11px; font-weight:600; white-space:nowrap; }
+  .stepper-box{ width:100%; min-width:0; display:flex; align-items:center; justify-content:space-between; background:var(--surface2); border-radius:14px; border:1px solid var(--border); }
+  .stepper-btn{ width:34px; height:44px; flex-shrink:0; display:flex; align-items:center; justify-content:center; transition:opacity .15s; }
+  .stepper-btn:active{ opacity:.6; }
+  .stepper-val{ font-weight:700; font-size:16px; min-width:0; text-align:center; background:transparent; border:none; padding:4px 0; flex:1 1 0; color:var(--chalk); }
+  .est-line{ text-align:center; color:var(--steel); font-size:12px; margin-bottom:20px; }
+  .est-line b{ color:var(--brass); font-weight:700; }
+  .section-label{ color:var(--steel); font-size:12px; font-weight:700; margin-bottom:10px; letter-spacing:.5px; }
+  .empty{ color:var(--steel); font-size:13px; text-align:center; padding:24px 0; }
+  .log-row{ display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:10px 12px; }
+  .log-list{ display:flex; flex-direction:column; gap:8px; }
+  .exercise-row{ width:100%; display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 14px; text-align:right; transition:all .15s; margin-bottom:8px; }
+  .exercise-row.active{ background:var(--surface2); border-color:var(--brass); }
+  .chart-card{ background:var(--surface); border:1px solid var(--border); border-radius:18px; padding:16px; margin-bottom:16px; }
+  .rep-table{ display:flex; gap:6px; margin-top:14px; padding-top:12px; border-top:1px solid var(--border); }
+  .rep-cell{ flex:1; background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:8px 4px; text-align:center; }
+  .rep-cell-label{ color:var(--steel); font-size:10px; font-weight:700; }
+  .rep-cell-val{ font-weight:700; font-size:13px; }
+  .bottom-bar{ position:fixed; left:0; right:0; bottom:0; display:flex; justify-content:center; background:linear-gradient(to top, var(--bg) 60%, transparent); padding:10px 16px calc(env(safe-area-inset-bottom,0px) + 14px); z-index:30; }
+  .save-btn{ width:100%; max-width:448px; background:var(--energy); color:#1a0d08; font-family:'Anton',sans-serif; font-weight:400; letter-spacing:0.5px; font-size:19px; padding:16px 0; border-radius:16px; display:flex; align-items:center; justify-content:center; gap:8px; box-shadow:0 8px 28px rgba(232,93,61,.4); transition:opacity .15s; }
+  .save-btn:active{ opacity:.85; }
+  .footer{ text-align:center; margin-top:28px; }
+  .footer-note{ color:var(--border); font-size:11px; margin-bottom:8px; }
+  .link-btn{ color:var(--border); font-size:11px; text-decoration:underline; }
+  .modal-overlay{ position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:50; display:none; align-items:flex-end; overflow:hidden; }
+  .modal-overlay.open{ display:flex; }
+  .modal-sheet{ background:var(--bg); border-top-left-radius:22px; border-top-right-radius:22px; width:100%; max-height:85%; padding-bottom:env(safe-area-inset-bottom,0px); display:flex; flex-direction:column; border:1px solid var(--border); border-bottom:none; overflow-x:hidden; }
+  .modal-head{ display:flex; align-items:center; justify-content:space-between; padding:16px 16px 8px; }
+  .modal-title{ color:var(--chalk); font-weight:800; font-size:16px; }
+  .search-box{ display:flex; align-items:center; margin:0 16px 12px; background:var(--surface2); border:1px solid var(--border); border-radius:12px; padding:8px 12px; gap:8px; }
+  .search-box input{ background:transparent; border:none; color:var(--chalk); flex:1; outline:none; }
+  .modal-list{ overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch; padding:0 16px 24px; flex:1; min-height:0; }
+  .cat-group{ margin-bottom:14px; }
+  .cat-head{ display:flex; align-items:center; gap:6px; margin-bottom:6px; }
+  .cat-name{ color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; }
+  .movement-btn{ width:100%; display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:12px 14px; text-align:right; margin-bottom:6px; }
+  .movement-btn.active{ background:var(--surface2); border-color:var(--brass); }
+  @media (prefers-reduced-motion: reduce){ *{ transition:none !important; animation:none !important; } }
 
-  .banner{
-    background:color-mix(in srgb, var(--brass) 14%, var(--surface));
-    border-bottom:1px solid var(--border);
-    padding:8px 16px; text-align:center; font-size:12.5px; color:var(--steel);
+  .cal-header{ display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+  .cal-nav-btn{ width:36px; height:36px; display:flex; align-items:center; justify-content:center; background:var(--surface); border:1px solid var(--border); border-radius:10px; }
+  .cal-month-label{ font-weight:800; font-size:15px; }
+  .cal-weekdays{ display:grid; grid-template-columns:repeat(7,1fr); gap:4px; margin-bottom:6px; }
+  .cal-weekday{ text-align:center; color:var(--steel); font-size:10px; font-weight:700; }
+  .cal-grid{ display:grid; grid-template-columns:repeat(7,1fr); gap:4px; margin-bottom:18px; }
+  .cal-cell{ aspect-ratio:1; display:flex; flex-direction:column; align-items:center; justify-content:center; border-radius:10px; background:var(--surface); border:1px solid var(--border); position:relative; gap:2px; }
+  .cal-cell.empty{ background:transparent; border-color:transparent; }
+  .cal-cell.today{ border-color:var(--chalk); }
+  .cal-cell.selected{ background:var(--surface2); border-color:var(--brass); }
+  .cal-daynum{ font-size:12px; font-weight:600; color:var(--chalk); }
+  .cal-dot{ width:5px; height:5px; border-radius:999px; background:var(--steel); }
+  .cal-dot.pr{ background:var(--brass); }
+  .report-row{ display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:10px 12px; margin-bottom:8px; }
+  .report-flag{ font-size:11px; font-weight:700; padding:2px 8px; border-radius:999px; }
+  .subtabbar{ display:flex; background:var(--surface2); border-radius:12px; padding:3px; margin-bottom:16px; border:1px solid var(--border); }
+  .subtabbtn{ flex:1; padding:8px 0; border-radius:9px; font-weight:700; font-size:13px; color:var(--steel); }
+  .subtabbtn.active{ background:var(--surface); color:var(--chalk); }
+  .rx-toggle{ display:flex; gap:8px; margin-bottom:16px; }
+  .rx-btn{ flex:1; padding:10px 0; border-radius:12px; border:1px solid var(--border); background:var(--surface); font-weight:700; font-size:13px; color:var(--steel); }
+  .rx-btn.active-rx{ background:rgba(63,132,85,.15); border-color:var(--green); color:var(--green); }
+  .rx-btn.active-scaled{ background:rgba(224,178,60,.15); border-color:var(--yellow); color:var(--yellow); }
+  .rx-btn.active-type{ background:rgba(201,75,41,.15); border-color:var(--energy); color:var(--energy); }
+  .wod-desc{ color:var(--steel); font-size:12px; margin-top:2px; }
+  .text-input{ width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:12px; padding:10px 12px; color:var(--chalk); font-size:16px; }
+  input[type="date"]{ color-scheme:var(--color-scheme); }
+  input[type="date"]::-webkit-calendar-picker-indicator{ cursor:pointer; }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]) input[type="date"]::-webkit-calendar-picker-indicator{ filter:invert(1) brightness(1.4); }
   }
-  .banner b{ color:var(--chalk); }
+  :root[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator{ filter:invert(1) brightness(1.4); }
+  .format-chip{ padding:10px 0; border-radius:12px; border:1px solid var(--border); background:var(--surface); font-weight:700; font-size:13px; color:var(--steel); text-align:center; flex:1; }
+  .format-chip.active{ background:rgba(232,93,61,.15); border-color:var(--energy); color:var(--energy); }
+  .movecheck-row{ width:100%; display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:11px 14px; margin-bottom:6px; text-align:right; }
+  .movecheck-row.checked{ background:var(--surface2); border-color:var(--brass); }
+  .movecheck-box{ width:18px; height:18px; border-radius:5px; border:1.5px solid var(--border); flex-shrink:0; display:flex; align-items:center; justify-content:center; }
+  .movecheck-row.checked .movecheck-box{ background:var(--brass); border-color:var(--brass); }
 
-  header{
-    display:flex; align-items:center; justify-content:space-between;
-    padding:14px 18px; border-bottom:1px solid var(--border); background:var(--surface);
+  /* ---- Achievements / medals ----
+     Tier metal tones are deliberately the same in both themes — gold is
+     gold regardless of page theme, only the surface around it changes. */
+  :root{
+    --bronze-lo:#8A6A1E; --bronze-mid:#C9A227; --bronze-hi:#F0DD9C;
+    --silver-lo:#8A94A0; --silver-mid:#D8DEE4; --silver-hi:#FFFFFF;
+    --gold-lo:#B8790A;  --gold-mid:#F2B90C; --gold-hi:#FFF3C4;
   }
-  .brand{ font-weight:800; font-size:16px; }
-  .brand span{ color:var(--energy); }
-  #whoWrap{ display:flex; align-items:center; gap:10px; font-size:12.5px; color:var(--steel); }
-  #signOutBtn{
-    border:1px solid var(--border); background:none; color:var(--steel);
-    border-radius:8px; padding:5px 10px; font-size:12px; font-family:inherit; cursor:pointer;
+  .medal-face{ fill:var(--surface); }
+  .medal-glyph{ fill:none; stroke-linecap:round; stroke-linejoin:round; }
+  .medal-glyph-fill{ fill:currentColor; stroke:none; }
+  .medal-rim{ stroke:rgba(0,0,0,.3); stroke-width:1.5; }
+  .medal-shine{ fill:url(#gradShine); pointer-events:none; }
+  @media (prefers-reduced-motion: no-preference){
+    .medal-badge.earned .medal-shine{ animation:medalTwinkle 3.2s ease-in-out infinite; }
+  }
+  @keyframes medalTwinkle{ 0%,100%{ opacity:.65; } 50%{ opacity:1; } }
+  .tier-bronze .medal-rim{ fill:url(#gradBronze); } .tier-bronze .medal-face{ fill:url(#gradBronzeFace); }
+  .tier-bronze .medal-glyph{ stroke:var(--bronze-lo); } .tier-bronze .medal-glyph-fill{ color:var(--bronze-lo); }
+  .tier-silver .medal-rim{ fill:url(#gradSilver); } .tier-silver .medal-face{ fill:url(#gradSilverFace); }
+  .tier-silver .medal-glyph{ stroke:var(--silver-lo); } .tier-silver .medal-glyph-fill{ color:var(--silver-lo); }
+  .tier-gold .medal-rim{ fill:url(#gradGold); } .tier-gold .medal-face{ fill:url(#gradGoldFace); }
+  .tier-gold .medal-glyph{ stroke:var(--gold-lo); } .tier-gold .medal-glyph-fill{ color:var(--gold-lo); }
+  .medal-milestone .medal-rim, .medal-milestone .medal-face{ fill:var(--energy); }
+  .medal-milestone .medal-glyph{ stroke:#fff; } .medal-milestone .medal-glyph-fill{ color:#fff; }
+  .medal-rx .medal-rim, .medal-rx .medal-face{ fill:var(--blue); }
+  .medal-rx .medal-glyph{ stroke:#fff; } .medal-rx .medal-glyph-fill{ color:#fff; }
+  .medal-capstone .medal-rim{ fill:url(#gradCapstone); } .medal-capstone .medal-face{ fill:url(#gradCapstoneFace); }
+  .medal-capstone .medal-glyph{ stroke:#3A2410; } .medal-capstone .medal-glyph-fill{ color:#3A2410; }
+  .ribbon{ fill:var(--stripe-a); }
+
+  .medal-badge{ width:72px; text-align:center; flex-shrink:0; }
+  .medal-shape{ width:64px; height:70px; margin:0 auto; }
+  .medal-shape-plate{ height:64px; display:flex; align-items:center; justify-content:center; }
+  .medal-plate{ position:relative; width:64px; height:64px; border-radius:50%; overflow:hidden; box-shadow:inset 0 0 0 2px rgba(255,255,255,.16); }
+  .medal-plate img{ width:100%; height:100%; object-fit:cover; display:block; }
+  .medal-plate-shine{ position:absolute; inset:0; border-radius:50%; background:linear-gradient(135deg,rgba(255,255,255,.28),transparent 38%,rgba(0,0,0,.18)); pointer-events:none; }
+  .medal-badge.locked .medal-shape-plate{ opacity:.72; }
+  .medal-shape.shape-circle{ height:64px; }
+  .capstone-badge{ width:auto; }
+  .capstone-badge .medal-shape{ width:104px; height:104px; }
+  .capstone-badge .medal-name{ font-size:14px; }
+  .capstone-badge.earned .medal-shape{ filter:drop-shadow(0 0 14px var(--glow-color)); }
+  @media (prefers-reduced-motion: no-preference){
+    .capstone-badge.earned .medal-shape{ animation:medalGlowBig 2.6s ease-in-out infinite; }
+  }
+  @keyframes medalGlowBig{ 0%,100%{ filter:drop-shadow(0 0 8px var(--glow-color)); } 50%{ filter:drop-shadow(0 0 18px var(--glow-color)); } }
+  .medal-name{ font-size:10.5px; font-weight:700; color:var(--chalk); margin-top:6px; line-height:1.3; }
+  .medal-badge.locked .medal-name{ color:var(--steel); }
+  .medal-rule{ font-size:9px; color:var(--steel); margin-top:2px; line-height:1.3; opacity:.85; }
+  .medal-badge.locked .medal-shape{ filter:grayscale(1) brightness(.55); opacity:.4; }
+  .medal-badge.earned .medal-shape{ filter:drop-shadow(0 0 5px var(--glow-color)) drop-shadow(0 0 13px var(--glow-color)); }
+  @media (prefers-reduced-motion: no-preference){
+    .medal-badge.earned .medal-shape{ animation:medalGlow 2.6s ease-in-out infinite; }
+  }
+  @keyframes medalGlow{
+    0%,100%{ filter:drop-shadow(0 0 4px var(--glow-color)) drop-shadow(0 0 10px var(--glow-color)); }
+    50%{ filter:drop-shadow(0 0 7px var(--glow-color)) drop-shadow(0 0 20px var(--glow-color)); }
   }
 
-  nav#nav{ display:flex; gap:4px; padding:8px 14px; background:var(--surface); border-bottom:1px solid var(--border); }
-  .navbtn{
-    flex:1; display:flex; align-items:center; justify-content:center; gap:6px;
-    border:none; background:none; color:var(--steel); font-family:inherit; font-size:13px; font-weight:600;
-    padding:9px 6px; border-radius:10px; cursor:pointer;
-  }
-  .navbtn.active{ background:var(--surface2); color:var(--energy); }
+  .ach-summary{ text-align:center; padding:4px 0 18px; }
+  .ach-summary-level{ font-weight:800; font-size:15px; color:var(--energy); letter-spacing:.3px; margin-bottom:2px; }
+  .ach-summary-num{ font-weight:700; font-size:22px; color:var(--chalk); }
+  .ach-summary-label{ color:var(--steel); font-size:12px; margin-top:2px; }
+  .ach-level-bar{ width:100%; max-width:220px; height:6px; border-radius:999px; background:var(--surface2); border:1px solid var(--border); margin:10px auto 4px; overflow:hidden; }
+  .ach-level-fill{ height:100%; background:var(--energy); border-radius:999px; }
+  .ach-section{ margin-bottom:22px; }
+  .ach-section-head{ display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+  .ach-section-dot{ width:8px; height:8px; border-radius:999px; flex-shrink:0; }
+  .ach-section-title{ font-weight:800; font-size:14px; color:var(--chalk); }
+  .ach-row{ display:flex; gap:14px; overflow-x:auto; padding-bottom:4px; -webkit-overflow-scrolling:touch; }
+  .ach-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(72px,1fr)); gap:16px 8px; }
 
-  main{ max-width:480px; margin:0 auto; padding:22px 16px 60px; }
-  .section-head{ margin-bottom:16px; }
-  .section-head p{ margin:4px 0 0; color:var(--steel); font-size:13px; }
-  .loading{ text-align:center; padding:40px 0; color:var(--steel); }
-  .empty{ text-align:center; padding:32px 0; color:var(--steel); font-size:14px; }
-
-  /* ---- auth ---- */
-  .auth-card{
-    max-width:380px; margin:40px auto 0; background:var(--surface); border:1px solid var(--border);
-    border-radius:16px; padding:28px 24px; text-align:center;
+  .celebration-stars{ position:absolute; inset:0; pointer-events:none; overflow:hidden; }
+  .cstar{ position:absolute; opacity:.35; }
+  @media (prefers-reduced-motion: no-preference){
+    .cstar{ animation:starTwinkle 1.8s ease-in-out infinite; }
   }
-  .auth-icon{ color:var(--energy); display:flex; justify-content:center; margin-bottom:10px; }
-  .auth-card h2{ margin-bottom:6px; }
-  .auth-sub{ color:var(--steel); font-size:13px; margin-bottom:20px; }
-  .field{ display:flex; flex-direction:column; gap:5px; text-align:right; margin-bottom:12px; }
-  .field span{ font-size:12.5px; font-weight:700; color:var(--steel); }
-  .field input{
-    border:1px solid var(--border); background:var(--bg); color:var(--chalk); border-radius:10px;
-    padding:11px 12px; font-size:14px; font-family:inherit;
+  @keyframes starTwinkle{ 0%,100%{ opacity:.3; transform:scale(.8) rotate(0deg); } 50%{ opacity:1; transform:scale(1.2) rotate(15deg); } }
+  .celebration-title{ font-family:'Anton',sans-serif; font-weight:400; font-size:30px; color:var(--brass); margin-bottom:6px; letter-spacing:.5px; }
+  .celebration-pr-line{ font-size:15px; font-weight:700; color:var(--chalk); margin-bottom:6px; }
+  .celebration-sub{ color:var(--steel); font-size:14px; margin-bottom:20px; }
+  .celebration-medals{ display:flex; justify-content:center; gap:16px; flex-wrap:wrap; }
+  @media (prefers-reduced-motion: no-preference){
+    .celebration-sheet{ animation:celebrationPop .35s cubic-bezier(.34,1.56,.64,1); }
   }
-  .auth-error{ color:var(--red); font-size:12.5px; margin-bottom:10px; text-align:right; }
-  .btn-primary{
-    width:100%; background:var(--energy); color:#fff; border:none; border-radius:10px;
-    padding:12px; font-weight:700; font-size:14.5px; font-family:inherit; cursor:pointer; margin-top:4px;
-  }
-  .btn-primary:disabled{ opacity:.6; }
-  .auth-hint{ margin-top:16px; font-size:11.5px; color:var(--steel); }
-
-  .quick-card{ max-width:380px; margin:16px auto 0; }
-  .quick-head{ font-size:12px; font-weight:700; color:var(--steel); text-align:center; margin-bottom:10px; }
-  .quick-head span{ display:block; font-weight:400; font-size:11px; color:var(--steel); opacity:.8; margin-top:2px; }
-  .quick-list{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-  .quick-user{
-    display:flex; align-items:center; gap:8px; background:var(--surface); border:1px solid var(--border);
-    border-radius:10px; padding:8px 10px; font-family:inherit; cursor:pointer; text-align:right;
-  }
-  .quick-avatar{
-    flex:none; width:26px; height:26px; border-radius:50%; background:var(--surface2); color:var(--energy);
-    display:flex; align-items:center; justify-content:center; font-weight:800; font-size:12px;
-  }
-  .quick-name{ flex:1; font-size:12.5px; font-weight:600; color:var(--chalk); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .quick-role{ font-size:10.5px; color:var(--steel); flex:none; }
-
-  /* ---- leaderboard ---- */
-  .chips{ display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
-  .chip{
-    border:1px solid var(--border); background:var(--surface); color:var(--steel);
-    border-radius:100px; padding:7px 14px; font-size:13px; font-weight:600; font-family:inherit; cursor:pointer;
-  }
-  .chip.active{ background:var(--energy); border-color:var(--energy); color:#fff; }
-  .lb-list{ display:flex; flex-direction:column; gap:6px; }
-  .lb-row{
-    display:flex; align-items:center; gap:12px; background:var(--surface); border:1px solid var(--border);
-    border-radius:10px; padding:11px 14px;
-  }
-  .lb-row.me{ border-color:var(--energy); background:color-mix(in srgb, var(--energy) 6%, var(--surface)); }
-  .lb-rank{ color:var(--steel); font-weight:700; width:20px; }
-  .lb-name{ flex:1; font-weight:600; }
-  .lb-score{ font-weight:700; color:var(--brass); }
-
-  /* ---- wall ---- */
-  .feed-list{ display:flex; flex-direction:column; gap:10px; }
-  .feed-item{ display:flex; gap:12px; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px 14px; }
-  .feed-avatar{
-    flex:none; width:36px; height:36px; border-radius:50%; background:var(--surface2); color:var(--energy);
-    display:flex; align-items:center; justify-content:center; font-weight:800; font-size:15px;
-  }
-  .feed-line{ font-size:14px; }
-  .feed-value{ color:var(--brass); font-weight:700; font-size:14px; margin-top:2px; }
-  .feed-time{ color:var(--steel); font-size:11.5px; margin-top:2px; }
-
-  /* ---- coach ---- */
-  .coach-list{ display:flex; flex-direction:column; gap:6px; }
-  .coach-row{
-    display:flex; align-items:center; gap:10px; background:var(--surface); border:1px solid var(--border);
-    border-radius:10px; padding:11px 14px; font-size:13.5px;
-  }
-  .coach-row.stale{ border-color:color-mix(in srgb, var(--red) 40%, var(--border)); background:color-mix(in srgb, var(--red) 6%, var(--surface)); }
-  .coach-name{ flex:1; font-weight:600; }
-  .coach-meta{ color:var(--steel); font-size:12px; }
-  .coach-last{ color:var(--steel); font-size:12px; min-width:64px; text-align:left; }
-  .coach-row.stale .coach-last{ color:var(--red); font-weight:700; }
+  @keyframes celebrationPop{ 0%{ transform:scale(.85); opacity:0; } 100%{ transform:scale(1); opacity:1; } }
 </style>
 </head>
 <body>
+<!-- Bigger and more explicit on purpose: an in-place reload doesn't always
+     fully swap the service worker on an installed/standalone PWA (iOS in
+     particular), so the copy tells the user the reliable fix — close and
+     reopen the app — rather than implying a tap alone is enough. Tapping
+     still fires the same SKIP_WAITING handshake as a bonus shortcut. -->
+<button id="updateBanner" data-action="reload-app" role="status" aria-live="polite" style="display:none; position:fixed; top:0; left:0; right:0; z-index:60; background:var(--energy); color:#1a0d08; text-align:center; padding:calc(env(safe-area-inset-top,0px) + 16px) 20px 16px; width:100%; box-shadow:0 4px 16px rgba(0,0,0,.25);">
+  <div style="font-weight:800; font-size:16px; margin-bottom:3px;">עדכון חדש זמין</div>
+  <div style="font-weight:600; font-size:13px; opacity:.85;">סגרו את האפליקציה ופתחו אותה מחדש כדי לעדכן</div>
+</button>
 
-<div class="banner">🔧 <b>תצוגה מקדימה</b> — נתוני דמה בלבד, לא מחובר לאפליקציה החיה או לנתוני מתאמנים אמיתיים</div>
-
-<header>
-  <div class="brand">האימוניה <span>קהילה</span></div>
-  <div id="whoWrap" style="display:none;">
-    <span id="whoami"></span>
-    <button id="signOutBtn" data-action="sign-out">יציאה</button>
+<!-- Custom "add to home screen" banner. Chrome/Android defer their native
+     install prompt to us via beforeinstallprompt (see app.js); iOS Safari
+     never fires that event, so this banner just never shows there. Shares
+     the update banner's fixed-top slot and visual weight, distinguished by
+     the brand stripe instead of the solid energy color, and steps aside if
+     an update banner is showing (see showUpdateBanner in app.js). -->
+<div id="installBanner" role="status" style="display:none; position:fixed; top:0; left:0; right:0; z-index:59; background-image:var(--stripe); padding:calc(env(safe-area-inset-top,0px) + 14px) 16px 14px; width:100%; box-shadow:0 4px 16px rgba(0,0,0,.25);">
+  <div class="flex items-center justify-between" style="max-width:448px; margin:0 auto; gap:12px;">
+    <div style="color:#fff; text-shadow:0 1px 3px rgba(0,0,0,.5);">
+      <div style="font-weight:800; font-size:14px;">התקינו את האימוניה</div>
+      <div style="font-weight:600; font-size:12px; opacity:.9;">גישה מהירה ישירות ממסך הבית</div>
+    </div>
+    <div class="flex items-center gap-8" style="flex-shrink:0;">
+      <button data-action="install-app" style="background:#fff; color:var(--energy); font-weight:800; font-size:13px; padding:8px 14px; border-radius:10px; white-space:nowrap;">התקנה</button>
+      <button data-action="dismiss-install-hint" aria-label="סגירה" style="color:#fff; padding:4px;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
   </div>
-</header>
+</div>
+<div id="loading" role="status" aria-live="polite" style="min-height:100dvh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;">
+  <img src="./assets/mark.png" alt="" width="40" height="46" style="opacity:.85;" />
+  <div style="color:var(--steel); font-size:13px; font-weight:700;">טוען את היומן שלך…</div>
+</div>
 
-<nav id="nav" style="display:none;">
-  <button class="navbtn" data-tab="leaderboard">לוח מובילים</button>
-  <button class="navbtn" data-tab="wall">קיר קהילה</button>
-  <button class="navbtn" data-tab="coach">לוח מאמן</button>
-</nav>
+<div id="app" style="display:none;">
+  <div class="header">
+    <div class="flex items-center gap-8">
+      <img src="./assets/logo-full.png" alt="האימוניה" class="header-logo" />
+      <button id="notificationsBellBtn" data-action="open-notifications" aria-label="עדכונים" style="position:relative; color:var(--steel); padding:4px; flex-shrink:0;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        <span id="notificationsBadge" aria-hidden="true" style="display:none; position:absolute; top:0; left:0; background:var(--energy); color:#fff; font-size:9px; font-weight:800; min-width:15px; height:15px; border-radius:8px; align-items:center; justify-content:center; padding:0 3px; line-height:1;"></span>
+      </button>
+    </div>
+    <div style="text-align:left;">
+      <button id="userGreeting" data-action="open-achievements" class="flex items-center gap-6" style="color:var(--chalk); font-size:16px; font-weight:800; margin-bottom:2px; max-width:170px;"></button>
+      <div class="flex items-center gap-6">
+        <span id="dateLabel" style="color:var(--steel); font-size:12px; font-weight:600;"></span>
+        <span id="streakLabel" class="flex items-center gap-6 mono" style="display:none; color:var(--energy); font-size:12px; font-weight:700;"></span>
+      </div>
+      <button data-action="open-achievements" class="link-btn" style="display:block; margin-top:3px;">לכל המדליות וההישגים שלי</button>
+    </div>
+  </div>
+  <div class="brand-stripe"></div>
 
-<main><div id="app"></div></main>
+  <div class="tabbar" role="tablist">
+    <button class="tabbtn active" id="tabAddBtn" data-action="switch-tab" data-tab="add" role="tab" aria-selected="true" aria-controls="content">רישום</button>
+    <button class="tabbtn" id="tabHistoryBtn" data-action="switch-tab" data-tab="history" role="tab" aria-selected="false" aria-controls="content">התקדמות</button>
+    <button class="tabbtn" id="tabCalendarBtn" data-action="switch-tab" data-tab="calendar" role="tab" aria-selected="false" aria-controls="content">לוח שנה</button>
+    <button class="tabbtn" id="tabWodBtn" data-action="switch-tab" data-tab="wod" role="tab" aria-selected="false" aria-controls="content">אימונים</button>
+    <button class="tabbtn" id="tabCommunityBtn" data-action="switch-tab" data-tab="community" role="tab" aria-selected="false" aria-controls="content">קהילה</button>
+  </div>
 
-<script src="app.js"></script>
+  <div id="content" role="tabpanel"></div>
+</div>
+
+<div class="bottom-bar" id="bottomBar" style="display:none;">
+  <button class="save-btn" data-action="save-set">
+    <img src="./assets/icon-barbell.png" alt="" width="22" height="7" style="filter:brightness(0); opacity:.75;" />
+    <span id="saveBtnLabel">רישום סט</span>
+  </button>
+</div>
+
+<div class="modal-overlay" id="pickerOverlay" data-action="close-picker" role="dialog" aria-modal="true" aria-labelledby="pickerTitle">
+  <div class="modal-sheet">
+    <div class="modal-head">
+      <span class="modal-title" id="pickerTitle">בחירת תרגיל</span>
+      <button data-action="close-picker" aria-label="סגירה" style="color:var(--steel); padding:4px;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="search-box">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8f97" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      <input id="pickerSearch" dir="auto" maxlength="80" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="חיפוש תרגיל" aria-label="חיפוש תרגיל" />
+    </div>
+    <div class="modal-list" id="pickerList"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="wodPickerOverlay" data-action="close-wod-picker" role="dialog" aria-modal="true" aria-labelledby="wodPickerTitle">
+  <div class="modal-sheet">
+    <div class="modal-head">
+      <span class="modal-title" id="wodPickerTitle">בחירת אימון</span>
+      <button data-action="close-wod-picker" aria-label="סגירה" style="color:var(--steel); padding:4px;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="search-box">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8f97" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      <input id="wodPickerSearch" dir="auto" maxlength="80" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="חיפוש אימון" aria-label="חיפוש אימון" />
+    </div>
+    <div class="modal-list" id="wodPickerList"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="wodBuilderOverlay" data-action="close-wod-builder" role="dialog" aria-modal="true" aria-labelledby="wodBuilderTitle">
+  <div class="modal-sheet">
+    <div class="modal-head">
+      <span class="modal-title" id="wodBuilderTitle">בניית אימון</span>
+      <button data-action="close-wod-builder" aria-label="סגירה" style="color:var(--steel); padding:4px;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-list" style="padding:0 16px calc(env(safe-area-inset-bottom, 0px) + 24px);">
+      <div style="color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; margin-bottom:6px;" id="wodBuilderNameLabel">שם</div>
+      <input id="wodBuilderName" class="text-input" dir="auto" maxlength="80" autocomplete="off" placeholder="לדוגמה: אימון יום שני" aria-labelledby="wodBuilderNameLabel" style="margin-bottom:16px;" />
+
+      <div style="color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; margin-bottom:6px;" id="wodBuilderFormatLabel">פורמט</div>
+      <div class="flex" style="gap:8px; margin-bottom:4px;" id="wodBuilderFormats" role="radiogroup" aria-labelledby="wodBuilderFormatLabel">
+        <button class="format-chip" data-action="builder-set-format" data-format="time" role="radio" aria-checked="false">זמן</button>
+        <button class="format-chip" data-action="builder-set-format" data-format="amrap" role="radio" aria-checked="false">AMRAP</button>
+        <button class="format-chip" data-action="builder-set-format" data-format="load" role="radio" aria-checked="false">משקל מקסימלי</button>
+        <button class="format-chip" data-action="builder-set-format" data-format="emom" role="radio" aria-checked="false">EMOM</button>
+      </div>
+      <div id="wodBuilderFormatHint" style="color:var(--steel); font-size:11px; margin-bottom:16px;">חובה לבחור אחד</div>
+      <div id="wodBuilderEmomOptions"></div>
+      <div id="wodBuilderTimeCapOptions"></div>
+
+      <button data-action="create-wod" class="save-btn" style="max-width:none; margin-bottom:20px;">צור אימון</button>
+
+      <div id="wodBuilderMovesLabel" style="color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; margin-bottom:6px;">תרגילים (אופציונלי)</div>
+      <div class="search-box" style="margin:0 0 12px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8f97" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input id="wodBuilderMoveSearch" dir="auto" maxlength="80" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="חיפוש תרגילים" aria-label="חיפוש תרגילים" />
+      </div>
+      <div id="wodBuilderMovements" style="margin-bottom:16px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Medal glyph/gradient sprite sheet. Shapes are built from the gym's own
+     mark files (assets/mark.png, icon-barbell.png, icon-chevrons.png) rather
+     than a generic medal icon, so an earned badge reads as "this box's". -->
+<svg style="position:absolute; width:0; height:0; overflow:hidden;" aria-hidden="true">
+  <defs>
+    <radialGradient id="gradBronze" cx="35%" cy="30%" r="75%">
+      <stop offset="0%" stop-color="var(--bronze-hi)"/><stop offset="55%" stop-color="var(--bronze-mid)"/><stop offset="100%" stop-color="var(--bronze-lo)"/>
+    </radialGradient>
+    <radialGradient id="gradSilver" cx="35%" cy="30%" r="75%">
+      <stop offset="0%" stop-color="var(--silver-hi)"/><stop offset="55%" stop-color="var(--silver-mid)"/><stop offset="100%" stop-color="var(--silver-lo)"/>
+    </radialGradient>
+    <radialGradient id="gradGold" cx="35%" cy="30%" r="75%">
+      <stop offset="0%" stop-color="var(--gold-hi)"/><stop offset="55%" stop-color="var(--gold-mid)"/><stop offset="100%" stop-color="var(--gold-lo)"/>
+    </radialGradient>
+    <radialGradient id="gradBronzeFace" cx="35%" cy="25%" r="85%">
+      <stop offset="0%" stop-color="var(--bronze-hi)"/><stop offset="100%" stop-color="var(--bronze-mid)"/>
+    </radialGradient>
+    <radialGradient id="gradSilverFace" cx="35%" cy="25%" r="85%">
+      <stop offset="0%" stop-color="var(--silver-hi)"/><stop offset="100%" stop-color="var(--silver-mid)"/>
+    </radialGradient>
+    <radialGradient id="gradGoldFace" cx="35%" cy="25%" r="85%">
+      <stop offset="0%" stop-color="var(--gold-hi)"/><stop offset="100%" stop-color="var(--gold-mid)"/>
+    </radialGradient>
+    <linearGradient id="gradCapstone" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="var(--gold-hi)"/><stop offset="50%" stop-color="var(--energy)"/><stop offset="100%" stop-color="var(--blue)"/>
+    </linearGradient>
+    <radialGradient id="gradCapstoneFace" cx="35%" cy="25%" r="85%">
+      <stop offset="0%" stop-color="var(--gold-hi)"/><stop offset="100%" stop-color="var(--energy)"/>
+    </radialGradient>
+    <radialGradient id="gradShine" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="55%" stop-color="#ffffff" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+
+    <g id="glyphHome">
+      <path class="medal-glyph" d="M 18 44 L 50 16 L 82 44" stroke-width="9"/>
+      <rect x="18" y="54" width="64" height="7" rx="1.5" class="medal-glyph-fill"/>
+      <rect x="18" y="67" width="64" height="7" rx="1.5" class="medal-glyph-fill"/>
+      <rect x="18" y="80" width="64" height="7" rx="1.5" class="medal-glyph-fill"/>
+    </g>
+    <g id="glyphBar">
+      <path class="medal-glyph" d="M10 50 H90" stroke-width="6"/>
+      <path class="medal-glyph" d="M25 30 V70 M33 30 V70 M67 30 V70 M75 30 V70" stroke-width="6"/>
+    </g>
+    <g id="glyphChevrons">
+      <path class="medal-glyph" d="M12 22 L34 50 L12 78" stroke-width="7"/>
+      <path class="medal-glyph" d="M38 22 L60 50 L38 78" stroke-width="7"/>
+      <path class="medal-glyph" d="M64 22 L86 50 L64 78" stroke-width="7"/>
+    </g>
+    <g id="glyphFlame">
+      <path d="M50 14 C40 32 30 40 30 56 C30 72 40 84 50 84 C60 84 70 72 70 56 C70 46 64 40 60 44 C60 30 56 20 50 14 Z" class="medal-glyph-fill"/>
+    </g>
+
+    <symbol id="medalShield" viewBox="0 0 100 112">
+      <path class="medal-rim" d="M6 6 H94 V62 C94 88 72 104 50 110 C28 104 6 88 6 62 Z"/>
+      <path class="medal-face" d="M15 15 H85 V60 C85 80 68 93 50 99 C32 93 15 80 15 60 Z"/>
+      <ellipse class="medal-shine" cx="36" cy="32" rx="19" ry="12" transform="rotate(-25 36 32)"/>
+      <path class="ribbon" d="M32 96 L50 112 L68 96 L60 96 L50 104 L40 96 Z"/>
+    </symbol>
+    <symbol id="medalCircle" viewBox="0 0 100 100">
+      <circle class="medal-rim" cx="50" cy="50" r="47"/>
+      <circle class="medal-face" cx="50" cy="50" r="38"/>
+      <ellipse class="medal-shine" cx="37" cy="34" rx="18" ry="11" transform="rotate(-25 37 34)"/>
+    </symbol>
+  </defs>
+</svg>
+
+<div class="modal-overlay" id="achievementsOverlay" data-action="close-achievements" role="dialog" aria-modal="true" aria-labelledby="achievementsTitle">
+  <div class="modal-sheet">
+    <div class="modal-head">
+      <span class="modal-title" id="achievementsTitle">עיטורים</span>
+      <button data-action="close-achievements" aria-label="סגירה" style="color:var(--steel); padding:4px;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-list" id="achievementsList"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="notificationsOverlay" data-action="close-notifications" role="dialog" aria-modal="true" aria-labelledby="notificationsTitle">
+  <div class="modal-sheet">
+    <div class="modal-head">
+      <span class="modal-title" id="notificationsTitle">מה חדש</span>
+      <button data-action="close-notifications" aria-label="סגירה" style="color:var(--steel); padding:4px;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-list" id="notificationsList"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="onboardingOverlay" role="dialog" aria-modal="true" aria-labelledby="onboardingTitle" style="align-items:center; padding:0 20px;">
+  <div class="modal-sheet" style="border-radius:22px; border-bottom:1px solid var(--border); max-height:none;">
+    <div style="padding:28px 22px calc(env(safe-area-inset-bottom,0px) + 24px);">
+      <div id="onboardingTitle" style="color:var(--chalk); font-weight:800; font-size:19px; margin-bottom:4px; text-align:center;">כמה מילים על האפליקציה</div>
+      <div style="color:var(--steel); font-size:13px; margin-bottom:22px; text-align:center;">ארבעה מסכים, כל אחד למטרה שלו</div>
+      <div style="display:flex; flex-direction:column; gap:16px; margin-bottom:24px;">
+        <div class="flex items-center gap-10">
+          <span style="color:var(--brass); flex-shrink:0;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 9v6M20 9v6M2 10v4M22 10v4M7 12h10"/></svg></span>
+          <div><div style="font-weight:700; font-size:14px;">רישום</div><div style="color:var(--steel); font-size:12.5px;">רישום סטים ואימונים, כולל סולם של כמה סטים ברצף</div></div>
+        </div>
+        <div class="flex items-center gap-10">
+          <span style="color:var(--brass); flex-shrink:0;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V12M12 20V4M20 20v-7"/></svg></span>
+          <div><div style="font-weight:700; font-size:14px;">התקדמות</div><div style="color:var(--steel); font-size:12.5px;">גרפים, שיאים אישיים, משקל גוף ומדדים</div></div>
+        </div>
+        <div class="flex items-center gap-10">
+          <span style="color:var(--brass); flex-shrink:0;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg></span>
+          <div><div style="font-weight:700; font-size:14px;">לוח שנה</div><div style="color:var(--steel); font-size:12.5px;">כל האימונים שלכם לפי תאריך, ונפח אימון לפי קטגוריה</div></div>
+        </div>
+        <div class="flex items-center gap-10">
+          <span style="color:var(--brass); flex-shrink:0;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2M9 2h6M12 2v3"/></svg></span>
+          <div><div style="font-weight:700; font-size:14px;">אימונים</div><div style="color:var(--steel); font-size:12.5px;">רישום WOD, כולל בנצ׳מארקים מוכרים או אימון מותאם אישית</div></div>
+        </div>
+      </div>
+      <button data-action="close-onboarding" class="save-btn" style="max-width:none;">בואו נתחיל</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="celebrationOverlay" data-action="close-celebration" role="dialog" aria-modal="true" aria-labelledby="celebrationTitle" style="align-items:center; padding:0 20px;">
+  <div class="modal-sheet celebration-sheet" style="border-radius:24px; border-bottom:1px solid var(--border); max-height:none; position:relative; overflow:hidden;">
+    <div class="celebration-stars" aria-hidden="true">
+      <svg class="cstar" style="top:6%; left:10%; width:14px; height:14px; animation-delay:0s;" viewBox="0 0 24 24" fill="var(--brass)"><path d="M12 2 14.59 8.36 21.51 8.79 16.13 13.14 17.94 19.88 12 16.2 6.06 19.88 7.87 13.14 2.49 8.79 9.41 8.36Z"/></svg>
+      <svg class="cstar" style="top:12%; left:82%; width:20px; height:20px; animation-delay:.3s;" viewBox="0 0 24 24" fill="var(--energy)"><path d="M12 2 14.59 8.36 21.51 8.79 16.13 13.14 17.94 19.88 12 16.2 6.06 19.88 7.87 13.14 2.49 8.79 9.41 8.36Z"/></svg>
+      <svg class="cstar" style="top:22%; left:4%; width:10px; height:10px; animation-delay:.6s;" viewBox="0 0 24 24" fill="var(--blue)"><path d="M12 2 14.59 8.36 21.51 8.79 16.13 13.14 17.94 19.88 12 16.2 6.06 19.88 7.87 13.14 2.49 8.79 9.41 8.36Z"/></svg>
+      <svg class="cstar" style="top:4%; left:46%; width:16px; height:16px; animation-delay:.9s;" viewBox="0 0 24 24" fill="var(--teal)"><path d="M12 2 14.59 8.36 21.51 8.79 16.13 13.14 17.94 19.88 12 16.2 6.06 19.88 7.87 13.14 2.49 8.79 9.41 8.36Z"/></svg>
+      <svg class="cstar" style="top:18%; left:64%; width:12px; height:12px; animation-delay:1.2s;" viewBox="0 0 24 24" fill="var(--brass)"><path d="M12 2 14.59 8.36 21.51 8.79 16.13 13.14 17.94 19.88 12 16.2 6.06 19.88 7.87 13.14 2.49 8.79 9.41 8.36Z"/></svg>
+      <svg class="cstar" style="bottom:8%; left:8%; width:18px; height:18px; animation-delay:.45s;" viewBox="0 0 24 24" fill="var(--energy)"><path d="M12 2 14.59 8.36 21.51 8.79 16.13 13.14 17.94 19.88 12 16.2 6.06 19.88 7.87 13.14 2.49 8.79 9.41 8.36Z"/></svg>
+      <svg class="cstar" style="bottom:14%; left:88%; width:14px; height:14px; animation-delay:.75s;" viewBox="0 0 24 24" fill="var(--blue)"><path d="M12 2 14.59 8.36 21.51 8.79 16.13 13.14 17.94 19.88 12 16.2 6.06 19.88 7.87 13.14 2.49 8.79 9.41 8.36Z"/></svg>
+      <svg class="cstar" style="bottom:4%; left:40%; width:10px; height:10px; animation-delay:1.05s;" viewBox="0 0 24 24" fill="var(--teal)"><path d="M12 2 14.59 8.36 21.51 8.79 16.13 13.14 17.94 19.88 12 16.2 6.06 19.88 7.87 13.14 2.49 8.79 9.41 8.36Z"/></svg>
+    </div>
+    <div style="padding:34px 22px calc(env(safe-area-inset-bottom,0px) + 26px); text-align:center; position:relative; z-index:1;">
+      <div class="celebration-title" id="celebrationTitle">כל הכבוד!</div>
+      <div class="celebration-pr-line" id="celebrationPrLine"></div>
+      <div class="celebration-sub" id="celebrationSub">עיטור חדש נפתח — תמשיכו ככה!</div>
+      <div class="celebration-medals" id="celebrationMedals"></div>
+      <button data-action="close-celebration" class="save-btn" style="max-width:none; margin-top:20px;">מעולה!</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="welcomeOverlay" role="dialog" aria-modal="true" aria-labelledby="welcomeTitle" style="align-items:center; padding:0 20px;">
+  <div class="modal-sheet" style="border-radius:22px; border-bottom:1px solid var(--border); max-height:none;">
+    <div style="padding:28px 20px calc(env(safe-area-inset-bottom,0px) + 24px); text-align:center;">
+      <img src="./assets/mark.png" alt="" width="36" height="41" style="margin-bottom:14px; opacity:.9;" />
+      <div id="welcomeTitle" style="color:var(--chalk); font-weight:800; font-size:19px; margin-bottom:6px;">ברוכים הבאים!</div>
+      <div id="welcomeSubtitle" style="color:var(--steel); font-size:13px; margin-bottom:18px;">איך נקרא לך?</div>
+      <input id="welcomeNameInput" class="text-input" dir="auto" maxlength="80" autocomplete="off" placeholder="השם שלך" aria-labelledby="welcomeSubtitle" style="margin-bottom:16px; text-align:center;" />
+      <div style="color:var(--steel); font-size:12px; margin-bottom:6px;" id="welcomeBoxStartLabel">מתי התחלתם להתאמן בבוקס? (לא חובה — פותח את עיטורי הוותק)</div>
+      <input id="welcomeBoxStartInput" type="date" class="text-input" aria-labelledby="welcomeBoxStartLabel" style="margin-bottom:16px; text-align:center;" />
+      <button data-action="save-user-name" class="save-btn" style="max-width:none; margin-bottom:10px;"><span id="welcomeSaveLabel">בואו נתחיל</span></button>
+      <button id="welcomeSkipBtn" data-action="skip-user-name" class="link-btn">דלג</button>
+    </div>
+  </div>
+</div>
+
+<script src="./vendor/supabase.js"></script>
+<script src="./cloud-config.js"></script>
+<script src="./cloud.js"></script>
+<script src="./app.js"></script>
 </body>
 </html>

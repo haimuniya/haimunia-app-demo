@@ -1,0 +1,146 @@
+// Service worker for האימוניה.
+// Version is the single source of truth for the cache name — bumping
+// APP_VERSION in app.js is what ships an update. Don't edit SW_VERSION by
+// hand: run `npm run sync-version` (see app.js) to copy it here.
+const SW_VERSION = "3.0.0";
+const CACHE = `haimunia-v${SW_VERSION}`;
+
+// Everything the app shell needs to boot with no network.
+const ASSETS = [
+  "./",
+  "./index.html",
+  "./app.js",
+  "./theme-init.js",
+  "./vendor/supabase.js",
+  "./cloud-config.js",
+  "./cloud.js",
+  "./PRIVACY.md",
+  "./TERMS.md",
+  "./manifest.json",
+  "./icon-192.png",
+  "./icon-512.png",
+  "./icon-192-maskable.png",
+  "./icon-512-maskable.png",
+  "./assets/mark.png",
+  "./assets/icon-barbell.png",
+  "./assets/icon-chevrons.png",
+  "./assets/logo-full.png",
+  "./assets/medal-bronze.png",
+  "./assets/medal-silver.png",
+  "./assets/medal-gold.png",
+  "./assets/fonts/rubik-400-latin.woff2",
+  "./assets/fonts/rubik-400-hebrew.woff2",
+  "./assets/fonts/rubik-600-latin.woff2",
+  "./assets/fonts/rubik-600-hebrew.woff2",
+  "./assets/fonts/rubik-700-latin.woff2",
+  "./assets/fonts/rubik-700-hebrew.woff2",
+  "./assets/fonts/rubik-800-latin.woff2",
+  "./assets/fonts/rubik-800-hebrew.woff2",
+  "./assets/fonts/rubik-900-latin.woff2",
+  "./assets/fonts/rubik-900-hebrew.woff2",
+  "./assets/fonts/jbmono-500-latin.woff2",
+  "./assets/fonts/jbmono-700-latin.woff2",
+  "./assets/fonts/anton-400-latin.woff2",
+];
+
+// Precache each asset independently. addAll() is all-or-nothing: a single
+// missing file used to fail the whole install and silently leave the app with
+// no offline support at all.
+self.addEventListener("install", (e) => {
+  e.waitUntil(
+    caches.open(CACHE).then((cache) =>
+      Promise.allSettled(
+        ASSETS.map((url) =>
+          cache.add(new Request(url, { cache: "reload" }))
+            .catch((err) => console.warn("[sw] precache miss:", url, err))
+        )
+      )
+    )
+  );
+  // No skipWaiting() here on purpose. The page shows an update banner and the
+  // user decides when to swap; activating under a running page would leave the
+  // old app.js talking to a new cache.
+});
+
+self.addEventListener("activate", (e) => {
+  e.waitUntil(
+    (async () => {
+      const keys = await caches.keys();
+      await Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)));
+      if (self.registration.navigationPreload) {
+        await self.registration.navigationPreload.enable().catch(() => {});
+      }
+      await self.clients.claim();
+    })()
+  );
+});
+
+// The update banner in index.html triggers the swap explicitly.
+self.addEventListener("message", (e) => {
+  if (e.data && e.data.type === "SKIP_WAITING") self.skipWaiting();
+});
+
+// Only app-shell files get written back to the cache, so a stray same-origin
+// request can't grow the cache without bound.
+function isPrecached(url) {
+  return ASSETS.some((a) => {
+    const rel = a.replace(/^\.\//, "");
+    return rel === "" ? url.pathname.endsWith("/") : url.pathname.endsWith("/" + rel);
+  });
+}
+
+self.addEventListener("fetch", (e) => {
+  const req = e.request;
+  if (req.method !== "GET") return;
+
+  let url;
+  try { url = new URL(req.url); } catch (err) { return; }
+
+  // Only ever touch our own origin. The previous version cached every
+  // successful GET from anywhere, which meant unbounded growth and let any
+  // third-party response sit in the app's cache indefinitely.
+  if (url.origin !== self.location.origin) return;
+  if (url.protocol !== "https:" && url.hostname !== "localhost" && url.hostname !== "127.0.0.1") return;
+
+  // Navigations: serve the shell. Matching with ignoreSearch is what makes the
+  // manifest shortcuts (./index.html?tab=add) work offline — an exact-URL match
+  // missed on the query string and fell through to a network error.
+  if (req.mode === "navigate") {
+    e.respondWith(
+      (async () => {
+        try {
+          const preload = await e.preloadResponse;
+          if (preload) return preload;
+          return await fetch(req);
+        } catch (err) {
+          const cache = await caches.open(CACHE);
+          return (
+            (await cache.match(req, { ignoreSearch: true })) ||
+            (await cache.match("./index.html")) ||
+            (await cache.match("./")) ||
+            new Response("offline", { status: 503, headers: { "Content-Type": "text/plain" } })
+          );
+        }
+      })()
+    );
+    return;
+  }
+
+  // Same-origin assets: stale-while-revalidate, but only re-cache things that
+  // are part of the app shell.
+  e.respondWith(
+    (async () => {
+      const cache = await caches.open(CACHE);
+      const cached = await cache.match(req, { ignoreSearch: true });
+      const network = fetch(req)
+        .then((res) => {
+          if (res && res.ok && res.type === "basic" && isPrecached(url)) {
+            cache.put(req, res.clone()).catch(() => {});
+          }
+          return res;
+        })
+        .catch(() => cached);
+      return cached || network;
+    })()
+  );
+});
