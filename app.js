@@ -144,7 +144,15 @@ function fmtRelative(iso) {
 }
 
 // ---------- Screens ----------
+const ROLE_LABEL = { member: "חבר/ה", coach: "מאמן/ת", owner: "בעלים" };
+
 function renderAuth() {
+  const quickList = mockDb.profiles.map((p) => `
+    <button class="quick-user" data-action="quick-login" data-id="${esc(p.id)}">
+      <span class="quick-avatar">${esc(p.display_name[0])}</span>
+      <span class="quick-name">${esc(p.display_name)}</span>
+      <span class="quick-role">${ROLE_LABEL[p.role]}</span>
+    </button>`).join("");
   return `
     <div class="auth-card">
       <div class="auth-icon">${ICON_HOME}</div>
@@ -161,6 +169,10 @@ function renderAuth() {
       <div id="joinError" class="auth-error" hidden></div>
       <button id="joinBtn" data-action="join" class="btn-primary">הצטרפות</button>
       <div class="auth-hint">לתצוגה: <b class="mono">DEMO2026</b> — חבר &nbsp;·&nbsp; <b class="mono">COACH2026</b> — מאמן</div>
+    </div>
+    <div class="quick-card">
+      <div class="quick-head">כניסה מהירה כמתאמן קיים <span>לצורך הדגמה בלבד — לא חלק מהזרימה האמיתית</span></div>
+      <div class="quick-list">${quickList}</div>
     </div>`;
 }
 
@@ -232,7 +244,7 @@ async function render() {
     b.classList.toggle("active", b.dataset.tab === tab);
     b.style.display = (b.dataset.tab === "coach" && currentUser.role === "member") ? "none" : "flex";
   });
-  document.getElementById("whoami").textContent = `${currentUser.display_name} · ${currentUser.role === "member" ? "חבר/ה" : currentUser.role === "coach" ? "מאמן/ת" : "בעלים"}`;
+  document.getElementById("whoami").textContent = `${currentUser.display_name} · ${ROLE_LABEL[currentUser.role]}`;
 
   app.innerHTML = `<div class="loading">טוען…</div>`;
   if (tab === "leaderboard") app.innerHTML = renderLeaderboard(await dbGetLeaderboard(leaderboardWod));
@@ -257,6 +269,13 @@ document.addEventListener("click", async (e) => {
     btn.disabled = false;
     if (result.error) { errEl.textContent = result.error; errEl.hidden = false; return; }
     currentUser = result.profile;
+    tab = "leaderboard";
+    render();
+  }
+  else if (action === "quick-login") {
+    const profile = mockDb.profiles.find((p) => p.id === el.dataset.id);
+    if (!profile) return;
+    currentUser = profile;
     tab = "leaderboard";
     render();
   }
