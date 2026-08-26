@@ -2,7 +2,7 @@
 // Version is the single source of truth for the cache name — bumping
 // APP_VERSION in app.js is what ships an update. Don't edit SW_VERSION by
 // hand: run `npm run sync-version` (see app.js) to copy it here.
-const SW_VERSION = "3.0.1";
+const SW_VERSION = "3.0.2";
 const CACHE = `haimunia-v${SW_VERSION}`;
 
 // Everything the app shell needs to boot with no network.
@@ -12,7 +12,6 @@ const ASSETS = [
   "./app.js",
   "./theme-init.js",
   "./vendor/supabase.js",
-  "./cloud-config.js",
   "./cloud.js",
   "./PRIVACY.md",
   "./TERMS.md",
@@ -101,6 +100,13 @@ self.addEventListener("fetch", (e) => {
   // third-party response sit in the app's cache indefinitely.
   if (url.origin !== self.location.origin) return;
   if (url.protocol !== "https:" && url.hostname !== "localhost" && url.hostname !== "127.0.0.1") return;
+
+  // Environment configuration must never be served stale. It may change
+  // independently of the app shell when switching demo/staging projects.
+  if (url.pathname.endsWith("/cloud-config.js")) {
+    e.respondWith(fetch(req, { cache: "no-store" }).catch(() => new Response("window.HAIMUNIA_CONFIG={};", { headers: { "Content-Type": "application/javascript" } })));
+    return;
+  }
 
   // Navigations: serve the shell. Matching with ignoreSearch is what makes the
   // manifest shortcuts (./index.html?tab=add) work offline — an exact-URL match
