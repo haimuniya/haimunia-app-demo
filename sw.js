@@ -2,7 +2,7 @@
 // Version is the single source of truth for the cache name — bumping
 // APP_VERSION in app.js is what ships an update. Don't edit SW_VERSION by
 // hand: run `npm run sync-version` (see app.js) to copy it here.
-const SW_VERSION = "3.0.0";
+const SW_VERSION = "3.0.1";
 const CACHE = `haimunia-v${SW_VERSION}`;
 
 // Everything the app shell needs to boot with no network.
