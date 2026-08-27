@@ -22,7 +22,7 @@ test("setTextScalePref applies the attribute, persists to localStorage, and re-r
   const window = await bootApp();
   window.setTextScalePref("large");
   assert.equal(window.document.documentElement.getAttribute("data-text-scale"), "large");
-  assert.equal(window.localStorage.getItem("haimunia:textScale"), "large");
+  assert.equal(window.localStorage.getItem("haimunia-demo:textScale"), "large");
 
   window.setTextScalePref("normal");
   assert.equal(window.document.documentElement.hasAttribute("data-text-scale"), false, "normal should remove the attribute, not set it to a no-op value");
@@ -37,7 +37,7 @@ test("setTextScalePref ignores an invalid value instead of applying garbage", as
 
 test("a leftover \"xlarge\" value from before it was removed falls back to normal, not crash or apply garbage", async () => {
   const window = await bootApp();
-  window.localStorage.setItem("haimunia:textScale", "xlarge");
+  window.localStorage.setItem("haimunia-demo:textScale", "xlarge");
   window.loadTextScalePref();
   window.applyTextScalePref();
   assert.equal(window.document.documentElement.hasAttribute("data-text-scale"), false, "an unrecognized stored value should resolve to normal");
@@ -45,7 +45,7 @@ test("a leftover \"xlarge\" value from before it was removed falls back to norma
 
 test("loadTextScalePref reads a previously-saved preference back from localStorage", async () => {
   const window = await bootApp();
-  window.localStorage.setItem("haimunia:textScale", "large");
+  window.localStorage.setItem("haimunia-demo:textScale", "large");
   window.loadTextScalePref();
   window.applyTextScalePref();
   assert.equal(window.document.documentElement.getAttribute("data-text-scale"), "large");

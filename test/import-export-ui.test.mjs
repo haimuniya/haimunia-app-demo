@@ -21,7 +21,7 @@ test("clicking ייצוא גיבוי in the footer exports without throwing and 
 
   assert.doesNotThrow(() => window.document.querySelector("[data-action='export-data']").click());
 
-  const stored = await window.dbGetSetting("boxlog:lastExportAt");
+  const stored = await window.dbGetSetting("haimunia-demo:lastExportAt");
   assert.ok(typeof stored === "number" && stored > 0, "exporting should record when the last export happened");
 });
 

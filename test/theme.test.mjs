@@ -18,18 +18,18 @@ test("setThemePref applies the attribute, persists to localStorage, and re-rende
   const window = await bootApp();
   window.setThemePref("light");
   assert.equal(window.document.documentElement.getAttribute("data-theme"), "light");
-  assert.equal(window.localStorage.getItem("haimunia:theme"), "light");
+  assert.equal(window.localStorage.getItem("haimunia-demo:theme"), "light");
 
   window.setThemePref("dark");
   assert.equal(window.document.documentElement.getAttribute("data-theme"), "dark");
-  assert.equal(window.localStorage.getItem("haimunia:theme"), "dark");
+  assert.equal(window.localStorage.getItem("haimunia-demo:theme"), "dark");
 });
 
 test("\"auto\" mode removes the explicit attribute and follows matchMedia instead", async () => {
   const window = await bootApp();
   window.setThemePref("auto");
   assert.equal(window.document.documentElement.hasAttribute("data-theme"), false, "auto should defer to the OS/browser, not stamp an explicit value");
-  assert.equal(window.localStorage.getItem("haimunia:theme"), "auto");
+  assert.equal(window.localStorage.getItem("haimunia-demo:theme"), "auto");
 });
 
 test("setThemePref ignores an invalid value instead of applying garbage", async () => {
@@ -41,7 +41,7 @@ test("setThemePref ignores an invalid value instead of applying garbage", async 
 
 test("loadThemePref reads a previously-saved preference back from localStorage", async () => {
   const window = await bootApp();
-  window.localStorage.setItem("haimunia:theme", "light");
+  window.localStorage.setItem("haimunia-demo:theme", "light");
   window.loadThemePref();
   window.applyThemePref();
   assert.equal(window.document.documentElement.getAttribute("data-theme"), "light");

@@ -2,8 +2,14 @@
 // Version is the single source of truth for the cache name — bumping
 // APP_VERSION in app.js is what ships an update. Don't edit SW_VERSION by
 // hand: run `npm run sync-version` (see app.js) to copy it here.
-const SW_VERSION = "3.0.2";
-const CACHE = `haimunia-v${SW_VERSION}`;
+const SW_VERSION = "3.0.3";
+// "haimunia-demo-v..." — deliberately distinct from the production app's
+// own "haimunia-v..." cache prefix. Both service workers are scoped to
+// the same origin (haimuniya.github.io), and the activate handler below
+// deletes any Cache Storage entry that isn't the current CACHE name —
+// with a shared prefix, this demo's own cleanup could delete the real
+// app's cached assets (Cache Storage is origin-wide, not scoped per SW).
+const CACHE = `haimunia-demo-v${SW_VERSION}`;
 
 // Everything the app shell needs to boot with no network.
 const ASSETS = [
@@ -65,7 +71,12 @@ self.addEventListener("activate", (e) => {
   e.waitUntil(
     (async () => {
       const keys = await caches.keys();
-      await Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)));
+      // Only ever delete this demo's OWN old cache versions — Cache
+      // Storage is shared across the whole origin, not scoped per service
+      // worker, so a bare "!== CACHE" here would also delete the real
+      // production app's cache the first time both apps have run in the
+      // same browser.
+      await Promise.all(keys.filter((k) => k.startsWith("haimunia-demo-v") && k !== CACHE).map((k) => caches.delete(k)));
       if (self.registration.navigationPreload) {
         await self.registration.navigationPreload.enable().catch(() => {});
       }

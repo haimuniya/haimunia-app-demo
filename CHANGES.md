@@ -1,3 +1,36 @@
+# Isolate this demo's browser storage from the production app — 2026-08-27
+
+Found by an independent audit: this demo and the real production app
+(`haimuniya.github.io/haimunia-app/`) are served from the same GitHub
+Pages origin — just different paths — and browser storage (IndexedDB,
+localStorage, sessionStorage, Cache Storage) is scoped per-origin, not
+per-path. This demo was using the production app's exact identifiers:
+
+- IndexedDB: `DB_NAME` was `"box-log-db"`, identical to production.
+  A real member whose browser had opened both URLs would have this
+  demo's community/social code reading and able to publish their real
+  local training data.
+- localStorage/sessionStorage: every key used the bare `"haimunia:"`
+  prefix (or the legacy `"boxlog:"` one), same as production.
+- Cache Storage: the service worker's cache name shared production's
+  `"haimunia-v..."` prefix — and its activate handler deleted *any*
+  cache that wasn't its own current version, which would have deleted
+  the production app's cached assets outright the first time both
+  service workers had ever run in the same browser.
+
+Every identifier above is now demo-specific (`"haimunia-demo-db"`,
+`"haimunia-demo:*"` keys, `"haimunia-demo-v..."` cache names), and the
+service worker's cleanup now only ever deletes caches matching its own
+prefix instead of "anything that isn't me." `manifest.json`'s `id`/
+`start_url`/`scope` were checked too — those are relative URLs that
+already resolve differently per path, so no change was needed there.
+
+4 new tests in `test/storage-isolation.test.mjs` lock this in: the
+IndexedDB name, every storage key actually written during real app
+flows, a source-level sweep of all four JS files for any lingering
+production identifier, and the cache-cleanup scoping logic itself (not
+just its name). Full suite: 130/130 (126 existing + 4 new), green.
+
 # Fix: WOD tab's רישום/היסטוריה pill highlight not following the subtab — 2026-08-25
 
 Reported by the user with a screenshot: after switching WOD subtabs,

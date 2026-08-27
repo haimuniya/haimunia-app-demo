@@ -9,14 +9,14 @@
 (function () {
   var t = "dark";
   try {
-    var stored = localStorage.getItem("haimunia:theme");
+    var stored = localStorage.getItem("haimunia-demo:theme");
     if (stored) t = stored;
   } catch (e) {}
   if (t === "light" || t === "dark") {
     document.documentElement.setAttribute("data-theme", t);
   }
   try {
-    if (localStorage.getItem("haimunia:textScale") === "large") {
+    if (localStorage.getItem("haimunia-demo:textScale") === "large") {
       document.documentElement.setAttribute("data-text-scale", "large");
     }
   } catch (e) {}

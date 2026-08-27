@@ -5,7 +5,7 @@
   const client = configured && window.supabase ? window.supabase.createClient(cfg.supabaseUrl, cfg.supabasePublishableKey, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
   }) : null;
-  const state = { configured, client, user: null, profile: null, feed: [], people: [], comparison: [], loading: false, message: "", syncEnabled: localStorage.getItem("haimunia:cloudSyncEnabled") === "1" };
+  const state = { configured, client, user: null, profile: null, feed: [], people: [], comparison: [], loading: false, message: "", syncEnabled: localStorage.getItem("haimunia-demo:cloudSyncEnabled") === "1" };
 
   function safeText(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
   function rerender() { if (typeof window.render === "function") window.render(); }
@@ -53,7 +53,7 @@
     if (!window.confirm("להעלות את היסטוריית האימונים הפרטית לחשבון? שום נתון לא יפורסם בקהילה.")) return;
     await window.queueAllLocalRecordsForSync();
     state.syncEnabled = true;
-    localStorage.setItem("haimunia:cloudSyncEnabled", "1");
+    localStorage.setItem("haimunia-demo:cloudSyncEnabled", "1");
     await flushOutbox();
     setMessage("ההיסטוריה הפרטית סונכרנה לחשבון");
   }

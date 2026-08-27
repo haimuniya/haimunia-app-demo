@@ -100,7 +100,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "3.0.2";
+const APP_VERSION = "3.0.3";
 
 const WOD_MOVEMENT_TAGS = [
   // Gymnastics (bodyweight)
@@ -527,7 +527,12 @@ function allMovements() { return MOVEMENTS.concat(customMovements); }
 function movementById(id) { return allMovements().find((m) => m.id === id); }
 
 // ---------- IndexedDB ----------
-const DB_NAME = "box-log-db", STORE = "entries", MOVSTORE = "movements", WODSTORE = "wodEntries", CUSTOMWODSTORE = "customWods", BWSTORE = "bodyweight", SETTINGSTORE = "settings", MEASTYPESTORE = "measureTypes", MEASSTORE = "measurements", OUTBOXSTORE = "syncOutbox";
+// Deliberately distinct from the real production app's own database name.
+// Both apps are served from the same GitHub Pages origin (haimuniya.
+// github.io), just different paths, and IndexedDB is scoped per-origin,
+// not per-path — reusing that name would mean a real member's local
+// training data and this demo's community/social code share one database.
+const DB_NAME = "haimunia-demo-db", STORE = "entries", MOVSTORE = "movements", WODSTORE = "wodEntries", CUSTOMWODSTORE = "customWods", BWSTORE = "bodyweight", SETTINGSTORE = "settings", MEASTYPESTORE = "measureTypes", MEASSTORE = "measurements", OUTBOXSTORE = "syncOutbox";
 let _dbPromise = null;
 let syncApplyingRemote = false;
 function openDB() {
@@ -1216,7 +1221,7 @@ function closeAchievements() {
 
 // Which badges the athlete has already been shown a celebration for, so a
 // save only pops the modal for what's genuinely new this time.
-const SEEN_ACHIEVEMENTS_KEY = "haimunia:seenAchievements";
+const SEEN_ACHIEVEMENTS_KEY = "haimunia-demo:seenAchievements";
 let seenAchievementIds = new Set();
 async function loadSeenAchievements() {
   try {
@@ -1301,7 +1306,7 @@ function compareVersions(a, b) {
   }
   return 0;
 }
-const LAST_SEEN_VERSION_KEY = "haimunia:lastSeenVersion";
+const LAST_SEEN_VERSION_KEY = "haimunia-demo:lastSeenVersion";
 let lastSeenVersion = null;
 async function loadLastSeenVersion() {
   try {
@@ -1356,7 +1361,7 @@ function closeNotifications() {
 }
 
 // ---------- First-time onboarding ----------
-const HAS_ONBOARDED_KEY = "haimunia:hasOnboarded";
+const HAS_ONBOARDED_KEY = "haimunia-demo:hasOnboarded";
 let hasOnboarded = true; // default true so existing devices never see it by accident
 async function loadOnboardedFlag() {
   try {
@@ -1720,7 +1725,7 @@ async function deleteMeasurementEntry(id) {
   renderMeasureArea();
 }
 
-const USER_NAME_KEY = "haimunia:userName";
+const USER_NAME_KEY = "haimunia-demo:userName";
 let userName = null;
 async function loadUserName() {
   try {
@@ -1740,7 +1745,7 @@ async function loadUserName() {
 // Box-tenure badges need the athlete's actual join date, not their first log
 // - someone can start using the app long after they joined the box, and
 // firstLogDate would silently measure "time using this app" instead.
-const BOX_START_KEY = "haimunia:boxStartDate";
+const BOX_START_KEY = "haimunia-demo:boxStartDate";
 let boxStartDate = null;
 async function loadBoxStartDate() {
   try {
@@ -1820,7 +1825,7 @@ function saveWelcomeForm(name) {
   if (wasFirstTimeWelcome && !hasOnboarded) openOnboarding();
 }
 
-const BAR_WEIGHT_KEY = "haimunia:barWeight";
+const BAR_WEIGHT_KEY = "haimunia-demo:barWeight";
 async function loadBarWeight() {
   try {
     const stored = await dbGetSetting(BAR_WEIGHT_KEY);
@@ -1842,7 +1847,7 @@ function setBarWeight(kg) {
 // Theme preference lives in localStorage, not IndexedDB — it has to be
 // readable synchronously by theme-init.js before first paint, and it isn't
 // user training data, so "clear all data" deliberately leaves it alone.
-const THEME_KEY = "haimunia:theme";
+const THEME_KEY = "haimunia-demo:theme";
 let themePref = "dark";
 function loadThemePref() {
   try {
@@ -1879,7 +1884,7 @@ function renderThemeRow() {
   </div>`;
 }
 
-const LAST_EXPORT_KEY = "boxlog:lastExportAt";
+const LAST_EXPORT_KEY = "haimunia-demo:lastExportAt";
 let lastExportAt = null;
 async function loadLastExport() {
   try {
@@ -2187,7 +2192,7 @@ function communityShareCandidates() {
   return strength.concat(wods).sort((a, b) => b.occurredOn.localeCompare(a.occurredOn)).slice(0, 8);
 }
 
-const TEXT_SCALE_KEY = "haimunia:textScale";
+const TEXT_SCALE_KEY = "haimunia-demo:textScale";
 let textScalePref = "normal";
 function loadTextScalePref() {
   let stored = "normal";
@@ -3910,7 +3915,7 @@ document.addEventListener("visibilitychange", () => {
 // relying on the browser's own (often buried) install affordance. iOS Safari
 // never fires this event at all, so there the banner simply never appears.
 let deferredInstallPrompt = null;
-const INSTALL_DISMISS_KEY = "haimunia:installDismissed";
+const INSTALL_DISMISS_KEY = "haimunia-demo:installDismissed";
 
 function isStandalone() {
   return (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true;
