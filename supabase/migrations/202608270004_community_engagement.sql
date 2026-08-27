@@ -21,7 +21,29 @@ begin
   return new;
 end $$;
 
--- 2. Lightweight comments — same visibility rule reactions already use,
+-- 2. Photo attachment on a shared post — one optional photo, uploaded to
+-- Storage under the author's own uid-prefixed path. workout_posts stores
+-- only the path, never a public URL. This has to run before the
+-- community_feed view below, which selects p.photo_path.
+alter table public.workout_posts add column photo_path text;
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+  values ('post-photos', 'post-photos', false, 5242880, array['image/jpeg','image/png','image/webp'])
+  on conflict (id) do nothing;
+
+create policy post_photos_insert_own on storage.objects for insert to authenticated
+  with check (bucket_id = 'post-photos' and (storage.foldername(name))[1] = auth.uid()::text);
+create policy post_photos_delete_own on storage.objects for delete to authenticated
+  using (bucket_id = 'post-photos' and (storage.foldername(name))[1] = auth.uid()::text);
+-- Read access mirrors the post itself: viewable only if the workout_post
+-- whose photo_path matches this object's name is visible to the viewer.
+-- post_visible_to_viewer() already exists from an earlier migration.
+create policy post_photos_select_if_post_visible on storage.objects for select to authenticated
+  using (bucket_id = 'post-photos' and exists (
+    select 1 from public.workout_posts p where p.photo_path = storage.objects.name and public.post_visible_to_viewer(p.id)
+  ));
+
+-- 3. Lightweight comments — same visibility rule reactions already use,
 -- so a comment can never be more exposed than the post it's on.
 create table public.post_comments (
   id uuid primary key default gen_random_uuid(),
@@ -37,7 +59,8 @@ create policy post_comments_visible on public.post_comments for select to authen
 create policy post_comments_insert_self on public.post_comments for insert to authenticated with check (author_id = auth.uid() and public.post_visible_to_viewer(post_id));
 create policy post_comments_delete_self on public.post_comments for delete to authenticated using (author_id = auth.uid());
 
--- community_feed gains a comment count, same pattern as cheer_count.
+-- community_feed gains a comment count (same pattern as cheer_count) and
+-- the new photo_path.
 create or replace view public.community_feed with (security_invoker = true) as
 select p.id, p.author_id, pr.handle, pr.display_name, pr.avatar_url, p.title, p.result_text,
        p.comparison_key, p.score_value, p.score_direction, p.rx, p.occurred_on, p.published_at,
@@ -53,7 +76,7 @@ where p.deleted_at is null
 group by p.id, pr.id;
 grant select on public.community_feed to authenticated;
 
--- 3. "Who's new" — the mirror of coach_inactive_members: whose EARLIEST
+-- 4. "Who's new" — the mirror of coach_inactive_members: whose EARLIEST
 -- activity_pings row falls inside the window, not their latest.
 create or replace function public.coach_new_members(p_within_days integer default 14)
 returns table(user_id uuid, handle text, display_name text, first_activity_on date)
@@ -73,27 +96,6 @@ begin
 end $$;
 revoke all on function public.coach_new_members(integer) from public, anon;
 grant execute on function public.coach_new_members(integer) to authenticated;
-
--- 4. Photo attachment on a shared post — one optional photo, uploaded to
--- Storage under the author's own uid-prefixed path. workout_posts stores
--- only the path, never a public URL (visibility still runs through the
--- post's own RLS, not through Storage's own default-public option).
-alter table public.workout_posts add column photo_path text;
-
-insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-  values ('post-photos', 'post-photos', false, 5242880, array['image/jpeg','image/png','image/webp'])
-  on conflict (id) do nothing;
-
-create policy post_photos_insert_own on storage.objects for insert to authenticated
-  with check (bucket_id = 'post-photos' and (storage.foldername(name))[1] = auth.uid()::text);
-create policy post_photos_delete_own on storage.objects for delete to authenticated
-  using (bucket_id = 'post-photos' and (storage.foldername(name))[1] = auth.uid()::text);
--- Read access mirrors the post itself: viewable only if the workout_post
--- whose photo_path matches this object's name is visible to the viewer.
-create policy post_photos_select_if_post_visible on storage.objects for select to authenticated
-  using (bucket_id = 'post-photos' and exists (
-    select 1 from public.workout_posts p where p.photo_path = storage.objects.name and public.post_visible_to_viewer(p.id)
-  ));
 
 -- 5. Pinned daily note — same announcements table, one nullable column.
 -- A non-null pinned_date surfaces it as "today's note" instead of a plain

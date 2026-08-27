@@ -5,7 +5,7 @@ import fs from "node:fs";
 const sql = fs.readFileSync(new URL("../supabase/migrations/202608270004_community_engagement.sql", import.meta.url), "utf8");
 
 test("protect_is_admin only clobbers is_admin for real 'authenticated' API requests, not a direct SQL editor session", () => {
-  const fn = sql.slice(sql.indexOf("create or replace function public.protect_is_admin"), sql.indexOf("-- 2. Lightweight comments"));
+  const fn = sql.slice(sql.indexOf("create or replace function public.protect_is_admin"), sql.indexOf("-- 2. Photo attachment"));
   assert.match(fn, /if auth\.role\(\) = 'authenticated' then/i);
   assert.match(fn, /new\.is_admin = old\.is_admin;/i);
 });
@@ -42,4 +42,15 @@ test("post-photos bucket is private with a size/type limit, and Storage RLS scop
 
 test("announcements gained a nullable pinned_date column for the daily WOD note", () => {
   assert.match(sql, /alter table public\.announcements add column pinned_date date/i);
+});
+
+// Regression: this exact ordering broke a live run — "column p.photo_path
+// does not exist" — because community_feed was originally recreated
+// before the column it selects was added. Migrations run top to bottom;
+// a column has to exist before any statement can reference it.
+test("workout_posts.photo_path is added before community_feed is recreated to select it", () => {
+  const addColumnAt = sql.indexOf("alter table public.workout_posts add column photo_path text");
+  const viewAt = sql.indexOf("create or replace view public.community_feed");
+  assert.ok(addColumnAt > -1 && viewAt > -1, "both statements must exist");
+  assert.ok(addColumnAt < viewAt, "photo_path must be added before the view that selects p.photo_path");
 });
