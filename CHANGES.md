@@ -1,3 +1,25 @@
+# Submission 3: rate limiting on comments, reactions, and reports — 2026-08-27
+
+Independent security review: no table beyond invite redemption had any
+rate limiting. Combined with a leaked invite code costing an attacker
+nothing to redeem repeatedly, a script could spam comments/reactions/
+reports without limit, bounded only by RLS ownership checks, never
+volume.
+
+Moved all three behind a security-definer RPC (same pattern
+`redeem_invite_code` already used) that checks a shared `rate_limits`
+table before writing, then revoked the client's direct INSERT grant on
+all three tables so the RPC can't be bypassed by calling `.insert()`
+directly. Reactions also got a small correctness bonus: the toggle
+(cheer/uncheer) is now one atomic server call instead of an insert
+followed by a delete-on-conflict, closing a small race between the two.
+
+Documented, not built: CAPTCHA on sign-up needs a Turnstile/hCaptcha
+site key only the project owner can create - see COMMUNITY_SETUP.md's
+new "Recommended, not yet done" section.
+
+228/228 tests pass.
+
 # Real username + password login, so one account works on any device — 2026-08-27
 
 Reported directly, with a screenshot: "this do not sync with community,

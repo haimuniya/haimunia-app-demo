@@ -15,7 +15,8 @@ The app remains fully usable offline when the backend is not configured.
    `202608270006_security_hardening.sql`, then
    `202608270007_grant_coach_by_handle.sql`, then
    `202608270008_hebrew_handles.sql`, then
-   `202608270009_admin_moderation_visibility.sql`), in each project.
+   `202608270009_admin_moderation_visibility.sql`, then
+   `202608270010_rate_limiting.sql`), in each project.
    `202608270001` adds the reactions RLS fix, achievement-unlock posts,
    coach announcements, activity streaks, and the weekly challenge — none
    of those features work until it's applied. `202608270002` is a
@@ -178,6 +179,23 @@ objects through SQL because it only removes metadata.
 - Confirm blocking works in both directions.
 - Confirm account deletion immediately unpublishes posts and the scheduled purge removes the Auth user after 30 days.
 - Install Playwright Chromium and run the browser checks before deployment.
+- Confirm posting a comment/reaction/report more than the configured
+  rate limit returns `rate_limited` instead of silently queuing forever.
+
+## Recommended, not yet done: CAPTCHA on sign-up
+
+Flagged by an independent security review: `signInAnonymously()` and
+`client.auth.updateUser()` (the anonymous-to-permanent upgrade a new
+signup goes through) have no bot/abuse protection — creating an account
+costs an attacker nothing beyond having one leaked invite code, and rate
+limiting (this migration) only slows down what a scripted attacker can
+do with an account, not how many accounts they can make in the first
+place. Supabase supports requiring a CAPTCHA (Cloudflare Turnstile or
+hCaptcha) on `signInAnonymously()`/sign-up via Authentication → Sign In /
+Providers → Bot and Abuse Protection. This needs a Turnstile/hCaptcha
+site key from an account only the project owner can create, so it's
+listed here rather than done — the app-side call would need to pass a
+`captchaToken` through, once the site key exists.
 
 ## Access tiers
 

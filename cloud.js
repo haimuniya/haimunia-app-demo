@@ -225,8 +225,8 @@
     if (!state.user) return;
     const body = String(form.body.value || "").trim();
     if (!body) return;
-    const { error } = await client.from("post_comments").insert({ post_id: postId, author_id: state.user.id, body: body.slice(0, 280) });
-    if (error) return setMessage("שליחת התגובה נכשלה");
+    const { error } = await client.rpc("add_post_comment", { p_post_id: postId, p_body: body });
+    if (error) return setMessage(error.message === "rate_limited" ? "יותר מדי תגובות, נסו שוב בעוד כמה דקות" : "שליחת התגובה נכשלה");
     form.reset();
     await loadCommentsFor(postId);
     await loadFeed();
@@ -345,13 +345,18 @@
   }
   async function react(postId) {
     if (!state.user) return;
-    const { error } = await client.from("reactions").insert({ post_id: postId, user_id: state.user.id, kind: "cheer" });
-    if (error && error.code === "23505") await client.from("reactions").delete().eq("post_id", postId).eq("user_id", state.user.id);
+    // toggle_reaction() does the insert-or-delete atomically server-side
+    // now, rate-limited - the old insert-then-delete-on-conflict here
+    // used to leave a small race between the failed insert and the
+    // follow-up delete.
+    const { error } = await client.rpc("toggle_reaction", { p_post_id: postId });
+    if (error && error.message === "rate_limited") setMessage("יותר מדי לחיצות, נסו שוב בעוד כמה דקות");
     await loadFeed(); rerender();
   }
   async function report(postId) {
     if (!state.user) return;
-    await client.from("reports").insert({ reporter_id: state.user.id, post_id: postId, reason: "inappropriate" });
+    const { error } = await client.rpc("submit_report", { p_post_id: postId });
+    if (error && error.message === "rate_limited") return setMessage("יותר מדי דיווחים, נסו שוב בעוד כמה דקות");
     setMessage("הדיווח נשלח לבדיקה והתוכן הוסתר עבורך"); await loadFeed();
   }
   async function searchPeople(query) {
