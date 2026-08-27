@@ -1,3 +1,73 @@
+# Fix the admin-grant trigger bug, and build the community-strategy quick/medium wins — 2026-08-27
+
+## Bug: the manual admin grant never actually worked
+
+`protect_is_admin` (from the previous migration) fired on every update to
+`profiles`, unconditionally resetting `is_admin` back to its old value —
+including for a legitimate `update ... set is_admin = true` run directly
+in the SQL editor. The trigger doesn't know or care who's running the
+UPDATE, only that a row changed, so it silently undid the grant every
+time — `is_admin` stayed `false` no matter how many times the manual step
+was followed correctly. Fixed by scoping the trigger to `auth.role() =
+'authenticated'`: real client requests always carry a JWT and read
+`'authenticated'` from it, while a direct SQL editor session has no JWT
+context at all and reads `null` — so the trigger now only clobbers the
+column for actual client requests, exactly the property it was meant to
+have, while a genuine dashboard-run grant now works.
+
+## New migration: `202608270004_community_engagement.sql`
+
+Built from a strategy review of what makes fitness-app communities work
+(Strava, Peloton, Duolingo, SugarWOD/Wodify) against what this app
+actually has — the quick wins and medium bets from that review, not the
+bigger one (class scheduling), which still needs its own planning pass.
+
+- **Comments** — `post_comments`, gated by the same `post_visible_to_viewer()`
+  rule reactions already use, so a comment can never be more exposed than
+  its post. `community_feed` gained a `comment_count` alongside
+  `cheer_count`.
+- **"Who's new"** — `coach_new_members()`, the mirror of
+  `coach_inactive_members()`: same admin self-gate, but looks at each
+  member's *earliest* `activity_pings` row instead of their latest.
+- **Photo attachment** — one optional photo per shared result. A private
+  `post-photos` Storage bucket (5MB limit, image MIME types only),
+  RLS-scoped so uploads only ever land under the uploader's own
+  `uid/...` folder, and read access mirrors the post's own visibility
+  rule rather than defaulting to public or owner-only.
+- **Pinned daily note** — `announcements.pinned_date`; when set to today,
+  it surfaces as a distinct "today's workout note" instead of sitting in
+  the regular chronological list.
+
+## Community tab: sub-tabs, top-3-plus-your-rank, comments UI
+
+`cloud.js`'s render function was rewritten around three sub-tabs (Feed /
+Boards / Account, reusing the same `.subtabbar` pattern the WOD tab
+already has) instead of one long scroll through profile, announcements,
+weekly challenge, streaks, member search, sharing, the feed, and the
+admin views, all stacked vertically.
+
+Streaks and the weekly challenge now render as top-3-in-full, then — if
+the viewer isn't already in the top 3 — a divider and their own
+highlighted row, instead of one long ranked list past the leaders
+(showing someone they're "#18 of 40" discourages more than it motivates;
+a small, friendly comparison does the opposite).
+
+Each feed post gets a comment count/expand button alongside the existing
+cheer count; expanding loads and shows the thread plus a small
+add-a-comment form, and a comment's own author gets a delete link on it.
+Sharing a result now offers an optional photo attachment via a
+lightweight `<label for=...>` file-picker trigger next to the existing
+followers/public buttons.
+
+13 new tests across `test/community-engagement.test.mjs` (migration
+static assertions) and `test/community-engagement-ui.test.mjs` (source
+shape of the new render/wiring). Visual behavior verified with real
+screenshots against a mocked Supabase client (a real signed-in session
+isn't reachable without a live magic-link email) — all three sub-tabs,
+the expanded-comments state, and the ranked-list framing. 157/157 tests
+pass; boot-smoke browser check passes with zero console errors against
+the live (partially-migrated) backend.
+
 # Redesign the Community tab — it was misusing the app's own design system — 2026-08-27
 
 Every section of the Community tab (profile, announcements, weekly

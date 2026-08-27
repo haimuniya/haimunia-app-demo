@@ -15,10 +15,12 @@ thing it still isn't.
 - The Community tab talks to a real Supabase project once one is
   configured in `cloud-config.js` (see `COMMUNITY_SETUP.md`): magic-link
   sign-in, a profile, following/blocking, a workout feed with reactions
-  and reporting, sharing a strength/WOD PR or an achievement unlock,
-  activity streaks, coach-posted announcements, and a weekly box-wide
-  challenge leaderboard. Row Level Security enforces every one of those
-  boundaries at the database, not just in the UI.
+  and comments, an optional photo on a shared result, sharing a strength/
+  WOD PR or an achievement unlock, activity streaks, coach-posted
+  announcements (with an optional "today's workout" pin), and a weekly
+  box-wide challenge leaderboard. Row Level Security enforces every one
+  of those boundaries at the database, not just in the UI. Organized into
+  three sub-tabs — Feed, Boards, Account — instead of one long scroll.
 - Fully usable offline with no backend configured at all — training data
   stays local in IndexedDB and nothing in the Community tab is required
   to log a workout.

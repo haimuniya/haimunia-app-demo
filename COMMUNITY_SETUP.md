@@ -9,7 +9,8 @@ The app remains fully usable offline when the backend is not configured.
    `202608260001_community_foundation.sql`, then
    `202608270001_community_growth.sql`, then
    `202608270002_lock_anon_defaults.sql`, then
-   `202608270003_invite_gate.sql`), in each project.
+   `202608270003_invite_gate.sql`, then
+   `202608270004_community_engagement.sql`), in each project.
    `202608270001` adds the reactions RLS fix, achievement-unlock posts,
    coach announcements, activity streaks, and the weekly challenge — none
    of those features work until it's applied. `202608270002` is a
@@ -37,6 +38,17 @@ The app remains fully usable offline when the backend is not configured.
    ```
    (only works after they've signed in once and redeemed a code — the
    profile row has to exist first).
+
+   `202608270004` fixes a real bug in `202608270003`: the trigger meant to
+   stop a client-side path from ever setting `is_admin` also blocked a
+   *legitimate* manual grant run directly in the SQL editor — the exact
+   `update ... set is_admin = true` command above would silently do
+   nothing. If you ran that command before this migration and it didn't
+   stick, re-run it after applying `202608270004`. This migration also
+   adds: comments on posts, a `post-photos` Storage bucket (private,
+   5MB/image limit) for optional photos on a shared result, a
+   `coach_new_members()` RPC mirroring `coach_inactive_members()`, and a
+   `pinned_date` column on `announcements` for a daily WOD note.
 3. In Authentication, enable email magic links and add the deployed app URL to Redirect URLs.
 4. Copy the project URL and **publishable** key into `cloud-config.js`.
 5. Never place a secret or service-role key in browser code, Git, or a static-host environment variable.
