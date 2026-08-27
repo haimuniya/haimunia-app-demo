@@ -30,13 +30,13 @@ await page.goto(target.url, { waitUntil: "networkidle" });
 await page.waitForSelector("#app", { state: "visible" });
 await dismissWelcomeModal(page);
 
-await selectMovement(page, "Weighted Plank");
-const exerciseName = (await page.textContent(".exercise-select span")).trim();
-check("selected the intended exercise", exerciseName.includes("Weighted Plank"), `got "${exerciseName}"`);
-
-// Default is reps mode — no duration stepper, barbell visual present.
+// The default-selected exercise (Back Squat) is a barbell movement, so this
+// checks the reps/duration toggle itself, not a movement-specific quirk —
+// Weighted Plank below is `barbell: false` and never shows the barbell
+// visual in either mode, which would make that check pass for the wrong
+// reason.
 const barbellVisibleBefore = await page.evaluate(() => !!document.getElementById("barbellVisual"));
-check("reps mode still shows the barbell visual (unchanged default)", barbellVisibleBefore);
+check("reps mode shows the barbell visual by default", barbellVisibleBefore);
 
 await page.click("[data-action='set-log-entry-type'][data-type='duration']");
 await page.waitForTimeout(150);
@@ -47,6 +47,15 @@ const durationStepperShown = await page.evaluate(() => !!document.querySelector(
 check("duration mode shows a duration stepper", durationStepperShown);
 const repsStepperGone = await page.evaluate(() => !document.querySelector("[data-field='reps'].stepper-val"));
 check("duration mode hides the reps stepper", repsStepperGone);
+
+await selectMovement(page, "Weighted Plank");
+const exerciseName = (await page.textContent(".exercise-select span")).trim();
+check("selected the intended exercise", exerciseName.includes("Weighted Plank"), `got "${exerciseName}"`);
+// Picking a fresh exercise resets entry type from its own history (none
+// yet), not from the previous exercise's mode — switch back to duration
+// explicitly for the save/history/calendar checks below.
+await page.click("[data-action='set-log-entry-type'][data-type='duration']");
+await page.waitForTimeout(150);
 
 await page.fill("[data-field='durationSeconds'].stepper-val", "40");
 await page.dispatchEvent("[data-field='durationSeconds'].stepper-val", "change");
