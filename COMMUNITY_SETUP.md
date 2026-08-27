@@ -12,7 +12,8 @@ The app remains fully usable offline when the backend is not configured.
    `202608270003_invite_gate.sql`, then
    `202608270004_community_engagement.sql`, then
    `202608270005_coach_tier.sql`, then
-   `202608270006_security_hardening.sql`), in each project.
+   `202608270006_security_hardening.sql`, then
+   `202608270007_grant_coach_by_handle.sql`), in each project.
    `202608270001` adds the reactions RLS fix, achievement-unlock posts,
    coach announcements, activity streaks, and the weekly challenge — none
    of those features work until it's applied. `202608270002` is a
@@ -117,10 +118,26 @@ first argument is the expiry. The second is the maximum redemption count.
 Normal redemption only grants member access.
 
 Promote an existing redeemed member to coach through a trusted service-role
-process:
+process — by handle (what you'd actually have on hand day to day):
+
+```sql
+select public.grant_coach_role_by_handle('their-handle');
+```
+
+Or by UUID directly, if you already have it:
 
 ```sql
 select public.grant_coach_role('USER_UUID');
+```
+
+There is deliberately no code-based or client-reachable path to either
+coach or admin — both are always a manual step run here, by an operator
+with dashboard access. To make someone a full admin, still the same
+handle-based `update` as before (not a function — deliberately not one,
+to keep this the single rarest, most manual operation in the system):
+
+```sql
+update public.profiles set is_admin = true where handle = 'their-handle';
 ```
 
 Run a daily service-role cleanup job which calls
