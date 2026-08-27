@@ -2,7 +2,7 @@
 // Version is the single source of truth for the cache name — bumping
 // APP_VERSION in app.js is what ships an update. Don't edit SW_VERSION by
 // hand: run `npm run sync-version` (see app.js) to copy it here.
-const SW_VERSION = "3.0.25";
+const SW_VERSION = "3.0.26";
 // "haimunia-demo-v..." — deliberately distinct from the production app's
 // own "haimunia-v..." cache prefix. Both service workers are scoped to
 // the same origin (haimuniya.github.io), and the activate handler below
@@ -22,6 +22,10 @@ const REQUIRED_ASSETS = [
   "./app.js",
   "./theme-init.js",
   "./cloud.js",
+  "./src/constants.js",
+  "./src/format.js",
+  "./src/sanitize.js",
+  "./src/db.js",
 ];
 // Optional: visual/informational assets — a miss degrades the experience
 // (a font falls back, an icon is missing) but never breaks the app, so

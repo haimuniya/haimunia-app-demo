@@ -14,6 +14,24 @@ const root = path.dirname(testDir);
 const htmlPath = path.join(root, "index.html");
 const appJsPath = path.join(root, "app.js");
 const cloudJsPath = path.join(root, "cloud.js");
+// app.js was split into a few self-contained files, loaded as separate
+// <script> tags in index.html, in the same order below. Real browsers
+// share one global *lexical* environment across classic <script> tags, so
+// a top-level `let`/`const` in one is visible from a later one — verified
+// against real Chromium via scripts/browser-check. jsdom's window.eval()
+// does NOT reproduce that: each separate eval() call gets its own script
+// scope, so a later call's `let X` from an earlier one throws
+// ReferenceError. Concatenating into one string before a single eval()
+// (below) sidesteps that jsdom-only gap without changing app.js itself.
+const appSrcPaths = [
+  path.join(root, "src", "constants.js"),
+  path.join(root, "src", "format.js"),
+  path.join(root, "src", "sanitize.js"),
+  path.join(root, "src", "db.js"),
+];
+function readAppSrc() {
+  return appSrcPaths.map((p) => readFileSync(p, "utf8")).join("\n") + "\n" + readFileSync(appJsPath, "utf8");
+}
 
 function newDom() {
   const html = readFileSync(htmlPath, "utf8");
@@ -50,8 +68,7 @@ function newDom() {
 
 export async function bootApp() {
   const window = newDom();
-  const appJs = readFileSync(appJsPath, "utf8");
-  window.eval(appJs);
+  window.eval(readAppSrc());
 
   await waitFor(() => window.document.getElementById("loading").style.display === "none", 5000);
   return window;
@@ -75,8 +92,7 @@ export async function bootCommunity(mock, opts = {}) {
 
   const cloudJs = readFileSync(cloudJsPath, "utf8");
   window.eval(cloudJs);
-  const appJs = readFileSync(appJsPath, "utf8");
-  window.eval(appJs);
+  window.eval(readAppSrc());
 
   await waitFor(() => window.document.getElementById("loading").style.display === "none", 5000);
   return window;

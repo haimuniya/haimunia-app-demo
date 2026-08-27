@@ -1,3 +1,59 @@
+# Submission 11: split app.js into src/ modules — 2026-08-27
+
+Last (and biggest) item on the deferred architecture backlog, scoped down
+after actually mapping the file: of app.js's ~4,500 lines, only about
+850 were genuinely self-contained - no dependency on the ~50 module-scope
+state variables (`entries`, `tab`, `weight`, `wodEntries`, etc.) that
+rendering, WOD actions, achievements, and event delegation all read and
+write throughout the rest of the file. Decomposing *that* core would mean
+first consolidating it into a shared state object (like cloud.js's own
+`state = {...}`) - a separate, larger, riskier rewrite, not something to
+fold into this pass. What actually moved, into `src/`:
+
+- **constants.js** - the data tables (`MOVEMENTS`, `WOD_LIBRARY`,
+  `WOD_MOVEMENT_TAGS`, `LIMITS`, `FIELD_MAX`, `MOVEMENT_CATEGORIES`, …)
+  and the small lookup helpers built on them (`catColor`, `catLabel`,
+  `cssSel`, `bag`).
+- **format.js** - pure formatters with no state dependency
+  (`estimate1RM`, `formatDuration`, `fmtDate`, `todayISO`, `esc`, …).
+  `calcPlates` stayed behind in app.js despite living right next to
+  these originally - it reads `barWeight`, which is live state.
+- **sanitize.js** - the `cleanX`/`sanitizeX` validators applied to every
+  record that comes off disk or out of an import.
+- **db.js** - the whole IndexedDB layer. This one grew past its original
+  contiguous block: four more `db*` functions turned out to be scattered
+  through the sync/WOD-deletion code later in the file, each reaching
+  into a store-name constant that only this file should own
+  (`OUTBOXSTORE`, `MOVSTORE`, `CUSTOMWODSTORE`) - moved alongside the
+  rest rather than left half-migrated. `queueSyncRecord`'s inline outbox
+  write became a `dbPutSyncOutboxRow()` call instead, matching every
+  other write in the file.
+
+app.js: 4,506 -> 3,660 lines. Two real correctness risks, both now
+guarded: `sw.js`'s offline precache list needed all four new files added
+by hand (missed, this silently breaks the app offline - a new test
+derives the expected list from index.html's own `<script>` tags instead
+of trusting a second hand-maintained copy) and the split briefly broke
+`npm test` in a way that would never show up in a real browser - jsdom's
+`window.eval()` (used by `test/helpers/boot.mjs` to run the app inside a
+fake DOM) gives each separate eval() call its own script scope, so a
+`const` from an earlier file isn't visible in a later one, unlike real
+`<script>` tags, which correctly share one global lexical environment
+(verified directly: `scripts/browser-check` never failed against real
+Chromium, only `npm test` did). Fixed in the harness, not the app, by
+concatenating the split files into one `eval()` call instead of one per
+file.
+
+Also fixed while auditing CI: `browser-checks` had been failing on `main`
+since Submission 8 for an unrelated reason - `duration.mjs` asserted the
+barbell visual shows by default after selecting Weighted Plank, but
+Weighted Plank is `barbell: false` and never shows it in any mode. The
+app's guard on that visual was correct; the test just picked a movement
+that could never pass its own assertion.
+
+266/266 tests pass, plus all 12 browser-check suites against a real
+Chromium build.
+
 # Submission 10: migration-apply CI check — 2026-08-27
 
 Last infra item from the deferred architecture list. A `migration-check`
