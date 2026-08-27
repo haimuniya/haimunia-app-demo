@@ -97,3 +97,51 @@ test("full signup lifecycle executes for real: bootstrap -> redeem code -> set c
   const handleField = window.document.querySelector('#communityProfile input[name="handle"]');
   assert.equal(handleField && handleField.value, "dana", "landed on the account tab's profile editor pre-filled with the saved handle, not an empty completion-gate form");
 });
+
+test("an admin can search for a member and grant coach, executing for real through the confirm dialog", async () => {
+  const mock = createMockSupabase({
+    profiles: [
+      { id: "admin-1", handle: "coach_admin", display_name: "מנהל", is_admin: true },
+      { id: "member-1", handle: "dana", display_name: "דנה", is_admin: false },
+    ],
+    invite_redemptions: [
+      { user_id: "admin-1", invite_id: "inv-1", role: "member", redeemed_at: new Date().toISOString() },
+      { user_id: "member-1", invite_id: "inv-1", role: "member", redeemed_at: new Date().toISOString() },
+    ],
+  });
+  mock.setUser({ id: "admin-1", is_anonymous: false, email: "coach_admin@members.haimuniya.invalid" });
+  mock.onRpc("admin_search_members", (args, ctx) => ({
+    data: ctx.db.profiles
+      .filter((p) => p.id === args.p_query || p.handle.includes(args.p_query))
+      .map((p) => {
+        const ir = ctx.db.invite_redemptions.find((r) => r.user_id === p.id);
+        return { id: p.id, handle: p.handle, display_name: p.display_name, is_admin: p.is_admin, role: ir && ir.role, redeemed_at: ir && ir.redeemed_at, last_activity_on: null };
+      }),
+    error: null,
+  }));
+  mock.onRpc("admin_grant_coach", (args, ctx) => {
+    const row = ctx.db.invite_redemptions.find((r) => r.user_id === args.p_user_id);
+    if (row) row.role = "coach";
+    return { data: null, error: null };
+  });
+
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();
+
+  const search = window.document.getElementById("adminMemberSearch");
+  search.value = "dana";
+  search.dispatchEvent(new window.Event("input", { bubbles: true }));
+  await waitFor(() => !!window.document.querySelector('[data-community-action="admin-grant-coach"]'), 3000);
+
+  window.document.querySelector('[data-community-action="admin-grant-coach"]').click();
+  await waitFor(() => !!window.document.getElementById("communityConfirmTitle"), 3000);
+  window.document.querySelector('[data-community-action="confirm-yes"]').click();
+
+  await waitFor(() => {
+    const row = mock.db.invite_redemptions.find((r) => r.user_id === "member-1");
+    return !!row && row.role === "coach";
+  }, 3000);
+  assert.equal(mock.db.invite_redemptions.find((r) => r.user_id === "member-1").role, "coach", "the real admin_grant_coach RPC must have actually run, server-side role changed from the confirm click");
+});

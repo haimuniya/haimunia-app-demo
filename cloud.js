@@ -7,7 +7,7 @@
   }) : null;
   const state = { configured, client, user: null, profile: null, feed: [], people: [], comparison: [], loading: false, message: "", syncEnabled: localStorage.getItem("haimunia-demo:cloudSyncEnabled") === "1",
     streaks: [], announcements: [], weeklyChallenge: null, weeklyLeaderboard: [], inactiveMembers: [], newMembers: [], redemption: null,
-    communityTab: "feed", comments: {}, openComments: {}, fieldErrors: {}, reports: [], confirmDialog: null, signupStarted: false };
+    communityTab: "feed", comments: {}, openComments: {}, fieldErrors: {}, reports: [], confirmDialog: null, signupStarted: false, memberSearch: "", memberResults: [] };
   const photoUrlCache = {};
 
   function safeText(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
@@ -188,6 +188,40 @@
     await loadReports();
     setMessage("הדיווח עודכן");
     rerender();
+  }
+  // Admin-only member lookup/management - was previously only possible
+  // through the Supabase SQL editor. Search by handle/name or paste an
+  // exact user id; role changes and removal each check real is_admin
+  // server-side too (admin_grant_coach/admin_revoke_coach/
+  // admin_remove_member), this is only for deciding what to show.
+  async function searchMembers(query) {
+    state.memberSearch = query;
+    const q = String(query || "").trim();
+    if (q.length < 2) { state.memberResults = []; return rerender(); }
+    const { data, error } = await client.rpc("admin_search_members", { p_query: q });
+    state.memberResults = error ? [] : (data || []);
+    rerender();
+  }
+  async function adminGrantCoach(userId) {
+    if (!state.user || !isAdmin()) return;
+    const { error } = await client.rpc("admin_grant_coach", { p_user_id: userId });
+    if (error) return setMessage("הענקת ההרשאה נכשלה");
+    setMessage("הרשאת מאמן/ת הוענקה");
+    await searchMembers(state.memberSearch);
+  }
+  async function adminRevokeCoach(userId) {
+    if (!state.user || !isAdmin()) return;
+    const { error } = await client.rpc("admin_revoke_coach", { p_user_id: userId });
+    if (error) return setMessage("ביטול ההרשאה נכשל");
+    setMessage("הרשאת מאמן/ת בוטלה");
+    await searchMembers(state.memberSearch);
+  }
+  async function adminRemoveMember(userId) {
+    if (!state.user || !isAdmin()) return;
+    const { error } = await client.rpc("admin_remove_member", { p_user_id: userId });
+    if (error) return setMessage("הסרת החבר/ה נכשלה");
+    setMessage("החבר/ה הוסר/ה");
+    await searchMembers(state.memberSearch);
   }
   async function publishAchievement(achievementId, title, rule) {
     if (!state.user || !state.profile) return setMessage("התחברו לקהילה כדי לשתף עיטור");
@@ -437,6 +471,8 @@
     else if (c.action === "delete-account") requestDeletion();
     else if (c.action === "delete-post") deletePost(c.payload.postId);
     else if (c.action === "publish") publishWorkout(c.payload.type, c.payload.id, c.payload.visibility, c.payload.file);
+    else if (c.action === "admin-grant-coach") adminGrantCoach(c.payload.userId);
+    else if (c.action === "admin-remove-member") adminRemoveMember(c.payload.userId);
     else rerender();
   }
 
@@ -517,6 +553,26 @@
       </div>`;
     };
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "דיווחים לבדיקה", true)}${state.reports.length ? "" : `<div class="empty">אין דיווחים ממתינים</div>`}${open.map(rowHtml).join("")}${closed.length ? `<details style="margin-top:10px;"><summary class="link-btn" style="cursor:pointer;display:inline-block;">היסטוריית דיווחים שטופלו (${closed.length})</summary><div style="margin-top:8px;">${closed.map(rowHtml).join("")}</div></details>` : ""}</div>`;
+  }
+  function memberRoleLabel(m) { return m.is_admin ? "מנהל/ת" : m.role === "coach" ? "מאמן/ת" : m.role === "member" ? "חבר/ה" : "לא הצטרפ/ה עדיין"; }
+  function renderMemberManagement() {
+    if (!isAdmin()) return "";
+    const results = state.memberResults;
+    const rowHtml = (m) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:6px;">
+      <div class="flex gap-10" style="align-items:center;">${avatarHtml(m.display_name || m.handle, 32)}<div><div style="font-weight:700;">${safeText(m.display_name || "@" + m.handle)}</div><div style="color:var(--steel);font-size:11px;">@${safeText(m.handle)} · ${memberRoleLabel(m)}</div></div></div>
+      <div style="color:var(--steel);font-size:11px;">הצטרפ/ה: ${m.redeemed_at ? safeText(String(m.redeemed_at).slice(0, 10)) : "—"} · פעילות אחרונה: ${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</div>
+      <div class="footer-note" style="margin:0;font-size:10.5px;">${safeText(m.id)}</div>
+      ${m.is_admin ? "" : `<div class="chip-row" style="margin-top:0;">
+        ${m.role === "coach"
+          ? `<button class="chip-btn" data-community-action="admin-revoke-coach" data-id="${safeText(m.id)}">ביטול הרשאת מאמן/ת</button>`
+          : `<button class="chip-btn" data-community-action="admin-grant-coach" data-id="${safeText(m.id)}">הענקת הרשאת מאמן/ת</button>`}
+        <button class="chip-btn" data-community-action="admin-remove-member" data-id="${safeText(m.id)}" style="color:var(--red);">הסרת חבר/ה</button>
+      </div>`}
+    </div>`;
+    return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--purple)", "ניהול חברים", true)}
+      <div class="search-box"><input id="adminMemberSearch" placeholder="חיפוש לפי handle, שם, או הדבקת מזהה משתמש" aria-label="חיפוש חברים לניהול" value="${safeText(state.memberSearch)}"/></div>
+      ${results.length ? `<div class="log-list">${results.map(rowHtml).join("")}</div>` : state.memberSearch.trim().length >= 2 ? `<div class="empty">לא נמצאו חברים תואמים</div>` : `<div class="empty">חיפוש לפי handle, שם, או מזהה משתמש (UUID)</div>`}
+    </div>`;
   }
 
   window.renderCommunityApp = function () {
@@ -600,7 +656,7 @@
     const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מתאמנים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין מתאמנים חדשים לאחרונה</div>`}</div>` : "";
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
-    const accountTab = account + people + newMembersHtml + inactiveHtml + renderModeration()
+    const accountTab = account + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement()
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
 
@@ -626,6 +682,8 @@
   window.afterRenderCommunity = function () {
     const input = document.getElementById("communityPeopleSearch");
     if (input) input.addEventListener("input", () => searchPeople(input.value));
+    const adminInput = document.getElementById("adminMemberSearch");
+    if (adminInput) adminInput.addEventListener("input", () => searchMembers(adminInput.value));
   };
   window.handleCommunityClick = function (el) {
     const action = el.dataset.communityAction;
@@ -655,6 +713,9 @@
     else if (action === "confirm-no") closeConfirm();
     else if (action === "start-signup") startSignup();
     else if (action === "sign-out") client.auth.signOut();
+    else if (action === "admin-grant-coach") askConfirm({ title: "הענקת הרשאת מאמן/ת", message: "להעניק הרשאת מאמן/ת למשתמש/ת זה/ו?", confirmLabel: "הענקה", action: "admin-grant-coach", payload: { userId: el.dataset.id } });
+    else if (action === "admin-revoke-coach") adminRevokeCoach(el.dataset.id);
+    else if (action === "admin-remove-member") askConfirm({ title: "הסרת חבר/ה", message: "הפרופיל והשיתופים של המשתמש/ת יוסרו מיד. המחיקה הסופית תתבצע לאחר 30 יום. להמשיך?", confirmLabel: "הסרה", destructive: true, action: "admin-remove-member", payload: { userId: el.dataset.id } });
   };
   window.isCommunitySignedIn = function () { return !!(state.user && state.profile); };
   window.shareAchievementToCommunity = function (achievementId, title, rule) { publishAchievement(achievementId, title, rule); };
@@ -681,7 +742,7 @@
           .then(pingActivity)
           .then(rerender);
       } else {
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false;
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = [];
         anonSignInAttempted = false;
         rerender();
       }

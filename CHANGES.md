@@ -1,3 +1,32 @@
+# Admin member management: search, grant/revoke coach, remove — 2026-08-27
+
+Requested directly: "we need to manage the users, by ID + user name...
+currently its not working." There was no in-app way to look up a member
+or change their role short of the Supabase SQL editor.
+
+New "ניהול חברים" panel in the Account tab, admin-only: search by
+handle, display name, or a pasted user id (UUID), see role/join-date/
+last-activity, and grant or revoke coach or remove the member - all
+backed by dedicated RPCs (`admin_search_members`, `admin_grant_coach`,
+`admin_revoke_coach`, `admin_remove_member`) that each check real
+`is_admin` server-side, the same boundary `review_report()` already
+uses, not the broader coach-inclusive `is_staff()`. Granting coach
+(elevates privilege) and removing a member (destructive) both go
+through the shared confirm dialog; revoking coach doesn't need one,
+since it only ever lowers privilege. Removing a member mirrors
+`request_account_deletion()`'s own effect - immediate soft-delete, a
+30-day scheduled purge - just admin-triggered for someone else.
+
+Also requested directly: "i also need user + id in the siupbase" - added
+`public.admin_user_directory`, a plain view joining id, handle, display
+name, the synthetic login email, role, and admin status in one place for
+browsing directly in the Supabase SQL or Table editor. No grants to
+`anon`/`authenticated` - it's a dashboard convenience, not part of the
+app's own API surface.
+
+Both new executing tests (see Submission 5) and the usual source-level
+ones pass: 247/247.
+
 # Submission 5: cloud.js now executes under test, not just source-matches — 2026-08-27
 
 Independent architecture review, highest-leverage recommendation: every

@@ -71,7 +71,7 @@ test("the login form and the credentials form each validate independently and cl
 test("sign-out is wired now that logging back in is possible, and resets signupStarted plus the anonymous-attempt guard so a fresh signup can start cleanly afterward", () => {
   assert.match(src, /data-community-action="sign-out"/);
   assert.match(src, /action === "sign-out"\) client\.auth\.signOut\(\)/);
-  assert.match(src, /state\.signupStarted = false;\s*\n\s*anonSignInAttempted = false;/);
+  assert.match(src, /state\.signupStarted = false;[^\n]*\n\s*anonSignInAttempted = false;/);
 });
 
 test("communityLogin and communityCredentials submits are wired to their handlers", () => {

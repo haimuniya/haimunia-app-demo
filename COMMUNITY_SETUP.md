@@ -16,7 +16,8 @@ The app remains fully usable offline when the backend is not configured.
    `202608270007_grant_coach_by_handle.sql`, then
    `202608270008_hebrew_handles.sql`, then
    `202608270009_admin_moderation_visibility.sql`, then
-   `202608270010_rate_limiting.sql`), in each project.
+   `202608270010_rate_limiting.sql`, then
+   `202608270011_admin_member_management.sql`), in each project.
    `202608270001` adds the reactions RLS fix, achievement-unlock posts,
    coach announcements, activity streaks, and the weekly challenge — none
    of those features work until it's applied. `202608270002` is a
@@ -205,13 +206,16 @@ Three real tiers, as of `202608270005`:
   everything, including who else is admin. Still the only tier that can
   ever be granted this way; there is no client-side path to it, coach
   code or otherwise.
-- **Coach** (`invite_redemptions.role = 'coach'`, set at sign-up by which
-  invite code they used) — a fixed set of powers, the same for every
-  coach: post/pin announcements, set the weekly challenge, see the
-  new/inactive member views. Deliberately *not* scoped to "their own"
-  classes or members — Arbox already owns class scheduling and rosters,
-  so this app's coach tier only needs to cover the community-layer
-  actions above, not a parallel membership model.
+- **Coach** (`invite_redemptions.role = 'coach'`) — a fixed set of
+  powers, the same for every coach: post/pin announcements, set the
+  weekly challenge, see the new/inactive member views. Set either at
+  sign-up (which invite code they used) or afterward by an admin, from
+  the Account tab's member-management panel (`202608270011`) or the
+  `grant_coach_role_by_handle()` RPC (`202608270007`, service-role only).
+  Deliberately *not* scoped to "their own" classes or members — Arbox
+  already owns class scheduling and rosters, so this app's coach tier
+  only needs to cover the community-layer actions above, not a parallel
+  membership model.
 - **Member** — the default: feed, sharing, comments, streaks.
 
 Both admin and coach are checked server-side through a single
@@ -219,6 +223,21 @@ Both admin and coach are checked server-side through a single
 the `coach_inactive_members()`/`coach_new_members()` functions all use
 it, so there's one place that defines "staff," not two policies that can
 drift apart.
+
+## Managing members
+
+The Account tab's "ניהול חברים" panel (admin-only, `202608270011`) is
+the day-to-day way to look someone up — by handle, display name, or a
+pasted user id — and grant/revoke coach or remove them, without the SQL
+editor. `admin_grant_coach()`/`admin_revoke_coach()`/`admin_remove_member()`
+all check real `is_admin` server-side, same boundary as `review_report()`.
+
+For anything that panel doesn't cover, `public.admin_user_directory` is
+a plain view (id, handle, display name, the synthetic login email, role,
+`is_admin`, join date) meant to be queried directly in the Supabase SQL
+editor or browsed in the Table Editor — it has no grants to `anon` or
+`authenticated`, so it's only ever reachable with full project-owner
+access, never from the app itself.
 
 ## Offline synchronization
 
