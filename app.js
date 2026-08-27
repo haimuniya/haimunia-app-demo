@@ -100,7 +100,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "3.0.3";
+const APP_VERSION = "3.0.4";
 
 const WOD_MOVEMENT_TAGS = [
   // Gymnastics (bodyweight)
@@ -1264,6 +1264,17 @@ function showCelebration(prLabel, badges) {
   }
   const medalsEl = document.getElementById("celebrationMedals");
   if (medalsEl) medalsEl.innerHTML = badges.map((a) => renderMedal(a, true)).join("");
+  const shareEl = document.getElementById("celebrationShare");
+  if (shareEl) {
+    // Achievement unlocks aren't durable local records the way strength/WOD
+    // entries are, so they can't join communityShareCandidates() — this is
+    // a transient share offer, only for the badges just earned, only shown
+    // if the community layer is actually signed in.
+    const canShare = badges.length && typeof window.isCommunitySignedIn === "function" && window.isCommunitySignedIn();
+    shareEl.innerHTML = canShare
+      ? badges.map((a) => `<button class="link-btn" data-action="share-achievement" data-id="${esc(a.id)}" data-title="${esc(a.name)}" data-rule="${esc(a.rule)}">שיתוף ${esc(a.name)} בקהילה</button>`).join(" · ")
+      : "";
+  }
   const sub = document.getElementById("celebrationSub");
   if (sub) {
     sub.textContent = badges.length
@@ -4114,6 +4125,9 @@ document.addEventListener("click", (e) => {
   else if (action === "close-celebration") {
     if (el.id === "celebrationOverlay" && e.target !== el) return;
     closeCelebration();
+  }
+  else if (action === "share-achievement") {
+    if (typeof window.shareAchievementToCommunity === "function") window.shareAchievementToCommunity(el.dataset.id, el.dataset.title, el.dataset.rule);
   }
   else if (action === "open-achievements") { openAchievements(); }
   else if (action === "close-achievements") {

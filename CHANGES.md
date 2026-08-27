@@ -1,3 +1,81 @@
+# Close the reactions RLS gap, and add achievement sharing, streaks, announcements, and a weekly challenge — 2026-08-27
+
+Two threads from the earlier audit of this repo's community layer, done
+together: closing out the remaining credibility gaps it found, and
+building the growth features discussed for pitching this to the box
+manager.
+
+## Credibility fixes
+
+- **CSP `frame-ancestors`**: the audit flagged this directive as dropped
+  compared to a "proper" CSP. On inspection this isn't fixable as stated —
+  `frame-ancestors`/`X-Frame-Options` are spec-ignored when delivered via
+  `<meta>`, only a real HTTP response header enforces them, and GitHub
+  Pages has no way to set custom response headers on static files. Adding
+  the directive back to the `<meta>` tag would be inert, not a fix. Left
+  the file's own comment expanded to say this plainly instead of silently
+  re-adding dead config — real clickjacking mitigation here would need
+  moving off GitHub Pages. For what it's worth, the production app ships
+  no CSP at all, so this demo is still strictly ahead on every directive
+  that *does* work via `<meta>`.
+- **Reactions RLS gap**: `reactions_visible`/`reactions_insert_self` only
+  checked that the referenced post *existed*, not that it was still
+  visible to the viewer — a deleted post, a blocked author, or a
+  followers-only post from someone you don't follow all leaked reaction
+  rows even though `posts_feed_select` correctly hid the post itself. New
+  migration factors the exact visibility rule `posts_feed_select` already
+  uses into `post_visible_to_viewer()` and both reaction policies now call
+  it, so the two rules can't drift apart again.
+- **README.md**: rewrote it — it still described the old mock-data-only
+  preview ("runs entirely on mock data today... not live for real
+  members"), which stopped being true once this became a real
+  Supabase-backed PWA.
+
+## New features
+
+New migration `supabase/migrations/202608270001_community_growth.sql`
+(on top of the existing `202608260001_community_foundation.sql` — **must
+be run against the live Supabase project before these features work; this
+session had no CLI/service-role access to apply it directly**):
+
+- **Achievement-unlock sharing**: `workout_posts.source_type` now accepts
+  `'achievement'` alongside the existing strength/WOD entry types. A new
+  share button appears per newly-earned badge directly in the existing
+  celebration popup (`celebrationShare` in `index.html`, wired in
+  `showCelebration()` in `app.js`) — only when the community layer
+  reports the athlete signed in (`window.isCommunitySignedIn()`).
+  Achievement unlocks aren't durable local records the way strength/WOD
+  entries are, so this is a transient share offer at the moment of
+  unlock rather than an addition to `communityShareCandidates()`.
+- **Activity streaks**: new `activity_pings` table (one row per user per
+  day, self-insert/self-select only — raw per-day presence stays
+  private) plus a `community_streaks` view that aggregates a
+  gaps-and-islands current-streak calculation across every user and
+  exposes only the resulting number to the whole community. The view is
+  deliberately *not* `security_invoker`, so it can read across
+  `activity_pings` rows RLS would otherwise restrict to their own owner —
+  the raw dates never leave the table, only the streak length does.
+- **Coach announcements**: new `announcements` table, admin-only insert
+  (checked against `profiles.is_admin`), readable by every signed-in
+  member. Composer form appears in the Community tab only for admins.
+- **Weekly box-wide challenge**: new `weekly_challenges` table (admin
+  sets a title, a `comparison_key`, and a date range) plus a
+  `weekly_challenge_leaderboard` view that reads straight from the
+  existing `workout_posts` — reusing `posts_feed_select`'s visibility
+  rules via `security_invoker`, so a challenge leaderboard never shows a
+  post its own visibility settings would otherwise hide from that viewer.
+- **Coach "who hasn't logged recently"**: new `coach_inactive_members()`
+  function, security-definer with an internal admin check (raises if the
+  caller isn't an admin profile) rather than widening `activity_pings`'
+  own RLS — keeps raw per-day activity data admin-only without a second
+  parallel table.
+
+7 new static-assertion tests in `test/community-growth.test.mjs` (matching
+the existing pattern in `test/community-foundation.test.mjs` — no live
+Postgres to run migrations against in this test suite) plus 2 new
+jsdom tests in `test/achievements.test.mjs` covering the celebration
+share button's visibility and click wiring.
+
 # Isolate this demo's browser storage from the production app — 2026-08-27
 
 Found by an independent audit: this demo and the real production app

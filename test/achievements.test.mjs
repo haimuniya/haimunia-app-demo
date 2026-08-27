@@ -88,3 +88,42 @@ test("a plain PR with no new badge still celebrates, without a badge grid", asyn
   assert.equal(prLine.style.display, "block");
   assert.ok(prLine.textContent.includes("Test Plain PR Deadlift"));
 });
+
+test("celebration never offers a community share button when cloud.js hasn't loaded (no community configured)", async () => {
+  const window = await bootApp();
+  for (const cat of ["Squat", "Deadlift", "Press", "Olympic", "Pull"]) {
+    await window.addMovement(`Test NoShare ${cat}`, cat);
+    window.applyFieldValue("step", "weight", 35);
+    window.applyFieldValue("step", "reps", 4);
+    window.applyFieldValue("step", "sets", 1);
+    await window.saveSet();
+  }
+  assert.equal(window.document.getElementById("celebrationOverlay").classList.contains("open"), true);
+  assert.equal(window.document.getElementById("celebrationShare").innerHTML, "", "with no window.isCommunitySignedIn (cloud.js absent), the share slot must stay empty");
+});
+
+test("celebration offers a per-badge community share button once signed in, wired to shareAchievementToCommunity", async () => {
+  const window = await bootApp();
+  window.isCommunitySignedIn = () => true;
+  let shared = null;
+  window.shareAchievementToCommunity = (id, title, rule) => { shared = { id, title, rule }; };
+
+  for (const cat of ["Squat", "Deadlift", "Press", "Olympic", "Pull"]) {
+    await window.addMovement(`Test Share ${cat}`, cat);
+    window.applyFieldValue("step", "weight", 45);
+    window.applyFieldValue("step", "reps", 6);
+    window.applyFieldValue("step", "sets", 1);
+    await window.saveSet();
+  }
+  assert.equal(window.document.getElementById("celebrationOverlay").classList.contains("open"), true);
+
+  const shareButtons = [...window.document.querySelectorAll('#celebrationShare [data-action="share-achievement"]')];
+  assert.ok(shareButtons.length > 0, "a share button should render once the community layer reports the athlete signed in");
+  const shareBtn = shareButtons.find((b) => b.dataset.id === "well-rounded");
+  assert.ok(shareBtn, "the well-rounded badge earned by this save should get its own share button");
+
+  shareBtn.click();
+  assert.ok(shared, "clicking the share button should call window.shareAchievementToCommunity");
+  assert.equal(shared.id, "well-rounded");
+  assert.equal(shared.title, "אתלט שלם");
+});

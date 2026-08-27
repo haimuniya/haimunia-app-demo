@@ -16,8 +16,15 @@
   Fonts are self-hosted (./assets/fonts/, see the @font-face block below), so
   there is no third-party entry in font-src/style-src at all — the app makes
   zero network requests to any origin but its own.
-  frame-ancestors / X-Frame-Options are ignored in <meta>; set them as real
-  response headers on the host if you can.
+  frame-ancestors / X-Frame-Options are spec-ignored in <meta> — browsers
+  only honor them as real HTTP response headers. GitHub Pages serves static
+  files with no way to set custom response headers (no server config, no
+  _headers file), so there is no working clickjacking mitigation available
+  on this host at all — adding the directive here would be inert and
+  misleading, not a fix. It would take moving off GitHub Pages (a host that
+  supports a headers file) to actually close this gap. The production app
+  (haimunia-app) ships no CSP at all, so this demo is still strictly ahead
+  on every directive that *does* work via <meta>.
 -->
 <meta http-equiv="Content-Security-Policy" content="
   default-src 'self';
@@ -591,6 +598,7 @@
       <div class="celebration-pr-line" id="celebrationPrLine"></div>
       <div class="celebration-sub" id="celebrationSub">עיטור חדש נפתח — תמשיכו ככה!</div>
       <div class="celebration-medals" id="celebrationMedals"></div>
+      <div id="celebrationShare" style="margin-top:10px; font-size:13px;"></div>
       <button data-action="close-celebration" class="save-btn" style="max-width:none; margin-top:20px;">מעולה!</button>
     </div>
   </div>

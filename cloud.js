@@ -5,7 +5,8 @@
   const client = configured && window.supabase ? window.supabase.createClient(cfg.supabaseUrl, cfg.supabasePublishableKey, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
   }) : null;
-  const state = { configured, client, user: null, profile: null, feed: [], people: [], comparison: [], loading: false, message: "", syncEnabled: localStorage.getItem("haimunia-demo:cloudSyncEnabled") === "1" };
+  const state = { configured, client, user: null, profile: null, feed: [], people: [], comparison: [], loading: false, message: "", syncEnabled: localStorage.getItem("haimunia-demo:cloudSyncEnabled") === "1",
+    streaks: [], announcements: [], weeklyChallenge: null, weeklyLeaderboard: [], inactiveMembers: [] };
 
   function safeText(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
   function rerender() { if (typeof window.render === "function") window.render(); }
@@ -15,13 +16,74 @@
     if (!client) return;
     const { data } = await client.auth.getSession();
     state.user = data.session ? data.session.user : null;
-    if (state.user) { await Promise.all([loadProfile(), loadFeed()]); await pullPrivateRecords(); }
+    if (state.user) {
+      await Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge()]);
+      if (state.profile && state.profile.is_admin) await loadInactiveMembers();
+      await pullPrivateRecords();
+      await pingActivity();
+    }
     rerender();
   }
   async function loadProfile() {
     if (!state.user) return;
-    const { data } = await client.from("profiles").select("id,handle,display_name,bio,avatar_url").eq("id", state.user.id).maybeSingle();
+    const { data } = await client.from("profiles").select("id,handle,display_name,bio,avatar_url,is_admin").eq("id", state.user.id).maybeSingle();
     state.profile = data || null;
+  }
+  // One row per user per day they had the app open — the raw dates stay
+  // private (activity_pings RLS is self-only); this only ever records
+  // today, so a missed day just isn't there rather than being backfilled.
+  async function pingActivity() {
+    if (!client || !state.user) return;
+    const today = new Date().toISOString().slice(0, 10);
+    await client.from("activity_pings").upsert({ user_id: state.user.id, activity_date: today }, { onConflict: "user_id,activity_date", ignoreDuplicates: true }).catch(() => {});
+  }
+  async function loadStreaks() {
+    if (!state.user) return;
+    const { data, error } = await client.from("community_streaks").select("user_id,handle,display_name,current_streak,last_activity_on").order("current_streak", { ascending: false }).limit(20);
+    state.streaks = error ? [] : (data || []).filter((r) => r.current_streak > 0);
+  }
+  async function loadAnnouncements() {
+    if (!state.user) return;
+    const { data, error } = await client.from("announcements").select("id,title,body,created_at,profiles(handle,display_name)").order("created_at", { ascending: false }).limit(20);
+    state.announcements = error ? [] : (data || []);
+  }
+  async function postAnnouncement(form) {
+    if (!state.user || !state.profile || !state.profile.is_admin) return;
+    const title = String(form.title.value || "").trim().slice(0, 120);
+    const body = String(form.body.value || "").trim().slice(0, 2000);
+    if (!title || !body) return setMessage("יש למלא כותרת ותוכן להודעה");
+    const { error } = await client.from("announcements").insert({ author_id: state.user.id, title, body });
+    if (error) return setMessage("פרסום ההודעה נכשל");
+    form.reset(); await loadAnnouncements(); setMessage("ההודעה פורסמה"); rerender();
+  }
+  async function loadWeeklyChallenge() {
+    if (!state.user) return;
+    const { data, error } = await client.from("weekly_challenge_leaderboard").select("*").limit(50);
+    if (error || !data || !data.length) { state.weeklyChallenge = null; state.weeklyLeaderboard = []; return; }
+    state.weeklyChallenge = { title: data[0].title, comparisonKey: data[0].comparison_key, startsOn: data[0].starts_on, endsOn: data[0].ends_on };
+    state.weeklyLeaderboard = data.sort((a, b) => a.score_direction === "lower" ? Number(a.score_value) - Number(b.score_value) : Number(b.score_value) - Number(a.score_value));
+  }
+  async function setWeeklyChallenge(form) {
+    if (!state.user || !state.profile || !state.profile.is_admin) return;
+    const title = String(form.title.value || "").trim().slice(0, 120);
+    const comparisonKey = String(form.comparisonKey.value || "").trim().slice(0, 160);
+    const startsOn = form.startsOn.value, endsOn = form.endsOn.value;
+    if (!title || !comparisonKey || !startsOn || !endsOn) return setMessage("יש למלא את כל שדות האתגר");
+    const { error } = await client.from("weekly_challenges").insert({ title, comparison_key: comparisonKey, starts_on: startsOn, ends_on: endsOn, created_by: state.user.id });
+    if (error) return setMessage("קביעת האתגר נכשלה");
+    form.reset(); await loadWeeklyChallenge(); setMessage("האתגר השבועי עודכן"); rerender();
+  }
+  async function loadInactiveMembers() {
+    if (!state.user || !state.profile || !state.profile.is_admin) return;
+    const { data, error } = await client.rpc("coach_inactive_members");
+    state.inactiveMembers = error ? [] : (data || []);
+  }
+  async function publishAchievement(achievementId, title, rule) {
+    if (!state.user || !state.profile) return setMessage("התחברו לקהילה כדי לשתף עיטור");
+    const payload = { author_id: state.user.id, source_type: "achievement", source_record_id: achievementId, visibility: "followers", title: String(title || "עיטור חדש").slice(0, 120), result_text: String(rule || "עיטור חדש נפתח").slice(0, 240), occurred_on: new Date().toISOString().slice(0, 10) };
+    const { error } = await client.from("workout_posts").upsert(payload, { onConflict: "author_id,source_type,source_record_id" });
+    if (error) return setMessage("שיתוף העיטור נכשל");
+    await loadFeed(); setMessage("העיטור שותף לעוקבים שלכם"); rerender();
   }
   async function loadFeed() {
     if (!state.user) return;
@@ -135,7 +197,17 @@
     const sharing = candidates.length ? `<div class="section-label" style="margin-top:18px;">שיתוף תוצאה</div>${candidates.map((item) => `<div class="log-row"><div><div style="font-weight:700;">${safeText(item.title)}</div><div class="mono" style="color:var(--brass);">${safeText(item.resultText)}</div></div><div><button class="link-btn" data-community-action="publish" data-type="${safeText(item.type)}" data-id="${safeText(item.id)}" data-visibility="followers">עוקבים</button> · <button class="link-btn" data-community-action="publish" data-type="${safeText(item.type)}" data-id="${safeText(item.id)}" data-visibility="public">ציבורי</button></div></div>`).join("")}` : "";
     const feed = state.feed.length ? state.feed.map((post) => `<article class="chart-card" style="margin-top:10px;"><div style="font-weight:800;">${safeText(post.display_name || "@" + post.handle)}</div><div style="font-size:16px;margin:8px 0;">${safeText(post.title)}</div><div class="mono" style="color:var(--brass);font-weight:700;">${safeText(post.result_text)}</div><div class="flex gap-10" style="margin-top:12px;"><button class="link-btn" data-community-action="cheer" data-id="${safeText(post.id)}">🔥 ${Number(post.cheer_count || 0)}</button>${post.comparison_key ? `<button class="link-btn" data-community-action="compare" data-key="${safeText(post.comparison_key)}">השוואה</button>` : ""}<button class="link-btn" data-community-action="report" data-id="${safeText(post.id)}">דיווח</button></div></article>`).join("") : `<div class="empty">עדיין אין שיתופים בפיד</div>`;
     const comparison = state.comparison.length ? `<div class="section-label" style="margin-top:18px;">השוואת תוצאות</div>${state.comparison.map((item, index) => `<div class="log-row"><span>${index + 1}. ${safeText(item.display_name || "@" + item.handle)}</span><span class="mono" style="color:var(--brass);">${safeText(item.result_text)}</span></div>`).join("")}` : "";
-    return profile + (state.message ? `<div class="footer-note" role="status" style="color:var(--brass);">${safeText(state.message)}</div>` : "") + people + sharing + comparison + `<div class="section-label" style="margin-top:18px;">הפיד שלי</div>${feed}<button class="link-btn" data-community-action="delete-account" style="display:block;margin:28px auto 0;color:var(--red);">בקשת מחיקת חשבון</button>`;
+    const isAdmin = !!(state.profile && state.profile.is_admin);
+    const announceComposer = isAdmin ? `<form id="communityAnnouncement" class="chart-card" style="margin-top:12px;"><div style="font-weight:800;margin-bottom:8px;">הודעה חדשה למועדון</div><input class="text-input" name="title" placeholder="כותרת" required/><textarea class="text-input" name="body" maxlength="2000" placeholder="תוכן ההודעה" style="margin-top:8px;" required></textarea><button class="link-btn" type="submit" style="margin-top:10px;">פרסום הודעה</button></form>` : "";
+    const announcementsList = state.announcements.length ? state.announcements.map((a) => `<div class="log-row" style="align-items:flex-start;"><div><div style="font-weight:700;">${safeText(a.title)}</div><div style="color:var(--steel);font-size:13px;margin-top:2px;">${safeText(a.body)}</div><div style="color:var(--steel);font-size:11px;margin-top:4px;">${safeText(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div></div></div>`).join("") : `<div class="empty">אין הודעות חדשות</div>`;
+    const announcementsHtml = `<div class="section-label" style="margin-top:18px;">הודעות מהמועדון</div>${announcementsList}${announceComposer}`;
+    const challengeSetter = isAdmin ? `<form id="communityWeeklyChallenge" class="chart-card" style="margin-top:12px;"><div style="font-weight:800;margin-bottom:8px;">קביעת אתגר שבועי</div><input class="text-input" name="title" placeholder="שם האתגר" required/><input class="text-input" name="comparisonKey" dir="ltr" placeholder="מפתח השוואה, למשל back-squat" style="margin-top:8px;" required/><div class="flex gap-10" style="margin-top:8px;"><input class="text-input" name="startsOn" type="date" required/><input class="text-input" name="endsOn" type="date" required/></div><button class="link-btn" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
+    const weeklyChallengeHtml = state.weeklyChallenge
+      ? `<div class="section-label" style="margin-top:18px;">אתגר השבוע: ${safeText(state.weeklyChallenge.title)}</div>${state.weeklyLeaderboard.map((r, index) => `<div class="log-row"><span>${index + 1}. ${safeText(r.display_name || "@" + r.handle)}</span><span class="mono" style="color:var(--brass);">${safeText(r.result_text)}</span></div>`).join("")}${challengeSetter}`
+      : `<div class="section-label" style="margin-top:18px;">אתגר השבוע</div><div class="empty">אין אתגר פעיל כרגע</div>${challengeSetter}`;
+    const streaksHtml = state.streaks.length ? `<div class="section-label" style="margin-top:18px;">רצפי התמדה</div>${state.streaks.map((r, index) => `<div class="log-row"><span>${index + 1}. ${safeText(r.display_name || "@" + r.handle)}</span><span class="mono" style="color:var(--brass);">🔥 ${Number(r.current_streak)}</span></div>`).join("")}` : "";
+    const inactiveHtml = isAdmin ? `<div class="section-label" style="margin-top:18px;">מי לא התאמן לאחרונה</div>${state.inactiveMembers.length ? state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("") : `<div class="empty">כולם פעילים</div>`}` : "";
+    return profile + (state.message ? `<div class="footer-note" role="status" style="color:var(--brass);">${safeText(state.message)}</div>` : "") + announcementsHtml + weeklyChallengeHtml + streaksHtml + people + sharing + comparison + inactiveHtml + `<div class="section-label" style="margin-top:18px;">הפיד שלי</div>${feed}<button class="link-btn" data-community-action="delete-account" style="display:block;margin:28px auto 0;color:var(--red);">בקשת מחיקת חשבון</button>`;
   };
   window.cloudStorageStatusText = function () {
     if (!configured) return "נשמר במכשיר הזה בלבד, ללא שרת";
@@ -158,12 +230,31 @@
     else if (action === "block") block(el.dataset.id);
     else if (action === "compare") compare(el.dataset.key);
     else if (action === "delete-account") requestDeletion();
+    else if (action === "share-achievement") publishAchievement(el.dataset.id, el.dataset.title, el.dataset.rule);
   };
-  document.addEventListener("submit", (event) => { if (event.target.id === "communityProfile") { event.preventDefault(); saveProfile(event.target); } });
+  window.isCommunitySignedIn = function () { return !!(state.user && state.profile); };
+  window.shareAchievementToCommunity = function (achievementId, title, rule) { publishAchievement(achievementId, title, rule); };
+  document.addEventListener("submit", (event) => {
+    if (event.target.id === "communityProfile") { event.preventDefault(); saveProfile(event.target); }
+    else if (event.target.id === "communityAnnouncement") { event.preventDefault(); postAnnouncement(event.target); }
+    else if (event.target.id === "communityWeeklyChallenge") { event.preventDefault(); setWeeklyChallenge(event.target); }
+  });
   window.addEventListener("online", flushOutbox);
-  window.addEventListener("haimunia-sync-needed", flushOutbox);
+  window.addEventListener("haimunia-sync-needed", () => { flushOutbox(); pingActivity(); });
   if (client) {
-    client.auth.onAuthStateChange((_event, session) => { state.user = session ? session.user : null; if (state.user) Promise.all([loadProfile(), loadFeed(), flushOutbox()]).then(pullPrivateRecords).then(rerender); else { state.profile = null; state.feed = []; rerender(); } });
+    client.auth.onAuthStateChange((_event, session) => {
+      state.user = session ? session.user : null;
+      if (state.user) {
+        Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), flushOutbox()])
+          .then(() => (state.profile && state.profile.is_admin ? loadInactiveMembers() : null))
+          .then(pullPrivateRecords)
+          .then(pingActivity)
+          .then(rerender);
+      } else {
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = [];
+        rerender();
+      }
+    });
     refreshSession();
   }
 })();

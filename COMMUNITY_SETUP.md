@@ -5,7 +5,12 @@ The app remains fully usable offline when the backend is not configured.
 ## Create the backend
 
 1. Create separate Supabase projects for staging and production.
-2. Run `supabase/migrations/202608260001_community_foundation.sql` in each project.
+2. Run every file in `supabase/migrations/`, in filename order (currently
+   `202608260001_community_foundation.sql` then
+   `202608270001_community_growth.sql`), in each project. The second file
+   adds the reactions RLS fix, achievement-unlock posts, coach
+   announcements, activity streaks, and the weekly challenge — none of
+   those features work until it's applied.
 3. In Authentication, enable email magic links and add the deployed app URL to Redirect URLs.
 4. Copy the project URL and **publishable** key into `cloud-config.js`.
 5. Never place a secret or service-role key in browser code, Git, or a static-host environment variable.
