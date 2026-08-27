@@ -13,7 +13,7 @@ alter table public.invite_codes add column use_count integer not null default 0 
 alter table public.invite_codes add column revoked_at timestamptz;
 
 update public.invite_codes
-set code_hash = encode(digest(code, 'sha256'), 'hex'),
+set code_hash = encode(extensions.digest(code, 'sha256'), 'hex'),
     revoked_at = coalesce(revoked_at, now());
 alter table public.invite_codes alter column id set not null;
 alter table public.invite_codes alter column code_hash set not null;
@@ -72,7 +72,7 @@ begin
 
   -- Ordinary redemption never grants or upgrades to coach.
   update public.invite_codes set use_count = use_count + 1
-  where code_hash = encode(digest(p_code, 'sha256'), 'hex')
+  where code_hash = encode(extensions.digest(p_code, 'sha256'), 'hex')
     and role = 'member' and active and revoked_at is null
     and (expires_at is null or expires_at > now()) and use_count < max_uses
   returning id into v_invite_id;
@@ -94,9 +94,9 @@ declare v_code text;
 begin
   if p_max_uses < 1 or p_max_uses > 1000 then raise exception 'max uses must be between 1 and 1000'; end if;
   if p_expires_at is null or p_expires_at <= now() then raise exception 'expiry must be in the future'; end if;
-  v_code := encode(gen_random_bytes(24), 'hex');
+  v_code := encode(extensions.gen_random_bytes(24), 'hex');
   insert into public.invite_codes(id, code_hash, role, active, expires_at, max_uses)
-  values (gen_random_uuid(), encode(digest(v_code, 'sha256'), 'hex'), 'member', true, p_expires_at, p_max_uses);
+  values (gen_random_uuid(), encode(extensions.digest(v_code, 'sha256'), 'hex'), 'member', true, p_expires_at, p_max_uses);
   return v_code;
 end $$;
 revoke all on function public.create_member_invite(timestamptz, integer) from public, anon, authenticated;

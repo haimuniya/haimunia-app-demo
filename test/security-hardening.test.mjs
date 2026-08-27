@@ -7,10 +7,26 @@ const cloudJs = fs.readFileSync(new URL("../cloud.js", import.meta.url), "utf8")
 const indexHtml = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
 
 test("legacy plaintext invite codes are removed and revoked", () => {
-  assert.match(sql, /set code_hash = encode\(digest\(code, 'sha256'\), 'hex'\)/i);
+  assert.match(sql, /set code_hash = encode\(extensions\.digest\(code, 'sha256'\), 'hex'\)/i);
   assert.match(sql, /revoked_at = coalesce\(revoked_at, now\(\)\)/i);
   assert.match(sql, /alter table public\.invite_codes drop column code/i);
   assert.match(sql, /alter table public\.invite_redemptions drop column code/i);
+});
+
+// Regression: unqualified pgcrypto calls broke a live run — "function
+// gen_random_bytes(integer) does not exist" (42883). Every function here
+// that calls a pgcrypto function sets `search_path = ''` (a deliberate
+// hardening against search-path-hijacking in security-definer
+// functions), and pgcrypto on this project is installed into the
+// `extensions` schema, not `public` — pg_catalog is always implicitly
+// searched regardless of search_path, but extension functions are not,
+// so every digest()/gen_random_bytes() call inside one of these
+// functions has to be schema-qualified.
+test("every pgcrypto call (digest/gen_random_bytes) is schema-qualified with extensions., since these functions run with search_path = ''", () => {
+  assert.doesNotMatch(sql, /[^.]\bdigest\(/i, "digest() must always be qualified as extensions.digest(), never called bare");
+  assert.doesNotMatch(sql, /[^.]\bgen_random_bytes\(/i, "gen_random_bytes() must always be qualified as extensions.gen_random_bytes(), never called bare");
+  assert.match(sql, /extensions\.digest\(/i);
+  assert.match(sql, /extensions\.gen_random_bytes\(/i);
 });
 
 // Regression: this exact ordering broke a live run — "there is no unique
@@ -30,8 +46,8 @@ test("invite_codes' primary key moves to id before the new FK referencing id is 
 
 test("member invites are high entropy, expiring, bounded, hashed, and service-role only", () => {
   const fn = sql.slice(sql.indexOf("create or replace function public.create_member_invite"), sql.indexOf("create or replace function public.grant_coach_role"));
-  assert.match(fn, /encode\(gen_random_bytes\(24\), 'hex'\)/i);
-  assert.match(fn, /encode\(digest\(v_code, 'sha256'\), 'hex'\)/i);
+  assert.match(fn, /encode\(extensions\.gen_random_bytes\(24\), 'hex'\)/i);
+  assert.match(fn, /encode\(extensions\.digest\(v_code, 'sha256'\), 'hex'\)/i);
   assert.match(fn, /p_expires_at/i);
   assert.match(fn, /p_max_uses/i);
   assert.match(fn, /revoke all .* from public, anon, authenticated/i);
