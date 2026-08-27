@@ -4176,7 +4176,11 @@ document.getElementById("welcomeNameInput").addEventListener("keydown", (e) => {
 });
 
 document.addEventListener("focusin", (e) => {
-  if (e.target.classList && e.target.classList.contains("stepper-val")) e.target.value = "";
+  // Select (don't clear) the existing value: typing immediately replaces
+  // it, same as before, but the value is never destructively wiped just
+  // from tapping in — a screen reader still announces it, and clicking to
+  // reposition the cursor for a small edit still works normally.
+  if (e.target.classList && e.target.classList.contains("stepper-val")) e.target.select();
 });
 document.addEventListener("keydown", (e) => {
   if (e.target.classList && e.target.classList.contains("stepper-val") && e.key === "Enter") {

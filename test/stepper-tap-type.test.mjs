@@ -49,3 +49,23 @@ test("the same fix applies to the EMOM builder's per-movement reps stepper (the 
   const afterTap = window.getFieldValue("builder-movement-reps", "Wall Balls");
   assert.equal(afterTap, 10, "tapping the reps field itself must not reset the target reps to 0");
 });
+
+// Audit finding (accessibility): a separate, real bug from the two above —
+// the document-level "focusin" handler used to set stepper-val.value = ""
+// on every focus, visually wiping the field the instant you tabbed or
+// tapped into it (before any click/step logic even ran). Fast retyping
+// still works via select() (typing replaces the selection), but the value
+// itself — and what a screen reader announces — is never destructively
+// cleared just from focusing.
+test("focusing a stepper input selects its value instead of clearing it", async () => {
+  const window = await bootApp();
+  await window.addMovement("Test Focus Select Squat", "Squat");
+
+  const input = window.document.querySelector("[data-field='weight'].stepper-val");
+  assert.equal(input.value, "20");
+
+  input.dispatchEvent(new window.FocusEvent("focusin", { bubbles: true }));
+  assert.equal(input.value, "20", "focusing must never clear the visible value");
+  assert.equal(input.selectionStart, 0, "the existing value should be selected...");
+  assert.equal(input.selectionEnd, input.value.length, "...end to end, so typing still replaces it in one keystroke");
+});

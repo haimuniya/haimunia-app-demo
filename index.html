@@ -82,7 +82,7 @@
      existing users keep today's look until they opt into something else. */
   :root{
     --bg:#F2F5FA; --surface:#FFFFFF; --surface2:#E9EFF8; --border:#D6DFEC;
-    --chalk:#1C2536; --steel:#68748C; --red:#C2392C; --blue:#2E5AA8;
+    --chalk:#1C2536; --steel:#57627A; --red:#C2392C; --blue:#2E5AA8;
     --yellow:#B07E12; --green:#2E7A48; --purple:#7A4FC2; --brass:#A6702E;
     --teal:#1E7D76;
     --energy:#C94B29;
@@ -93,7 +93,7 @@
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
       --bg:#152342; --surface:#1F3057; --surface2:#2A3D6B; --border:#425481;
-      --chalk:#F2ECE1; --steel:#8891A6; --red:#D8453C; --blue:#3E6FD9;
+      --chalk:#F2ECE1; --steel:#A8B3C9; --red:#D8453C; --blue:#3E6FD9;
       --yellow:#E0B23C; --green:#4B9B5F; --purple:#9B6FD9; --brass:#E8B98A;
       --teal:#3FA7A0;
       --energy:#E85D3D;
@@ -117,7 +117,7 @@
   button{ background:none; border:none; color:inherit; cursor:pointer; padding:0; }
   input{ font-size:16px; }
   html[data-text-scale="large"]{ zoom:1.12; }
-  button:focus-visible, input:focus-visible { outline:2px solid var(--brass); outline-offset:2px; }
+  button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visible, [tabindex]:focus-visible { outline:2px solid var(--brass); outline-offset:2px; }
   .mono{ font-family:'JetBrains Mono',monospace; direction:ltr; unicode-bidi:isolate; }
   .flex{ display:flex; }
   .col{ flex-direction:column; }
@@ -156,7 +156,7 @@
   .stepper{ flex:1 1 0; min-width:0; display:flex; flex-direction:column; align-items:center; gap:4px; }
   .stepper-label{ color:var(--steel); font-size:11px; font-weight:600; white-space:nowrap; }
   .stepper-box{ width:100%; min-width:0; display:flex; align-items:center; justify-content:space-between; background:var(--surface2); border-radius:14px; border:1px solid var(--border); }
-  .stepper-btn{ width:34px; height:44px; flex-shrink:0; display:flex; align-items:center; justify-content:center; transition:opacity .15s; }
+  .stepper-btn{ width:44px; height:44px; flex-shrink:0; display:flex; align-items:center; justify-content:center; transition:opacity .15s; }
   .stepper-btn:active{ opacity:.6; }
   .stepper-val{ font-weight:700; font-size:16px; min-width:0; text-align:center; background:transparent; border:none; padding:4px 0; flex:1 1 0; color:var(--chalk); }
   .est-line{ text-align:center; color:var(--steel); font-size:12px; margin-bottom:20px; }
@@ -176,8 +176,8 @@
   .save-btn{ width:100%; max-width:448px; background:var(--energy); color:#1a0d08; font-family:'Anton',sans-serif; font-weight:400; letter-spacing:0.5px; font-size:19px; padding:16px 0; border-radius:16px; display:flex; align-items:center; justify-content:center; gap:8px; box-shadow:0 8px 28px rgba(232,93,61,.4); transition:opacity .15s; }
   .save-btn:active{ opacity:.85; }
   .footer{ text-align:center; margin-top:28px; }
-  .footer-note{ color:var(--border); font-size:11px; margin-bottom:8px; }
-  .link-btn{ color:var(--border); font-size:11px; text-decoration:underline; }
+  .footer-note{ color:var(--steel); font-size:11px; margin-bottom:8px; }
+  .link-btn{ color:var(--steel); font-size:11px; text-decoration:underline; }
   .modal-overlay{ position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:50; display:none; align-items:flex-end; overflow:hidden; }
   .modal-overlay.open{ display:flex; }
   .modal-sheet{ background:var(--bg); border-top-left-radius:22px; border-top-right-radius:22px; width:100%; max-height:85%; padding-bottom:env(safe-area-inset-bottom,0px); display:flex; flex-direction:column; border:1px solid var(--border); border-bottom:none; overflow-x:hidden; }
@@ -194,7 +194,7 @@
   @media (prefers-reduced-motion: reduce){ *{ transition:none !important; animation:none !important; } }
 
   .cal-header{ display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
-  .cal-nav-btn{ width:36px; height:36px; display:flex; align-items:center; justify-content:center; background:var(--surface); border:1px solid var(--border); border-radius:10px; }
+  .cal-nav-btn{ width:44px; height:44px; display:flex; align-items:center; justify-content:center; background:var(--surface); border:1px solid var(--border); border-radius:10px; }
   .cal-month-label{ font-weight:800; font-size:15px; }
   .cal-weekdays{ display:grid; grid-template-columns:repeat(7,1fr); gap:4px; margin-bottom:6px; }
   .cal-weekday{ text-align:center; color:var(--steel); font-size:10px; font-weight:700; }
