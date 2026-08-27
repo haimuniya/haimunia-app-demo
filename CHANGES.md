@@ -1,3 +1,24 @@
+# Allow Hebrew handles — this is a Hebrew-speaking app — 2026-08-27
+
+Reported directly, with a screenshot of a Hebrew keyboard: the handle
+field only accepted English letters (`a-z0-9_`), forcing a Hebrew-
+speaking membership to switch keyboards and think up an English name
+just to finish their profile. Widened both the database CHECK constraint
+and the matching client-side regex to also accept Hebrew letters (א-ת),
+same length bound (3-24) and same ban on spaces/punctuation as before —
+still a compact identifier, not free text (`display_name` already covers
+full free-form names).
+
+Also fixed something the regex change alone would have left broken: both
+handle inputs forced `dir="ltr"`, which would render Hebrew text
+backwards while typing even once it was allowed. Switched to `dir="auto"`
+so the field adapts to whichever script is actually typed into it.
+Placeholder text updated to a Hebrew example (`דנה_כהן`) so the new
+capability is obvious, not just technically possible.
+
+3 new tests. 191/191 pass; visually verified — a Hebrew handle now renders
+correctly, right-to-left, while typing.
+
 # Fix two real bugs found by actually using the new sign-in flow — 2026-08-27
 
 Reported directly: member search "not working," and no way to tell
