@@ -40,11 +40,11 @@ test("a photo can be attached when sharing a result, uploaded to the private pos
   assert.match(src, /id="photo-\$\{safeText\(item\.id\)\}"/);
 });
 
-test("who's-new and who's-inactive are both admin-only and call the matching security-definer RPCs", () => {
+test("who's-new and who's-inactive are both staff-only (admin or coach) and call the matching security-definer RPCs", () => {
   assert.match(src, /async function loadNewMembers\(\)/);
   assert.match(src, /client\.rpc\("coach_new_members"\)/);
   assert.match(src, /client\.rpc\("coach_inactive_members"\)/);
-  assert.match(src, /if \(!state\.user \|\| !state\.profile \|\| !state\.profile\.is_admin\) return;\s*\n\s*const \{ data, error \} = await client\.rpc\("coach_new_members"\)/);
+  assert.match(src, /if \(!state\.user \|\| !isStaff\(\)\) return;\s*\n\s*const \{ data, error \} = await client\.rpc\("coach_new_members"\)/);
 });
 
 test("an admin can pin an announcement as today's note, and it's excluded from the regular list once pinned", () => {

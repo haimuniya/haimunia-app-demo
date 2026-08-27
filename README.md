@@ -34,11 +34,14 @@ thing it still isn't.
 
 - Not connected to `haimunia-app`'s real database or member data — it's a
   separate Supabase project and a separate browser storage namespace.
-- Not scoped to a coach's specific classes/members yet — sign-up is gated
-  behind a single shared invite code per role (member/coach, see
-  `COMMUNITY_SETUP.md`), but a coach code today is just a label, not
-  elevated access. Full admin stays a manual, dashboard-only grant. Real
-  coach-scoped permissions are tracked separately, not yet built.
+- Not scoped to a coach's specific classes or members — sign-up is gated
+  behind a single shared invite code per role (member/coach), and a
+  coach gets a fixed set of powers (announcements, the weekly challenge,
+  the new/inactive member views), the same for every coach, not a
+  per-coach roster. Class scheduling and "who's coming to class" are
+  intentionally out of scope here — that's already handled by Arbox.
+  Full admin stays a separate, manual, dashboard-only grant. See
+  "Access tiers" in `COMMUNITY_SETUP.md`.
 
 ## Running it locally
 

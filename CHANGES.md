@@ -1,3 +1,35 @@
+# Build the coach access tier — 2026-08-27
+
+Three real tiers now, via new migration `202608270005_coach_tier.sql`:
+**admin** (unchanged — full access, manual dashboard-only grant),
+**coach** (new — a fixed set of powers, the same for every coach: post/
+pin announcements, set the weekly challenge, see the new/inactive member
+views), **member** (the default).
+
+Coach is deliberately *not* scoped to "their own" classes or members —
+Arbox already owns class scheduling and rosters, so building a parallel
+membership model here would duplicate something that already exists
+elsewhere. This is the direct outcome of asking, now that Arbox is in the
+picture: coach doesn't need a data model for "relevant," it just needs a
+fixed set of community-layer powers.
+
+Both tiers are checked server-side through one new function,
+`public.is_staff()` (true if either `profiles.is_admin` or the caller's
+own `invite_redemptions.role = 'coach'`) — every RLS policy and RPC that
+used to check `is_admin` directly now goes through it, so "who counts as
+staff" is defined in exactly one place instead of two policies that could
+quietly drift apart over time. `cloud.js` got the matching client-side
+`isStaff()` helper, and the render function's local `isAdmin` variable
+(now genuinely misleading — it gated coach-relevant sections too) was
+renamed to `staff` throughout.
+
+6 new tests across `test/community-coach-tier.test.mjs` (migration
+static assertions, plus one asserting the four staff-gated render
+sections all route through `isStaff()` and none of them check
+`state.profile.is_admin` directly anymore) and an update to an existing
+engagement test whose assertion had gone stale. 164/164 tests pass;
+boot-smoke passes with zero console errors.
+
 # Fix the admin-grant trigger bug, and build the community-strategy quick/medium wins — 2026-08-27
 
 ## Bug: the manual admin grant never actually worked

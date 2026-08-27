@@ -10,7 +10,8 @@ The app remains fully usable offline when the backend is not configured.
    `202608270001_community_growth.sql`, then
    `202608270002_lock_anon_defaults.sql`, then
    `202608270003_invite_gate.sql`, then
-   `202608270004_community_engagement.sql`), in each project.
+   `202608270004_community_engagement.sql`, then
+   `202608270005_coach_tier.sql`), in each project.
    `202608270001` adds the reactions RLS fix, achievement-unlock posts,
    coach announcements, activity streaks, and the weekly challenge — none
    of those features work until it's applied. `202608270002` is a
@@ -29,10 +30,10 @@ The app remains fully usable offline when the backend is not configured.
    ```sql
    insert into public.invite_codes (code, role) values ('YOURCODE2026', 'member');
    ```
-   `role` is `'member'` or `'coach'` — right now this is a label only
-   (shown nowhere yet, grants nothing extra); it's there for when real
-   coach-scoped permissions get built (see below). To make someone a full
-   admin, that's still a separate manual step, unrelated to invite codes:
+   `role` is `'member'` or `'coach'` — as of `202608270005`, a `'coach'`
+   code grants a fixed set of powers on its own (see "Access tiers"
+   below), no separate step needed. To make someone a full admin, that's
+   still a separate manual step, unrelated to invite codes:
    ```sql
    update public.profiles set is_admin = true where id = (select id from auth.users where email = 'their@email.com');
    ```
@@ -49,6 +50,13 @@ The app remains fully usable offline when the backend is not configured.
    5MB/image limit) for optional photos on a shared result, a
    `coach_new_members()` RPC mirroring `coach_inactive_members()`, and a
    `pinned_date` column on `announcements` for a daily WOD note.
+
+   `202608270005` builds the coach tier (see "Access tiers" below) — a
+   coach-code redemption (`insert into public.invite_codes (code, role)
+   values ('COACHCODE2026', 'coach');`) now actually grants something:
+   posting/pinning announcements, setting the weekly challenge, and
+   seeing the new/inactive member views, without needing the manual
+   `is_admin` grant.
 3. In Authentication, enable email magic links and add the deployed app URL to Redirect URLs.
 4. Copy the project URL and **publishable** key into `cloud-config.js`.
 5. Never place a secret or service-role key in browser code, Git, or a static-host environment variable.
@@ -66,17 +74,28 @@ The app remains fully usable offline when the backend is not configured.
 - Confirm account deletion immediately unpublishes posts and the scheduled purge removes the Auth user after 30 days.
 - Install Playwright Chromium and run the browser checks before deployment.
 
-## Access tiers (roadmap)
+## Access tiers
 
-The end state is three real tiers: **admin** (full access, today's
-`profiles.is_admin`), **coach** (scoped to their own relevant
-classes/members — not built yet), and **member**. `invite_codes.role`
-already distinguishes `'member'`/`'coach'` at sign-up time so that piece
-doesn't need revisiting, but a coach-code redemption currently grants
-*nothing* beyond the label — it is deliberately not wired to `is_admin`.
-Building real coach-scoped access needs a data model for what "their
-relevant" means (which classes or members a coach is attached to) before
-any RLS policy can scope by it; that's a separate task, not started.
+Three real tiers, as of `202608270005`:
+
+- **Admin** (`profiles.is_admin = true`, manual dashboard-only grant) —
+  everything, including who else is admin. Still the only tier that can
+  ever be granted this way; there is no client-side path to it, coach
+  code or otherwise.
+- **Coach** (`invite_redemptions.role = 'coach'`, set at sign-up by which
+  invite code they used) — a fixed set of powers, the same for every
+  coach: post/pin announcements, set the weekly challenge, see the
+  new/inactive member views. Deliberately *not* scoped to "their own"
+  classes or members — Arbox already owns class scheduling and rosters,
+  so this app's coach tier only needs to cover the community-layer
+  actions above, not a parallel membership model.
+- **Member** — the default: feed, sharing, comments, streaks.
+
+Both admin and coach are checked server-side through a single
+`public.is_staff()` function (true if either applies) — RLS policies and
+the `coach_inactive_members()`/`coach_new_members()` functions all use
+it, so there's one place that defines "staff," not two policies that can
+drift apart.
 
 ## Offline synchronization
 

@@ -11,6 +11,11 @@
   const photoUrlCache = {};
 
   function safeText(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+  // Coach and admin are both "staff" for the fixed set of powers every
+  // coach gets (announcements, the weekly challenge, the new/inactive
+  // member views) — matches public.is_staff() server-side, which is what
+  // actually enforces this; this is only for deciding what to show.
+  function isStaff() { return !!(state.profile && (state.profile.is_admin || (state.redemption && state.redemption.role === "coach"))); }
   function rerender() { if (typeof window.render === "function") window.render(); }
   function setMessage(message) { state.message = message || ""; rerender(); }
   function todayIso() { return new Date().toISOString().slice(0, 10); }
@@ -22,7 +27,7 @@
     if (state.user) {
       await loadRedemption();
       await Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge()]);
-      if (state.profile && state.profile.is_admin) await Promise.all([loadInactiveMembers(), loadNewMembers()]);
+      if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers()]);
       await pullPrivateRecords();
       await pingActivity();
     }
@@ -69,7 +74,7 @@
     state.announcements = error ? [] : (data || []);
   }
   async function postAnnouncement(form) {
-    if (!state.user || !state.profile || !state.profile.is_admin) return;
+    if (!state.user || !isStaff()) return;
     const title = String(form.title.value || "").trim().slice(0, 120);
     const body = String(form.body.value || "").trim().slice(0, 2000);
     if (!title || !body) return setMessage("יש למלא כותרת ותוכן להודעה");
@@ -87,7 +92,7 @@
     state.weeklyLeaderboard = data.sort((a, b) => a.score_direction === "lower" ? Number(a.score_value) - Number(b.score_value) : Number(b.score_value) - Number(a.score_value));
   }
   async function setWeeklyChallenge(form) {
-    if (!state.user || !state.profile || !state.profile.is_admin) return;
+    if (!state.user || !isStaff()) return;
     const title = String(form.title.value || "").trim().slice(0, 120);
     const comparisonKey = String(form.comparisonKey.value || "").trim().slice(0, 160);
     const startsOn = form.startsOn.value, endsOn = form.endsOn.value;
@@ -97,12 +102,12 @@
     form.reset(); await loadWeeklyChallenge(); setMessage("האתגר השבועי עודכן"); rerender();
   }
   async function loadInactiveMembers() {
-    if (!state.user || !state.profile || !state.profile.is_admin) return;
+    if (!state.user || !isStaff()) return;
     const { data, error } = await client.rpc("coach_inactive_members");
     state.inactiveMembers = error ? [] : (data || []);
   }
   async function loadNewMembers() {
-    if (!state.user || !state.profile || !state.profile.is_admin) return;
+    if (!state.user || !isStaff()) return;
     const { data, error } = await client.rpc("coach_new_members");
     state.newMembers = error ? [] : (data || []);
   }
@@ -294,13 +299,13 @@
     if (!state.user) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">כניסה לקהילה</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">קישור כניסה חד-פעמי יישלח לאימייל. האימונים נשארים פרטיים עד שתבחרו לשתף.</div><input id="communityEmail" class="text-input" type="email" dir="ltr" autocomplete="email" placeholder="name@example.com" aria-label="אימייל"/><button class="save-btn" style="margin-top:12px;" data-community-action="magic-link">שליחת קישור כניסה</button>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
     if (!state.redemption) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">קוד הזמנה למועדון</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">הקהילה פתוחה רק למי שקיבל/ה קוד הזמנה מהמאמן/ת. הקוד לא נוגע לרישום האימונים עצמו — הוא רק פותח את לשונית הקהילה.</div><form id="communityInviteCode"><input class="text-input" name="code" dir="ltr" placeholder="קוד הזמנה" required/><button class="save-btn" type="submit" style="margin-top:12px;">אישור קוד</button></form>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
     const p = state.profile || {};
-    const isAdmin = !!(state.profile && state.profile.is_admin);
+    const staff = isStaff();
 
     // ---- Feed tab: announcements (+ today's pinned note), the social
     // feed with comments, sharing, comparisons ----
     const pinnedToday = state.announcements.find((a) => a.pinned_date === todayIso());
     const pinnedHtml = pinnedToday ? `<div class="chart-card admin-card" style="margin-bottom:12px;"><div style="font-weight:800;margin-bottom:6px;">📌 הערת האימון להיום</div><div style="font-weight:700;">${safeText(pinnedToday.title)}</div><div style="color:var(--steel);font-size:13px;margin-top:4px;">${safeText(pinnedToday.body)}</div></div>` : "";
-    const announceComposer = isAdmin ? `<form id="communityAnnouncement" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">הודעה חדשה למועדון<span class="admin-tag">ניהול</span></div><label class="field"><span class="field-label">כותרת</span><input class="text-input" name="title" placeholder="כותרת" required/></label><label class="field"><span class="field-label">תוכן</span><textarea class="text-input" name="body" maxlength="2000" placeholder="תוכן ההודעה" required></textarea></label><label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="pinToday"/><span style="font-size:12.5px;color:var(--steel);">סמן כהערת האימון להיום</span></label><button class="chip-btn primary" type="submit" style="margin-top:10px;">פרסום הודעה</button></form>` : "";
+    const announceComposer = staff ? `<form id="communityAnnouncement" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">הודעה חדשה למועדון<span class="admin-tag">ניהול</span></div><label class="field"><span class="field-label">כותרת</span><input class="text-input" name="title" placeholder="כותרת" required/></label><label class="field"><span class="field-label">תוכן</span><textarea class="text-input" name="body" maxlength="2000" placeholder="תוכן ההודעה" required></textarea></label><label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="pinToday"/><span style="font-size:12.5px;color:var(--steel);">סמן כהערת האימון להיום</span></label><button class="chip-btn primary" type="submit" style="margin-top:10px;">פרסום הודעה</button></form>` : "";
     const otherAnnouncements = state.announcements.filter((a) => a !== pinnedToday);
     const announcementsList = otherAnnouncements.length ? `<div class="log-list">${otherAnnouncements.map((a) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:4px;"><div style="font-weight:700;">${safeText(a.title)}</div><div style="color:var(--steel);font-size:13px;">${safeText(a.body)}</div><div style="color:var(--steel);font-size:11px;">${safeText(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div></div>`).join("")}</div>` : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
     const announcementsHtml = `<div class="ach-section">${sectionHead("var(--brass)", "הודעות מהמועדון")}${pinnedHtml}${announcementsList}${announceComposer}</div>`;
@@ -316,7 +321,7 @@
     const feedTab = announcementsHtml + sharing + comparison + feedHtml;
 
     // ---- Boards tab: weekly challenge + streaks, top-3-plus-your-rank ----
-    const challengeSetter = isAdmin ? `<form id="communityWeeklyChallenge" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">קביעת אתגר שבועי<span class="admin-tag">ניהול</span></div><label class="field"><span class="field-label">שם האתגר</span><input class="text-input" name="title" placeholder="שם האתגר" required/></label><label class="field"><span class="field-label">מפתח השוואה</span><input class="text-input" name="comparisonKey" dir="ltr" placeholder="למשל back-squat" required/></label><div class="flex gap-10 field"><input class="text-input" name="startsOn" type="date" required/><input class="text-input" name="endsOn" type="date" required/></div><button class="chip-btn primary" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
+    const challengeSetter = staff ? `<form id="communityWeeklyChallenge" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">קביעת אתגר שבועי<span class="admin-tag">ניהול</span></div><label class="field"><span class="field-label">שם האתגר</span><input class="text-input" name="title" placeholder="שם האתגר" required/></label><label class="field"><span class="field-label">מפתח השוואה</span><input class="text-input" name="comparisonKey" dir="ltr" placeholder="למשל back-squat" required/></label><div class="flex gap-10 field"><input class="text-input" name="startsOn" type="date" required/><input class="text-input" name="endsOn" type="date" required/></div><button class="chip-btn primary" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
     const weeklyLeaderboardList = state.weeklyChallenge ? renderRankedList(state.weeklyLeaderboard, (it) => it.author_id, (it) => safeText(it.result_text)) : `<div class="empty">אין אתגר פעיל כרגע</div>`;
     const weeklyChallengeHtml = `<div class="ach-section">${sectionHead("var(--teal)", state.weeklyChallenge ? `אתגר השבוע: ${safeText(state.weeklyChallenge.title)}` : "אתגר השבוע")}${weeklyLeaderboardList}${challengeSetter}</div>`;
 
@@ -334,8 +339,8 @@
 
     const people = `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--steel)", "מציאת מתאמנים")}<div class="search-box"><input id="communityPeopleSearch" placeholder="חיפוש לפי שם או @handle" aria-label="חיפוש מתאמנים" /></div>${state.people.length ? `<div class="log-list">${state.people.map((person) => `<div class="log-row"><div><div style="font-weight:700;">${safeText(person.display_name || "@" + person.handle)}</div><div style="color:var(--steel);font-size:12px;">@${safeText(person.handle)} ${safeText(person.bio || "")}</div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="follow" data-id="${safeText(person.id)}">מעקב</button><button class="chip-btn" data-community-action="block" data-id="${safeText(person.id)}">חסימה</button></div></div>`).join("")}</div>` : ""}</div>`;
 
-    const newMembersHtml = isAdmin ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מתאמנים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין מתאמנים חדשים לאחרונה</div>`}</div>` : "";
-    const inactiveHtml = isAdmin ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
+    const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מתאמנים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין מתאמנים חדשים לאחרונה</div>`}</div>` : "";
+    const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
     const accountTab = account + people + newMembersHtml + inactiveHtml
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:20px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
@@ -399,7 +404,7 @@
       if (state.user) {
         loadRedemption()
           .then(() => Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), flushOutbox()]))
-          .then(() => (state.profile && state.profile.is_admin ? Promise.all([loadInactiveMembers(), loadNewMembers()]) : null))
+          .then(() => (isStaff() ? Promise.all([loadInactiveMembers(), loadNewMembers()]) : null))
           .then(pullPrivateRecords)
           .then(pingActivity)
           .then(rerender);

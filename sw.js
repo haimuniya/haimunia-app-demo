@@ -2,7 +2,7 @@
 // Version is the single source of truth for the cache name — bumping
 // APP_VERSION in app.js is what ships an update. Don't edit SW_VERSION by
 // hand: run `npm run sync-version` (see app.js) to copy it here.
-const SW_VERSION = "3.0.7";
+const SW_VERSION = "3.0.8";
 // "haimunia-demo-v..." — deliberately distinct from the production app's
 // own "haimunia-v..." cache prefix. Both service workers are scoped to
 // the same origin (haimuniya.github.io), and the activate handler below
