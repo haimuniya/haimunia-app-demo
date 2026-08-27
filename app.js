@@ -100,7 +100,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "3.0.21";
+const APP_VERSION = "3.0.22";
 
 const WOD_MOVEMENT_TAGS = [
   // Gymnastics (bodyweight)
@@ -249,6 +249,12 @@ const WOD_MOVEMENT_TAGS = [
 ];
 const WOD_MOVE_CATEGORIES_WITH_WEIGHT = new Set(["Weightlifting", "Dumbbell", "Kettlebell", "Odd Object"]);
 const WOD_MOVE_CATEGORIES = ["Gymnastics", "Weightlifting", "Dumbbell", "Kettlebell", "Odd Object", "Monostructural"];
+// A movement typed into the WOD builder that isn't in the built-in list
+// above - persisted (see WODTAGSTORE), same "custom X" pattern as
+// customMovements/customWods, unlike the in-memory-only version this
+// used to be.
+let customWodMovementTags = [];
+function allWodMovementTags() { return WOD_MOVEMENT_TAGS.concat(customWodMovementTags); }
 
 const WOD_LIBRARY = [
   { id: "fran", name: "Fran", category: "Girls", scoreType: "time", desc: "21-15-9 Thrusters & Pull-ups" },
@@ -405,6 +411,12 @@ function sanitizeMovement(m) {
   if (!id || !name) return null;
   return { id, name, category: MOVEMENT_CATEGORIES.includes(m.category) ? m.category : "Other" };
 }
+function sanitizeWodMovementTag(t) {
+  if (!t || typeof t !== "object") return null;
+  const name = cleanStr(t.name, LIMITS.nameLen);
+  if (!name) return null;
+  return { name, category: WOD_MOVE_CATEGORIES.includes(t.category) ? t.category : "Gymnastics" };
+}
 function sanitizeCustomWod(w) {
   if (!w || typeof w !== "object") return null;
   const id = cleanId(w.id), name = cleanStr(w.name, LIMITS.nameLen);
@@ -543,13 +555,13 @@ function isBarbellMovement(id) {
 // github.io), just different paths, and IndexedDB is scoped per-origin,
 // not per-path — reusing that name would mean a real member's local
 // training data and this demo's community/social code share one database.
-const DB_NAME = "haimunia-demo-db", STORE = "entries", MOVSTORE = "movements", WODSTORE = "wodEntries", CUSTOMWODSTORE = "customWods", BWSTORE = "bodyweight", SETTINGSTORE = "settings", MEASTYPESTORE = "measureTypes", MEASSTORE = "measurements", OUTBOXSTORE = "syncOutbox";
+const DB_NAME = "haimunia-demo-db", STORE = "entries", MOVSTORE = "movements", WODSTORE = "wodEntries", CUSTOMWODSTORE = "customWods", BWSTORE = "bodyweight", SETTINGSTORE = "settings", MEASTYPESTORE = "measureTypes", MEASSTORE = "measurements", OUTBOXSTORE = "syncOutbox", WODTAGSTORE = "wodMovementTags";
 let _dbPromise = null;
 let syncApplyingRemote = false;
 function openDB() {
   if (_dbPromise) return _dbPromise;
   _dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 8);
+    const req = indexedDB.open(DB_NAME, 9);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: "id" });
@@ -561,6 +573,12 @@ function openDB() {
       if (!db.objectStoreNames.contains(MEASTYPESTORE)) db.createObjectStore(MEASTYPESTORE, { keyPath: "id" });
       if (!db.objectStoreNames.contains(MEASSTORE)) db.createObjectStore(MEASSTORE, { keyPath: "id" });
       if (!db.objectStoreNames.contains(OUTBOXSTORE)) db.createObjectStore(OUTBOXSTORE, { keyPath: "id" });
+      // A user-typed WOD builder movement (e.g. "Sandbag Carry") used to
+      // live only in the in-memory WOD_MOVEMENT_TAGS array, unlike every
+      // other "custom X" feature (movements, WODs), which all write
+      // through to IndexedDB - it vanished on reload, and re-building a
+      // similar WOD meant re-categorizing the same movement from scratch.
+      if (!db.objectStoreNames.contains(WODTAGSTORE)) db.createObjectStore(WODTAGSTORE, { keyPath: "name" });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => { _dbPromise = null; reject(req.error); };
@@ -619,6 +637,32 @@ async function dbClearMovements() {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(MOVSTORE, "readwrite");
     tx.objectStore(MOVSTORE).clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function dbLoadWodMovementTags() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(WODTAGSTORE, "readonly").objectStore(WODTAGSTORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function dbAddWodMovementTag(t) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(WODTAGSTORE, "readwrite");
+    tx.objectStore(WODTAGSTORE).put(t);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function dbClearWodMovementTags() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(WODTAGSTORE, "readwrite");
+    tx.objectStore(WODTAGSTORE).clear();
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -2066,6 +2110,7 @@ async function reloadFromDb() {
     if (bodyweightEntries[0]) bwWeight = bodyweightEntries[0].weight;
     measureTypes = sanitizeList(await dbLoadMeasureTypes(), sanitizeMeasureType);
     measureEntries = sanitizeList(await dbLoadMeasurements(), sanitizeMeasurement);
+    customWodMovementTags = sanitizeList(await dbLoadWodMovementTags(), sanitizeWodMovementTag);
     storageOK = true;
     storageErrMsg = "";
     return true;
@@ -2091,6 +2136,7 @@ async function clearAllData() {
   measureTypes = [];
   measureEntries = [];
   measureValues = bag();
+  customWodMovementTags = [];
   try {
     await dbClear();
     await dbClearWodEntries();
@@ -2099,6 +2145,7 @@ async function clearAllData() {
     await dbClearBodyweight();
     await dbClearMeasureTypes();
     await dbClearMeasurements();
+    await dbClearWodMovementTags();
     // "delete everything" must also drop the stored name and export marker.
     await dbClearSettings();
     try { localStorage.removeItem(USER_NAME_KEY); localStorage.removeItem(LAST_EXPORT_KEY); } catch (e) {}
@@ -2354,8 +2401,8 @@ function renderWodBuilderMovements(query) {
   if (!el) return;
   if (typeof query === "string") builderMoveSearch = query;
   const q = builderMoveSearch.trim().toLowerCase();
-  const filtered = WOD_MOVEMENT_TAGS.filter((m) => m.name.toLowerCase().includes(q));
-  const exactMatch = WOD_MOVEMENT_TAGS.some((m) => m.name.toLowerCase() === q);
+  const filtered = allWodMovementTags().filter((m) => m.name.toLowerCase().includes(q));
+  const exactMatch = allWodMovementTags().some((m) => m.name.toLowerCase() === q);
   const byCategory = bag();
   filtered.forEach((m) => { (byCategory[m.category] = byCategory[m.category] || []).push(m); });
   const addRow = builderMoveSearch.trim() && !exactMatch
@@ -3493,6 +3540,7 @@ function render() {
       content = renderLogTab();
       if (selected) {
         const prefix = editingEntryId ? "עדכון סט — " : ladderMode ? `הוספת סט ${currentLadderRounds().length + 1} ל${ladderPartnerId ? "סופרסט" : "סולם"} — ` : "רישום סט — ";
+        document.getElementById("bottomBarBtn").dataset.action = "save-set";
         document.getElementById("saveBtnLabel").textContent = prefix + selected.name;
       }
     } else if (tab === "history") {
@@ -3501,6 +3549,11 @@ function render() {
       content = renderCalendarTab();
     } else if (tab === "wod") {
       content = renderWodTab();
+      const w = wodSubTab === "log" ? wodById(selectedWodId) : null;
+      if (w) {
+        document.getElementById("bottomBarBtn").dataset.action = "save-wod";
+        document.getElementById("saveBtnLabel").textContent = `${editingWodEntryId ? "עדכון" : "רישום"} אימון — ${w.name}`;
+      }
     } else {
       content = typeof renderCommunityApp === "function" ? renderCommunityApp() : `<div class="empty">הקהילה בטעינה</div>`;
     }
@@ -3516,7 +3569,7 @@ function render() {
     btn.className = "tabbtn" + (tab === t ? " active" : "");
     btn.setAttribute("aria-selected", String(tab === t));
   });
-  document.getElementById("bottomBar").style.display = tab === "add" ? "flex" : "none";
+  document.getElementById("bottomBar").style.display = (tab === "add" || (tab === "wod" && wodSubTab === "log" && wodById(selectedWodId))) ? "flex" : "none";
   updateStreakLabel();
   // Rendered after every tab's own content, not just Community's, so a
   // share triggered from Calendar/Progress can still show its confirm
@@ -3664,11 +3717,6 @@ function renderWodLogSection() {
     </div>` : ""}
 
     ${inputsHtml}
-
-    <button data-action="save-wod" class="save-btn" style="max-width:none; margin:20px 0 24px;">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-      ${editingWodEntryId ? "עדכון" : "רישום"} אימון — ${esc(w.name)}
-    </button>
 
     ${dayWods.length === 0 ? `
     <div class="empty">${isToday ? "עדיין לא נרשמו אימונים היום." : `עדיין לא נרשמו אימונים ב-${esc(dayLabel)}.`}</div>` : `
@@ -4143,6 +4191,17 @@ document.addEventListener("click", (e) => {
       btn.setAttribute("aria-selected", String(active));
     });
     renderWodContent();
+    // Same reasoning as the pill highlight above: the fixed bottom bar's
+    // visibility/action is normally set inside the full render(), which
+    // this partial update deliberately skips - sync it here too, or
+    // switching away from the log sub-tab leaves a stale save-wod button
+    // pinned for a WOD you're no longer even looking at.
+    const w = wodSubTab === "log" ? wodById(selectedWodId) : null;
+    document.getElementById("bottomBar").style.display = w ? "flex" : "none";
+    if (w) {
+      document.getElementById("bottomBarBtn").dataset.action = "save-wod";
+      document.getElementById("saveBtnLabel").textContent = `${editingWodEntryId ? "עדכון" : "רישום"} אימון — ${w.name}`;
+    }
   }
   else if (action === "open-wod-picker") { openWodPicker(); }
   else if (action === "close-wod-picker") {
@@ -4171,9 +4230,11 @@ document.addEventListener("click", (e) => {
   else if (action === "add-builder-movement-tag") {
     const name = cleanStr(el.dataset.name, LIMITS.nameLen), category = el.dataset.category;
     if (!name) return;
-    if (WOD_MOVEMENT_TAGS.length >= 500) return;
-    if (!WOD_MOVEMENT_TAGS.some((m) => m.name.toLowerCase() === name.toLowerCase())) {
-      WOD_MOVEMENT_TAGS.push({ name, category: WOD_MOVE_CATEGORIES.includes(category) ? category : "Gymnastics" });
+    if (allWodMovementTags().length >= 500) return;
+    if (!allWodMovementTags().some((m) => m.name.toLowerCase() === name.toLowerCase())) {
+      const tag = { name, category: WOD_MOVE_CATEGORIES.includes(category) ? category : "Gymnastics" };
+      customWodMovementTags.push(tag);
+      dbAddWodMovementTag(tag).catch(noteStorageError);
     }
     builderMovements[name] = { reps: 10, weight: 0, checked: true };
     builderMoveSearch = "";

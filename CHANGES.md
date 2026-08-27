@@ -1,3 +1,27 @@
+# Submission 6: three items from the deferred architecture list — 2026-08-27
+
+- **WOD log's Save button is now pinned** to the same fixed bottom bar
+  the main Log tab already has, instead of an inline button at the end
+  of scrolling content (EMOM with several movements, or Scaled mode's
+  extra notes field, used to mean real scrolling to reach it). The bar
+  now switches its action/label based on which tab - and for WOD,
+  whether a WOD is actually selected - is active.
+- **Compare results render inline under the post that triggered them**,
+  not in one spot at the top of the whole feed - tapping compare on a
+  post scrolled far down used to produce a result with no visual link
+  back to which post it was for. A second tap on the same post's button
+  closes it again.
+- **A movement typed into the WOD builder now persists** through
+  IndexedDB (new `wodMovementTags` store, DB version 8 → 9), matching
+  every other "custom X" feature - it used to live only in memory and
+  vanish on reload, meaning re-building a similar WOD meant
+  re-categorizing the same movement from scratch every time. Also fixed
+  a real (if previously harmless) bug found while touching this: the
+  500-tag cap was checking the built-in list's fixed length, which never
+  changes, so it never actually enforced anything.
+
+260/260 tests pass.
+
 # Sharing moves to where the result actually lives — 2026-08-27
 
 Reported directly: "שיתוף תוצאה takes too much [room] here, it need to
