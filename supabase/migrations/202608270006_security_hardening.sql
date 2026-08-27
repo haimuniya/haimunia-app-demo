@@ -112,12 +112,15 @@ revoke all on function public.grant_coach_role(uuid) from public, anon, authenti
 grant execute on function public.grant_coach_role(uuid) to service_role;
 
 -- Replace the arbitrary-user staff lookup with a caller-only function.
-create or replace function public.is_staff(p_uid uuid) returns boolean
-language sql stable security invoker set search_path = '' as $$
-  select exists (select 1 from public.profiles where id = p_uid and is_admin and deleted_at is null)
-    or exists (select 1 from public.invite_redemptions where user_id = p_uid and role = 'coach');
-$$;
-revoke all on function public.is_staff(uuid) from public, anon, authenticated;
+-- CREATE OR REPLACE cannot remove an existing default parameter value
+-- (Postgres error 42P13, "cannot remove parameter defaults from existing
+-- function") — 202608270005's is_staff(p_uid uuid default auth.uid())
+-- has to be dropped outright before a caller-only is_staff() can take
+-- its place; PL/pgSQL function bodies aren't catalog-tracked
+-- dependencies, so dropping it here doesn't fail even though
+-- coach_inactive_members/coach_new_members below still (briefly, in
+-- their not-yet-replaced form) reference it in their own bodies.
+drop function public.is_staff(uuid);
 
 create or replace function public.is_staff() returns boolean
 language sql stable security invoker set search_path = '' as $$
@@ -160,7 +163,6 @@ begin
     having min(ap.activity_date) >= (current_date - p_within_days)
     order by min(ap.activity_date) desc;
 end $$;
-drop function public.is_staff(uuid);
 
 -- Bind every photo path to its author and limit uploads to active members.
 update public.workout_posts set photo_path = null

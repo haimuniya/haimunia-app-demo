@@ -60,8 +60,13 @@ test("coach promotion is a separate service-role operation", () => {
 test("authenticated callers only receive the caller-scoped is_staff function", () => {
   assert.match(sql, /create or replace function public\.is_staff\(\) returns boolean/i);
   assert.match(sql, /where id = auth\.uid\(\) and is_admin/i);
-  assert.match(sql, /revoke all on function public\.is_staff\(uuid\) from public, anon, authenticated/i);
   assert.match(sql, /drop function public\.is_staff\(uuid\)/i);
+  // Exactly once: CREATE OR REPLACE can't remove an existing default
+  // parameter value (42P13), so 202608270005's is_staff(uuid default
+  // auth.uid()) has to be dropped outright, not replaced — and only
+  // once, not dropped again later after already being removed.
+  const dropCount = (sql.match(/drop function public\.is_staff\(uuid\)/gi) || []).length;
+  assert.equal(dropCount, 1, "is_staff(uuid) must be dropped exactly once, not replaced-then-dropped");
 });
 
 test("post photo paths are bound to the author and visible posts", () => {
