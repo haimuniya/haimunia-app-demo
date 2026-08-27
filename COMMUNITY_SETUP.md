@@ -67,44 +67,56 @@ The app remains fully usable offline when the backend is not configured.
    posting/pinning announcements, setting the weekly challenge, and
    seeing the new/inactive member views, without needing the manual
    `is_admin` grant.
-3. In Authentication → Sign In / Providers, enable **Anonymous Sign-ins**
-   (off by default). This is the only auth method the app uses — see
-   "Sign-in has no email" below for why, and for what that trades away.
+3. In Authentication → Sign In / Providers:
+   - Enable **Anonymous Sign-ins** (off by default) — still required, as
+     the one-time bootstrap step a brand-new signup uses before it has
+     real credentials. See "Sign-in has no email" below.
+   - Under the **Email** provider, turn **Confirm email** OFF. The app
+     never configures SMTP and never will (see below) — every account's
+     email field is a synthetic, never-delivered address, so a
+     confirmation requirement would either silently fail to send or lock
+     every new signup out of their own just-created account.
 4. Copy the project URL and **publishable** key into `cloud-config.js`.
 5. Never place a secret or service-role key in browser code, Git, or a static-host environment variable.
 6. Schedule `select public.purge_due_accounts();` once daily from a trusted service-role Edge Function or external scheduler.
 
-## Sign-in has no email
+## Sign-in has no email, but does have a real username + password
 
-The app never collects an email address or sends a magic link — opening
-the Community tab silently creates a real Supabase Auth session via
-`client.auth.signInAnonymously()` (a genuine `auth.users` row, `auth.uid()`
-works normally, every RLS policy applies exactly as it does for any other
-`authenticated` session — anonymous sessions are `role: authenticated`
-with an `is_anonymous: true` JWT claim, not a lesser access level). The
-invite code is the only real gate, checked at profile-creation time by
-`profiles_insert_self`'s RLS policy — identical security model to before,
-just without an email round-trip in the middle of it.
+Two-step signup, both in-app forms with no redirect anywhere: a
+brand-new member first redeems a club invite code (needs some session to
+attach the redemption to, so `ensureAnonymousSession()` silently creates
+a throwaway anonymous one — a real `auth.users` row, `auth.uid()` works
+normally, RLS applies exactly as for any other `authenticated` session).
+Right after redeeming, they set a username + password, which
+`client.auth.updateUser({ email, password })` links to that *same*
+`auth.uid()` — the anonymous session becomes a permanent one in place,
+no data migration, no new row. A returning member on any device just
+calls `client.auth.signInWithPassword(...)` with those same credentials
+and lands back in the exact same account.
 
-This was a deliberate trade, not an oversight: a magic-link email often
-opens in whatever the phone's default browser is (Chrome, say), not
-Safari, and not inside the installed home-screen PWA — the auth session
-lands somewhere other than where the person actually wanted to be. With
-no email step at all, there's nothing to hand off to the wrong app.
+The "email" `updateUser`/`signInWithPassword` sees is never real and
+never collected from the person: `cloud.js`'s `usernameToEmail()` builds
+it locally as `${username}@members.haimuniya.invalid` purely because
+Supabase's password provider requires an email-shaped identifier.
+`.invalid` is the RFC 2606-reserved TLD for exactly this — guaranteed to
+never resolve or receive anything. This is also why **Confirm email**
+must stay off (see setup step 3): there is no inbox behind that address,
+so a confirmation requirement would only ever lock people out.
 
-The real trade: there is no "sign back in" path. Nothing external (no
-email, no password) ties a person to their identity — if they clear site
-data, switch devices, or reinstall, a fresh anonymous session with no
-memory of the old one is all `ensureAnonymousSession()` can create, and
-the old profile/history/streak is unreachable from it. That's why the
-Account tab no longer offers a "sign out" button — the previous session
-would have had no way back either, so a casual-looking sign-out button
-would have been misleading. "Request account deletion" is still there
-for someone who deliberately wants to walk away.
+This whole design exists to route around a real problem the previous
+plain-anonymous-only version had: with no way to reauthenticate, a
+cleared browser, a new device, or a reinstall left someone locked out of
+their own profile/history/streak with no path back, and a casual-looking
+"sign out" button would have been actively misleading, so there wasn't
+one. Real credentials fix that directly — the Account tab can now offer
+an honest sign-out, and logging in from a different device reaches the
+same account. "Request account deletion" still exists for someone who
+deliberately wants to walk away for good.
 
-Because of this trade, keep SMTP/email delivery configuration entirely
-out of scope for this project going forward — there is nothing left in
-the app that would ever send a member an email.
+Because no real email is ever collected or sent, keep SMTP/email
+delivery configuration entirely out of scope for this project going
+forward — there is nothing in the app that would ever send a member an
+email.
 
 ## Hardened invite and photo operations
 

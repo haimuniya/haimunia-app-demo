@@ -1,3 +1,43 @@
+# Real username + password login, so one account works on any device — 2026-08-27
+
+Reported directly, with a screenshot: "this do not sync with community,
+profiles is a mess, i want one time login and that it, figure how to,
+like any other normal app." Plain anonymous-only sign-in had a real,
+structural limit behind that complaint — there was no way to log back
+into the same account from a different device or after clearing site
+data, so every fresh browser/device was a disconnected identity with its
+own invite-code redemption and profile.
+
+New flow, still with no real email ever collected or sent: a brand-new
+member enters the club invite code first (needs some session to attach
+the redemption to, so an anonymous one is created invisibly, same as
+before), then immediately sets a username + password. That upgrades the
+same underlying account to a permanent one — Supabase's supported
+anonymous-to-permanent conversion (`auth.updateUser`), same `auth.uid()`,
+so the redemption and profile carry straight over with nothing to
+migrate. A returning member just logs in with those credentials from any
+device and reaches the exact same account, same history, same streak.
+
+The password field is real. The "email" behind it isn't: it's built
+locally from the username using the `.invalid` TLD reserved by RFC 2606
+for exactly this — an address guaranteed to never resolve or receive
+anything. Both the login form and the account-creation form are plain
+in-app submits with no redirect anywhere, so the one thing that ruled
+out email in the first place (a magic link opening in the phone's
+default browser, disconnected from the installed home-screen app)
+doesn't apply here.
+
+Also added back a real sign-out button in the Account tab — safe now
+that logging back in actually works, unlike before.
+
+Setup note: **Confirm email** must be turned off for the Email provider
+in the Supabase dashboard (Authentication → Sign In / Providers) — see
+COMMUNITY_SETUP.md. Nothing in the app can deliver a confirmation to a
+`.invalid` address, so leaving it on would lock every new signup out of
+the account they just created.
+
+223/223 tests pass.
+
 # Submission 2: one confirm dialog everywhere, publish preview, delete-own-post — 2026-08-27
 
 Three UX findings, done together since they all touch the same

@@ -1,12 +1,16 @@
-// Product decision: no email collection at all for community sign-in.
-// A magic-link email often opens in whatever the phone's default browser
-// is, not inside the installed home-screen PWA, landing the session
-// somewhere other than where the person actually wanted to be. Sign-in
-// is now a real Supabase Auth anonymous session (client.auth.signInAnonymously()),
-// created invisibly the first time the Community tab is opened, with the
-// invite code remaining the only real gate (unchanged: checked server-side
-// by profiles_insert_self's RLS policy at profile-creation time, not by
-// how the session was created).
+// Product decision: no real email is ever collected, sent, or required
+// for community sign-in - a magic-link email often opens in whatever the
+// phone's default browser is, not inside the installed home-screen PWA,
+// landing the session somewhere other than where the person actually
+// wanted to be. signInAnonymously() still exists, but only as a
+// one-time, invisible bootstrap step for a brand-new signup, needed
+// purely because redeem_invite_code requires some session to attach to.
+// It is no longer the permanent identity: see
+// community-username-password-auth.test.mjs for the username+password
+// upgrade that replaces it immediately after redemption, which is what
+// makes logging back in from a different device possible - something
+// plain anonymous-only sign-in structurally couldn't offer, and the
+// reason it stopped being the whole story.
 import { test } from "node:test";
 import assert from "node:assert";
 import fs from "node:fs";
@@ -33,7 +37,7 @@ test("the signed-out render state triggers ensureAnonymousSession and shows a co
   assert.doesNotMatch(branch, /שליחת קישור/);
 });
 
-test("there is no sign-out button — anonymous sessions have no path back in, so it would be misleading", () => {
-  assert.doesNotMatch(cloudJs, /data-community-action="sign-out"/);
-  assert.doesNotMatch(cloudJs, />יציאה</);
+test("a real sign-out button exists now that logging back in is possible with real credentials", () => {
+  assert.match(cloudJs, /data-community-action="sign-out"/);
+  assert.match(cloudJs, /action === "sign-out"\) client\.auth\.signOut\(\)/);
 });

@@ -7,7 +7,7 @@
   }) : null;
   const state = { configured, client, user: null, profile: null, feed: [], people: [], comparison: [], loading: false, message: "", syncEnabled: localStorage.getItem("haimunia-demo:cloudSyncEnabled") === "1",
     streaks: [], announcements: [], weeklyChallenge: null, weeklyLeaderboard: [], inactiveMembers: [], newMembers: [], redemption: null,
-    communityTab: "feed", comments: {}, openComments: {}, fieldErrors: {}, reports: [], confirmDialog: null };
+    communityTab: "feed", comments: {}, openComments: {}, fieldErrors: {}, reports: [], confirmDialog: null, signupStarted: false };
   const photoUrlCache = {};
 
   function safeText(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
@@ -237,14 +237,21 @@
     await loadCommentsFor(postId);
     await loadFeed();
   }
-  // No email, no magic link — sign-in is a real Supabase Auth session
-  // (client-side only, no server round-trip a mail client could hijack
-  // into the wrong browser and away from the installed home-screen app)
-  // with zero user input. The invite code is the only real gate: it's
-  // checked at profile-creation time by profiles_insert_self's RLS
-  // policy, not by how the session was created. Attempted at most once
-  // per page load, and only once the Community tab is actually opened —
-  // never for someone who only ever uses the offline training log.
+  // No real email is ever collected or sent - a synthetic, RFC 2606
+  // "invalid" address is built locally from a username purely so
+  // Supabase's password-auth provider (which requires an email-shaped
+  // identifier) has something to key on. Login/signup are both a plain
+  // in-app form submit, no redirect anywhere - the exact problem
+  // magic-link email had (opening in the phone's default browser,
+  // disconnected from the installed home-screen app) doesn't apply here.
+  function usernameToEmail(username) { return `${username}@members.haimuniya.invalid`; }
+  const USERNAME_RE = /^[a-z0-9_]{3,24}$/;
+
+  // A brand-new member starts anonymous (zero typing) purely so
+  // redeem_invite_code has a session to attach the redemption to - this
+  // identity is upgraded to a real username+password account (same
+  // auth.uid(), same redemption/profile - see setCredentials) before
+  // profile completion, never left as the permanent identity.
   let anonSignInAttempted = false;
   async function ensureAnonymousSession() {
     if (!client || state.user || anonSignInAttempted) return;
@@ -252,6 +259,45 @@
     const { error } = await client.auth.signInAnonymously();
     if (error) { setMessage("לא ניתן להתחבר לקהילה כרגע, נסו לרענן את הדף"); return; }
     // onAuthStateChange below picks up the new session and loads everything.
+  }
+  function startSignup() { state.signupStarted = true; ensureAnonymousSession(); rerender(); }
+  // A returning member logs into the exact same account (same auth.uid(),
+  // same profile/history/streak) from any device - the one thing
+  // anonymous-only sign-in structurally couldn't offer.
+  async function login(form) {
+    if (!client) return;
+    const username = String(form.username.value || "").trim().toLowerCase();
+    const password = String(form.password.value || "");
+    const errors = {};
+    if (!USERNAME_RE.test(username)) errors.username = "שם משתמש לא תקין";
+    if (!password) errors.password = "יש להזין סיסמה";
+    if (Object.keys(errors).length) return setFieldErrors("communityLogin", errors);
+    const { error } = await client.auth.signInWithPassword({ email: usernameToEmail(username), password });
+    if (error) return setFieldErrors("communityLogin", { password: "שם משתמש או סיסמה שגויים" });
+    setFieldErrors("communityLogin", {});
+    // onAuthStateChange picks up the session and loads the existing account.
+  }
+  // Upgrades the bootstrap anonymous session to a permanent one by
+  // linking real credentials to it (Supabase's supported anonymous-user
+  // conversion path) - the underlying auth.uid() never changes, so the
+  // redemption and profile already tied to it carry straight over with
+  // no migration step.
+  async function setCredentials(form) {
+    if (!state.user) return;
+    const username = String(form.username.value || "").trim().toLowerCase();
+    const password = String(form.password.value || "");
+    const passwordConfirm = String(form.passwordConfirm.value || "");
+    const errors = {};
+    if (!USERNAME_RE.test(username)) errors.username = "שם משתמש: 3–24 תווים, אותיות אנגליות קטנות, ספרות או קו תחתון";
+    if (password.length < 8) errors.password = "הסיסמה חייבת להכיל לפחות 8 תווים";
+    if (password !== passwordConfirm) errors.passwordConfirm = "הסיסמאות לא תואמות";
+    if (Object.keys(errors).length) return setFieldErrors("communityCredentials", errors);
+    const { data, error } = await client.auth.updateUser({ email: usernameToEmail(username), password });
+    if (error) return setFieldErrors("communityCredentials", { username: /registered|exists|taken/i.test(error.message || "") ? "שם המשתמש כבר תפוס" : "השמירה נכשלה, נסו שוב" });
+    state.user = data.user;
+    setFieldErrors("communityCredentials", {});
+    setMessage("החשבון נוצר, אפשר להתחבר איתו מכל מכשיר");
+    rerender();
   }
   async function saveProfile(form) {
     if (!state.user) return;
@@ -465,14 +511,26 @@
   window.renderCommunityApp = function () {
     if (!configured) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:8px;">הקהילה מוכנה לחיבור</div><div style="color:var(--steel);font-size:13px;line-height:1.7;">יש ליצור פרויקט Supabase, להריץ את קובץ המיגרציה ולהכניס URL ומפתח publishable בקובץ cloud-config.js. אין להכניס מפתח secret.</div></div>`;
     if (!state.user) {
+      // Two real entry points, both visible at once: log into an existing
+      // account (any device, same identity), or start fresh with a club
+      // invite code. Nothing happens silently here — the old
+      // ensureAnonymousSession()-on-load only fires once "start-signup"
+      // is actually chosen, below.
+      if (!state.signupStarted) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:14px;">כניסה לקהילה</div><form id="communityLogin">${field("communityLogin", "username", "שם משתמש", `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="שם משתמש" required/>`)}${field("communityLogin", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="current-password" placeholder="סיסמה" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">התחברות</button></form><button class="link-btn" data-community-action="start-signup" style="display:block;margin:18px auto 0;">חבר/ה חדש/ה? התחלת הרשמה עם קוד הזמנה</button>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
       ensureAnonymousSession();
       return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">מתחברים לקהילה…</div><div style="color:var(--steel);font-size:13px;">שנייה אחת.</div>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
     }
     if (!state.redemption) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">קוד הזמנה למועדון</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">הקהילה פתוחה רק למי שקיבל/ה קוד הזמנה מהמאמן/ת. הקוד לא נוגע לרישום האימונים עצמו — הוא רק פותח את לשונית הקהילה.</div><form id="communityInviteCode">${field("communityInviteCode", "code", "קוד הזמנה", `<input class="text-input" name="code" dir="ltr" placeholder="קוד הזמנה" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">אישור קוד</button></form>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
+    // Right after the code, before anything else — this is what turns the
+    // bootstrap anonymous session into a real, log-in-from-any-device
+    // account. state.user.is_anonymous flips to false the moment
+    // setCredentials() succeeds, so a returning user (who logged in with
+    // real credentials to begin with) never sees this screen at all.
+    if (state.user.is_anonymous) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">יצירת חשבון</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">שם משתמש וסיסמה — כדי שתוכלו להתחבר שוב מכל מכשיר.</div><form id="communityCredentials">${field("communityCredentials", "username", "שם משתמש", `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="אותיות אנגליות, ספרות או קו תחתון" required/>`)}${field("communityCredentials", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="new-password" placeholder="לפחות 8 תווים" required/>`)}${field("communityCredentials", "passwordConfirm", "אימות סיסמה", `<input class="text-input" name="passwordConfirm" type="password" dir="ltr" autocomplete="new-password" placeholder="הקלידו שוב" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">יצירת חשבון</button></form>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
     // Without this gate, a fresh code-redeemer landed straight on the Feed
     // sub-tab — mostly empty, nothing prompting them to the profile form
     // buried in Account — with no clear signal anything had actually been
-    // saved. Now profile creation is unskippable, same pattern as the two
+    // saved. Now profile creation is unskippable, same pattern as the
     // gates above it: this screen is all there is until a profile exists,
     // and the whole screen changing to the real tabbed UI afterward is the
     // confirmation, not just a toast that's easy to miss.
@@ -532,7 +590,8 @@
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
     const accountTab = account + people + newMembersHtml + inactiveHtml + renderModeration()
-      + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:20px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
+      + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
+      + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
 
     const pendingReports = isAdmin() ? state.reports.filter((r) => r.status === "open").length : 0;
     const tabs = [
@@ -583,6 +642,8 @@
     else if (action === "review-report") reviewReport(el.dataset.id, el.dataset.status);
     else if (action === "confirm-yes") runConfirm();
     else if (action === "confirm-no") closeConfirm();
+    else if (action === "start-signup") startSignup();
+    else if (action === "sign-out") client.auth.signOut();
   };
   window.isCommunitySignedIn = function () { return !!(state.user && state.profile); };
   window.shareAchievementToCommunity = function (achievementId, title, rule) { publishAchievement(achievementId, title, rule); };
@@ -591,6 +652,8 @@
     else if (event.target.id === "communityAnnouncement") { event.preventDefault(); postAnnouncement(event.target); }
     else if (event.target.id === "communityWeeklyChallenge") { event.preventDefault(); setWeeklyChallenge(event.target); }
     else if (event.target.id === "communityInviteCode") { event.preventDefault(); redeemCode(event.target); }
+    else if (event.target.id === "communityLogin") { event.preventDefault(); login(event.target); }
+    else if (event.target.id === "communityCredentials") { event.preventDefault(); setCredentials(event.target); }
     else if (event.target.dataset && event.target.dataset.commentPostId) { event.preventDefault(); addComment(event.target.dataset.commentPostId, event.target); }
   });
   window.addEventListener("online", flushOutbox);
@@ -607,7 +670,8 @@
           .then(pingActivity)
           .then(rerender);
       } else {
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null;
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false;
+        anonSignInAttempted = false;
         rerender();
       }
     });
