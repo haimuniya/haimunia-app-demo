@@ -1,3 +1,46 @@
+# Redesign the Community tab — it was misusing the app's own design system — 2026-08-27
+
+Every section of the Community tab (profile, announcements, weekly
+challenge, streaks, member search, feed) rendered as an identical stack of
+`.chart-card` boxes separated only by a tiny 12px gray `.section-label`,
+with almost every action — save profile, follow, block, cheer, report,
+post an announcement, set the weekly challenge — using `.link-btn`. That
+class is an 11px underlined micro-link, styled in `var(--border)` (the
+lowest-contrast color in the palette), meant for a deliberately
+de-emphasized action like "delete account." Using it for every primary
+action in the tab is what made the whole screen read as a flat, low-
+contrast wall of near-identical boxes with no hierarchy.
+
+Fixed by reusing the app's own existing vocabulary instead of inventing a
+new one: every section now gets a real header — the same colored-dot +
+bold-title pattern (`.ach-section-head`/`.ach-section-dot`/
+`.ach-section-title`) the achievements screen already uses, one accent
+color per section (brass for announcements, teal for the weekly
+challenge, purple for streaks, energy for sharing, blue for the feed and
+comparisons, red for the admin-only inactive-members view) so sections
+are visually distinguishable at a glance, not just by reading the label.
+
+New `.chip-btn`/`.chip-btn.primary`/`.chip-row` give every real action an
+actual button (bordered chip for secondary actions, filled energy-orange
+for the primary one per group) instead of underlined micro-text — `.link-btn`
+now only used where it already made sense, the account-deletion link.
+
+Admin-only forms (the announcement composer, the weekly-challenge setter)
+now get a visibly distinct treatment — an energy-orange left border
+(`.admin-card`) plus a small "ניהול" pill (`.admin-tag`) right on their
+heading — so it's unmistakable which controls are admin-only versus
+regular community actions, which the flat card stack made impossible to
+tell apart before. The profile form also gained real field labels above
+each input instead of relying on placeholder text that disappears the
+moment a value is set.
+
+Verified visually, not just by reading the diff: screenshotted the tab
+against realistic mocked data (a fake Supabase client stubbed in before
+page load, since a real signed-in session isn't reachable without a live
+magic-link email) before and after — the "before" shot is what surfaced
+this in the first place. 145/145 tests and the boot-smoke browser check
+still pass.
+
 # Gate community sign-up behind an invite code, and fix an admin self-lockout bug found along the way — 2026-08-27
 
 Anyone who found the demo URL could sign in with any email and create a

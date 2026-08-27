@@ -302,6 +302,16 @@
   .ach-section-dot{ width:8px; height:8px; border-radius:999px; flex-shrink:0; }
   .ach-section-title{ font-weight:800; font-size:14px; color:var(--chalk); }
   .ach-row{ display:flex; gap:14px; overflow-x:auto; padding-bottom:4px; -webkit-overflow-scrolling:touch; }
+  /* Community tab: real buttons and admin-only framing, instead of the
+     11px underlined .link-btn (meant for a de-emphasized action like
+     "delete account") standing in for every primary action. */
+  .chip-btn{ display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:9px 16px; border-radius:12px; border:1px solid var(--border); background:var(--surface2); color:var(--chalk); font-weight:700; font-size:13px; white-space:nowrap; }
+  .chip-btn.primary{ background:var(--energy); color:#1a0d08; border-color:var(--energy); }
+  .chip-row{ display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+  .admin-tag{ display:inline-flex; align-items:center; font-size:10px; font-weight:800; letter-spacing:.3px; color:var(--energy); background:rgba(232,93,61,.12); border:1px solid var(--energy); border-radius:999px; padding:2px 9px; margin-inline-start:8px; }
+  .admin-card{ border-color:var(--energy); }
+  .field-label{ font-size:11px; font-weight:700; color:var(--steel); display:block; margin-bottom:4px; }
+  .field + .field{ margin-top:10px; }
   .ach-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(72px,1fr)); gap:16px 8px; }
 
   .celebration-stars{ position:absolute; inset:0; pointer-events:none; overflow:hidden; }
