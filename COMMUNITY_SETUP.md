@@ -8,7 +8,8 @@ The app remains fully usable offline when the backend is not configured.
 2. Run every file in `supabase/migrations/`, in filename order (currently
    `202608260001_community_foundation.sql`, then
    `202608270001_community_growth.sql`, then
-   `202608270002_lock_anon_defaults.sql`), in each project.
+   `202608270002_lock_anon_defaults.sql`, then
+   `202608270003_invite_gate.sql`), in each project.
    `202608270001` adds the reactions RLS fix, achievement-unlock posts,
    coach announcements, activity streaks, and the weekly challenge — none
    of those features work until it's applied. `202608270002` is a
@@ -20,7 +21,22 @@ The app remains fully usable offline when the backend is not configured.
    *future* migration that adds a table should double check this the same
    way (query it as anon, no session, right after applying) rather than
    assuming the default-privilege revoke below still covers it forever —
-   it only covers tables created after the point it runs.
+   it only covers tables created after the point it runs. `202608270003`
+   gates community sign-up behind an invite code — **after running it, no
+   one can create a community profile until you insert at least one
+   active code**:
+   ```sql
+   insert into public.invite_codes (code, role) values ('YOURCODE2026', 'member');
+   ```
+   `role` is `'member'` or `'coach'` — right now this is a label only
+   (shown nowhere yet, grants nothing extra); it's there for when real
+   coach-scoped permissions get built (see below). To make someone a full
+   admin, that's still a separate manual step, unrelated to invite codes:
+   ```sql
+   update public.profiles set is_admin = true where id = (select id from auth.users where email = 'their@email.com');
+   ```
+   (only works after they've signed in once and redeemed a code — the
+   profile row has to exist first).
 3. In Authentication, enable email magic links and add the deployed app URL to Redirect URLs.
 4. Copy the project URL and **publishable** key into `cloud-config.js`.
 5. Never place a secret or service-role key in browser code, Git, or a static-host environment variable.
@@ -37,6 +53,18 @@ The app remains fully usable offline when the backend is not configured.
 - Confirm blocking works in both directions.
 - Confirm account deletion immediately unpublishes posts and the scheduled purge removes the Auth user after 30 days.
 - Install Playwright Chromium and run the browser checks before deployment.
+
+## Access tiers (roadmap)
+
+The end state is three real tiers: **admin** (full access, today's
+`profiles.is_admin`), **coach** (scoped to their own relevant
+classes/members — not built yet), and **member**. `invite_codes.role`
+already distinguishes `'member'`/`'coach'` at sign-up time so that piece
+doesn't need revisiting, but a coach-code redemption currently grants
+*nothing* beyond the label — it is deliberately not wired to `is_admin`.
+Building real coach-scoped access needs a data model for what "their
+relevant" means (which classes or members a coach is attached to) before
+any RLS policy can scope by it; that's a separate task, not started.
 
 ## Offline synchronization
 

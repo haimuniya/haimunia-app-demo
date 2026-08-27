@@ -32,10 +32,11 @@ thing it still isn't.
 
 - Not connected to `haimunia-app`'s real database or member data — it's a
   separate Supabase project and a separate browser storage namespace.
-- Not gated behind a box invite code or membership check yet — anyone who
-  signs in with a valid email can create a profile and see the public
-  feed. Scoping the community to one box's actual members is a real
-  architecture change, tracked separately, not yet built.
+- Not scoped to a coach's specific classes/members yet — sign-up is gated
+  behind a single shared invite code per role (member/coach, see
+  `COMMUNITY_SETUP.md`), but a coach code today is just a label, not
+  elevated access. Full admin stays a manual, dashboard-only grant. Real
+  coach-scoped permissions are tracked separately, not yet built.
 
 ## Running it locally
 

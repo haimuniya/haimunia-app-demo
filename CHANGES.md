@@ -1,3 +1,36 @@
+# Gate community sign-up behind an invite code, and fix an admin self-lockout bug found along the way — 2026-08-27
+
+Anyone who found the demo URL could sign in with any email and create a
+community profile. New migration `supabase/migrations/202608270003_invite_gate.sql`
+closes that: `invite_codes` (one shared code per role, member/coach) plus
+`invite_redemptions` (one row per user, written only by the new
+`redeem_invite_code()` RPC — no direct client insert path). `profiles_insert_self`
+now requires a redemption on file before a profile can be created at all.
+Community tab shows a new "enter invite code" step ahead of the profile
+form whenever a signed-in user hasn't redeemed one yet.
+
+The end state discussed for this is three access tiers — admin (full
+access), coach (scoped to their own relevant classes/members), member —
+but "coach" doesn't have a data model for what "their relevant" means
+yet. So a coach-code redemption is deliberately just a label right now
+(`invite_redemptions.role`), not wired to `is_admin` or any elevated
+access — avoids locking in "coach == full admin" as the real design
+before the actual scoping work happens. Full admin stays a manual,
+dashboard-only grant, same as before this migration.
+
+Bug found while writing the above: `profiles_update_self`'s RLS check
+required `is_admin = false` on *every* update — meaning the moment any
+profile actually had `is_admin = true`, that account could never save its
+own profile again (any edit would get rejected, since the resulting row
+still has `is_admin = true`). This would have locked out the very first
+real admin account. Fixed with a trigger (`protect_is_admin`) that pins
+`is_admin` to its previously stored value on every update, so no
+client-side path — invite code, profile-edit upsert, or otherwise — can
+ever change it after creation; the update policy's `is_admin = false`
+requirement was then unnecessary and removed.
+
+5 new tests in `test/community-invite-gate.test.mjs`. 145/145 pass.
+
 # Lock down an anon read leak found by live-testing the previous migration — 2026-08-27
 
 Found immediately after applying `202608270001_community_growth.sql`
