@@ -23,11 +23,18 @@ alter table public.invite_redemptions add column invite_id uuid;
 update public.invite_redemptions ir set invite_id = ic.id
 from public.invite_codes ic where ir.code = ic.code;
 alter table public.invite_redemptions alter column invite_id set not null;
-alter table public.invite_redemptions add constraint invite_redemptions_invite_id_fkey
-  foreign key (invite_id) references public.invite_codes(id);
+
+-- Swap invite_codes' primary key from code to id BEFORE adding the new
+-- FK below that references id — a foreign key's target column needs a
+-- unique/primary-key constraint to already exist at the moment the FK is
+-- created. Dropping the old code-based FK first is what makes it safe to
+-- then drop the old code-based primary key and add the new one on id.
 alter table public.invite_redemptions drop constraint invite_redemptions_code_fkey;
 alter table public.invite_codes drop constraint invite_codes_pkey;
 alter table public.invite_codes add constraint invite_codes_pkey primary key (id);
+
+alter table public.invite_redemptions add constraint invite_redemptions_invite_id_fkey
+  foreign key (invite_id) references public.invite_codes(id);
 alter table public.invite_redemptions drop column code;
 alter table public.invite_codes drop column code;
 

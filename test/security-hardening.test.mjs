@@ -13,6 +13,21 @@ test("legacy plaintext invite codes are removed and revoked", () => {
   assert.match(sql, /alter table public\.invite_redemptions drop column code/i);
 });
 
+// Regression: this exact ordering broke a live run — "there is no unique
+// constraint matching given keys for referenced table 'invite_codes'"
+// (42830). A foreign key's target column needs a unique/primary-key
+// constraint to already exist at the moment the FK is created — the new
+// invite_redemptions_invite_id_fkey (referencing invite_codes.id) must
+// come after invite_codes.id becomes the primary key, not before.
+test("invite_codes' primary key moves to id before the new FK referencing id is created", () => {
+  const pkDropAt = sql.indexOf("alter table public.invite_codes drop constraint invite_codes_pkey");
+  const pkAddAt = sql.indexOf("alter table public.invite_codes add constraint invite_codes_pkey primary key (id)");
+  const fkAddAt = sql.indexOf("alter table public.invite_redemptions add constraint invite_redemptions_invite_id_fkey");
+  assert.ok(pkDropAt > -1 && pkAddAt > -1 && fkAddAt > -1, "all three statements must exist");
+  assert.ok(pkDropAt < pkAddAt, "the old code-based primary key must be dropped before the new id-based one is added");
+  assert.ok(pkAddAt < fkAddAt, "invite_codes.id must become the primary key before any FK references it");
+});
+
 test("member invites are high entropy, expiring, bounded, hashed, and service-role only", () => {
   const fn = sql.slice(sql.indexOf("create or replace function public.create_member_invite"), sql.indexOf("create or replace function public.grant_coach_role"));
   assert.match(fn, /encode\(gen_random_bytes\(24\), 'hex'\)/i);
