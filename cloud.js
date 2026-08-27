@@ -310,6 +310,14 @@
       return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">מתחברים לקהילה…</div><div style="color:var(--steel);font-size:13px;">שנייה אחת.</div>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
     }
     if (!state.redemption) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">קוד הזמנה למועדון</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">הקהילה פתוחה רק למי שקיבל/ה קוד הזמנה מהמאמן/ת. הקוד לא נוגע לרישום האימונים עצמו — הוא רק פותח את לשונית הקהילה.</div><form id="communityInviteCode"><input class="text-input" name="code" dir="ltr" placeholder="קוד הזמנה" required/><button class="save-btn" type="submit" style="margin-top:12px;">אישור קוד</button></form>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
+    // Without this gate, a fresh code-redeemer landed straight on the Feed
+    // sub-tab — mostly empty, nothing prompting them to the profile form
+    // buried in Account — with no clear signal anything had actually been
+    // saved. Now profile creation is unskippable, same pattern as the two
+    // gates above it: this screen is all there is until a profile exists,
+    // and the whole screen changing to the real tabbed UI afterward is the
+    // confirmation, not just a toast that's easy to miss.
+    if (!state.profile) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">השלמת פרופיל</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">כמעט סיימתם — עוד רגע אחד ותהיו בפנים.</div><form id="communityProfile"><label class="field"><span class="field-label">שם משתמש (handle)</span><input class="text-input" name="handle" dir="ltr" placeholder="handle" required/></label><label class="field"><span class="field-label">שם תצוגה</span><input class="text-input" name="displayName" placeholder="שם תצוגה"/></label><label class="field"><span class="field-label">קצת עליי</span><textarea class="text-input" name="bio" maxlength="160" placeholder="כמה מילים עליי"></textarea></label><button class="save-btn" type="submit" style="margin-top:12px;">שמירת פרופיל</button></form>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
     const p = state.profile || {};
     const staff = isStaff();
 
@@ -376,7 +384,7 @@
   };
   window.afterRenderCommunity = function () {
     const input = document.getElementById("communityPeopleSearch");
-    if (input) input.addEventListener("change", () => searchPeople(input.value));
+    if (input) input.addEventListener("input", () => searchPeople(input.value));
   };
   window.handleCommunityClick = function (el) {
     const action = el.dataset.communityAction;

@@ -1,3 +1,30 @@
+# Fix two real bugs found by actually using the new sign-in flow — 2026-08-27
+
+Reported directly: member search "not working," and no way to tell
+whether a profile had actually been saved.
+
+- **Member search only fired on blur.** `afterRenderCommunity()` bound
+  the search box with a `"change"` listener — only fires when the field
+  loses focus, not while typing. Every other search box in the app
+  (`historySearch`) already uses a live `"input"` listener; this one just
+  didn't match. Typing a name and seeing nothing happen, with no visible
+  reason why, reads exactly like "broken."
+- **A freshly-redeemed invite code landed on the mostly-empty Feed tab**,
+  with the actual profile-creation form buried in the Account sub-tab and
+  no cue pointing there. Someone who didn't know to navigate there could
+  easily believe they were "done" without ever having created a profile
+  at all — there was no way to tell "did this save?" from that screen.
+  Fixed the same way the two gates before it already work (no session yet
+  / no redeemed code yet): a signed-in, code-redeemed user with no
+  profile now sees *only* a profile-completion form, full stop, until
+  they save one — the whole screen changing to the real tabbed UI
+  afterward is the confirmation, not a toast easy to miss.
+
+2 new tests. 188/188 pass; both fixes visually verified against a mocked
+client — the gate correctly blocks the tabbed UI until a profile exists,
+correctly clears once one's saved, and search now fires from typing
+alone with no blur needed.
+
 # Remove email from community sign-in entirely — anonymous auth, invite code only — 2026-08-27
 
 Sign-in no longer collects an email address or sends a magic link.
