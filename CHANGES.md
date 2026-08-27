@@ -1,3 +1,17 @@
+# Submission 7: stepper-field config table — 2026-08-27
+
+Architecture finding: every numeric stepper field (main log, WOD log,
+bodyweight, the WOD builder's per-movement/EMOM/time-cap fields, body
+measurements) required a matching branch added to four separate
+functions - fieldMax/getFieldValue/setFieldState/applyFieldValue - for
+every new field type, kept in sync by hand. One `FIELD_ACTIONS` config
+table now drives all four instead, so adding a field type is one entry,
+not four edits. Behavior-preserving refactor, not a feature change -
+the full existing stepper test suite (which already covered this
+machinery in real depth) passes unchanged.
+
+260/260 tests pass.
+
 # Submission 6: three items from the deferred architecture list — 2026-08-27
 
 - **WOD log's Save button is now pinned** to the same fixed bottom bar

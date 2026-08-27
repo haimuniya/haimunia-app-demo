@@ -100,7 +100,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "3.0.22";
+const APP_VERSION = "3.0.23";
 
 const WOD_MOVEMENT_TAGS = [
   // Gymnastics (bodyweight)
@@ -354,15 +354,14 @@ const FIELD_MAX = {
   wodReps: LIMITS.reps, wodWeight: LIMITS.weight, wodScaledWeight: LIMITS.weight,
   bwWeight: LIMITS.bodyweight, durationSeconds: LIMITS.duration,
 };
+// Defined below (see FIELD_ACTIONS, near getFieldValue/setFieldState/
+// applyFieldValue) - declared here only so it's callable this early in
+// the file; a function declaration's body doesn't run until it's
+// actually called, well after the whole script (including
+// FIELD_ACTIONS) has executed, so the forward reference is safe.
 function fieldMax(action, field) {
-  if (action === "bw-step") return LIMITS.bodyweight;
-  if (action === "builder-movement-reps") return LIMITS.reps;
-  if (action === "builder-movement-weight") return LIMITS.weight;
-  if (action === "builder-movement-duration") return LIMITS.duration;
-  if (action === "builder-emom-minutes") return LIMITS.minutes;
-  if (action === "builder-time-cap") return LIMITS.minutes;
-  if (action === "wod-emom-step") return LIMITS.reps;
-  if (action === "measure-step") return LIMITS.measurement;
+  const cfg = FIELD_ACTIONS[action];
+  if (cfg) return cfg.max(field);
   return Object.prototype.hasOwnProperty.call(FIELD_MAX, field) ? FIELD_MAX[field] : LIMITS.weight;
 }
 function cleanStr(v, max) {
@@ -3444,6 +3443,106 @@ function updateLogQuickUI(field) {
 
 // Bound every numeric field at both ends. Previously only a floor was applied,
 // so "1e12" typed into a weight box propagated straight through the app state.
+// Every numeric stepper field (main log, WOD log, bodyweight, the WOD
+// builder's per-movement/EMOM/time-cap fields, body measurements) used
+// to require a matching branch added to four separate functions -
+// fieldMax/getFieldValue/setFieldState/applyFieldValue - for every new
+// field type. One config table now drives all four instead, so adding a
+// field type is one entry, not four edits kept in sync by hand.
+const FIELD_ACTIONS = {
+  "step": {
+    max: (field) => FIELD_MAX[field] ?? LIMITS.weight,
+    get: (field) => ({ weight, reps, sets, durationSeconds })[field],
+    set: (field, value) => {
+      if (field === "weight") weight = value;
+      else if (field === "reps") reps = value;
+      else if (field === "sets") sets = value;
+      else if (field === "durationSeconds") durationSeconds = value;
+    },
+    sync: (field) => updateLogQuickUI(field),
+  },
+  "wod-step": {
+    max: (field) => FIELD_MAX[field] ?? LIMITS.weight,
+    get: (field) => ({ wodMinutes, wodSeconds, wodRounds, wodReps, wodWeight, wodScaledWeight })[field],
+    set: (field, value) => {
+      if (field === "wodMinutes") wodMinutes = value;
+      else if (field === "wodSeconds") wodSeconds = value;
+      else if (field === "wodRounds") wodRounds = value;
+      else if (field === "wodReps") wodReps = value;
+      else if (field === "wodWeight") wodWeight = value;
+      else if (field === "wodScaledWeight") wodScaledWeight = value;
+    },
+    sync: (field) => {
+      const valMap = { wodMinutes, wodSeconds, wodRounds, wodReps, wodWeight, wodScaledWeight };
+      const inp = document.querySelector(`.stepper-val[data-action="wod-step"][data-field="${cssSel(field)}"]`);
+      if (inp) inp.value = valMap[field];
+    },
+  },
+  "bw-step": {
+    max: () => LIMITS.bodyweight,
+    get: () => bwWeight,
+    set: (field, value) => { bwWeight = value; },
+    sync: () => {
+      const inp = document.querySelector(`.stepper-val[data-action="bw-step"][data-field="bwWeight"]`);
+      if (inp) inp.value = bwWeight;
+    },
+  },
+  "builder-movement-reps": {
+    max: () => LIMITS.reps,
+    get: (field) => builderMovements[field] ? builderMovements[field].reps : 0,
+    set: (field, value) => { if (builderMovements[field]) builderMovements[field].reps = value; },
+    sync: () => renderWodBuilderMovements(),
+  },
+  "builder-movement-weight": {
+    max: () => LIMITS.weight,
+    get: (field) => builderMovements[field] ? builderMovements[field].weight : 0,
+    set: (field, value) => { if (builderMovements[field]) builderMovements[field].weight = value; },
+    sync: () => renderWodBuilderMovements(),
+  },
+  "builder-movement-duration": {
+    max: () => LIMITS.duration,
+    get: (field) => builderMovements[field] ? builderMovements[field].durationSeconds : 0,
+    set: (field, value) => { if (builderMovements[field]) builderMovements[field].durationSeconds = value; },
+    sync: () => renderWodBuilderMovements(),
+  },
+  "builder-emom-minutes": {
+    max: () => LIMITS.minutes,
+    get: () => builderEmomMinutes,
+    set: (field, value) => { builderEmomMinutes = value; },
+    sync: () => {
+      const inp = document.querySelector(`.stepper-val[data-action="builder-emom-minutes"]`);
+      if (inp) inp.value = builderEmomMinutes;
+    },
+  },
+  "builder-time-cap": {
+    max: () => LIMITS.minutes,
+    get: () => builderTimeCapMinutes,
+    set: (field, value) => { builderTimeCapMinutes = value; },
+    sync: () => {
+      const inp = document.querySelector(`.stepper-val[data-action="builder-time-cap"]`);
+      if (inp) inp.value = builderTimeCapMinutes;
+    },
+  },
+  "wod-emom-step": {
+    max: () => LIMITS.reps,
+    get: (field) => typeof wodEmomReps[+field] === "number" ? wodEmomReps[+field] : 0,
+    set: (field, value) => { wodEmomReps[+field] = value; },
+    sync: (field, value) => {
+      const inp = document.querySelector(`.stepper-val[data-action="wod-emom-step"][data-field="${cssSel(field)}"]`);
+      if (inp) inp.value = value;
+    },
+  },
+  "measure-step": {
+    max: () => LIMITS.measurement,
+    get: (field) => typeof measureValues[field] === "number" ? measureValues[field] : 0,
+    set: (field, value) => { measureValues[field] = value; },
+    sync: (field, value) => {
+      const inp = document.querySelector(`.stepper-val[data-action="measure-step"][data-field="${cssSel(field)}"]`);
+      if (inp) inp.value = value;
+    },
+  },
+};
+
 function clampField(action, field, value, min) {
   const lo = isFinite(min) ? min : 0;
   const hi = fieldMax(action, field);
@@ -3452,50 +3551,14 @@ function clampField(action, field, value, min) {
 }
 
 function getFieldValue(action, field) {
-  if (action === "step") return { weight, reps, sets, durationSeconds }[field];
-  if (action === "wod-step") return { wodMinutes, wodSeconds, wodRounds, wodReps, wodWeight, wodScaledWeight }[field];
-  if (action === "bw-step") return bwWeight;
-  if (action === "builder-movement-reps") return builderMovements[field] ? builderMovements[field].reps : 0;
-  if (action === "builder-movement-weight") return builderMovements[field] ? builderMovements[field].weight : 0;
-  if (action === "builder-movement-duration") return builderMovements[field] ? builderMovements[field].durationSeconds : 0;
-  if (action === "builder-emom-minutes") return builderEmomMinutes;
-  if (action === "builder-time-cap") return builderTimeCapMinutes;
-  if (action === "wod-emom-step") return typeof wodEmomReps[+field] === "number" ? wodEmomReps[+field] : 0;
-  if (action === "measure-step") return typeof measureValues[field] === "number" ? measureValues[field] : 0;
-  return 0;
+  const cfg = FIELD_ACTIONS[action];
+  return cfg ? cfg.get(field) : 0;
 }
 
 // Pure state write, no DOM side effects — safe to call on every keystroke.
 function setFieldState(action, field, value) {
-  if (action === "step") {
-    if (field === "weight") weight = value;
-    else if (field === "reps") reps = value;
-    else if (field === "sets") sets = value;
-    else if (field === "durationSeconds") durationSeconds = value;
-  } else if (action === "wod-step") {
-    if (field === "wodMinutes") wodMinutes = value;
-    else if (field === "wodSeconds") wodSeconds = value;
-    else if (field === "wodRounds") wodRounds = value;
-    else if (field === "wodReps") wodReps = value;
-    else if (field === "wodWeight") wodWeight = value;
-    else if (field === "wodScaledWeight") wodScaledWeight = value;
-  } else if (action === "bw-step") {
-    bwWeight = value;
-  } else if (action === "builder-movement-reps") {
-    if (builderMovements[field]) builderMovements[field].reps = value;
-  } else if (action === "builder-movement-weight") {
-    if (builderMovements[field]) builderMovements[field].weight = value;
-  } else if (action === "builder-movement-duration") {
-    if (builderMovements[field]) builderMovements[field].durationSeconds = value;
-  } else if (action === "builder-emom-minutes") {
-    builderEmomMinutes = value;
-  } else if (action === "builder-time-cap") {
-    builderTimeCapMinutes = value;
-  } else if (action === "wod-emom-step") {
-    wodEmomReps[+field] = value;
-  } else if (action === "measure-step") {
-    measureValues[field] = value;
-  }
+  const cfg = FIELD_ACTIONS[action];
+  if (cfg) cfg.set(field, value);
 }
 
 // Full commit: validates, writes state, and resyncs every dependent display
@@ -3506,30 +3569,8 @@ function applyFieldValue(action, field, value) {
     if (typeof value !== "number" || !isFinite(value)) value = 0;
   }
   setFieldState(action, field, value);
-  if (action === "step") {
-    updateLogQuickUI(field);
-  } else if (action === "wod-step") {
-    const valMap = { wodMinutes, wodSeconds, wodRounds, wodReps, wodWeight, wodScaledWeight };
-    const inp = document.querySelector(`.stepper-val[data-action="wod-step"][data-field="${cssSel(field)}"]`);
-    if (inp) inp.value = valMap[field];
-  } else if (action === "bw-step") {
-    const inp = document.querySelector(`.stepper-val[data-action="bw-step"][data-field="bwWeight"]`);
-    if (inp) inp.value = bwWeight;
-  } else if (action === "builder-movement-reps" || action === "builder-movement-weight" || action === "builder-movement-duration") {
-    renderWodBuilderMovements();
-  } else if (action === "builder-emom-minutes") {
-    const inp = document.querySelector(`.stepper-val[data-action="builder-emom-minutes"]`);
-    if (inp) inp.value = builderEmomMinutes;
-  } else if (action === "builder-time-cap") {
-    const inp = document.querySelector(`.stepper-val[data-action="builder-time-cap"]`);
-    if (inp) inp.value = builderTimeCapMinutes;
-  } else if (action === "wod-emom-step") {
-    const inp = document.querySelector(`.stepper-val[data-action="wod-emom-step"][data-field="${cssSel(field)}"]`);
-    if (inp) inp.value = value;
-  } else if (action === "measure-step") {
-    const inp = document.querySelector(`.stepper-val[data-action="measure-step"][data-field="${cssSel(field)}"]`);
-    if (inp) inp.value = value;
-  }
+  const cfg = FIELD_ACTIONS[action];
+  if (cfg) cfg.sync(field, value);
 }
 
 function render() {
