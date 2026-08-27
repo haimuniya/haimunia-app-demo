@@ -69,6 +69,27 @@ test("authenticated callers only receive the caller-scoped is_staff function", (
   assert.equal(dropCount, 1, "is_staff(uuid) must be dropped exactly once, not replaced-then-dropped");
 });
 
+// Regression: this exact ordering broke a live run — "cannot drop
+// function is_staff(uuid) because other objects depend on it" (2BP01),
+// naming these three policies. Unlike a PL/pgSQL function body, a
+// policy's USING/WITH CHECK clause is dependency-tracked against
+// whichever function overload it resolved to at CREATE POLICY time —
+// these three were created (in 202608270005) while is_staff(uuid) was
+// the only overload, so they must be dropped before it, and only
+// recreated after the new is_staff() exists.
+test("the three is_staff-dependent policies are dropped before is_staff(uuid), and recreated only after the new is_staff() exists", () => {
+  const dropIsStaffAt = sql.indexOf("drop function public.is_staff(uuid)");
+  const newIsStaffAt = sql.indexOf("create or replace function public.is_staff() returns boolean");
+  assert.ok(dropIsStaffAt > -1 && newIsStaffAt > -1, "both statements must exist");
+  for (const policy of ["announcements_insert_admin", "announcements_update_admin", "weekly_challenges_insert_admin"]) {
+    const dropAt = sql.indexOf(`drop policy ${policy}`);
+    const createAt = sql.lastIndexOf(`create policy ${policy}`);
+    assert.ok(dropAt > -1 && createAt > -1, `${policy} must have both a drop and a create statement`);
+    assert.ok(dropAt < dropIsStaffAt, `${policy} must be dropped before is_staff(uuid) is dropped`);
+    assert.ok(createAt > newIsStaffAt, `${policy} must be recreated only after the new is_staff() exists`);
+  }
+});
+
 test("post photo paths are bound to the author and visible posts", () => {
   assert.match(sql, /split_part\(new\.photo_path, '\/', 1\) <> new\.author_id::text/i);
   assert.match(sql, /create trigger workout_posts_photo_owner/i);

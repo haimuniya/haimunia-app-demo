@@ -116,10 +116,19 @@ grant execute on function public.grant_coach_role(uuid) to service_role;
 -- (Postgres error 42P13, "cannot remove parameter defaults from existing
 -- function") — 202608270005's is_staff(p_uid uuid default auth.uid())
 -- has to be dropped outright before a caller-only is_staff() can take
--- its place; PL/pgSQL function bodies aren't catalog-tracked
--- dependencies, so dropping it here doesn't fail even though
--- coach_inactive_members/coach_new_members below still (briefly, in
--- their not-yet-replaced form) reference it in their own bodies.
+-- its place. Unlike PL/pgSQL function bodies (opaque text, not
+-- catalog-tracked — coach_inactive_members/coach_new_members below can
+-- safely stay in their not-yet-replaced form across the drop), an RLS
+-- policy's USING/WITH CHECK clause is a real parsed expression, and
+-- Postgres DOES track a dependency on whatever function it resolves to
+-- at CREATE POLICY time. These three policies were created while
+-- is_staff(uuid) was the only overload, so calling public.is_staff()
+-- with no arguments in their WITH CHECK bound to that specific default-
+-- parameter overload — they have to be dropped before it, not after.
+drop policy announcements_insert_admin on public.announcements;
+drop policy announcements_update_admin on public.announcements;
+drop policy weekly_challenges_insert_admin on public.weekly_challenges;
+
 drop function public.is_staff(uuid);
 
 create or replace function public.is_staff() returns boolean
@@ -130,13 +139,10 @@ $$;
 revoke all on function public.is_staff() from public, anon;
 grant execute on function public.is_staff() to authenticated;
 
-drop policy announcements_insert_admin on public.announcements;
 create policy announcements_insert_admin on public.announcements for insert to authenticated
   with check (author_id = auth.uid() and public.is_staff());
-drop policy announcements_update_admin on public.announcements;
 create policy announcements_update_admin on public.announcements for update to authenticated
   using (public.is_staff()) with check (public.is_staff());
-drop policy weekly_challenges_insert_admin on public.weekly_challenges;
 create policy weekly_challenges_insert_admin on public.weekly_challenges for insert to authenticated
   with check (created_by = auth.uid() and public.is_staff());
 
