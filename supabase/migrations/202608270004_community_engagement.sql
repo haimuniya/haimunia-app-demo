@@ -60,13 +60,16 @@ create policy post_comments_insert_self on public.post_comments for insert to au
 create policy post_comments_delete_self on public.post_comments for delete to authenticated using (author_id = auth.uid());
 
 -- community_feed gains a comment count (same pattern as cheer_count) and
--- the new photo_path.
+-- the new photo_path. CREATE OR REPLACE VIEW can only ever append new
+-- columns at the end — it errors if an existing column's name or
+-- position changes — so cheer_count has to stay exactly where it was
+-- (last column of the original view) and both new columns go after it.
 create or replace view public.community_feed with (security_invoker = true) as
 select p.id, p.author_id, pr.handle, pr.display_name, pr.avatar_url, p.title, p.result_text,
        p.comparison_key, p.score_value, p.score_direction, p.rx, p.occurred_on, p.published_at,
-       p.photo_path,
        count(distinct r.post_id)::integer as cheer_count,
-       count(distinct c.id)::integer as comment_count
+       count(distinct c.id)::integer as comment_count,
+       p.photo_path
 from public.workout_posts p
 join public.profiles pr on pr.id = p.author_id
 left join public.reactions r on r.post_id = p.id

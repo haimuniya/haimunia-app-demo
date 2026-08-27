@@ -54,3 +54,19 @@ test("workout_posts.photo_path is added before community_feed is recreated to se
   assert.ok(addColumnAt > -1 && viewAt > -1, "both statements must exist");
   assert.ok(addColumnAt < viewAt, "photo_path must be added before the view that selects p.photo_path");
 });
+
+// Regression: this exact ordering also broke a live run — "cannot change
+// name of view column 'cheer_count' to 'photo_path'". CREATE OR REPLACE
+// VIEW can only append new columns after the original view's last one;
+// it errors if an existing column's name or position changes. The
+// original community_feed (from 202608270001) ends in cheer_count, so
+// every new column this migration adds must come after it, never before.
+test("both new community_feed columns (comment_count, photo_path) are appended after the original last column (cheer_count), never inserted before it", () => {
+  const view = sql.slice(sql.indexOf("create or replace view public.community_feed"), sql.indexOf("grant select on public.community_feed"));
+  const cheerAt = view.indexOf("as cheer_count");
+  const commentAt = view.indexOf("as comment_count");
+  const photoAt = view.lastIndexOf("p.photo_path");
+  assert.ok(cheerAt > -1 && commentAt > -1 && photoAt > -1, "all three columns must be present in the view definition");
+  assert.ok(cheerAt < commentAt, "comment_count must come after cheer_count");
+  assert.ok(cheerAt < photoAt, "photo_path must come after cheer_count");
+});
