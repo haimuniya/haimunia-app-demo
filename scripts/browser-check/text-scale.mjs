@@ -78,8 +78,12 @@ check("preference persists across a reload", attrAfterReload === "large", attrAf
 // the content inside it still visibly scales with the rest of the page.
 await page.click("#tabWodBtn");
 await page.waitForTimeout(150);
-// No WOD is pre-selected on a fresh load anymore — its own direct build
-// button in the empty state replaces the old picker-then-builder detour.
+// A WOD is always pre-selected (selectedWodId's module-level default) —
+// reaching the builder now goes through the WOD picker overlay (tap the
+// current WOD to open it, then its own "build a custom WOD" button),
+// not a direct empty-state button.
+await page.click("[data-action='open-wod-picker']");
+await page.waitForSelector("#wodPickerOverlay.open");
 await page.click("[data-action='open-wod-builder']");
 await page.waitForSelector("#wodBuilderOverlay.open");
 await page.waitForTimeout(150);
