@@ -1,3 +1,27 @@
+# Submission 2: one confirm dialog everywhere, publish preview, delete-own-post — 2026-08-27
+
+Three UX findings, done together since they all touch the same
+destructive/broadcast-action surface in cloud.js.
+
+Publishing a workout to the community feed (public, optionally with a
+photo) used to fire immediately with zero confirmation or preview, while
+lower-stakes actions in the same file (block, sync history, delete
+account) went through the browser's native confirm dialog - which breaks
+out of the app's own dark, custom-fonted visual language entirely. Three
+different patterns, and the riskiest action had none of them.
+
+Replaced all of it with one in-app confirm dialog (askConfirm/
+closeConfirm/runConfirm), matching the app's existing bottom-sheet modal
+style. Publishing now shows the post's title and result text (and a
+photo indicator) before it goes out. Destructive actions (block, delete
+account, delete post) render their confirm button in red.
+
+Also added the delete action that never existed: a post's author can now
+remove it from the feed directly - previously the only way to undo a
+publish was deleting the entire account.
+
+214/214 tests pass.
+
 # Two critical bugs, from an independent 3-lens audit — 2026-08-27
 
 First of several follow-up submissions closing out findings from a

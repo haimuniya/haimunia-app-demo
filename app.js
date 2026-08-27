@@ -100,7 +100,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "3.0.14";
+const APP_VERSION = "3.0.15";
 
 const WOD_MOVEMENT_TAGS = [
   // Gymnastics (bodyweight)

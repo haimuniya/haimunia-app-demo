@@ -7,7 +7,7 @@
   }) : null;
   const state = { configured, client, user: null, profile: null, feed: [], people: [], comparison: [], loading: false, message: "", syncEnabled: localStorage.getItem("haimunia-demo:cloudSyncEnabled") === "1",
     streaks: [], announcements: [], weeklyChallenge: null, weeklyLeaderboard: [], inactiveMembers: [], newMembers: [], redemption: null,
-    communityTab: "feed", comments: {}, openComments: {}, fieldErrors: {}, reports: [] };
+    communityTab: "feed", comments: {}, openComments: {}, fieldErrors: {}, reports: [], confirmDialog: null };
   const photoUrlCache = {};
 
   function safeText(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
@@ -275,7 +275,6 @@
   }
   async function migrateLocalData() {
     if (!state.user || typeof window.queueAllLocalRecordsForSync !== "function") return;
-    if (!window.confirm("להעלות את היסטוריית האימונים הפרטית לחשבון? שום נתון לא יפורסם בקהילה.")) return;
     await window.queueAllLocalRecordsForSync();
     state.syncEnabled = true;
     localStorage.setItem("haimunia-demo:cloudSyncEnabled", "1");
@@ -323,10 +322,16 @@
     await loadFeed(); setMessage(error && error.code !== "23505" ? "עדכון המעקב נכשל" : "המעקב עודכן");
   }
   async function block(userId) {
-    if (!state.user || !window.confirm("לחסום את המשתמש? לא תראו זה את זה בקהילה.")) return;
+    if (!state.user) return;
     await client.from("blocks").upsert({ blocker_id: state.user.id, blocked_id: userId });
     await client.from("follows").delete().eq("follower_id", state.user.id).eq("followed_id", userId);
     state.people = state.people.filter((person) => person.id !== userId); await loadFeed(); setMessage("המשתמש נחסם");
+  }
+  async function deletePost(postId) {
+    if (!state.user) return;
+    const { error } = await client.from("workout_posts").delete().eq("id", postId).eq("author_id", state.user.id);
+    if (error) return setMessage("הסרת השיתוף נכשלה");
+    await loadFeed(); setMessage("השיתוף הוסר");
   }
   async function publishWorkout(type, id, visibility, photoFile) {
     if (!state.user || !state.profile || typeof window.communityShareCandidates !== "function") return;
@@ -350,12 +355,33 @@
     setMessage(error ? "השוואת התוצאות נכשלה" : "");
   }
   async function requestDeletion() {
-    if (!state.user || !window.confirm("הפרופיל והשיתופים יוסרו מיד. המחיקה הסופית תתבצע לאחר 30 יום. להמשיך?")) return;
+    if (!state.user) return;
     const { error } = await client.rpc("request_account_deletion");
     if (error) return setMessage("בקשת המחיקה נכשלה");
     await client.auth.signOut();
   }
   function setCommunityTab(tab) { state.communityTab = tab; rerender(); }
+
+  // A single in-app confirm dialog, replacing three different patterns
+  // that used to exist for comparably serious actions: the native browser
+  // confirm dialog (broke out of the app's entire custom visual language), an inline
+  // footer swap (app.js's clear-all-data), and no confirmation at all
+  // (publishing to the community feed, which — unlike blocking someone —
+  // used to fire immediately). Every destructive or broadcast-to-others
+  // action now goes through this same path.
+  function askConfirm(opts) { state.confirmDialog = opts; rerender(); }
+  function closeConfirm() { state.confirmDialog = null; rerender(); }
+  function runConfirm() {
+    const c = state.confirmDialog;
+    state.confirmDialog = null;
+    if (!c) return;
+    if (c.action === "migrate") migrateLocalData();
+    else if (c.action === "block") block(c.payload.userId);
+    else if (c.action === "delete-account") requestDeletion();
+    else if (c.action === "delete-post") deletePost(c.payload.postId);
+    else if (c.action === "publish") publishWorkout(c.payload.type, c.payload.id, c.payload.visibility, c.payload.file);
+    else rerender();
+  }
 
   // Splices aria-invalid/aria-describedby onto an already-built <input>/
   // <textarea> string when that field has a live validation error, and
@@ -367,6 +393,22 @@
     const errId = `err-${formId}-${name}`;
     const tagged = err ? inputHtml.replace(/^<(input|textarea)/, `<$1 aria-invalid="true" aria-describedby="${errId}"`) : inputHtml;
     return `<label class="field"><span class="field-label">${labelText}</span>${tagged}${err ? `<span class="field-error" id="${errId}" role="alert">${safeText(err)}</span>` : ""}</label>`;
+  }
+  function renderConfirmDialog() {
+    const c = state.confirmDialog;
+    if (!c) return "";
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="communityConfirmTitle" style="align-items:center;padding:0 20px;">
+      <div class="modal-sheet" style="border-radius:22px;border-bottom:1px solid var(--border);max-height:none;">
+        <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
+          <div id="communityConfirmTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">${safeText(c.title || "אישור פעולה")}</div>
+          <div style="color:var(--steel);font-size:13.5px;line-height:1.6;margin-bottom:20px;">${safeText(c.message)}</div>
+          <div class="chip-row" style="margin-top:0;">
+            <button class="chip-btn" data-community-action="confirm-no">ביטול</button>
+            <button class="chip-btn primary" data-community-action="confirm-yes" style="${c.destructive ? "background:var(--red);border-color:var(--red);color:#fff;" : ""}">${safeText(c.confirmLabel || "אישור")}</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
   }
   function sectionHead(color, title, adminTag) {
     return `<div class="ach-section-head"><span class="ach-section-dot" style="background:${color};"></span><span class="ach-section-title">${title}</span>${adminTag ? `<span class="admin-tag">ניהול</span>` : ""}</div>`;
@@ -459,7 +501,7 @@
         <button class="chip-btn" data-community-action="cheer" data-id="${safeText(post.id)}" aria-label="עידוד, ${Number(post.cheer_count || 0)} עידודים">🔥 ${Number(post.cheer_count || 0)}</button>
         <button class="chip-btn" data-community-action="toggle-comments" data-id="${safeText(post.id)}" aria-label="תגובות, ${Number(post.comment_count || 0)}">💬 ${Number(post.comment_count || 0)}</button>
         ${post.comparison_key ? `<button class="chip-btn" data-community-action="compare" data-key="${safeText(post.comparison_key)}">השוואה</button>` : ""}
-        <button class="chip-btn" data-community-action="report" data-id="${safeText(post.id)}">דיווח</button>
+        ${post.author_id === (state.user && state.user.id) ? `<button class="chip-btn" data-community-action="delete-post" data-id="${safeText(post.id)}">הסרה</button>` : `<button class="chip-btn" data-community-action="report" data-id="${safeText(post.id)}">דיווח</button>`}
       </div>${renderComments(post)}</article>`).join("")}</div>` : `<div class="empty">עדיין אין שיתופים בפיד</div>`;
     const feedHtml = `<div class="ach-section">${sectionHead("var(--blue)", "הפיד שלי")}${feed}</div>`;
 
@@ -503,7 +545,8 @@
 
     return tabBar
       + (state.message ? `<div class="footer-note" role="status" style="color:var(--brass);margin-bottom:14px;">${safeText(state.message)}</div>` : "")
-      + activeTab.html;
+      + activeTab.html
+      + renderConfirmDialog();
   };
   window.cloudStorageStatusText = function () {
     if (!configured) return "נשמר במכשיר הזה בלבד, ללא שרת";
@@ -516,23 +559,30 @@
   };
   window.handleCommunityClick = function (el) {
     const action = el.dataset.communityAction;
-    if (action === "migrate") migrateLocalData();
+    if (action === "migrate") askConfirm({ title: "סנכרון היסטוריה", message: "להעלות את היסטוריית האימונים הפרטית לחשבון? שום נתון לא יפורסם בקהילה.", confirmLabel: "העלאה", action: "migrate" });
     else if (action === "cheer") react(el.dataset.id);
     else if (action === "report") report(el.dataset.id);
     else if (action === "publish") {
       const fileInput = document.getElementById("photo-" + el.dataset.id);
       const file = fileInput && fileInput.files && fileInput.files[0];
-      publishWorkout(el.dataset.type, el.dataset.id, el.dataset.visibility, file);
+      const candidates = typeof window.communityShareCandidates === "function" ? window.communityShareCandidates() : [];
+      const item = candidates.find((c) => c.type === el.dataset.type && c.id === el.dataset.id);
+      const audience = el.dataset.visibility === "public" ? "לכולם, פומבי" : "לעוקבים שלכם בלבד";
+      const preview = item ? `"${item.title}" — ${item.resultText}${file ? " (כולל תמונה)" : ""}` : "";
+      askConfirm({ title: "פרסום תוצאה", message: `לפרסם ${audience}?${preview ? " " + preview : ""}`, confirmLabel: "פרסום", action: "publish", payload: { type: el.dataset.type, id: el.dataset.id, visibility: el.dataset.visibility, file } });
     }
     else if (action === "follow") follow(el.dataset.id);
-    else if (action === "block") block(el.dataset.id);
+    else if (action === "block") askConfirm({ title: "חסימת משתמש", message: "לחסום את המשתמש? לא תראו זה את זה בקהילה.", confirmLabel: "חסימה", destructive: true, action: "block", payload: { userId: el.dataset.id } });
+    else if (action === "delete-post") askConfirm({ title: "הסרת שיתוף", message: "להסיר את השיתוף מהפיד? הפעולה לא ניתנת לביטול.", confirmLabel: "הסרה", destructive: true, action: "delete-post", payload: { postId: el.dataset.id } });
     else if (action === "compare") compare(el.dataset.key);
-    else if (action === "delete-account") requestDeletion();
+    else if (action === "delete-account") askConfirm({ title: "מחיקת חשבון", message: "הפרופיל והשיתופים יוסרו מיד. המחיקה הסופית תתבצע לאחר 30 יום. להמשיך?", confirmLabel: "מחיקה", destructive: true, action: "delete-account" });
     else if (action === "share-achievement") publishAchievement(el.dataset.id, el.dataset.title, el.dataset.rule);
     else if (action === "toggle-comments") toggleComments(el.dataset.id);
     else if (action === "delete-comment") deleteComment(el.dataset.id, el.dataset.post);
     else if (action === "set-tab") setCommunityTab(el.dataset.tab);
     else if (action === "review-report") reviewReport(el.dataset.id, el.dataset.status);
+    else if (action === "confirm-yes") runConfirm();
+    else if (action === "confirm-no") closeConfirm();
   };
   window.isCommunitySignedIn = function () { return !!(state.user && state.profile); };
   window.shareAchievementToCommunity = function (achievementId, title, rule) { publishAchievement(achievementId, title, rule); };
@@ -557,7 +607,7 @@
           .then(pingActivity)
           .then(rerender);
       } else {
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {};
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null;
         rerender();
       }
     });
