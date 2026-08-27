@@ -1,3 +1,30 @@
+# Submission 8: sync cursor and real conflict detection — 2026-08-27
+
+Two architecture findings on the private-records sync path:
+
+**Every login re-fetched and re-applied every private record** (up to
+20,000) from scratch, even though almost nothing had changed since last
+time. `pullPrivateRecords()` now keeps a per-user sync cursor
+(`dbGetSetting`/`dbSetSetting`, keyed by user id so a different account
+signing in on the same device never inherits a stale one) and only
+queries records newer than it - verified with a real executing test
+that a second pull only fetches the one genuinely new record, not the
+whole table again.
+
+**Both push and pull blindly overwrote by id with no timestamp
+comparison** - two devices editing the same entry offline would
+silently clobber whichever one happened to sync last. `shouldApplyRemote()`
+now compares timestamps for the four record types that actually carry
+one (strength/WOD entries, bodyweight, measurements) before applying a
+remote write - an older edit is simply not applied, not lost (its own
+outbox row still exists and pushes out again later). Movement/WOD/
+measure-type definitions, which have no timestamp and are rarely edited
+concurrently, keep the previous behavior; deletes aren't
+conflict-checked either, since there's no tombstone timestamp to compare
+against - documented as a known, accepted limitation rather than solved.
+
+264/264 tests pass.
+
 # Submission 7: stepper-field config table — 2026-08-27
 
 Architecture finding: every numeric stepper field (main log, WOD log,

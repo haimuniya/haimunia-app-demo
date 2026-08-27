@@ -29,6 +29,7 @@ export function createMockSupabase(seedTables = {}) {
       select() { return api; },
       eq(col, val) { filters.push((r) => r[col] === val); return api; },
       neq(col, val) { filters.push((r) => r[col] !== val); return api; },
+      gt(col, val) { filters.push((r) => r[col] > val); return api; },
       or() { return api; },
       order(col, opts) { api._orderCol = col; api._orderAsc = !opts || opts.ascending !== false; return api; },
       limit() { return api; },

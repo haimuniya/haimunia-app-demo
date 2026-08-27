@@ -376,11 +376,24 @@
       if (!error) await window.dbDeleteSyncOutbox(row.id);
     }
   }
+  // Every login used to re-fetch and re-apply every private record (up
+  // to 20,000) from scratch, even though almost nothing changed since
+  // last time - slow and IndexedDB-write-heavy for a long-running
+  // account. Keyed per-user (dbGetSetting/dbSetSetting), not globally,
+  // so a different account signing in on the same device never inherits
+  // a stale cursor and silently misses its own older records.
+  function syncCursorKey(userId) { return `haimunia-demo:syncCursor:${userId}`; }
   async function pullPrivateRecords() {
     if (!client || !state.user || typeof window.applyRemotePrivateRecord !== "function") return;
-    const { data, error } = await client.from("private_records").select("record_type,record_id,payload,deleted_at,updated_at").order("updated_at", { ascending: true }).limit(20000);
+    const cursorKey = syncCursorKey(state.user.id);
+    const cursor = typeof window.dbGetSetting === "function" ? await window.dbGetSetting(cursorKey) : null;
+    let query = client.from("private_records").select("record_type,record_id,payload,deleted_at,updated_at").order("updated_at", { ascending: true }).limit(20000);
+    if (cursor) query = query.gt("updated_at", cursor);
+    const { data, error } = await query;
     if (error) return;
     for (const row of data || []) await window.applyRemotePrivateRecord(row);
+    const newest = (data || []).length ? data[data.length - 1].updated_at : null;
+    if (newest && typeof window.dbSetSetting === "function") await window.dbSetSetting(cursorKey, newest);
     if (typeof window.reloadFromDb === "function") { await window.reloadFromDb(); rerender(); }
   }
   async function react(postId) {

@@ -100,7 +100,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "3.0.23";
+const APP_VERSION = "3.0.24";
 
 const WOD_MOVEMENT_TAGS = [
   // Gymnastics (bodyweight)
@@ -1589,6 +1589,25 @@ async function queueAllLocalRecordsForSync() {
   const groups = [["movement", customMovements], ["custom_wod", customWods], ["strength_entry", entries], ["wod_entry", wodEntries], ["bodyweight", bodyweightEntries], ["measure_type", measureTypes], ["measurement", measureEntries]];
   for (const [type, list] of groups) for (const record of list) await queueSyncRecord(type, record);
 }
+// Real conflict detection, not blind last-write-wins: for the four
+// record types that actually carry a timestamp (ts, set at creation/
+// edit time), a remote write only overwrites the local copy if it's at
+// least as new. Two devices editing the same entry offline no longer
+// silently clobber whichever one happens to sync last - the older edit
+// is simply not applied (its own outbox row still exists locally and
+// will push out again, so it isn't lost, just not allowed to regress
+// this device's copy). Deletes and the three definition-only record
+// types (movement/custom_wod/measure_type, which have no ts and are
+// rarely edited concurrently) keep the previous always-apply behavior.
+function shouldApplyRemote(recordType, recordId, incomingTs) {
+  if (typeof incomingTs !== "number") return true;
+  const existing =
+    recordType === "strength_entry" ? entries.find((e) => e.id === recordId) :
+    recordType === "wod_entry" ? wodEntries.find((e) => e.id === recordId) :
+    recordType === "bodyweight" ? bodyweightEntries.find((e) => e.id === recordId) :
+    recordType === "measurement" ? measureEntries.find((e) => e.id === recordId) : null;
+  return !existing || incomingTs >= existing.ts;
+}
 async function applyRemotePrivateRecord(row) {
   if (!row || !row.record_type || !row.record_id) return;
   const deleted = !!row.deleted_at;
@@ -1601,6 +1620,7 @@ async function applyRemotePrivateRecord(row) {
     : row.record_type === "measure_type" ? sanitizeMeasureType(payload)
     : row.record_type === "measurement" ? sanitizeMeasurement(payload) : null;
   if (!deleted && !clean) return;
+  if (!deleted && clean && !shouldApplyRemote(row.record_type, row.record_id, clean.ts)) return;
   syncApplyingRemote = true;
   try {
     if (row.record_type === "movement") deleted ? await dbDeleteMovementRecord(row.record_id) : await dbAddMovement(clean);
