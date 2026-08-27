@@ -3,6 +3,7 @@ import assert from "node:assert";
 import fs from "node:fs";
 
 const sql = fs.readFileSync(new URL("../supabase/migrations/202608270001_community_growth.sql", import.meta.url), "utf8");
+const lockdownSql = fs.readFileSync(new URL("../supabase/migrations/202608270002_lock_anon_defaults.sql", import.meta.url), "utf8");
 
 test("reactions policies now gate on post_visible_to_viewer, not just row existence", () => {
   assert.match(sql, /create policy reactions_visible on public\.reactions for select to authenticated using \(public\.post_visible_to_viewer\(post_id\)\)/i);
@@ -45,4 +46,16 @@ test("weekly_challenges is admin-write, all-member-read, and its leaderboard vie
   assert.match(sql, /create policy weekly_challenges_read on public\.weekly_challenges for select to authenticated using \(true\)/i);
   assert.match(sql, /weekly_challenges_insert_admin[\s\S]*p\.is_admin/i);
   assert.match(sql, /create or replace view public\.weekly_challenge_leaderboard with \(security_invoker = true\)/i);
+});
+
+// Found by live-testing 202608270001 right after applying it: this
+// project auto-grants anon SELECT on any newly created table via a
+// leftover default privilege, and 202608270001 never re-revoked it for
+// its own new objects the way 202608260001 did for the tables that
+// existed when *it* ran — activity_pings, announcements,
+// weekly_challenges, and community_streaks were all readable with no
+// login at all until this follow-up migration.
+test("202608270002 revokes anon's leaked read access on every table/view 202608270001 created, and closes the default for future migrations too", () => {
+  assert.match(lockdownSql, /revoke all on public\.activity_pings, public\.announcements, public\.weekly_challenges, public\.community_streaks from anon/i);
+  assert.match(lockdownSql, /alter default privileges in schema public revoke select, insert, update, delete on tables from anon, authenticated/i);
 });

@@ -1,3 +1,34 @@
+# Lock down an anon read leak found by live-testing the previous migration — 2026-08-27
+
+Found immediately after applying `202608270001_community_growth.sql`
+against the live project and testing it with no login at all (just the
+publishable key, no session): `activity_pings`, `announcements`,
+`weekly_challenges`, and the `community_streaks` view were all readable
+by anyone, no auth required. `activity_pings` in particular was designed
+to be self-only — its own RLS policies say so — but RLS never got a
+chance to run, because the `anon` role had a standing table-level SELECT
+grant that bypassed the question entirely. Writes were still safe: a test
+insert into `announcements` correctly failed on the RLS policy.
+
+Cause: this Supabase project has a default privilege that auto-grants
+`anon` (and `authenticated`) SELECT/INSERT/UPDATE/DELETE on any newly
+created table. `202608260001`'s blanket `revoke all ... from anon,
+authenticated` only covered tables that existed at the moment it ran —
+every table `202608270001` created afterward silently picked the default
+back up, since nothing in that migration re-revoked it.
+
+New migration `202608270002_lock_anon_defaults.sql`: revokes the leaked
+access on the four objects above, and — so this can't repeat itself the
+next time a migration adds a table — runs `alter default privileges in
+schema public revoke select, insert, update, delete on tables from anon,
+authenticated`, which stops the auto-grant from applying to anything
+created from this point forward. Every table this app needs already gets
+an explicit `grant ... to authenticated` alongside its own RLS policy, so
+nothing legitimate depended on the default.
+
+1 new static-assertion test locks in that this migration exists and does
+what it says.
+
 # Close the reactions RLS gap, and add achievement sharing, streaks, announcements, and a weekly challenge — 2026-08-27
 
 Two threads from the earlier audit of this repo's community layer, done
