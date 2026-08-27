@@ -127,7 +127,14 @@
   .flex-1{ flex:1; }
   .gap-6{ gap:6px; } .gap-8{ gap:8px; } .gap-10{ gap:10px; }
   .wrap{ flex-wrap:wrap; }
-  #app{ max-width:480px; margin:0 auto; padding: calc(env(safe-area-inset-top,0px) + 20px) 16px calc(env(safe-area-inset-bottom,0px) + 100px); overflow-x:hidden; }
+  /* max(env(...), 28px): some Android WebView/Chrome combinations report
+     safe-area-inset-top as 0 on an installed (standalone) PWA even though
+     the status bar still overlays the page — without a floor, .brand-stripe
+     (the first thing in #app, with a busy diagonal pattern, not a plain
+     background) creeps up under the real status bar icons. 28px covers a
+     typical Android status bar; a device that reports a real, larger inset
+     (e.g. an iPhone notch) still gets that larger value via max(). */
+  #app{ max-width:480px; margin:0 auto; padding: calc(max(env(safe-area-inset-top,0px), 28px) + 20px) 16px calc(env(safe-area-inset-bottom,0px) + 100px); overflow-x:hidden; }
   .header{ display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:14px; }
   .header-logo{ height:46px; width:auto; display:block; }
   .brand-stripe{ height:6px; border-radius:4px; background-image:var(--stripe); margin-bottom:18px; }
@@ -353,7 +360,7 @@
      particular), so the copy tells the user the reliable fix — close and
      reopen the app — rather than implying a tap alone is enough. Tapping
      still fires the same SKIP_WAITING handshake as a bonus shortcut. -->
-<button id="updateBanner" data-action="reload-app" role="status" aria-live="polite" style="display:none; position:fixed; top:0; left:0; right:0; z-index:60; background:var(--energy); color:#1a0d08; text-align:center; padding:calc(env(safe-area-inset-top,0px) + 16px) 20px 16px; width:100%; box-shadow:0 4px 16px rgba(0,0,0,.25);">
+<button id="updateBanner" data-action="reload-app" role="status" aria-live="polite" style="display:none; position:fixed; top:0; left:0; right:0; z-index:60; background:var(--energy); color:#1a0d08; text-align:center; padding:calc(max(env(safe-area-inset-top,0px), 28px) + 16px) 20px 16px; width:100%; box-shadow:0 4px 16px rgba(0,0,0,.25);">
   <div style="font-weight:800; font-size:16px; margin-bottom:3px;">עדכון חדש זמין</div>
   <div style="font-weight:600; font-size:13px; opacity:.85;">סגרו את האפליקציה ופתחו אותה מחדש כדי לעדכן</div>
 </button>
@@ -364,7 +371,7 @@
      the update banner's fixed-top slot and visual weight, distinguished by
      the brand stripe instead of the solid energy color, and steps aside if
      an update banner is showing (see showUpdateBanner in app.js). -->
-<div id="installBanner" role="status" style="display:none; position:fixed; top:0; left:0; right:0; z-index:59; background-image:var(--stripe); padding:calc(env(safe-area-inset-top,0px) + 14px) 16px 14px; width:100%; box-shadow:0 4px 16px rgba(0,0,0,.25);">
+<div id="installBanner" role="status" style="display:none; position:fixed; top:0; left:0; right:0; z-index:59; background-image:var(--stripe); padding:calc(max(env(safe-area-inset-top,0px), 28px) + 14px) 16px 14px; width:100%; box-shadow:0 4px 16px rgba(0,0,0,.25);">
   <div class="flex items-center justify-between" style="max-width:448px; margin:0 auto; gap:12px;">
     <div style="color:#fff; text-shadow:0 1px 3px rgba(0,0,0,.5);">
       <div style="font-weight:800; font-size:14px;">התקינו את האימוניה</div>

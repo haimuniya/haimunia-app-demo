@@ -1,3 +1,27 @@
+# Fix status bar colliding with the top of the page on Android — 2026-08-27
+
+Reported with a screenshot: on an installed (Add to Home Screen) Android
+PWA, the phone's real status bar (clock, signal, battery) sat directly on
+top of `.brand-stripe` - the orange/white diagonal decoration at the very
+top of `#app` - instead of above it. Root cause: `#app`'s top padding was
+just `env(safe-area-inset-top, 0px) + 20px`, and at least one real
+Android browser/WebView combination reports `safe-area-inset-top` as 0 on
+an installed standalone PWA even though the status bar still visually
+overlays the page. With no real inset reported, the 20px flat padding
+wasn't enough clearance, so brand-stripe's own busy pattern - not a plain
+background - ended up directly behind the status bar icons.
+
+Fixed with a floor, not a bigger flat number: `max(env(safe-area-inset-top,
+0px), 28px)`, applied to `#app`'s top padding and the two other
+top-of-viewport elements with the same shape (`#updateBanner`,
+`#installBanner` - both also have colorful, non-plain backgrounds at
+`top:0`). A device that correctly reports a real, larger inset (an
+iPhone notch, for example) is unaffected - max() just keeps the larger
+real value. One that under-reports it now gets a guaranteed 28px
+minimum instead of colliding.
+
+266/266 tests pass, plus all 12 browser-check suites.
+
 # Submission 11: split app.js into src/ modules — 2026-08-27
 
 Last (and biggest) item on the deferred architecture backlog, scoped down
