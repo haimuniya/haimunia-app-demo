@@ -1,3 +1,30 @@
+# Submission 9: anon-key smoke test, vendored-version check, pre-commit hook — 2026-08-27
+
+Three infra items from the deferred architecture list, run against the
+real live project where relevant, not just written and hoped:
+
+- **`npm run smoke-test-anon-key`** queries every table/view over the
+  real network as the public anon key with no session and asserts each
+  one returns nothing - the invariant that makes shipping the committed
+  publishable key safe, previously verified by nothing automated (RLS
+  has been wrong on first attempt three separate times in this
+  project's history). Ran it against the live project just now: all 17
+  tables/views correctly return HTTP 401, no grant. Deliberately not
+  part of `npm test`, which stays offline/hermetic - this needs the
+  live network.
+- **`npm run check-vendor-version`** (and a real offline test running
+  it) confirms `vendor/supabase.js` - a hand-copied build artifact -
+  actually matches the `@supabase/supabase-js` version package.json
+  declares, instead of the two being able to silently drift apart with
+  nothing checking.
+- **`npm run setup-hooks`** (opt-in, one time per clone) points git at
+  `.githooks/pre-commit`, which runs both version checks above before
+  every commit - catches the exact class of mistake (a version bump
+  that forgets `npm run sync-version`) before it's committed, not just
+  in CI.
+
+266/266 tests pass.
+
 # Submission 8: sync cursor and real conflict detection — 2026-08-27
 
 Two architecture findings on the private-records sync path:

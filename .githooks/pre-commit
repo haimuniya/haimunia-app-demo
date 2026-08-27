@@ -1,0 +1,12 @@
+#!/bin/sh
+# Opt-in: run `npm run setup-hooks` once per clone to enable this
+# (git config core.hooksPath .githooks). Catches, before the commit
+# happens rather than after in CI, the two version-drift mistakes this
+# project has actually made: APP_VERSION (app.js) and SW_VERSION (sw.js)
+# left out of sync after a version bump, and vendor/supabase.js drifting
+# from the @supabase/supabase-js version package.json declares.
+set -e
+echo "pre-commit: checking APP_VERSION/SW_VERSION are in sync..."
+npm run check-version --silent
+echo "pre-commit: checking vendor/supabase.js matches package.json..."
+node scripts/check-vendored-supabase-version.mjs

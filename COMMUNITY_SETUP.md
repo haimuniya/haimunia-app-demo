@@ -164,6 +164,16 @@ objects through SQL because it only removes metadata.
 ## Required launch checks
 
 - Run `npm test`.
+- Run `npm run smoke-test-anon-key` against the real project - queries
+  every table/view as the public anon key with no session and asserts
+  each one returns nothing. The committed publishable key is only safe
+  to ship if this stays true, and RLS has already been wrong on first
+  attempt three separate times in this project's history. Not part of
+  `npm test` since it needs the live network, unlike the rest of the
+  suite.
+- Optionally run `npm run setup-hooks` once per clone to catch
+  APP_VERSION/SW_VERSION drift and a stale `vendor/supabase.js` before
+  they're committed, not just in CI.
 - Confirm Anonymous Sign-ins is enabled in the project (Authentication →
   Sign In / Providers) — without it, opening the Community tab fails
   silently at `signInAnonymously()` and nobody can ever get past
