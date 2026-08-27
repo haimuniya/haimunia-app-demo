@@ -1,3 +1,41 @@
+# Form field errors wired for screen readers, a real admin moderation queue, and community UI polish — 2026-08-27
+
+Three deferred rescan items, done together since they touch the same
+render code:
+
+**Form validation is now screen-reader visible.** Every real-validation
+field in the Community tab (invite code, handle, announcement title/body,
+weekly challenge fields) goes through a new shared `field()` helper that
+sets `aria-invalid`/`aria-describedby` on the input and renders the exact
+same error text visibly beneath it, instead of only a generic banner at
+the top of the form. The bare invite-code input also gained a real
+`<label>` — it never had one before.
+
+**`review_report()` (from the security-hardening migration) had nothing
+calling it.** An admin had no way to see or act on a report short of the
+Supabase SQL editor. Added a moderation queue in the Account tab —
+open/reviewing/resolved/dismissed, with mark-as-reviewing/resolved/
+dismissed actions — gated on real `is_admin`, not the broader
+coach-inclusive `is_staff()`, matching `review_report()`'s own boundary
+exactly. That required one more migration
+(`202608270009_admin_moderation_visibility.sql`): nothing previously let
+an admin actually *see* a reported "followers"-only post from a stranger
+they don't follow, so `post_visible_to_viewer()` and a new
+`workout_posts` RLS policy grant a real-admin-only bypass (deliberately
+not `is_staff()`, which would have also handed every coach read access to
+private posts they have no way to act on). Also caught and fixed while in
+here: `COMMUNITY_SETUP.md`'s migration list had silently skipped
+`202608270008_hebrew_handles.sql` since it shipped.
+
+**Community UI pass.** Feed posts and comments now show an avatar (colored
+initials, deterministic per person) and a relative timestamp ("לפני 3
+שע׳") instead of just a name with no sense of who or when. Feed post cards
+got a real header instead of a bare name line; the Account tab shows a
+red badge with the open-report count so an admin sees at a glance whether
+anything needs attention.
+
+203/203 tests pass.
+
 # Fix incomplete dark-mode contrast fix, found while auditing "what's left" — 2026-08-27
 
 The rescan report flagged this correctly: an earlier accessibility pass

@@ -7,7 +7,7 @@
   }) : null;
   const state = { configured, client, user: null, profile: null, feed: [], people: [], comparison: [], loading: false, message: "", syncEnabled: localStorage.getItem("haimunia-demo:cloudSyncEnabled") === "1",
     streaks: [], announcements: [], weeklyChallenge: null, weeklyLeaderboard: [], inactiveMembers: [], newMembers: [], redemption: null,
-    communityTab: "feed", comments: {}, openComments: {} };
+    communityTab: "feed", comments: {}, openComments: {}, fieldErrors: {}, reports: [] };
   const photoUrlCache = {};
 
   function safeText(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
@@ -16,9 +16,41 @@
   // member views) — matches public.is_staff() server-side, which is what
   // actually enforces this; this is only for deciding what to show.
   function isStaff() { return !!(state.profile && (state.profile.is_admin || (state.redemption && state.redemption.role === "coach"))); }
+  // Narrower than isStaff() on purpose — review_report() and the RLS
+  // bypass that lets a moderator see reported posts both check real
+  // is_admin only, not a coach-code role, so the review queue must match.
+  function isAdmin() { return !!(state.profile && state.profile.is_admin); }
   function rerender() { if (typeof window.render === "function") window.render(); }
   function setMessage(message) { state.message = message || ""; rerender(); }
   function todayIso() { return new Date().toISOString().slice(0, 10); }
+  function setFieldErrors(formId, errors) {
+    if (errors && Object.keys(errors).length) state.fieldErrors[formId] = errors;
+    else delete state.fieldErrors[formId];
+    rerender();
+  }
+  // Compact, deterministic per-identity color so the same person always
+  // gets the same avatar color across the feed, comments and search.
+  const AVATAR_PALETTE = ["var(--energy)", "var(--blue)", "var(--teal)", "var(--purple)", "var(--green)", "var(--brass)"];
+  function avatarHtml(name, size) {
+    const label = String(name || "?").trim();
+    const initial = label ? label[0].toUpperCase() : "?";
+    let hash = 0;
+    for (let i = 0; i < label.length; i++) hash = (hash * 31 + label.charCodeAt(i)) >>> 0;
+    const color = AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
+    const px = size || 36;
+    return `<span aria-hidden="true" class="avatar-badge" style="width:${px}px;height:${px}px;font-size:${Math.round(px * 0.42)}px;background:${color};">${safeText(initial)}</span>`;
+  }
+  function relativeTime(iso) {
+    if (!iso) return "";
+    const diffMin = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+    if (diffMin < 1) return "עכשיו";
+    if (diffMin < 60) return `לפני ${diffMin} דק׳`;
+    const diffHr = Math.floor(diffMin / 60);
+    if (diffHr < 24) return `לפני ${diffHr} שע׳`;
+    const diffDay = Math.floor(diffHr / 24);
+    if (diffDay < 7) return `לפני ${diffDay} ימים`;
+    return new Date(iso).toLocaleDateString("he-IL");
+  }
 
   async function refreshSession() {
     if (!client) return;
@@ -28,6 +60,7 @@
       await loadRedemption();
       await Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge()]);
       if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers()]);
+      if (isAdmin()) await loadReports();
       await pullPrivateRecords();
       await pingActivity();
     }
@@ -49,10 +82,11 @@
   async function redeemCode(form) {
     if (!state.user) return;
     const code = String(form.code.value || "").trim();
-    if (!code) return setMessage("יש להזין קוד הזמנה");
+    if (!code) return setFieldErrors("communityInviteCode", { code: "יש להזין קוד הזמנה" });
     const { data, error } = await client.rpc("redeem_invite_code", { p_code: code });
-    if (error || data === "rate_limited") return setMessage(data === "rate_limited" ? "יותר מדי ניסיונות. יש לנסות שוב בעוד 15 דקות" : "קוד ההזמנה שגוי או לא פעיל");
-    if (data !== "member") return setMessage("קוד ההזמנה שגוי, פג תוקף או נוצל");
+    if (error || data === "rate_limited") return setFieldErrors("communityInviteCode", { code: data === "rate_limited" ? "יותר מדי ניסיונות. יש לנסות שוב בעוד 15 דקות" : "קוד ההזמנה שגוי או לא פעיל" });
+    if (data !== "member") return setFieldErrors("communityInviteCode", { code: "קוד ההזמנה שגוי, פג תוקף או נוצל" });
+    setFieldErrors("communityInviteCode", {});
     await loadRedemption();
     setMessage("קוד אושר, אפשר להשלים פרופיל");
     rerender();
@@ -78,7 +112,11 @@
     if (!state.user || !isStaff()) return;
     const title = String(form.title.value || "").trim().slice(0, 120);
     const body = String(form.body.value || "").trim().slice(0, 2000);
-    if (!title || !body) return setMessage("יש למלא כותרת ותוכן להודעה");
+    const errors = {};
+    if (!title) errors.title = "יש למלא כותרת";
+    if (!body) errors.body = "יש למלא תוכן להודעה";
+    if (Object.keys(errors).length) return setFieldErrors("communityAnnouncement", errors);
+    setFieldErrors("communityAnnouncement", {});
     const payload = { author_id: state.user.id, title, body };
     if (form.pinToday && form.pinToday.checked) payload.pinned_date = todayIso();
     const { error } = await client.from("announcements").insert(payload);
@@ -97,7 +135,13 @@
     const title = String(form.title.value || "").trim().slice(0, 120);
     const comparisonKey = String(form.comparisonKey.value || "").trim().slice(0, 160);
     const startsOn = form.startsOn.value, endsOn = form.endsOn.value;
-    if (!title || !comparisonKey || !startsOn || !endsOn) return setMessage("יש למלא את כל שדות האתגר");
+    const errors = {};
+    if (!title) errors.title = "יש למלא שם לאתגר";
+    if (!comparisonKey) errors.comparisonKey = "יש למלא מפתח השוואה";
+    if (!startsOn) errors.startsOn = "יש לבחור תאריך התחלה";
+    if (!endsOn) errors.endsOn = "יש לבחור תאריך סיום";
+    if (Object.keys(errors).length) return setFieldErrors("communityWeeklyChallenge", errors);
+    setFieldErrors("communityWeeklyChallenge", {});
     const { error } = await client.from("weekly_challenges").insert({ title, comparison_key: comparisonKey, starts_on: startsOn, ends_on: endsOn, created_by: state.user.id });
     if (error) return setMessage("קביעת האתגר נכשלה");
     form.reset(); await loadWeeklyChallenge(); setMessage("האתגר השבועי עודכן"); rerender();
@@ -111,6 +155,24 @@
     if (!state.user || !isStaff()) return;
     const { data, error } = await client.rpc("coach_new_members");
     state.newMembers = error ? [] : (data || []);
+  }
+  // Admin-only (see isAdmin()) — matches review_report()'s own
+  // is_admin-only check and the posts_select_admin_review RLS policy that
+  // lets this embed actually resolve the reported post's content.
+  async function loadReports() {
+    if (!state.user || !isAdmin()) return;
+    const { data, error } = await client.from("reports")
+      .select("id,reason,details,status,created_at,reviewed_at,resolution_notes,post_id,reporter_id,profiles!reports_reporter_id_fkey(handle,display_name),workout_posts(title,result_text,photo_path,profiles(handle,display_name))")
+      .order("created_at", { ascending: false }).limit(100);
+    state.reports = error ? [] : (data || []);
+  }
+  async function reviewReport(reportId, status) {
+    if (!state.user || !isAdmin()) return;
+    const { error } = await client.rpc("review_report", { p_report_id: reportId, p_status: status });
+    if (error) return setMessage("עדכון הדיווח נכשל");
+    await loadReports();
+    setMessage("הדיווח עודכן");
+    rerender();
   }
   async function publishAchievement(achievementId, title, rule) {
     if (!state.user || !state.profile) return setMessage("התחברו לקהילה כדי לשתף עיטור");
@@ -184,8 +246,9 @@
   }
   async function saveProfile(form) {
     if (!state.user) return;
+    const formId = form.id;
     const handle = String(form.handle.value || "").trim().toLowerCase();
-    if (!/^[a-zא-ת0-9_]{3,24}$/.test(handle)) return setMessage("שם המשתמש חייב להכיל 3–24 תווים (עברית או אנגלית), מספרים או קו תחתון, בלי רווחים");
+    if (!/^[a-zא-ת0-9_]{3,24}$/.test(handle)) return setFieldErrors(formId, { handle: "שם המשתמש חייב להכיל 3–24 תווים (עברית או אנגלית), מספרים או קו תחתון, בלי רווחים" });
     // is_admin is deliberately never sent from here — a coach-code
     // redemption is a label only (invite_redemptions.role), not automatic
     // full admin access. Full admin stays a manual dashboard-only flip;
@@ -193,7 +256,12 @@
     // separate piece of work, not built yet.
     const payload = { id: state.user.id, handle, display_name: String(form.displayName.value || "").trim().slice(0, 80), bio: String(form.bio.value || "").trim().slice(0, 160) };
     const { error } = await client.from("profiles").upsert(payload);
-    if (error) return setMessage(error.code === "23505" ? "שם המשתמש כבר תפוס" : "שמירת הפרופיל נכשלה");
+    if (error) {
+      if (error.code === "23505") setFieldErrors(formId, { handle: "שם המשתמש כבר תפוס" });
+      else setMessage("שמירת הפרופיל נכשלה");
+      return;
+    }
+    setFieldErrors(formId, {});
     await loadProfile(); setMessage("הפרופיל נשמר");
   }
   async function migrateLocalData() {
@@ -280,6 +348,17 @@
   }
   function setCommunityTab(tab) { state.communityTab = tab; rerender(); }
 
+  // Splices aria-invalid/aria-describedby onto an already-built <input>/
+  // <textarea> string when that field has a live validation error, and
+  // renders the matching visible error text right under the field — the
+  // same error, not a duplicate message, so a screen reader and a sighted
+  // user learn the same thing at the same place.
+  function field(formId, name, labelText, inputHtml) {
+    const err = (state.fieldErrors[formId] || {})[name];
+    const errId = `err-${formId}-${name}`;
+    const tagged = err ? inputHtml.replace(/^<(input|textarea)/, `<$1 aria-invalid="true" aria-describedby="${errId}"`) : inputHtml;
+    return `<label class="field"><span class="field-label">${labelText}</span>${tagged}${err ? `<span class="field-error" id="${errId}" role="alert">${safeText(err)}</span>` : ""}</label>`;
+  }
   function sectionHead(color, title, adminTag) {
     return `<div class="ach-section-head"><span class="ach-section-dot" style="background:${color};"></span><span class="ach-section-title">${title}</span>${adminTag ? `<span class="admin-tag">ניהול</span>` : ""}</div>`;
   }
@@ -299,8 +378,37 @@
   function renderComments(post) {
     const open = !!state.openComments[post.id];
     if (!open) return "";
-    const list = (state.comments[post.id] || []).map((c) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:2px;"><div style="font-size:12.5px;"><b>${safeText(c.profiles ? (c.profiles.display_name || "@" + c.profiles.handle) : "")}</b> ${safeText(c.body)}</div>${c.author_id === (state.user && state.user.id) ? `<button class="link-btn" data-community-action="delete-comment" data-id="${safeText(c.id)}" data-post="${safeText(post.id)}">מחיקה</button>` : ""}</div>`).join("") || `<div class="empty" style="padding:6px 0;">אין תגובות עדיין</div>`;
-    return `<div style="margin-top:10px;"><div class="log-list">${list}</div><form data-comment-post-id="${safeText(post.id)}" class="flex gap-6" style="margin-top:8px;"><input class="text-input" name="body" maxlength="280" placeholder="הוספת תגובה"/><button class="chip-btn primary" type="submit">שליחה</button></form></div>`;
+    const list = (state.comments[post.id] || []).map((c) => {
+      const name = c.profiles ? (c.profiles.display_name || "@" + c.profiles.handle) : "";
+      return `<div class="comment-row">${avatarHtml(name, 24)}<div style="flex:1;min-width:0;"><div style="font-size:12.5px;"><b>${safeText(name)}</b> ${safeText(c.body)}</div><div class="flex gap-10" style="margin-top:2px;"><span style="color:var(--steel);font-size:11px;">${relativeTime(c.created_at)}</span>${c.author_id === (state.user && state.user.id) ? `<button class="link-btn" data-community-action="delete-comment" data-id="${safeText(c.id)}" data-post="${safeText(post.id)}" aria-label="מחיקת תגובה">מחיקה</button>` : ""}</div></div></div>`;
+    }).join("") || `<div class="empty" style="padding:6px 0;">אין תגובות עדיין</div>`;
+    return `<div style="margin-top:10px;"><div class="log-list">${list}</div><form data-comment-post-id="${safeText(post.id)}" class="flex gap-6" style="margin-top:8px;"><input class="text-input" name="body" maxlength="280" placeholder="הוספת תגובה" aria-label="הוספת תגובה"/><button class="chip-btn primary" type="submit">שליחה</button></form></div>`;
+  }
+  function reasonLabel(reason) { return { spam: "ספאם", harassment: "הטרדה", privacy: "פרטיות", inappropriate: "תוכן לא הולם", other: "אחר" }[reason] || reason; }
+  function reportStatusLabel(status) { return { open: "פתוח", reviewing: "בטיפול", resolved: "טופל", dismissed: "נדחה" }[status] || status; }
+  function renderModeration() {
+    if (!isAdmin()) return "";
+    const open = state.reports.filter((r) => r.status === "open" || r.status === "reviewing");
+    const closed = state.reports.filter((r) => r.status === "resolved" || r.status === "dismissed");
+    const rowHtml = (r) => {
+      const post = r.workout_posts;
+      const authorName = post && post.profiles ? (post.profiles.display_name || "@" + post.profiles.handle) : "";
+      const reporterName = r.profiles ? (r.profiles.display_name || "@" + r.profiles.handle) : "משתמש";
+      const active = r.status === "open" || r.status === "reviewing";
+      return `<div class="chart-card" style="margin-bottom:10px;">
+        <div class="flex" style="justify-content:space-between;align-items:flex-start;gap:10px;">
+          <div style="min-width:0;">
+            <div style="font-weight:800;">${post ? safeText(post.title) : "הפוסט הוסר"}</div>
+            ${post ? `<div style="color:var(--steel);font-size:12.5px;margin-top:2px;">מאת ${safeText(authorName)}</div><div class="mono" style="color:var(--brass);margin-top:4px;">${safeText(post.result_text)}</div>` : ""}
+          </div>
+          <span class="admin-tag" style="${r.status === "open" ? "background:rgba(194,57,44,.12);border-color:var(--red);color:var(--red);" : ""}">${reportStatusLabel(r.status)}</span>
+        </div>
+        <div style="color:var(--steel);font-size:12.5px;margin-top:8px;">דווח ע״י ${safeText(reporterName)} · ${reasonLabel(r.reason)}${r.details ? ` — ${safeText(r.details)}` : ""} · ${relativeTime(r.created_at)}</div>
+        ${active ? `<div class="chip-row" style="margin-top:10px;">${r.status === "open" ? `<button class="chip-btn" data-community-action="review-report" data-id="${safeText(r.id)}" data-status="reviewing">סימון כבטיפול</button>` : ""}<button class="chip-btn primary" data-community-action="review-report" data-id="${safeText(r.id)}" data-status="resolved">סימון כטופל</button><button class="chip-btn" data-community-action="review-report" data-id="${safeText(r.id)}" data-status="dismissed">דחיית הדיווח</button></div>`
+          : `<div style="color:var(--steel);font-size:11px;margin-top:8px;">${r.resolution_notes ? safeText(r.resolution_notes) + " · " : ""}טופל ${relativeTime(r.reviewed_at)}</div>`}
+      </div>`;
+    };
+    return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "דיווחים לבדיקה", true)}${state.reports.length ? "" : `<div class="empty">אין דיווחים ממתינים</div>`}${open.map(rowHtml).join("")}${closed.length ? `<details style="margin-top:10px;"><summary class="link-btn" style="cursor:pointer;display:inline-block;">היסטוריית דיווחים שטופלו (${closed.length})</summary><div style="margin-top:8px;">${closed.map(rowHtml).join("")}</div></details>` : ""}</div>`;
   }
 
   window.renderCommunityApp = function () {
@@ -309,7 +417,7 @@
       ensureAnonymousSession();
       return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">מתחברים לקהילה…</div><div style="color:var(--steel);font-size:13px;">שנייה אחת.</div>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
     }
-    if (!state.redemption) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">קוד הזמנה למועדון</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">הקהילה פתוחה רק למי שקיבל/ה קוד הזמנה מהמאמן/ת. הקוד לא נוגע לרישום האימונים עצמו — הוא רק פותח את לשונית הקהילה.</div><form id="communityInviteCode"><input class="text-input" name="code" dir="ltr" placeholder="קוד הזמנה" required/><button class="save-btn" type="submit" style="margin-top:12px;">אישור קוד</button></form>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
+    if (!state.redemption) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">קוד הזמנה למועדון</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">הקהילה פתוחה רק למי שקיבל/ה קוד הזמנה מהמאמן/ת. הקוד לא נוגע לרישום האימונים עצמו — הוא רק פותח את לשונית הקהילה.</div><form id="communityInviteCode">${field("communityInviteCode", "code", "קוד הזמנה", `<input class="text-input" name="code" dir="ltr" placeholder="קוד הזמנה" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">אישור קוד</button></form>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
     // Without this gate, a fresh code-redeemer landed straight on the Feed
     // sub-tab — mostly empty, nothing prompting them to the profile form
     // buried in Account — with no clear signal anything had actually been
@@ -317,7 +425,7 @@
     // gates above it: this screen is all there is until a profile exists,
     // and the whole screen changing to the real tabbed UI afterward is the
     // confirmation, not just a toast that's easy to miss.
-    if (!state.profile) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">השלמת פרופיל</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">כמעט סיימתם — עוד רגע אחד ותהיו בפנים.</div><form id="communityProfile"><label class="field"><span class="field-label">שם משתמש (handle)</span><input class="text-input" name="handle" dir="auto" placeholder="למשל דנה_כהן" required/></label><label class="field"><span class="field-label">שם תצוגה</span><input class="text-input" name="displayName" placeholder="שם תצוגה"/></label><label class="field"><span class="field-label">קצת עליי</span><textarea class="text-input" name="bio" maxlength="160" placeholder="כמה מילים עליי"></textarea></label><button class="save-btn" type="submit" style="margin-top:12px;">שמירת פרופיל</button></form>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
+    if (!state.profile) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">השלמת פרופיל</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">כמעט סיימתם — עוד רגע אחד ותהיו בפנים.</div><form id="communityProfile">${field("communityProfile", "handle", "שם משתמש (handle)", `<input class="text-input" name="handle" dir="auto" placeholder="למשל דנה_כהן" required/>`)}<label class="field"><span class="field-label">שם תצוגה</span><input class="text-input" name="displayName" placeholder="שם תצוגה"/></label><label class="field"><span class="field-label">קצת עליי</span><textarea class="text-input" name="bio" maxlength="160" placeholder="כמה מילים עליי"></textarea></label><button class="save-btn" type="submit" style="margin-top:12px;">שמירת פרופיל</button></form>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
     const p = state.profile || {};
     const staff = isStaff();
 
@@ -325,7 +433,7 @@
     // feed with comments, sharing, comparisons ----
     const pinnedToday = state.announcements.find((a) => a.pinned_date === todayIso());
     const pinnedHtml = pinnedToday ? `<div class="chart-card admin-card" style="margin-bottom:12px;"><div style="font-weight:800;margin-bottom:6px;">📌 הערת האימון להיום</div><div style="font-weight:700;">${safeText(pinnedToday.title)}</div><div style="color:var(--steel);font-size:13px;margin-top:4px;">${safeText(pinnedToday.body)}</div></div>` : "";
-    const announceComposer = staff ? `<form id="communityAnnouncement" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">הודעה חדשה למועדון<span class="admin-tag">ניהול</span></div><label class="field"><span class="field-label">כותרת</span><input class="text-input" name="title" placeholder="כותרת" required/></label><label class="field"><span class="field-label">תוכן</span><textarea class="text-input" name="body" maxlength="2000" placeholder="תוכן ההודעה" required></textarea></label><label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="pinToday"/><span style="font-size:12.5px;color:var(--steel);">סמן כהערת האימון להיום</span></label><button class="chip-btn primary" type="submit" style="margin-top:10px;">פרסום הודעה</button></form>` : "";
+    const announceComposer = staff ? `<form id="communityAnnouncement" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">הודעה חדשה למועדון<span class="admin-tag">ניהול</span></div>${field("communityAnnouncement", "title", "כותרת", `<input class="text-input" name="title" placeholder="כותרת" required/>`)}${field("communityAnnouncement", "body", "תוכן", `<textarea class="text-input" name="body" maxlength="2000" placeholder="תוכן ההודעה" required></textarea>`)}<label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="pinToday"/><span style="font-size:12.5px;color:var(--steel);">סמן כהערת האימון להיום</span></label><button class="chip-btn primary" type="submit" style="margin-top:10px;">פרסום הודעה</button></form>` : "";
     const otherAnnouncements = state.announcements.filter((a) => a !== pinnedToday);
     const announcementsList = otherAnnouncements.length ? `<div class="log-list">${otherAnnouncements.map((a) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:4px;"><div style="font-weight:700;">${safeText(a.title)}</div><div style="color:var(--steel);font-size:13px;">${safeText(a.body)}</div><div style="color:var(--steel);font-size:11px;">${safeText(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div></div>`).join("")}</div>` : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
     const announcementsHtml = `<div class="ach-section">${sectionHead("var(--brass)", "הודעות מהמועדון")}${pinnedHtml}${announcementsList}${announceComposer}</div>`;
@@ -333,7 +441,17 @@
     const candidates = typeof window.communityShareCandidates === "function" ? window.communityShareCandidates() : [];
     const sharing = candidates.length ? `<div class="ach-section">${sectionHead("var(--energy)", "שיתוף תוצאה")}<div class="log-list">${candidates.map((item) => `<div class="log-row"><div><div style="font-weight:700;">${safeText(item.title)}</div><div class="mono" style="color:var(--brass);">${safeText(item.resultText)}</div></div><div class="chip-row" style="margin-top:0;align-items:center;"><input type="file" id="photo-${safeText(item.id)}" accept="image/jpeg,image/png,image/webp" style="display:none;"/><label class="chip-btn" for="photo-${safeText(item.id)}" style="cursor:pointer;">📷 הוספת תמונה</label><button class="chip-btn" data-community-action="publish" data-type="${safeText(item.type)}" data-id="${safeText(item.id)}" data-visibility="followers">עוקבים</button><button class="chip-btn primary" data-community-action="publish" data-type="${safeText(item.type)}" data-id="${safeText(item.id)}" data-visibility="public">ציבורי</button></div></div>`).join("")}</div></div>` : "";
 
-    const feed = state.feed.length ? `<div class="log-list">${state.feed.map((post) => `<article class="chart-card"><div style="font-weight:800;">${safeText(post.display_name || "@" + post.handle)}</div><div style="font-size:16px;margin:8px 0;">${safeText(post.title)}</div><div class="mono" style="color:var(--brass);font-weight:700;">${safeText(post.result_text)}</div>${post.photo_path && photoUrlCache[post.photo_path] ? `<img src="${photoUrlCache[post.photo_path]}" alt="" style="width:100%;border-radius:12px;margin-top:10px;display:block;"/>` : ""}<div class="chip-row"><button class="chip-btn" data-community-action="cheer" data-id="${safeText(post.id)}">🔥 ${Number(post.cheer_count || 0)}</button><button class="chip-btn" data-community-action="toggle-comments" data-id="${safeText(post.id)}">💬 ${Number(post.comment_count || 0)}</button>${post.comparison_key ? `<button class="chip-btn" data-community-action="compare" data-key="${safeText(post.comparison_key)}">השוואה</button>` : ""}<button class="chip-btn" data-community-action="report" data-id="${safeText(post.id)}">דיווח</button></div>${renderComments(post)}</article>`).join("")}</div>` : `<div class="empty">עדיין אין שיתופים בפיד</div>`;
+    const feed = state.feed.length ? `<div class="log-list">${state.feed.map((post) => `<article class="chart-card post-card">
+      <div class="post-head">${avatarHtml(post.display_name || post.handle)}<div class="post-head-text"><div class="post-author">${safeText(post.display_name || "@" + post.handle)}</div><div class="post-time">${relativeTime(post.published_at)}</div></div></div>
+      <div class="post-title">${safeText(post.title)}</div>
+      <div class="mono post-result">${safeText(post.result_text)}</div>
+      ${post.photo_path && photoUrlCache[post.photo_path] ? `<img src="${photoUrlCache[post.photo_path]}" alt="" class="post-photo"/>` : ""}
+      <div class="chip-row post-actions">
+        <button class="chip-btn" data-community-action="cheer" data-id="${safeText(post.id)}" aria-label="עידוד, ${Number(post.cheer_count || 0)} עידודים">🔥 ${Number(post.cheer_count || 0)}</button>
+        <button class="chip-btn" data-community-action="toggle-comments" data-id="${safeText(post.id)}" aria-label="תגובות, ${Number(post.comment_count || 0)}">💬 ${Number(post.comment_count || 0)}</button>
+        ${post.comparison_key ? `<button class="chip-btn" data-community-action="compare" data-key="${safeText(post.comparison_key)}">השוואה</button>` : ""}
+        <button class="chip-btn" data-community-action="report" data-id="${safeText(post.id)}">דיווח</button>
+      </div>${renderComments(post)}</article>`).join("")}</div>` : `<div class="empty">עדיין אין שיתופים בפיד</div>`;
     const feedHtml = `<div class="ach-section">${sectionHead("var(--blue)", "הפיד שלי")}${feed}</div>`;
 
     const comparison = state.comparison.length ? `<div class="ach-section">${sectionHead("var(--blue)", "השוואת תוצאות")}<div class="log-list">${state.comparison.map((item, index) => `<div class="log-row"><span>${index + 1}. ${safeText(item.display_name || "@" + item.handle)}</span><span class="mono" style="color:var(--brass);">${safeText(item.result_text)}</span></div>`).join("")}</div></div>` : "";
@@ -341,7 +459,7 @@
     const feedTab = announcementsHtml + sharing + comparison + feedHtml;
 
     // ---- Boards tab: weekly challenge + streaks, top-3-plus-your-rank ----
-    const challengeSetter = staff ? `<form id="communityWeeklyChallenge" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">קביעת אתגר שבועי<span class="admin-tag">ניהול</span></div><label class="field"><span class="field-label">שם האתגר</span><input class="text-input" name="title" placeholder="שם האתגר" required/></label><label class="field"><span class="field-label">מפתח השוואה</span><input class="text-input" name="comparisonKey" dir="ltr" placeholder="למשל back-squat" required/></label><div class="flex gap-10 field"><input class="text-input" name="startsOn" type="date" required/><input class="text-input" name="endsOn" type="date" required/></div><button class="chip-btn primary" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
+    const challengeSetter = staff ? `<form id="communityWeeklyChallenge" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">קביעת אתגר שבועי<span class="admin-tag">ניהול</span></div>${field("communityWeeklyChallenge", "title", "שם האתגר", `<input class="text-input" name="title" placeholder="שם האתגר" required/>`)}${field("communityWeeklyChallenge", "comparisonKey", "מפתח השוואה", `<input class="text-input" name="comparisonKey" dir="ltr" placeholder="למשל back-squat" required/>`)}<div class="flex gap-10 field">${field("communityWeeklyChallenge", "startsOn", "תאריך התחלה", `<input class="text-input" name="startsOn" type="date" required/>`)}${field("communityWeeklyChallenge", "endsOn", "תאריך סיום", `<input class="text-input" name="endsOn" type="date" required/>`)}</div><button class="chip-btn primary" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
     const weeklyLeaderboardList = state.weeklyChallenge ? renderRankedList(state.weeklyLeaderboard, (it) => it.author_id, (it) => safeText(it.result_text)) : `<div class="empty">אין אתגר פעיל כרגע</div>`;
     const weeklyChallengeHtml = `<div class="ach-section">${sectionHead("var(--teal)", state.weeklyChallenge ? `אתגר השבוע: ${safeText(state.weeklyChallenge.title)}` : "אתגר השבוע")}${weeklyLeaderboardList}${challengeSetter}</div>`;
 
@@ -351,27 +469,28 @@
 
     // ---- Account tab: profile, member search, admin member management ----
     const account = `<form id="communityProfile" class="chart-card"><div style="font-weight:800;font-size:16px;margin-bottom:12px;">הפרופיל שלי</div>
-      <label class="field"><span class="field-label">שם משתמש (handle)</span><input class="text-input" name="handle" dir="auto" value="${safeText(p.handle || "")}" placeholder="למשל דנה_כהן" required/></label>
+      ${field("communityProfile", "handle", "שם משתמש (handle)", `<input class="text-input" name="handle" dir="auto" value="${safeText(p.handle || "")}" placeholder="למשל דנה_כהן" required/>`)}
       <label class="field"><span class="field-label">שם תצוגה</span><input class="text-input" name="displayName" value="${safeText(p.display_name || "")}" placeholder="שם תצוגה"/></label>
       <label class="field"><span class="field-label">קצת עליי</span><textarea class="text-input" name="bio" maxlength="160" placeholder="כמה מילים עליי">${safeText(p.bio || "")}</textarea></label>
       <div class="chip-row"><button class="chip-btn primary" type="submit">שמירת פרופיל</button><button class="chip-btn" type="button" data-community-action="migrate">סנכרון היסטוריה פרטית</button></div>
     </form>`;
 
-    const people = `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--steel)", "מציאת מתאמנים")}<div class="search-box"><input id="communityPeopleSearch" placeholder="חיפוש לפי שם או @handle" aria-label="חיפוש מתאמנים" /></div>${state.people.length ? `<div class="log-list">${state.people.map((person) => `<div class="log-row"><div><div style="font-weight:700;">${safeText(person.display_name || "@" + person.handle)}</div><div style="color:var(--steel);font-size:12px;">@${safeText(person.handle)} ${safeText(person.bio || "")}</div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="follow" data-id="${safeText(person.id)}">מעקב</button><button class="chip-btn" data-community-action="block" data-id="${safeText(person.id)}">חסימה</button></div></div>`).join("")}</div>` : ""}</div>`;
+    const people = `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--steel)", "מציאת מתאמנים")}<div class="search-box"><input id="communityPeopleSearch" placeholder="חיפוש לפי שם או @handle" aria-label="חיפוש מתאמנים" /></div>${state.people.length ? `<div class="log-list">${state.people.map((person) => `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32)}<div><div style="font-weight:700;">${safeText(person.display_name || "@" + person.handle)}</div><div style="color:var(--steel);font-size:12px;">@${safeText(person.handle)} ${safeText(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="follow" data-id="${safeText(person.id)}">מעקב</button><button class="chip-btn" data-community-action="block" data-id="${safeText(person.id)}">חסימה</button></div></div>`).join("")}</div>` : ""}</div>`;
 
     const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מתאמנים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין מתאמנים חדשים לאחרונה</div>`}</div>` : "";
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
-    const accountTab = account + people + newMembersHtml + inactiveHtml
+    const accountTab = account + people + newMembersHtml + inactiveHtml + renderModeration()
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:20px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
 
+    const pendingReports = isAdmin() ? state.reports.filter((r) => r.status === "open").length : 0;
     const tabs = [
       { id: "feed", label: "פיד", html: feedTab },
       { id: "boards", label: "לוחות", html: boardsTab },
-      { id: "account", label: "חשבון", html: accountTab },
+      { id: "account", label: "חשבון", html: accountTab, badge: pendingReports },
     ];
     const activeTab = tabs.find((t) => t.id === state.communityTab) || tabs[0];
-    const tabBar = `<div class="subtabbar">${tabs.map((t) => `<button class="subtabbtn${t.id === activeTab.id ? " active" : ""}" data-community-action="set-tab" data-tab="${t.id}">${t.label}</button>`).join("")}</div>`;
+    const tabBar = `<div class="subtabbar">${tabs.map((t) => `<button class="subtabbtn${t.id === activeTab.id ? " active" : ""}" data-community-action="set-tab" data-tab="${t.id}">${t.label}${t.badge ? `<span class="tab-badge" aria-label="${t.badge} דיווחים ממתינים">${t.badge}</span>` : ""}</button>`).join("")}</div>`;
 
     return tabBar
       + (state.message ? `<div class="footer-note" role="status" style="color:var(--brass);margin-bottom:14px;">${safeText(state.message)}</div>` : "")
@@ -404,6 +523,7 @@
     else if (action === "toggle-comments") toggleComments(el.dataset.id);
     else if (action === "delete-comment") deleteComment(el.dataset.id, el.dataset.post);
     else if (action === "set-tab") setCommunityTab(el.dataset.tab);
+    else if (action === "review-report") reviewReport(el.dataset.id, el.dataset.status);
   };
   window.isCommunitySignedIn = function () { return !!(state.user && state.profile); };
   window.shareAchievementToCommunity = function (achievementId, title, rule) { publishAchievement(achievementId, title, rule); };
@@ -423,11 +543,12 @@
         loadRedemption()
           .then(() => Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), flushOutbox()]))
           .then(() => (isStaff() ? Promise.all([loadInactiveMembers(), loadNewMembers()]) : null))
+          .then(() => (isAdmin() ? loadReports() : null))
           .then(pullPrivateRecords)
           .then(pingActivity)
           .then(rerender);
       } else {
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null;
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {};
         rerender();
       }
     });

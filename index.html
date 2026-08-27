@@ -312,7 +312,24 @@
   .admin-card{ border-color:var(--energy); }
   .field-label{ font-size:11px; font-weight:700; color:var(--steel); display:block; margin-bottom:4px; }
   .field + .field{ margin-top:10px; }
+  .field-error{ display:block; color:var(--red); font-size:12px; margin-top:5px; }
+  .text-input[aria-invalid="true"]{ border-color:var(--red); }
   .ach-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(72px,1fr)); gap:16px 8px; }
+
+  /* Community: identity + timing, so a feed post reads as a person and a
+     moment rather than an anonymous card of numbers. */
+  .avatar-badge{ display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; border-radius:50%; color:#fff; font-weight:800; line-height:1; }
+  .post-card{ padding:16px; }
+  .post-head{ display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .post-head-text{ display:flex; flex-direction:column; gap:1px; min-width:0; }
+  .post-author{ font-weight:800; font-size:14px; }
+  .post-time{ color:var(--steel); font-size:11px; }
+  .post-title{ font-size:16px; margin-bottom:4px; }
+  .post-result{ color:var(--brass); font-weight:700; }
+  .post-photo{ width:100%; max-height:360px; object-fit:cover; border-radius:12px; margin-top:10px; display:block; }
+  .post-actions{ margin-top:12px; }
+  .comment-row{ display:flex; align-items:flex-start; gap:8px; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:8px 10px; }
+  .tab-badge{ display:inline-flex; align-items:center; justify-content:center; min-width:16px; height:16px; padding:0 4px; margin-inline-start:6px; border-radius:999px; background:var(--red); color:#fff; font-size:10px; font-weight:800; }
 
   .celebration-stars{ position:absolute; inset:0; pointer-events:none; overflow:hidden; }
   .cstar{ position:absolute; opacity:.35; }

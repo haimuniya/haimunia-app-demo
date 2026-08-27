@@ -13,7 +13,9 @@ The app remains fully usable offline when the backend is not configured.
    `202608270004_community_engagement.sql`, then
    `202608270005_coach_tier.sql`, then
    `202608270006_security_hardening.sql`, then
-   `202608270007_grant_coach_by_handle.sql`), in each project.
+   `202608270007_grant_coach_by_handle.sql`, then
+   `202608270008_hebrew_handles.sql`, then
+   `202608270009_admin_moderation_visibility.sql`), in each project.
    `202608270001` adds the reactions RLS fix, achievement-unlock posts,
    coach announcements, activity streaks, and the weekly challenge — none
    of those features work until it's applied. `202608270002` is a
