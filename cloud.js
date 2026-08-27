@@ -90,7 +90,7 @@
   }
   async function redeemCode(form) {
     if (!state.user) return;
-    const code = String(form.code.value || "").trim();
+    const code = String(form.elements.code.value || "").trim();
     if (!code) return setFieldErrors("communityInviteCode", { code: "יש להזין קוד הזמנה" });
     const { data, error } = await client.rpc("redeem_invite_code", { p_code: code });
     if (error || data === "rate_limited") return setFieldErrors("communityInviteCode", { code: data === "rate_limited" ? "יותר מדי ניסיונות. יש לנסות שוב בעוד 15 דקות" : "קוד ההזמנה שגוי או לא פעיל" });
@@ -119,15 +119,15 @@
   }
   async function postAnnouncement(form) {
     if (!state.user || !isStaff()) return;
-    const title = String(form.title.value || "").trim().slice(0, 120);
-    const body = String(form.body.value || "").trim().slice(0, 2000);
+    const title = String(form.elements.title.value || "").trim().slice(0, 120);
+    const body = String(form.elements.body.value || "").trim().slice(0, 2000);
     const errors = {};
     if (!title) errors.title = "יש למלא כותרת";
     if (!body) errors.body = "יש למלא תוכן להודעה";
     if (Object.keys(errors).length) return setFieldErrors("communityAnnouncement", errors);
     setFieldErrors("communityAnnouncement", {});
     const payload = { author_id: state.user.id, title, body };
-    if (form.pinToday && form.pinToday.checked) payload.pinned_date = todayIso();
+    if (form.elements.pinToday && form.elements.pinToday.checked) payload.pinned_date = todayIso();
     const { error } = await client.from("announcements").insert(payload);
     if (error) return setMessage("פרסום ההודעה נכשל");
     form.reset(); await loadAnnouncements(); setMessage("ההודעה פורסמה"); rerender();
@@ -141,9 +141,9 @@
   }
   async function setWeeklyChallenge(form) {
     if (!state.user || !isStaff()) return;
-    const title = String(form.title.value || "").trim().slice(0, 120);
-    const comparisonKey = String(form.comparisonKey.value || "").trim().slice(0, 160);
-    const startsOn = form.startsOn.value, endsOn = form.endsOn.value;
+    const title = String(form.elements.title.value || "").trim().slice(0, 120);
+    const comparisonKey = String(form.elements.comparisonKey.value || "").trim().slice(0, 160);
+    const startsOn = form.elements.startsOn.value, endsOn = form.elements.endsOn.value;
     const errors = {};
     if (!title) errors.title = "יש למלא שם לאתגר";
     if (!comparisonKey) errors.comparisonKey = "יש למלא מפתח השוואה";
@@ -229,7 +229,7 @@
   }
   async function addComment(postId, form) {
     if (!state.user) return;
-    const body = String(form.body.value || "").trim();
+    const body = String(form.elements.body.value || "").trim();
     if (!body) return;
     const { error } = await client.rpc("add_post_comment", { p_post_id: postId, p_body: body });
     if (error) return setMessage(error.message === "rate_limited" ? "יותר מדי תגובות, נסו שוב בעוד כמה דקות" : "שליחת התגובה נכשלה");
@@ -272,8 +272,8 @@
   // anonymous-only sign-in structurally couldn't offer.
   async function login(form) {
     if (!client) return;
-    const username = String(form.username.value || "").trim().toLowerCase();
-    const password = String(form.password.value || "");
+    const username = String(form.elements.username.value || "").trim().toLowerCase();
+    const password = String(form.elements.password.value || "");
     const errors = {};
     if (!USERNAME_RE.test(username)) errors.username = "שם משתמש לא תקין";
     if (!password) errors.password = "יש להזין סיסמה";
@@ -290,9 +290,9 @@
   // no migration step.
   async function setCredentials(form) {
     if (!state.user) return;
-    const username = String(form.username.value || "").trim().toLowerCase();
-    const password = String(form.password.value || "");
-    const passwordConfirm = String(form.passwordConfirm.value || "");
+    const username = String(form.elements.username.value || "").trim().toLowerCase();
+    const password = String(form.elements.password.value || "");
+    const passwordConfirm = String(form.elements.passwordConfirm.value || "");
     const errors = {};
     if (!USERNAME_RE.test(username)) errors.username = "שם משתמש: 3–24 תווים, אותיות אנגליות קטנות, ספרות או קו תחתון";
     if (password.length < 8) errors.password = "הסיסמה חייבת להכיל לפחות 8 תווים";
@@ -308,14 +308,14 @@
   async function saveProfile(form) {
     if (!state.user) return;
     const formId = form.id;
-    const handle = String(form.handle.value || "").trim().toLowerCase();
+    const handle = String(form.elements.handle.value || "").trim().toLowerCase();
     if (!/^[a-zא-ת0-9_]{3,24}$/.test(handle)) return setFieldErrors(formId, { handle: "שם המשתמש חייב להכיל 3–24 תווים (עברית או אנגלית), מספרים או קו תחתון, בלי רווחים" });
     // is_admin is deliberately never sent from here — a coach-code
     // redemption is a label only (invite_redemptions.role), not automatic
     // full admin access. Full admin stays a manual dashboard-only flip;
     // real coach-scoped permissions (their own classes/members) are a
     // separate piece of work, not built yet.
-    const payload = { id: state.user.id, handle, display_name: String(form.displayName.value || "").trim().slice(0, 80), bio: String(form.bio.value || "").trim().slice(0, 160) };
+    const payload = { id: state.user.id, handle, display_name: String(form.elements.displayName.value || "").trim().slice(0, 80), bio: String(form.elements.bio.value || "").trim().slice(0, 160) };
     const { error } = await client.from("profiles").upsert(payload);
     if (error) {
       if (error.code === "23505") setFieldErrors(formId, { handle: "שם המשתמש כבר תפוס" });

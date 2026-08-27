@@ -13,8 +13,9 @@ const testDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const root = path.dirname(testDir);
 const htmlPath = path.join(root, "index.html");
 const appJsPath = path.join(root, "app.js");
+const cloudJsPath = path.join(root, "cloud.js");
 
-export async function bootApp() {
+function newDom() {
   const html = readFileSync(htmlPath, "utf8");
   const dom = new JSDOM(html, {
     url: "https://example.test/",
@@ -44,7 +45,36 @@ export async function bootApp() {
   // that go through confirmation flows (e.g. import merge).
   window.confirm = () => true;
   window.alert = () => {};
+  return window;
+}
 
+export async function bootApp() {
+  const window = newDom();
+  const appJs = readFileSync(appJsPath, "utf8");
+  window.eval(appJs);
+
+  await waitFor(() => window.document.getElementById("loading").style.display === "none", 5000);
+  return window;
+}
+
+// Boots cloud.js alongside app.js, in the same order the real
+// index.html script tags do (cloud.js first, so its functions exist on
+// window by the time app.js's render() can call
+// window.renderCommunityApp), wired to a mock Supabase client instead of
+// a real project - see helpers/mockSupabase.mjs. This is what lets a
+// test actually execute the community/sync surface (refreshSession,
+// the login/signup gates, publishing, moderation) instead of only
+// regex-matching cloud.js's source text.
+export async function bootCommunity(mock, opts = {}) {
+  const window = newDom();
+  window.HAIMUNIA_CONFIG = { supabaseUrl: "https://mockproj.supabase.co", supabasePublishableKey: "mock-key" };
+  window.supabase = { createClient: () => mock.client };
+  // cloud.js reads this synchronously at module init (state.syncEnabled),
+  // so it has to be set before cloud.js is eval'd below, not after.
+  if (opts.syncEnabled) window.localStorage.setItem("haimunia-demo:cloudSyncEnabled", "1");
+
+  const cloudJs = readFileSync(cloudJsPath, "utf8");
+  window.eval(cloudJs);
   const appJs = readFileSync(appJsPath, "utf8");
   window.eval(appJs);
 

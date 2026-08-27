@@ -1,3 +1,38 @@
+# Submission 5: cloud.js now executes under test, not just source-matches — 2026-08-27
+
+Independent architecture review, highest-leverage recommendation: every
+cloud.js test before this one was a regex match against the source
+text - it could prove a function signature exists, but not that the
+code actually runs correctly. That exact gap is why the
+refreshSession()-doesn't-flush-before-pulling regression (Submission 1)
+could ship undetected in the first place, and it's the reason the whole
+community/sync surface had the least durable coverage in the app despite
+being the most recently and heavily hardened part of it.
+
+Added `test/helpers/mockSupabase.mjs` (an in-memory mock of the
+Supabase client - auth, `.from()` query chaining, `.rpc()`, `.storage()`)
+and `bootCommunity()` in `test/helpers/boot.mjs`, which boots cloud.js
+alongside the real app.js in jsdom the way `bootApp()` already did for
+app.js alone. Two real executing tests now exist:
+`community-live-sync-and-auth.test.mjs` runs the exact scenario the
+Submission 1 sync bug corrupted (a queued local edit reaching the mock
+server before a stale remote copy would be pulled back) end to end, and
+runs the full signup lifecycle for real - bootstrap, redeem code, set
+credentials, complete profile, reach the app, sign out, log back in and
+land in the same account - the way a real login flow actually behaves,
+not just what the source claims it does.
+
+Building this surfaced one real, previously-latent bug: every cloud.js
+form handler read fields via the legacy `form.fieldName` shorthand,
+which real browsers support but jsdom doesn't implement (a known jsdom
+gap, not a bug in the app) - switched to the more explicit,
+equally-standard `form.elements.fieldName`, which also sidesteps a
+real footgun the bare form gets wrong in every browser: a field
+literally named `action` or `reset` would otherwise shadow the form's
+own methods.
+
+239/239 tests pass.
+
 # Submission 4: eight smaller UX findings from the audit — 2026-08-27
 
 Batched together since each is small and self-contained:
