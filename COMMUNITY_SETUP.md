@@ -178,7 +178,13 @@ objects through SQL because it only removes metadata.
   Sign In / Providers) — without it, opening the Community tab fails
   silently at `signInAnonymously()` and nobody can ever get past
   "מתחברים לקהילה…".
-- Run the migration against an empty staging database.
+- Running the migrations against an empty database is now automated: the
+  `migration-check` job in `.github/workflows/test.yml` applies every
+  file in `supabase/migrations/` from scratch on every push and PR via
+  the Supabase CLI's local stack. Still worth doing once by hand against
+  the real staging project before a release, since CI only proves the
+  SQL applies cleanly, not that staging's existing data/config doesn't
+  conflict with it.
 - Test every RLS policy as two different users, especially private records, blocks, follower-only posts, and reports.
 - Confirm bodyweight, measurements, session notes, WOD notes, and partner tags never appear in `workout_posts` or `community_feed`.
 - Confirm a reported post disappears for its reporter.

@@ -1,0 +1,74 @@
+# Local/CI-only config for the Supabase CLI. Not used in production - the
+# real project is configured through the Supabase dashboard. This file
+# exists so `supabase start` can spin up a throwaway local stack and apply
+# every file in supabase/migrations/ in order, catching a broken migration
+# in CI before it ever reaches the real project. See
+# https://supabase.com/docs/guides/local-development/cli/config
+project_id = "haimunia-app-demo"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+# Keep in sync with the real project's Postgres major version
+# (`show server_version;` on the real project) if migrations ever start
+# depending on version-specific behavior.
+major_version = 17
+
+[db.migrations]
+enabled = true
+
+[db.seed]
+# No seed data - the migrations themselves are what this check verifies.
+enabled = false
+
+[realtime]
+enabled = false
+
+[studio]
+enabled = false
+
+[storage]
+enabled = true
+file_size_limit = "50MiB"
+
+[storage.s3_protocol]
+enabled = false
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:3000"
+additional_redirect_urls = []
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 10
+enable_signup = true
+# Required - see COMMUNITY_SETUP.md's "Sign-in has no email" section. Every
+# real signup starts as an anonymous session before becoming permanent.
+enable_anonymous_sign_ins = true
+enable_manual_linking = false
+minimum_password_length = 6
+password_requirements = ""
+
+[auth.email]
+enable_signup = true
+# Matches the real project's "Confirm email OFF" setting - see
+# COMMUNITY_SETUP.md step 3. No inbox ever exists behind the synthetic
+# @members.haimuniya.invalid addresses this app generates.
+enable_confirmations = false
+secure_password_change = false
+
+[auth.sms]
+enable_signup = false
+
+[edge_runtime]
+enabled = false
+
+[analytics]
+enabled = false

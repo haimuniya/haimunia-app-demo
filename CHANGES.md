@@ -1,3 +1,22 @@
+# Submission 10: migration-apply CI check — 2026-08-27
+
+Last infra item from the deferred architecture list. A `migration-check`
+job in `.github/workflows/test.yml` now runs `supabase start` (via
+`supabase/setup-cli`) on every push and PR, which spins up a throwaway
+local Postgres + Auth + Storage stack and applies every file in
+`supabase/migrations/`, in order, from scratch. The migrations lean on
+Supabase-specific schemas (`auth.users`, `auth.uid()`, `storage.objects`,
+the `extensions` schema for pgcrypto) that a plain `postgres:` service
+container in Actions doesn't have, so this uses the real local Supabase
+stack rather than a bare database - the same reason
+"Run the migration against an empty staging database" was previously a
+manual step in `COMMUNITY_SETUP.md`'s launch checklist. This automates
+that check on every push instead of relying on someone remembering to do
+it by hand before a release. New `supabase/config.toml` (CLI-only, not
+used in production - the real project stays configured through the
+dashboard) mirrors the two settings the app actually depends on:
+anonymous sign-ins on, email confirmation off.
+
 # Submission 9: anon-key smoke test, vendored-version check, pre-commit hook — 2026-08-27
 
 Three infra items from the deferred architecture list, run against the
