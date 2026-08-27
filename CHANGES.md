@@ -1,3 +1,38 @@
+# Submission 4: eight smaller UX findings from the audit — 2026-08-27
+
+Batched together since each is small and self-contained:
+
+- Bodyweight now gets its own section label in the History tab, instead
+  of reading as just another tracked exercise (measurements already had
+  one).
+- The main tab bar and Community sub-tab bar meet the 44px touch-target
+  baseline — they were the app's most-tapped control, often used with
+  chalky hands, sitting under it.
+- Onboarding now mentions the Community tab and that it needs an invite
+  code — previously the least self-explanatory of the five tabs was the
+  one left out of the four-item walkthrough.
+- Submitting the WOD builder with an empty name used to fail completely
+  silently (a focus jump, nothing else) — now shows a real error and
+  marks the field invalid.
+- The destructive "delete all data" trigger gets its own red-bordered
+  styling instead of the same de-emphasized link style as "edit profile."
+- Clearing all data now auto-downloads a backup first, the same safety
+  net Import already had for a far less destructive operation.
+- Unchecking then rechecking an EMOM station now restores its original
+  rotation position instead of silently moving it to the end of the list.
+- The weekly-challenge comparison-key field now shows a real example
+  (`movement:back-squat:est1rm`) instead of a bare movement name that can
+  never match a real post, and validates the format before saving — the
+  old failure mode was invisible, since an unmatchable key's empty
+  leaderboard looks identical to a legitimately fresh one.
+
+Deferred to a later pass, each larger than it looks: pinning the WOD log
+tab's Save button the way the main Log tab's already is, and rendering
+compare-results inline under the post that triggered them instead of
+above the whole feed.
+
+236/236 tests pass.
+
 # Submission 3: rate limiting on comments, reactions, and reports — 2026-08-27
 
 Independent security review: no table beyond invite redemption had any

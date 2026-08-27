@@ -100,7 +100,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "3.0.17";
+const APP_VERSION = "3.0.18";
 
 const WOD_MOVEMENT_TAGS = [
   // Gymnastics (bodyweight)
@@ -2076,6 +2076,12 @@ async function reloadFromDb() {
 }
 
 async function clearAllData() {
+  // The one truly irreversible action in the app used to have no safety
+  // net, unlike import (which downloads a rollback file for a far less
+  // destructive merge). Auto-download the same backup export would
+  // produce, before anything is actually wiped.
+  const hasData = entries.length || wodEntries.length || customMovements.length || customWods.length || bodyweightEntries.length || measureTypes.length || measureEntries.length;
+  if (hasData) downloadBackup(buildBackupPayload(), `box-log-backup-before-delete-${todayISO()}.json`);
   endLadder();
   entries = [];
   wodEntries = [];
@@ -2280,6 +2286,9 @@ function openWodBuilder(prefillName) {
   overlay.style.height = (window.visualViewport ? window.visualViewport.height : window.innerHeight) + "px";
   overlay.classList.add("open");
   document.getElementById("wodBuilderName").value = prefillName || "";
+  document.getElementById("wodBuilderName").removeAttribute("aria-invalid");
+  const nameHint = document.getElementById("wodBuilderNameHint");
+  if (nameHint) { nameHint.textContent = ""; nameHint.style.display = "none"; }
   const moveSearch = document.getElementById("wodBuilderMoveSearch");
   if (moveSearch) moveSearch.value = "";
   renderWodBuilderMovements("");
@@ -2350,8 +2359,9 @@ function renderWodBuilderMovements(query) {
     <div class="cat-group">
       <div class="cat-head"><div class="dot" style="background:${esc(catColor(cat))}"></div><span class="cat-name">${esc(catLabel(cat))}</span></div>
       ${items.map((m) => {
-        const checked = Object.prototype.hasOwnProperty.call(builderMovements, m.name);
-        const data = builderMovements[m.name] || { reps: 10, weight: 0, type: "reps", durationSeconds: 20 };
+        const entry = builderMovements[m.name];
+        const checked = !!(entry && entry.checked);
+        const data = entry || { reps: 10, weight: 0, type: "reps", durationSeconds: 20 };
         const isEmom = builderFormat === "emom";
         const hasWeight = !isEmom && WOD_MOVE_CATEGORIES_WITH_WEIGHT.has(m.category);
         const isDuration = !isEmom && data.type === "duration";
@@ -2359,7 +2369,10 @@ function renderWodBuilderMovements(query) {
         // rotation order itself (shown here) carries the structure, and
         // keeping every station the same simple shape keeps the log form
         // straightforward too. See renderWodLogSection.
-        const rotationNum = isEmom && checked ? Object.keys(builderMovements).indexOf(m.name) + 1 : null;
+        // Unchecking a station keeps its entry (checked:false) instead of
+        // deleting it, so re-checking restores its original position in
+        // the rotation instead of silently moving it to the end.
+        const rotationNum = isEmom && checked ? activeBuilderMovementNames().indexOf(m.name) + 1 : null;
         return `
         <button class="movecheck-row ${checked ? "checked" : ""}" data-action="toggle-builder-movement" data-name="${esc(m.name)}" role="checkbox" aria-checked="${checked}">
           <span style="font-weight:600; font-size:14px;">${rotationNum ? `${rotationNum}. ` : ""}${esc(m.name)}</span>
@@ -2381,9 +2394,16 @@ function renderWodBuilderMovements(query) {
       }).join("")}
     </div>`).join("");
 }
+// Selected, in original rotation order — filters out unchecked entries
+// rather than reading Object.keys(builderMovements) directly, since an
+// unchecked station stays in the object (see toggleBuilderMovement) so a
+// re-check can restore its position instead of moving it to the end.
+function activeBuilderMovementNames() {
+  return Object.keys(builderMovements).filter((name) => builderMovements[name].checked);
+}
 function toggleBuilderMovement(name) {
-  if (Object.prototype.hasOwnProperty.call(builderMovements, name)) delete builderMovements[name];
-  else builderMovements[name] = { reps: 10, weight: 0, type: "reps", durationSeconds: 20 };
+  if (Object.prototype.hasOwnProperty.call(builderMovements, name)) builderMovements[name].checked = !builderMovements[name].checked;
+  else builderMovements[name] = { reps: 10, weight: 0, type: "reps", durationSeconds: 20, checked: true };
   renderWodBuilderMovements();
 }
 function setBuilderMovementType(name, type) {
@@ -2394,7 +2414,14 @@ function setBuilderMovementType(name, type) {
 function createWodFromBuilder() {
   const nameInput = document.getElementById("wodBuilderName");
   const name = nameInput ? cleanStr(nameInput.value, LIMITS.nameLen) : "";
-  if (!name) { nameInput.focus(); return; }
+  const nameHint = document.getElementById("wodBuilderNameHint");
+  if (!name) {
+    if (nameInput) { nameInput.setAttribute("aria-invalid", "true"); nameInput.focus(); }
+    if (nameHint) { nameHint.textContent = "יש להזין שם לאימון"; nameHint.style.display = "block"; }
+    return;
+  }
+  if (nameInput) nameInput.removeAttribute("aria-invalid");
+  if (nameHint) { nameHint.textContent = ""; nameHint.style.display = "none"; }
   if (!builderFormat) {
     const hint = document.getElementById("wodBuilderFormatHint");
     if (hint) {
@@ -2407,7 +2434,7 @@ function createWodFromBuilder() {
     return;
   }
   if (builderFormat === "emom") {
-    const emomMovements = Object.keys(builderMovements);
+    const emomMovements = activeBuilderMovementNames();
     if (emomMovements.length === 0) {
       const hint = document.getElementById("wodBuilderFormatHint");
       if (hint) { hint.textContent = "יש לבחור לפחות תרגיל אחד לסיבוב"; hint.style.color = "var(--red)"; }
@@ -2419,7 +2446,9 @@ function createWodFromBuilder() {
     });
     return;
   }
-  addCustomWod(name, builderFormat, builderMovementsToDesc(builderMovements), {
+  const activeMovements = {};
+  for (const n of activeBuilderMovementNames()) activeMovements[n] = builderMovements[n];
+  addCustomWod(name, builderFormat, builderMovementsToDesc(activeMovements), {
     timeCapSeconds: builderTimeCapMinutes > 0 ? builderTimeCapMinutes * 60 : null,
   });
 }
@@ -3150,6 +3179,7 @@ function renderBodyweightArea() {
   const last = bodyweightEntries.slice().sort((a, b) => (b.ts || 0) - (a.ts || 0))[0];
   const chartData = sorted.map((e) => ({ dateLabel: fmtDate(e.date), est1RM: e.weight, isPR: false }));
   const header = `
+    <div class="section-label">משקל גוף</div>
     <button class="exercise-row ${bodyweightExpanded ? "active" : ""}" data-action="toggle-bodyweight" style="${bodyweightExpanded ? "margin-bottom:0; border-bottom-left-radius:0; border-bottom-right-radius:0;" : ""}">
       <div class="flex items-center gap-8">
         <span style="display:inline-flex; transition:transform .2s; transform:rotate(${bodyweightExpanded ? "90deg" : "180deg"});">${ICONS.chevron}</span>
@@ -3303,10 +3333,12 @@ function renderFooter() {
       <div style="color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; margin-bottom:6px;">מראה</div>
       ${renderThemeRow()}
       ${importMessage ? `<div class="footer-note" role="status" aria-live="polite" style="color:var(--brass); margin-bottom:8px;">${esc(importMessage)}</div>` : ""}
-      ${!confirmClear ? `<button class="link-btn" data-action="ask-clear">מחיקת כל הנתונים</button>` : `
+      ${!confirmClear
+        ? `<div style="text-align:center; margin-top:4px;"><button data-action="ask-clear" style="color:var(--red); font-size:11px; font-weight:700; border:1px solid var(--red); border-radius:10px; padding:8px 16px;">מחיקת כל הנתונים</button></div>`
+        : `
         <div class="flex items-center justify-center gap-10">
           <span style="color:var(--steel); font-size:11px;">למחוק הכל?</span>
-          <button data-action="do-clear" style="color:var(--red); font-size:11px; font-weight:700;">כן, מחיקה</button>
+          <button data-action="do-clear" style="color:#fff; background:var(--red); border:1px solid var(--red); border-radius:10px; padding:6px 14px; font-size:11px; font-weight:700;">כן, מחיקה</button>
           <button data-action="cancel-clear" style="color:var(--steel); font-size:11px;">ביטול</button>
         </div>`}
       <div class="footer-note" style="margin-top:10px;">© ${new Date().getFullYear()} Shahaf Rachmany · v${APP_VERSION}</div>
@@ -4111,7 +4143,7 @@ document.addEventListener("click", (e) => {
     if (!WOD_MOVEMENT_TAGS.some((m) => m.name.toLowerCase() === name.toLowerCase())) {
       WOD_MOVEMENT_TAGS.push({ name, category: WOD_MOVE_CATEGORIES.includes(category) ? category : "Gymnastics" });
     }
-    builderMovements[name] = { reps: 10, weight: 0 };
+    builderMovements[name] = { reps: 10, weight: 0, checked: true };
     builderMoveSearch = "";
     const moveSearch = document.getElementById("wodBuilderMoveSearch");
     if (moveSearch) moveSearch.value = "";

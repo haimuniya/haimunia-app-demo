@@ -132,7 +132,7 @@
   .header-logo{ height:46px; width:auto; display:block; }
   .brand-stripe{ height:6px; border-radius:4px; background-image:var(--stripe); margin-bottom:18px; }
   .tabbar{ display:flex; background:var(--surface); border-radius:14px; padding:4px; margin-bottom:20px; border:1px solid var(--border); gap:2px; }
-  .tabbtn{ flex:1; min-width:0; padding:10px 0; border-radius:10px; font-weight:700; font-size:12.5px; color:var(--steel); border:1px solid transparent; transition:all .15s; white-space:nowrap; }
+  .tabbtn{ flex:1; min-width:0; min-height:44px; padding:10px 0; border-radius:10px; font-weight:700; font-size:12.5px; color:var(--steel); border:1px solid transparent; transition:all .15s; white-space:nowrap; }
   .tabbtn.active{ background:var(--surface2); color:var(--chalk); border-color:var(--border); box-shadow:inset 0 -2px 0 var(--energy); }
   .card{ background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 14px; }
   .exercise-select{ width:100%; display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:14px 16px; margin-bottom:12px; }
@@ -209,7 +209,7 @@
   .report-row{ display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:10px 12px; margin-bottom:8px; }
   .report-flag{ font-size:11px; font-weight:700; padding:2px 8px; border-radius:999px; }
   .subtabbar{ display:flex; background:var(--surface2); border-radius:12px; padding:3px; margin-bottom:16px; border:1px solid var(--border); }
-  .subtabbtn{ flex:1; padding:8px 0; border-radius:9px; font-weight:700; font-size:13px; color:var(--steel); }
+  .subtabbtn{ flex:1; min-height:44px; padding:8px 0; border-radius:9px; font-weight:700; font-size:13px; color:var(--steel); }
   .subtabbtn.active{ background:var(--surface); color:var(--chalk); }
   .rx-toggle{ display:flex; gap:8px; margin-bottom:16px; }
   .rx-btn{ flex:1; padding:10px 0; border-radius:12px; border:1px solid var(--border); background:var(--surface); font-weight:700; font-size:13px; color:var(--steel); }
@@ -463,16 +463,17 @@
     </div>
     <div class="modal-list" style="padding:0 16px calc(env(safe-area-inset-bottom, 0px) + 24px);">
       <div style="color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; margin-bottom:6px;" id="wodBuilderNameLabel">שם</div>
-      <input id="wodBuilderName" class="text-input" dir="auto" maxlength="80" autocomplete="off" placeholder="לדוגמה: אימון יום שני" aria-labelledby="wodBuilderNameLabel" style="margin-bottom:16px;" />
+      <input id="wodBuilderName" class="text-input" dir="auto" maxlength="80" autocomplete="off" placeholder="לדוגמה: אימון יום שני" aria-labelledby="wodBuilderNameLabel" aria-describedby="wodBuilderNameHint" style="margin-bottom:6px;" />
+      <div id="wodBuilderNameHint" role="alert" style="color:var(--red); font-size:11px; margin-bottom:16px; display:none;"></div>
 
       <div style="color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; margin-bottom:6px;" id="wodBuilderFormatLabel">פורמט</div>
-      <div class="flex" style="gap:8px; margin-bottom:4px;" id="wodBuilderFormats" role="radiogroup" aria-labelledby="wodBuilderFormatLabel">
+      <div class="flex" style="gap:8px; margin-bottom:4px;" id="wodBuilderFormats" role="radiogroup" aria-labelledby="wodBuilderFormatLabel" aria-describedby="wodBuilderFormatHint">
         <button class="format-chip" data-action="builder-set-format" data-format="time" role="radio" aria-checked="false">זמן</button>
         <button class="format-chip" data-action="builder-set-format" data-format="amrap" role="radio" aria-checked="false">AMRAP</button>
         <button class="format-chip" data-action="builder-set-format" data-format="load" role="radio" aria-checked="false">משקל מקסימלי</button>
         <button class="format-chip" data-action="builder-set-format" data-format="emom" role="radio" aria-checked="false">EMOM</button>
       </div>
-      <div id="wodBuilderFormatHint" style="color:var(--steel); font-size:11px; margin-bottom:16px;">חובה לבחור אחד</div>
+      <div id="wodBuilderFormatHint" role="alert" style="color:var(--steel); font-size:11px; margin-bottom:16px;">חובה לבחור אחד</div>
       <div id="wodBuilderEmomOptions"></div>
       <div id="wodBuilderTimeCapOptions"></div>
 
@@ -601,6 +602,10 @@
         <div class="flex items-center gap-10">
           <span style="color:var(--brass); flex-shrink:0;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2M9 2h6M12 2v3"/></svg></span>
           <div><div style="font-weight:700; font-size:14px;">אימונים</div><div style="color:var(--steel); font-size:12.5px;">רישום WOD, כולל בנצ׳מארקים מוכרים או אימון מותאם אישית</div></div>
+        </div>
+        <div class="flex items-center gap-10">
+          <span style="color:var(--brass); flex-shrink:0;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M2 20c0-3.5 3-6 7-6s7 2.5 7 6"/><circle cx="17" cy="7" r="2.4"/><path d="M16.5 12.2c2.7.3 4.5 2.4 4.5 5.3"/></svg></span>
+          <div><div style="font-weight:700; font-size:14px;">קהילה</div><div style="color:var(--steel); font-size:12.5px;">פיד, עידודים ולוחות תוצאות עם חברי המועדון — צריך קוד הזמנה מהמאמן/ת</div></div>
         </div>
       </div>
       <button data-action="close-onboarding" class="save-btn" style="max-width:none;">בואו נתחיל</button>
