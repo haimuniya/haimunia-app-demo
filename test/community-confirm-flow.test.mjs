@@ -48,8 +48,14 @@ test("deletePost is scoped to the caller's own post, and only the author sees a 
   assert.match(src, /askConfirm\(\{ title: "הסרת שיתוף".*action: "delete-post", payload: \{ postId: el\.dataset\.id \} \}\)/);
 });
 
-test("the confirm dialog is rendered into the community app output and reset on sign-out", () => {
+test("the confirm dialog is exposed globally (not just inside the Community tab's own output) and reset on sign-out", () => {
+  // Sharing can now be triggered from the Calendar/Progress tabs (see
+  // renderShareControl), so the confirm dialog can't only render as part
+  // of renderCommunityApp()'s return value - app.js's own render() calls
+  // window.renderCloudConfirmDialog() unconditionally after every tab's
+  // content instead. See community-live-sync-and-auth.test.mjs for an
+  // executing test of this actually working across a tab switch.
   assert.match(src, /function renderConfirmDialog\(\)/);
-  assert.match(src, /\+ renderConfirmDialog\(\);/);
+  assert.match(src, /window\.renderCloudConfirmDialog = renderConfirmDialog;/);
   assert.match(src, /state\.confirmDialog = null;\s*$/m);
 });

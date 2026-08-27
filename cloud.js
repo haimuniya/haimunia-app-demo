@@ -7,7 +7,7 @@
   }) : null;
   const state = { configured, client, user: null, profile: null, feed: [], people: [], comparison: [], loading: false, message: "", syncEnabled: localStorage.getItem("haimunia-demo:cloudSyncEnabled") === "1",
     streaks: [], announcements: [], weeklyChallenge: null, weeklyLeaderboard: [], inactiveMembers: [], newMembers: [], redemption: null,
-    communityTab: "feed", comments: {}, openComments: {}, fieldErrors: {}, reports: [], confirmDialog: null, signupStarted: false, memberSearch: "", memberResults: [] };
+    communityTab: "feed", comments: {}, openComments: {}, fieldErrors: {}, reports: [], confirmDialog: null, signupStarted: false, memberSearch: "", memberResults: [], openShare: {} };
   const photoUrlCache = {};
 
   function safeText(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
@@ -425,8 +425,12 @@
     await loadFeed(); setMessage("השיתוף הוסר");
   }
   async function publishWorkout(type, id, visibility, photoFile) {
-    if (!state.user || !state.profile || typeof window.communityShareCandidates !== "function") return;
-    const item = window.communityShareCandidates().find((candidate) => candidate.type === type && candidate.id === id);
+    if (!state.user || !state.profile || typeof window.communityShareCandidateFor !== "function") return;
+    // communityShareCandidateFor looks up any entry by id regardless of
+    // age - unlike the old recency-limited list, sharing can now be
+    // triggered from Calendar or Progress, which show results from any
+    // date, not just the last few.
+    const item = window.communityShareCandidateFor(type, id);
     if (!item) return setMessage("לא ניתן למצוא את התוצאה במכשיר");
     let photoPath = null;
     if (photoFile) {
@@ -437,8 +441,32 @@
     if (photoPath) payload.photo_path = photoPath;
     const { error } = await client.from("workout_posts").upsert(payload, { onConflict: "author_id,source_type,source_record_id" });
     if (error) return setMessage("שיתוף התוצאה נכשל");
+    delete state.openShare[shareKey(type, id)];
     await loadFeed(); setMessage("התוצאה שותפה בלי הערות, מדדים או פרטים אישיים");
   }
+  // Collapsed to one small icon by default wherever a result actually
+  // lives (Calendar day view, a movement/WOD's Progress card) instead of
+  // a standing list of everything shareable sitting in the Community tab
+  // itself - tap to expand the same photo/visibility controls publishing
+  // already had.
+  function shareKey(type, id) { return `${type}:${id}`; }
+  function toggleShare(type, id) {
+    const key = shareKey(type, id);
+    if (state.openShare[key]) delete state.openShare[key]; else state.openShare[key] = true;
+    rerender();
+  }
+  window.renderShareControl = function (type, id) {
+    if (!window.isCommunitySignedIn || !window.isCommunitySignedIn()) return "";
+    const key = shareKey(type, id);
+    if (!state.openShare[key]) return `<button data-community-action="toggle-share" data-type="${safeText(type)}" data-id="${safeText(id)}" aria-label="שיתוף לקהילה" style="color:var(--steel);padding:4px;">📤</button>`;
+    return `<div class="flex items-center gap-6" style="flex-wrap:wrap;">
+      <input type="file" id="photo-${safeText(id)}" accept="image/jpeg,image/png,image/webp" style="display:none;"/>
+      <label class="chip-btn" for="photo-${safeText(id)}" style="cursor:pointer;padding:5px 9px;font-size:11px;">📷</label>
+      <button class="chip-btn" data-community-action="publish" data-type="${safeText(type)}" data-id="${safeText(id)}" data-visibility="followers" style="padding:5px 9px;font-size:11px;">לעוקבים</button>
+      <button class="chip-btn primary" data-community-action="publish" data-type="${safeText(type)}" data-id="${safeText(id)}" data-visibility="public" style="padding:5px 9px;font-size:11px;">לכולם</button>
+      <button class="link-btn" data-community-action="toggle-share" data-type="${safeText(type)}" data-id="${safeText(id)}" aria-label="ביטול שיתוף" style="padding:5px;">✕</button>
+    </div>`;
+  };
   async function compare(comparisonKey) {
     if (!comparisonKey) return;
     const { data, error } = await client.from("community_feed").select("id,handle,display_name,result_text,score_value,score_direction,occurred_on").eq("comparison_key", comparisonKey).limit(50);
@@ -614,8 +642,12 @@
     const announcementsList = otherAnnouncements.length ? `<div class="log-list">${otherAnnouncements.map((a) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:4px;"><div style="font-weight:700;">${safeText(a.title)}</div><div style="color:var(--steel);font-size:13px;">${safeText(a.body)}</div><div style="color:var(--steel);font-size:11px;">${safeText(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div></div>`).join("")}</div>` : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
     const announcementsHtml = `<div class="ach-section">${sectionHead("var(--brass)", "הודעות מהמועדון")}${pinnedHtml}${announcementsList}${announceComposer}</div>`;
 
-    const candidates = typeof window.communityShareCandidates === "function" ? window.communityShareCandidates() : [];
-    const sharing = candidates.length ? `<div class="ach-section">${sectionHead("var(--energy)", "שיתוף תוצאה")}<div class="log-list">${candidates.map((item) => `<div class="log-row"><div><div style="font-weight:700;">${safeText(item.title)}</div><div class="mono" style="color:var(--brass);">${safeText(item.resultText)}</div></div><div class="chip-row" style="margin-top:0;align-items:center;"><input type="file" id="photo-${safeText(item.id)}" accept="image/jpeg,image/png,image/webp" style="display:none;"/><label class="chip-btn" for="photo-${safeText(item.id)}" style="cursor:pointer;">📷 הוספת תמונה</label><button class="chip-btn" data-community-action="publish" data-type="${safeText(item.type)}" data-id="${safeText(item.id)}" data-visibility="followers">עוקבים</button><button class="chip-btn primary" data-community-action="publish" data-type="${safeText(item.type)}" data-id="${safeText(item.id)}" data-visibility="public">ציבורי</button></div></div>`).join("")}</div></div>` : "";
+    // Sharing itself no longer lives here - it was a standing list of the
+    // 8 most recent shareable results eating vertical space at the top of
+    // the feed you open to see *other* people's posts. It's now
+    // triggered from wherever a specific result actually lives (Calendar,
+    // Progress) via renderShareControl(), collapsed to a single icon
+    // until tapped.
 
     const feed = state.feed.length ? `<div class="log-list">${state.feed.map((post) => `<article class="chart-card post-card">
       <div class="post-head">${avatarHtml(post.display_name || post.handle)}<div class="post-head-text"><div class="post-author">${safeText(post.display_name || "@" + post.handle)}</div><div class="post-time">${relativeTime(post.published_at)}</div></div></div>
@@ -632,7 +664,7 @@
 
     const comparison = state.comparison.length ? `<div class="ach-section">${sectionHead("var(--blue)", "השוואת תוצאות")}<div class="log-list">${state.comparison.map((item, index) => `<div class="log-row"><span>${index + 1}. ${safeText(item.display_name || "@" + item.handle)}</span><span class="mono" style="color:var(--brass);">${safeText(item.result_text)}</span></div>`).join("")}</div></div>` : "";
 
-    const feedTab = announcementsHtml + sharing + comparison + feedHtml;
+    const feedTab = announcementsHtml + comparison + feedHtml;
 
     // ---- Boards tab: weekly challenge + streaks, top-3-plus-your-rank ----
     const challengeSetter = staff ? `<form id="communityWeeklyChallenge" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">קביעת אתגר שבועי<span class="admin-tag">ניהול</span></div>${field("communityWeeklyChallenge", "title", "שם האתגר", `<input class="text-input" name="title" placeholder="שם האתגר" required/>`)}${field("communityWeeklyChallenge", "comparisonKey", "מפתח השוואה", `<input class="text-input" name="comparisonKey" dir="ltr" placeholder="movement:back-squat:est1rm" required/>`)}<div style="color:var(--steel);font-size:11px;margin:-6px 0 10px;">חייב להתחיל ב-movement: (תרגיל) או wod: (אימון) — בדיוק כמו שהוא נשמר בשיתופים, למשל movement:back-squat:est1rm או wod:fran:time:rx</div><div class="flex gap-10 field">${field("communityWeeklyChallenge", "startsOn", "תאריך התחלה", `<input class="text-input" name="startsOn" type="date" required/>`)}${field("communityWeeklyChallenge", "endsOn", "תאריך סיום", `<input class="text-input" name="endsOn" type="date" required/>`)}</div><button class="chip-btn primary" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
@@ -671,9 +703,15 @@
 
     return tabBar
       + (state.message ? `<div class="footer-note" role="status" style="color:var(--brass);margin-bottom:14px;">${safeText(state.message)}</div>` : "")
-      + activeTab.html
-      + renderConfirmDialog();
+      + activeTab.html;
   };
+  // Sharing (see renderShareControl) can now be triggered from the
+  // Calendar and Progress tabs, not just the Community tab, so the
+  // confirm dialog can no longer live only inside renderCommunityApp()'s
+  // own output - it has to render regardless of which top-level tab is
+  // active. app.js's own render() appends this unconditionally after
+  // every tab's content (see index.html/app.js render()).
+  window.renderCloudConfirmDialog = renderConfirmDialog;
   window.cloudStorageStatusText = function () {
     if (!configured) return "נשמר במכשיר הזה בלבד, ללא שרת";
     if (!state.user) return "נשמר במכשיר; התחברו כדי לסנכרן באופן פרטי";
@@ -693,8 +731,7 @@
     else if (action === "publish") {
       const fileInput = document.getElementById("photo-" + el.dataset.id);
       const file = fileInput && fileInput.files && fileInput.files[0];
-      const candidates = typeof window.communityShareCandidates === "function" ? window.communityShareCandidates() : [];
-      const item = candidates.find((c) => c.type === el.dataset.type && c.id === el.dataset.id);
+      const item = typeof window.communityShareCandidateFor === "function" ? window.communityShareCandidateFor(el.dataset.type, el.dataset.id) : null;
       const audience = el.dataset.visibility === "public" ? "לכולם, פומבי" : "לעוקבים שלכם בלבד";
       const preview = item ? `"${item.title}" — ${item.resultText}${file ? " (כולל תמונה)" : ""}` : "";
       askConfirm({ title: "פרסום תוצאה", message: `לפרסם ${audience}?${preview ? " " + preview : ""}`, confirmLabel: "פרסום", action: "publish", payload: { type: el.dataset.type, id: el.dataset.id, visibility: el.dataset.visibility, file } });
@@ -716,6 +753,7 @@
     else if (action === "admin-grant-coach") askConfirm({ title: "הענקת הרשאת מאמן/ת", message: "להעניק הרשאת מאמן/ת למשתמש/ת זה/ו?", confirmLabel: "הענקה", action: "admin-grant-coach", payload: { userId: el.dataset.id } });
     else if (action === "admin-revoke-coach") adminRevokeCoach(el.dataset.id);
     else if (action === "admin-remove-member") askConfirm({ title: "הסרת חבר/ה", message: "הפרופיל והשיתופים של המשתמש/ת יוסרו מיד. המחיקה הסופית תתבצע לאחר 30 יום. להמשיך?", confirmLabel: "הסרה", destructive: true, action: "admin-remove-member", payload: { userId: el.dataset.id } });
+    else if (action === "toggle-share") toggleShare(el.dataset.type, el.dataset.id);
   };
   window.isCommunitySignedIn = function () { return !!(state.user && state.profile); };
   window.shareAchievementToCommunity = function (achievementId, title, rule) { publishAchievement(achievementId, title, rule); };
@@ -742,7 +780,7 @@
           .then(pingActivity)
           .then(rerender);
       } else {
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = [];
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {};
         anonSignInAttempted = false;
         rerender();
       }

@@ -100,7 +100,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "3.0.20";
+const APP_VERSION = "3.0.21";
 
 const WOD_MOVEMENT_TAGS = [
   // Gymnastics (bodyweight)
@@ -2199,25 +2199,42 @@ async function addCustomWod(name, scoreType, desc, extra) {
   render();
 }
 
+function strengthShareCandidate(entry) {
+  const movement = movementById(entry.exerciseId);
+  if (!movement) return null;
+  const duration = entry.type === "duration";
+  return { type: "strength_entry", id: entry.id, title: movement.name,
+    resultText: duration ? `${formatDuration(entry.durationSeconds)}${entry.weight ? ` @ ${entry.weight} kg` : ""}` : `${entry.weight} kg × ${entry.reps} × ${entry.sets}`,
+    comparisonKey: `movement:${entry.exerciseId}:${duration ? "duration" : "est1rm"}`,
+    scoreValue: duration ? entry.durationSeconds : entry.est1RM, scoreDirection: "higher", occurredOn: entry.date, rx: null };
+}
+function wodShareCandidate(entry) {
+  const wod = wodById(entry.wodId);
+  if (!wod) return null;
+  return { type: "wod_entry", id: entry.id, title: wod.name, resultText: formatWodEntry(entry),
+    comparisonKey: entry.scoreType === "emom" ? null : `wod:${entry.wodId}:${entry.scoreType}:${entry.rx ? "rx" : "scaled"}`,
+    scoreValue: entry.scoreType === "emom" ? null : scoreValue(entry),
+    scoreDirection: entry.scoreType === "time" ? "lower" : entry.scoreType === "emom" ? null : "higher", occurredOn: entry.date, rx: entry.rx };
+}
 function communityShareCandidates() {
-  const strength = entries.slice(0, 5).map((entry) => {
-    const movement = movementById(entry.exerciseId);
-    if (!movement) return null;
-    const duration = entry.type === "duration";
-    return { type: "strength_entry", id: entry.id, title: movement.name,
-      resultText: duration ? `${formatDuration(entry.durationSeconds)}${entry.weight ? ` @ ${entry.weight} kg` : ""}` : `${entry.weight} kg × ${entry.reps} × ${entry.sets}`,
-      comparisonKey: `movement:${entry.exerciseId}:${duration ? "duration" : "est1rm"}`,
-      scoreValue: duration ? entry.durationSeconds : entry.est1RM, scoreDirection: "higher", occurredOn: entry.date, rx: null };
-  }).filter(Boolean);
-  const wods = wodEntries.slice(0, 5).map((entry) => {
-    const wod = wodById(entry.wodId);
-    if (!wod) return null;
-    return { type: "wod_entry", id: entry.id, title: wod.name, resultText: formatWodEntry(entry),
-      comparisonKey: entry.scoreType === "emom" ? null : `wod:${entry.wodId}:${entry.scoreType}:${entry.rx ? "rx" : "scaled"}`,
-      scoreValue: entry.scoreType === "emom" ? null : scoreValue(entry),
-      scoreDirection: entry.scoreType === "time" ? "lower" : entry.scoreType === "emom" ? null : "higher", occurredOn: entry.date, rx: entry.rx };
-  }).filter(Boolean);
+  const strength = entries.slice(0, 5).map(strengthShareCandidate).filter(Boolean);
+  const wods = wodEntries.slice(0, 5).map(wodShareCandidate).filter(Boolean);
   return strength.concat(wods).sort((a, b) => b.occurredOn.localeCompare(a.occurredOn)).slice(0, 8);
+}
+// Unlike communityShareCandidates() (the 8 most recent, for a compact
+// "what can I share right now" list), this finds any single entry by id
+// regardless of age — needed once sharing is triggered from Calendar or
+// Progress, which can show a result from any date, not just the last few.
+function communityShareCandidateFor(type, id) {
+  if (type === "strength_entry") {
+    const entry = entries.find((e) => e.id === id);
+    return entry ? strengthShareCandidate(entry) : null;
+  }
+  if (type === "wod_entry") {
+    const entry = wodEntries.find((e) => e.id === id);
+    return entry ? wodShareCandidate(entry) : null;
+  }
+  return null;
 }
 
 const TEXT_SCALE_KEY = "haimunia-demo:textScale";
@@ -2848,7 +2865,10 @@ function renderDetailCard(m) {
     <div class="chart-card" style="margin-top:-4px; border-top-left-radius:0; border-top-right-radius:0; border-top:none;">
       <div class="flex items-center justify-between" style="margin-bottom:12px;">
         <span style="font-weight:800; font-size:15px;">${esc(m.name)}</span>
-        ${trend !== null ? `<span class="flex items-center gap-6" style="font-weight:700; font-size:12px;">${trend > 0 ? ICONS.up : trend < 0 ? ICONS.down : ICONS.flat}<span class="mono">${trend > 0 ? "+" : ""}${trend} kg</span> 1RM משוער</span>` : ""}
+        <div class="flex items-center gap-8">
+          ${trend !== null ? `<span class="flex items-center gap-6" style="font-weight:700; font-size:12px;">${trend > 0 ? ICONS.up : trend < 0 ? ICONS.down : ICONS.flat}<span class="mono">${trend > 0 ? "+" : ""}${trend} kg</span> 1RM משוער</span>` : ""}
+          ${typeof window.renderShareControl === "function" ? window.renderShareControl("strength_entry", hEntries[0].id) : ""}
+        </div>
       </div>
       ${renderChart(chartData)}
       <div class="rep-table">
@@ -2877,7 +2897,10 @@ function renderDurationDetailCard(m, durationEntries) {
     <div class="chart-card" style="margin-top:-4px; border-top-left-radius:0; border-top-right-radius:0; border-top:none;">
       <div class="flex items-center justify-between" style="margin-bottom:12px;">
         <span style="font-weight:800; font-size:15px;">${esc(m.name)}</span>
-        ${trendSec !== null ? `<span class="flex items-center gap-6" style="font-weight:700; font-size:12px;">${trendSec > 0 ? ICONS.up : trendSec < 0 ? ICONS.down : ICONS.flat}<span class="mono">${trendSec > 0 ? "+" : ""}${formatDuration(Math.abs(trendSec))}</span> שיא החזקה</span>` : ""}
+        <div class="flex items-center gap-8">
+          ${trendSec !== null ? `<span class="flex items-center gap-6" style="font-weight:700; font-size:12px;">${trendSec > 0 ? ICONS.up : trendSec < 0 ? ICONS.down : ICONS.flat}<span class="mono">${trendSec > 0 ? "+" : ""}${formatDuration(Math.abs(trendSec))}</span> שיא החזקה</span>` : ""}
+          ${typeof window.renderShareControl === "function" ? window.renderShareControl("strength_entry", durationEntries[0].id) : ""}
+        </div>
       </div>
       ${renderChart(chartData)}
       ${best ? `<div class="rep-table"><div class="rep-cell"><div class="rep-cell-label">שיא החזקה</div><div class="rep-cell-val mono" style="color:var(--chalk);">${formatDuration(best)}</div></div></div>` : ""}
@@ -3047,6 +3070,7 @@ function renderCalDetail() {
           </div>
           <div class="flex items-center gap-10">
             <span class="mono" style="color:var(--steel); font-size:13px;">${esc(entrySummary(e))}</span>
+            ${typeof window.renderShareControl === "function" ? window.renderShareControl("strength_entry", e.id) : ""}
             <button data-action="edit-entry" data-id="${esc(e.id)}" aria-label="עריכת סט" style="color:var(--steel); padding:4px;">${ICONS.edit}</button>
             <button data-action="delete-entry" data-id="${esc(e.id)}" aria-label="מחיקת סט" style="color:var(--steel); padding:4px;">${ICONS.trash}</button>
           </div>
@@ -3094,6 +3118,7 @@ function renderCalDetail() {
             </div>
             <div class="flex items-center gap-10">
               <span class="mono" style="color:var(--steel); font-size:13px;">${formatWodEntry(e)}</span>
+              ${typeof window.renderShareControl === "function" ? window.renderShareControl("wod_entry", e.id) : ""}
               <button data-action="edit-wod-entry" data-id="${esc(e.id)}" aria-label="עריכת אימון" style="color:var(--steel); padding:4px;">${ICONS.edit}</button>
               <button data-action="delete-wod-entry" data-id="${esc(e.id)}" aria-label="מחיקת אימון" style="color:var(--steel); padding:4px;">${ICONS.trash}</button>
             </div>
@@ -3493,7 +3518,11 @@ function render() {
   });
   document.getElementById("bottomBar").style.display = tab === "add" ? "flex" : "none";
   updateStreakLabel();
-  document.getElementById("content").innerHTML = content + renderFooter();
+  // Rendered after every tab's own content, not just Community's, so a
+  // share triggered from Calendar/Progress can still show its confirm
+  // dialog regardless of which tab is currently active.
+  const cloudOverlay = typeof window.renderCloudConfirmDialog === "function" ? window.renderCloudConfirmDialog() : "";
+  document.getElementById("content").innerHTML = content + renderFooter() + cloudOverlay;
   try {
     if (tab === "add") {
       const dateInput = document.getElementById("logDateInput");
@@ -3693,7 +3722,10 @@ function renderWodDetailCard(w) {
                 <span style="color:var(--steel); font-size:12px;">${fmtDate(e.date)}</span>
                 <span style="color:var(--steel); font-size:11px;">${e.rx ? "Rx" : "Scaled"}${e.partnerTag ? ` · ${esc(e.partnerTag)}` : ""}</span>
               </div>
-              <span class="mono" style="font-size:13px;">${formatWodEntry(e)}</span>
+              <span class="flex items-center gap-6">
+                <span class="mono" style="font-size:13px;">${formatWodEntry(e)}</span>
+                ${typeof window.renderShareControl === "function" ? window.renderShareControl("wod_entry", e.id) : ""}
+              </span>
             </div>
             ${e.notes ? `<div style="color:var(--steel); font-size:12px;">${esc(e.notes)}</div>` : ""}
           </div>`).join("")}

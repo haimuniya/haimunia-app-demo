@@ -37,7 +37,11 @@ test("a photo can be attached when sharing a result, uploaded to the private pos
   assert.match(src, /async function uploadPostPhoto\(file\)/);
   assert.match(src, /client\.storage\.from\("post-photos"\)\.upload\(path, file/);
   assert.match(src, /\$\{state\.user\.id\}\/\$\{Date\.now\(\)\}/);
-  assert.match(src, /id="photo-\$\{safeText\(item\.id\)\}"/);
+  // The photo picker moved from a standing "share result" list in the
+  // Community tab into renderShareControl(), triggered from wherever the
+  // result actually lives (Calendar, Progress) - see
+  // community-share-control.test.mjs.
+  assert.match(src, /id="photo-\$\{safeText\(id\)\}"/);
 });
 
 test("who's-new and who's-inactive are both staff-only (admin or coach) and call the matching security-definer RPCs", () => {

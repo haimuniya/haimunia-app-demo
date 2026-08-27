@@ -1,3 +1,31 @@
+# Sharing moves to where the result actually lives — 2026-08-27
+
+Reported directly: "שיתוף תוצאה takes too much [room] here, it need to
+be shared by click from the calendar or progress, not from community
+area." The old "share result" section was a standing list of the 8 most
+recent shareable results sitting at the top of the Community tab's
+feed - the place you open to see *other* people's posts, not to decide
+what of your own to publish.
+
+Removed it. Sharing is now triggered from wherever a result actually
+lives - a single collapsed icon (renderShareControl) on each entry in
+Calendar's day view and on each movement/WOD's Progress card, expanding
+into the same photo/visibility controls only when tapped.
+
+This needed one real architectural fix, not just a relocation: the
+confirm dialog used to only render as part of the Community tab's own
+output, so a share triggered from Calendar would have had no way to
+show it. app.js's render() now appends it unconditionally after every
+tab's content instead, regardless of which tab is active - verified
+with a real executing test that publishes from the Calendar tab and
+confirms the mock server actually received the post.
+
+Publishing itself now looks up the specific entry by id
+(communityShareCandidateFor), not just within the 8 most recent -
+Calendar and Progress can both show a result from any date.
+
+252/252 tests pass.
+
 # Admin member management: search, grant/revoke coach, remove — 2026-08-27
 
 Requested directly: "we need to manage the users, by ID + user name...
