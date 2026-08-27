@@ -43,7 +43,7 @@
   // not just here) — this just drives which form the Community tab shows.
   async function loadRedemption() {
     if (!state.user) return;
-    const { data } = await client.from("invite_redemptions").select("code,role,redeemed_at").eq("user_id", state.user.id).maybeSingle();
+    const { data } = await client.from("invite_redemptions").select("invite_id,role,redeemed_at").eq("user_id", state.user.id).maybeSingle();
     state.redemption = data || null;
   }
   async function redeemCode(form) {
@@ -51,9 +51,10 @@
     const code = String(form.code.value || "").trim();
     if (!code) return setMessage("יש להזין קוד הזמנה");
     const { data, error } = await client.rpc("redeem_invite_code", { p_code: code });
-    if (error) return setMessage("קוד ההזמנה שגוי או לא פעיל");
+    if (error || data === "rate_limited") return setMessage(data === "rate_limited" ? "יותר מדי ניסיונות. יש לנסות שוב בעוד 15 דקות" : "קוד ההזמנה שגוי או לא פעיל");
+    if (data !== "member") return setMessage("קוד ההזמנה שגוי, פג תוקף או נוצל");
     await loadRedemption();
-    setMessage(data === "coach" ? "קוד מאמן אושר, אפשר להשלים פרופיל" : "קוד אושר, אפשר להשלים פרופיל");
+    setMessage("קוד אושר, אפשר להשלים פרופיל");
     rerender();
   }
   // One row per user per day they had the app open — the raw dates stay

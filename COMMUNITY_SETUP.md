@@ -11,7 +11,8 @@ The app remains fully usable offline when the backend is not configured.
    `202608270002_lock_anon_defaults.sql`, then
    `202608270003_invite_gate.sql`, then
    `202608270004_community_engagement.sql`, then
-   `202608270005_coach_tier.sql`), in each project.
+   `202608270005_coach_tier.sql`, then
+   `202608270006_security_hardening.sql`), in each project.
    `202608270001` adds the reactions RLS fix, achievement-unlock posts,
    coach announcements, activity streaks, and the weekly challenge — none
    of those features work until it's applied. `202608270002` is a
@@ -28,8 +29,11 @@ The app remains fully usable offline when the backend is not configured.
    one can create a community profile until you insert at least one
    active code**:
    ```sql
-   insert into public.invite_codes (code, role) values ('YOURCODE2026', 'member');
+   -- Historical example only. Do not run after 202608270006.
    ```
+   Migration `202608270006` supersedes the original code-creation and
+   coach-redemption instructions below. Follow "Hardened invite and photo
+   operations" after applying the complete migration set.
    `role` is `'member'` or `'coach'` — as of `202608270005`, a `'coach'`
    code grants a fixed set of powers on its own (see "Access tiers"
    below), no separate step needed. To make someone a full admin, that's
@@ -53,7 +57,9 @@ The app remains fully usable offline when the backend is not configured.
 
    `202608270005` builds the coach tier (see "Access tiers" below) — a
    coach-code redemption (`insert into public.invite_codes (code, role)
-   values ('COACHCODE2026', 'coach');`) now actually grants something:
+   values ('COACHCODE2026', 'coach');`) was the historical flow. Migration
+   `202608270006` disables public coach-code promotion and replaces it with
+   a trusted service-role promotion step. A coach then receives:
    posting/pinning announcements, setting the weekly challenge, and
    seeing the new/inactive member views, without needing the manual
    `is_admin` grant.
@@ -63,6 +69,31 @@ The app remains fully usable offline when the backend is not configured.
 6. Schedule `select public.purge_due_accounts();` once daily from a trusted service-role Edge Function or external scheduler.
 7. Configure SMTP before public launch so authentication email delivery is dependable.
 
+## Hardened invite and photo operations
+
+Migration `202608270006_security_hardening.sql` revokes every legacy
+plaintext invite. Create a replacement member code through the service role:
+
+```sql
+select public.create_member_invite(now() + interval '14 days', 1);
+```
+
+The returned high-entropy code is shown once and stored only as a hash. The
+first argument is the expiry. The second is the maximum redemption count.
+Normal redemption only grants member access.
+
+Promote an existing redeemed member to coach through a trusted service-role
+process:
+
+```sql
+select public.grant_coach_role('USER_UUID');
+```
+
+Run a daily service-role cleanup job which calls
+`public.list_orphaned_post_photos(interval '1 day')`, then deletes the
+returned objects through the Supabase Storage API. Do not delete Storage
+objects through SQL because it only removes metadata.
+
 ## Required launch checks
 
 - Run `npm test`.
@@ -70,6 +101,11 @@ The app remains fully usable offline when the backend is not configured.
 - Test every RLS policy as two different users, especially private records, blocks, follower-only posts, and reports.
 - Confirm bodyweight, measurements, session notes, WOD notes, and partner tags never appear in `workout_posts` or `community_feed`.
 - Confirm a reported post disappears for its reporter.
+- Confirm one user cannot attach or read another user's photo path.
+- Confirm an unredeemed Auth user cannot upload a post photo.
+- Confirm invite redemption stops after five failed attempts in 15 minutes.
+- Confirm normal invite redemption never grants coach access.
+- Confirm only an admin can run `review_report()`.
 - Confirm blocking works in both directions.
 - Confirm account deletion immediately unpublishes posts and the scheduled purge removes the Auth user after 30 days.
 - Install Playwright Chromium and run the browser checks before deployment.
