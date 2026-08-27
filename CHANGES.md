@@ -1,3 +1,22 @@
+# Fix incomplete dark-mode contrast fix, found while auditing "what's left" — 2026-08-27
+
+The rescan report flagged this correctly: an earlier accessibility pass
+(the `--steel` contrast fix, WCAG AA) updated the auto-detected dark
+theme (`@media prefers-color-scheme: dark`) but missed the explicit
+`[data-theme="dark"]` block — a separate, textually-identical-looking CSS
+rule that never actually got touched. Since `theme-init.js` stamps
+`data-theme="dark"` by default for every existing user, the *explicit*
+block is the one that actually matters for almost everyone, and it kept
+shipping the old, contrast-failing value the whole time. Fixed by
+re-checking directly rather than trusting the earlier commit message.
+
+New test (`test/theme-token-parity.test.mjs`) locks in that every color
+token in one dark-theme block matches the other, not just that both
+blocks exist — the exact class of mistake that let this slip through
+undetected.
+
+192/192 tests pass.
+
 # Allow Hebrew handles — this is a Hebrew-speaking app — 2026-08-27
 
 Reported directly, with a screenshot of a Hebrew keyboard: the handle
