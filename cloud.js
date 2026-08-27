@@ -61,6 +61,15 @@
       await Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge()]);
       if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers()]);
       if (isAdmin()) await loadReports();
+      // Push pending local edits before pulling the remote copy - without
+      // this, reopening the app with an unflushed outbox (e.g. a set
+      // logged offline seconds ago) pulls the still-stale server record
+      // and silently overwrites the just-made local edit in IndexedDB.
+      // The outbox row survives and re-pushes later, but the UI regresses
+      // in the meantime. onAuthStateChange already flushes before
+      // pulling; this is the far more common path (reopening an existing
+      // session) and was missing it.
+      await flushOutbox();
       await pullPrivateRecords();
       await pingActivity();
     }

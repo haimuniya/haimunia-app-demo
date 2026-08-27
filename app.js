@@ -49,7 +49,7 @@ const MOVEMENTS = [
   { id: "split-jerk", name: "Split Jerk", category: "Press" },
   { id: "seated-press", name: "Seated Press", category: "Press" },
   { id: "z-press", name: "Z-Press", category: "Press" },
-  { id: "single-arm-db-press", name: "Single-Arm DB Press", category: "Press" },
+  { id: "single-arm-db-press", name: "Single-Arm DB Press", category: "Press", barbell: false },
   { id: "incline-bench-press", name: "Incline Bench Press", category: "Press" },
   { id: "close-grip-bench-press", name: "Close-Grip Bench Press", category: "Press" },
   { id: "landmine-press", name: "Landmine Press", category: "Press" },
@@ -67,31 +67,31 @@ const MOVEMENTS = [
   { id: "snatch-balance", name: "Snatch Balance", category: "Olympic" },
   { id: "pause-snatch", name: "Pause Snatch", category: "Olympic" },
   { id: "pause-clean", name: "Pause Clean", category: "Olympic" },
-  { id: "weighted-pullup", name: "Weighted Pull-Up", category: "Pull" },
-  { id: "weighted-chinup", name: "Weighted Chin-Up", category: "Pull" },
+  { id: "weighted-pullup", name: "Weighted Pull-Up", category: "Pull", barbell: false },
+  { id: "weighted-chinup", name: "Weighted Chin-Up", category: "Pull", barbell: false },
   { id: "bent-over-row", name: "Bent-Over Row", category: "Pull" },
   { id: "barbell-row", name: "Barbell Row", category: "Pull" },
   { id: "pendlay-row", name: "Pendlay Row", category: "Pull" },
-  { id: "single-arm-db-row", name: "Single-Arm DB Row", category: "Pull" },
+  { id: "single-arm-db-row", name: "Single-Arm DB Row", category: "Pull", barbell: false },
   { id: "t-bar-row", name: "T-Bar Row", category: "Pull" },
-  { id: "face-pull", name: "Face Pull", category: "Pull" },
-  { id: "lat-pulldown", name: "Lat Pulldown", category: "Pull" },
+  { id: "face-pull", name: "Face Pull", category: "Pull", barbell: false },
+  { id: "lat-pulldown", name: "Lat Pulldown", category: "Pull", barbell: false },
   { id: "thruster", name: "Thruster", category: "Other" },
   { id: "front-rack-lunge", name: "Front Rack Lunge", category: "Other" },
-  { id: "weighted-dip", name: "Weighted Dip", category: "Other" },
-  { id: "turkish-getup", name: "Turkish Get-Up", category: "Other" },
+  { id: "weighted-dip", name: "Weighted Dip", category: "Other", barbell: false },
+  { id: "turkish-getup", name: "Turkish Get-Up", category: "Other", barbell: false },
   { id: "good-mornings", name: "Good Mornings", category: "Other" },
   { id: "hip-thrust", name: "Hip Thrust", category: "Other" },
   { id: "barbell-lunge", name: "Barbell Lunge", category: "Other" },
-  { id: "weighted-step-up", name: "Weighted Step-Up", category: "Other" },
-  { id: "nordic-curl", name: "Nordic Curl", category: "Other" },
-  { id: "ghd-hip-extension", name: "GHD Hip Extension", category: "Other" },
-  { id: "weighted-plank", name: "Weighted Plank", category: "Other" },
-  { id: "ab-wheel-rollout", name: "Ab Wheel Rollout", category: "Other" },
-  { id: "leg-press", name: "Leg Press", category: "Other" },
-  { id: "leg-curl", name: "Leg Curl", category: "Other" },
-  { id: "leg-extension", name: "Leg Extension", category: "Other" },
-  { id: "calf-raise", name: "Calf Raise", category: "Other" },
+  { id: "weighted-step-up", name: "Weighted Step-Up", category: "Other", barbell: false },
+  { id: "nordic-curl", name: "Nordic Curl", category: "Other", barbell: false },
+  { id: "ghd-hip-extension", name: "GHD Hip Extension", category: "Other", barbell: false },
+  { id: "weighted-plank", name: "Weighted Plank", category: "Other", barbell: false },
+  { id: "ab-wheel-rollout", name: "Ab Wheel Rollout", category: "Other", barbell: false },
+  { id: "leg-press", name: "Leg Press", category: "Other", barbell: false },
+  { id: "leg-curl", name: "Leg Curl", category: "Other", barbell: false },
+  { id: "leg-extension", name: "Leg Extension", category: "Other", barbell: false },
+  { id: "calf-raise", name: "Calf Raise", category: "Other", barbell: false },
 ];
 
 const STANDARD_REPS = [1, 2, 3, 5, 10];
@@ -100,7 +100,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "3.0.13";
+const APP_VERSION = "3.0.14";
 
 const WOD_MOVEMENT_TAGS = [
   // Gymnastics (bodyweight)
@@ -525,6 +525,17 @@ function sanitizeList(list, fn) {
 let customMovements = [];
 function allMovements() { return MOVEMENTS.concat(customMovements); }
 function movementById(id) { return allMovements().find((m) => m.id === id); }
+// Defaults to true (custom movements and most of MOVEMENTS are barbell
+// lifts) - only entries explicitly marked barbell:false (weighted
+// bodyweight accessories, dumbbell/machine/cable movements) are exempt.
+// Without this, the weight stepper's floor was tied to barWeight (the
+// empty-bar weight) for every movement in "reps" mode, silently clamping
+// a real light added-weight input up to 8/15/20kg for things like
+// weighted pull-ups - the wrong number then landing in PR history.
+function isBarbellMovement(id) {
+  const m = movementById(id);
+  return !!m && m.barbell !== false;
+}
 
 // ---------- IndexedDB ----------
 // Deliberately distinct from the real production app's own database name.
@@ -2631,6 +2642,7 @@ function ladderRoundSummary(r, showExercise) {
 function renderLogTab() {
   const selected = movementById(selectedId);
   const isDuration = logEntryType === "duration";
+  const isBarbell = isBarbellMovement(selectedId);
   const est = isDuration ? null : bestEst1RM(selectedId);
   const bestHold = isDuration ? bestDurationFor(selectedId) : null;
   // Matches whichever mode is toggled — a duration exercise's most recent
@@ -2690,15 +2702,15 @@ function renderLogTab() {
       </div>`;
     })()}
 
-    ${isDuration ? "" : renderBarWeightRow()}
+    ${isDuration || !isBarbell ? "" : renderBarWeightRow()}
 
     <div class="bar-wrap" id="barWrap">
       <div class="pr-flash" id="prFlash" style="display:none;">${ICONS.flame}<span>שיא חדש!</span></div>
-      ${isDuration ? "" : `<div id="barbellVisual">${renderBarbell(weight)}</div>`}
+      ${isDuration || !isBarbell ? "" : `<div id="barbellVisual">${renderBarbell(weight)}</div>`}
     </div>
 
     <div class="steppers">
-      ${renderStepper("weight", "משקל (ק\"ג)", weight, 2.5, isDuration ? 0 : barWeight)}
+      ${renderStepper("weight", "משקל (ק\"ג)", weight, 2.5, isDuration || !isBarbell ? 0 : barWeight)}
       ${isDuration ? renderStepper("durationSeconds", "משך (שניות)", durationSeconds, 5, 1) : renderStepper("reps", "חזרות", reps, 1, 1)}
       ${renderStepper("sets", "סטים", sets, 1, 1)}
     </div>
@@ -3308,9 +3320,14 @@ function updateLogQuickUI(field) {
   if (field === "weight" && logEntryType === "reps") {
     const bv = document.getElementById("barbellVisual");
     if (bv) bv.innerHTML = renderBarbell(weight);
-    // The weight stepper's floor tracks barWeight (total can't be less than
-    // the empty bar) - keep every element carrying data-min in sync with it.
-    document.querySelectorAll('[data-action="step"][data-field="weight"]').forEach((elm) => { elm.dataset.min = barWeight; });
+    // The weight stepper's floor tracks barWeight (total can't be less
+    // than the empty bar) - but only for movements actually loaded on a
+    // barbell (isBarbellMovement) - keep every element carrying data-min
+    // in sync with it. A non-barbell movement (weighted pull-up, dumbbell
+    // press, machine leg press, ...) keeps a plain 0 floor instead.
+    if (isBarbellMovement(selectedId)) {
+      document.querySelectorAll('[data-action="step"][data-field="weight"]').forEach((elm) => { elm.dataset.min = barWeight; });
+    }
   }
   if (logEntryType === "reps") {
     const estEl = document.getElementById("estLineValue");

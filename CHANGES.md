@@ -1,3 +1,32 @@
+# Two critical bugs, from an independent 3-lens audit — 2026-08-27
+
+First of several follow-up submissions closing out findings from a
+full-app UX/security/architecture review. These two were flagged
+Critical by the UX and architecture reviewers respectively, and both are
+silent-data-corruption bugs a real user could hit through completely
+normal use, with no error shown either time.
+
+**Weight floor was tied to barbell weight for every movement.** The
+weight stepper in "reps" mode enforced a floor equal to the selected bar
+weight (8/15/20kg) regardless of which movement was selected - including
+weighted pull-ups, chin-ups, dips, dumbbell presses/rows, lat pulldown,
+leg press, and other non-barbell entries sharing the same picker. Typing
+a real light added weight for one of these got silently clamped up to
+the barbell floor, corrupting the actual saved PR. Fixed with an explicit
+`barbell: false` flag on the MOVEMENTS entries that aren't loaded on a
+bar, gating both the stepper floor and the barbell-plates visual on it.
+
+**Reopening the app could silently overwrite a just-made offline edit.**
+`refreshSession()` - the path that runs on every normal app open when a
+session already exists - pulled the remote community-sync copy of
+private records without first flushing pending local edits. A set logged
+offline seconds before reopening the app got its local edit overwritten
+by the still-stale server copy; the queued edit would eventually
+re-push, but the UI visibly regressed in the meantime. Fixed by flushing
+the outbox first, matching the pattern the sign-in path already used.
+
+208/208 tests pass.
+
 # Form field errors wired for screen readers, a real admin moderation queue, and community UI polish — 2026-08-27
 
 Three deferred rescan items, done together since they touch the same
