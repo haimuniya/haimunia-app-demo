@@ -11,14 +11,23 @@ const SW_VERSION = "3.0.8";
 // app's cached assets (Cache Storage is origin-wide, not scoped per SW).
 const CACHE = `haimunia-demo-v${SW_VERSION}`;
 
-// Everything the app shell needs to boot with no network.
-const ASSETS = [
+// Required: the app cannot render/run offline without these. A miss here
+// fails the whole install (the old service worker — and its own cache —
+// stays in control, per the Cache/Service Worker spec's normal failed-
+// install behavior), rather than silently activating a shell that's
+// missing its own HTML or JS.
+const REQUIRED_ASSETS = [
   "./",
   "./index.html",
   "./app.js",
   "./theme-init.js",
-  "./vendor/supabase.js",
   "./cloud.js",
+];
+// Optional: visual/informational assets — a miss degrades the experience
+// (a font falls back, an icon is missing) but never breaks the app, so
+// install still proceeds without them.
+const OPTIONAL_ASSETS = [
+  "./vendor/supabase.js",
   "./PRIVACY.md",
   "./TERMS.md",
   "./manifest.json",
@@ -47,20 +56,23 @@ const ASSETS = [
   "./assets/fonts/jbmono-700-latin.woff2",
   "./assets/fonts/anton-400-latin.woff2",
 ];
+const ASSETS = [...REQUIRED_ASSETS, ...OPTIONAL_ASSETS];
 
-// Precache each asset independently. addAll() is all-or-nothing: a single
-// missing file used to fail the whole install and silently leave the app with
-// no offline support at all.
 self.addEventListener("install", (e) => {
   e.waitUntil(
-    caches.open(CACHE).then((cache) =>
-      Promise.allSettled(
-        ASSETS.map((url) =>
+    caches.open(CACHE).then(async (cache) => {
+      // addAll() is all-or-nothing across the whole list; doing required
+      // assets as their own strict Promise.all() means a miss here is
+      // exactly as fatal as it should be, without also failing on an
+      // optional asset miss the way a single addAll() over everything would.
+      await Promise.all(REQUIRED_ASSETS.map((url) => cache.add(new Request(url, { cache: "reload" }))));
+      await Promise.allSettled(
+        OPTIONAL_ASSETS.map((url) =>
           cache.add(new Request(url, { cache: "reload" }))
             .catch((err) => console.warn("[sw] precache miss:", url, err))
         )
-      )
-    )
+      );
+    })
   );
   // No skipWaiting() here on purpose. The page shows an update banner and the
   // user decides when to swap; activating under a running page would leave the

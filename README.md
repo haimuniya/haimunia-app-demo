@@ -59,3 +59,20 @@ of the feed.
 
 See `COMMUNITY_SETUP.md` for creating the Supabase project, running the
 migrations in `supabase/migrations/`, and the required pre-launch checks.
+
+## Development
+
+Requires Node 22+ and npm (no other runtime dependency — the app itself
+ships with zero build step; Node is only for the test suite and the
+browser-check scripts).
+
+```
+npm ci                              # install test dependencies
+npm test                            # 177+ unit/integration tests (jsdom)
+npm run sync-version                # keep APP_VERSION (app.js) and SW_VERSION (sw.js) in sync after a version bump
+cd scripts/browser-check && npm ci && npx playwright install chromium
+node run-all.mjs                    # full real-Chromium suite; same jobs CI runs
+```
+
+`npm test` and the browser-check suite both run in CI on every push and
+pull request (see `.github/workflows/test.yml`).
