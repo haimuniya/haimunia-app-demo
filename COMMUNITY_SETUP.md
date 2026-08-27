@@ -37,12 +37,13 @@ The app remains fully usable offline when the backend is not configured.
    `role` is `'member'` or `'coach'` — as of `202608270005`, a `'coach'`
    code grants a fixed set of powers on its own (see "Access tiers"
    below), no separate step needed. To make someone a full admin, that's
-   still a separate manual step, unrelated to invite codes:
+   still a separate manual step, unrelated to invite codes. Sign-in has
+   no email (see below), so look them up by handle, not email:
    ```sql
-   update public.profiles set is_admin = true where id = (select id from auth.users where email = 'their@email.com');
+   update public.profiles set is_admin = true where handle = 'their-handle';
    ```
-   (only works after they've signed in once and redeemed a code — the
-   profile row has to exist first).
+   (only works after they've signed in once, redeemed a code, and saved
+   a profile — the profile row, and its handle, has to exist first).
 
    `202608270004` fixes a real bug in `202608270003`: the trigger meant to
    stop a client-side path from ever setting `is_admin` also blocked a
@@ -63,11 +64,44 @@ The app remains fully usable offline when the backend is not configured.
    posting/pinning announcements, setting the weekly challenge, and
    seeing the new/inactive member views, without needing the manual
    `is_admin` grant.
-3. In Authentication, enable email magic links and add the deployed app URL to Redirect URLs.
+3. In Authentication → Sign In / Providers, enable **Anonymous Sign-ins**
+   (off by default). This is the only auth method the app uses — see
+   "Sign-in has no email" below for why, and for what that trades away.
 4. Copy the project URL and **publishable** key into `cloud-config.js`.
 5. Never place a secret or service-role key in browser code, Git, or a static-host environment variable.
 6. Schedule `select public.purge_due_accounts();` once daily from a trusted service-role Edge Function or external scheduler.
-7. Configure SMTP before public launch so authentication email delivery is dependable.
+
+## Sign-in has no email
+
+The app never collects an email address or sends a magic link — opening
+the Community tab silently creates a real Supabase Auth session via
+`client.auth.signInAnonymously()` (a genuine `auth.users` row, `auth.uid()`
+works normally, every RLS policy applies exactly as it does for any other
+`authenticated` session — anonymous sessions are `role: authenticated`
+with an `is_anonymous: true` JWT claim, not a lesser access level). The
+invite code is the only real gate, checked at profile-creation time by
+`profiles_insert_self`'s RLS policy — identical security model to before,
+just without an email round-trip in the middle of it.
+
+This was a deliberate trade, not an oversight: a magic-link email often
+opens in whatever the phone's default browser is (Chrome, say), not
+Safari, and not inside the installed home-screen PWA — the auth session
+lands somewhere other than where the person actually wanted to be. With
+no email step at all, there's nothing to hand off to the wrong app.
+
+The real trade: there is no "sign back in" path. Nothing external (no
+email, no password) ties a person to their identity — if they clear site
+data, switch devices, or reinstall, a fresh anonymous session with no
+memory of the old one is all `ensureAnonymousSession()` can create, and
+the old profile/history/streak is unreachable from it. That's why the
+Account tab no longer offers a "sign out" button — the previous session
+would have had no way back either, so a casual-looking sign-out button
+would have been misleading. "Request account deletion" is still there
+for someone who deliberately wants to walk away.
+
+Because of this trade, keep SMTP/email delivery configuration entirely
+out of scope for this project going forward — there is nothing left in
+the app that would ever send a member an email.
 
 ## Hardened invite and photo operations
 
@@ -97,6 +131,10 @@ objects through SQL because it only removes metadata.
 ## Required launch checks
 
 - Run `npm test`.
+- Confirm Anonymous Sign-ins is enabled in the project (Authentication →
+  Sign In / Providers) — without it, opening the Community tab fails
+  silently at `signInAnonymously()` and nobody can ever get past
+  "מתחברים לקהילה…".
 - Run the migration against an empty staging database.
 - Test every RLS policy as two different users, especially private records, blocks, follower-only posts, and reports.
 - Confirm bodyweight, measurements, session notes, WOD notes, and partner tags never appear in `workout_posts` or `community_feed`.

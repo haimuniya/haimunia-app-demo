@@ -166,14 +166,22 @@
     await loadCommentsFor(postId);
     await loadFeed();
   }
-  async function sendMagicLink(email) {
-    if (!client) return setMessage("יש להגדיר תחילה את חיבור Supabase");
-    const clean = String(email || "").trim().toLowerCase();
-    if (!/^\S+@\S+\.\S+$/.test(clean)) return setMessage("כתובת האימייל אינה תקינה");
-    const { error } = await client.auth.signInWithOtp({ email: clean, options: { emailRedirectTo: location.origin + location.pathname } });
-    setMessage(error ? "שליחת הקישור נכשלה" : "שלחנו קישור כניסה לאימייל");
+  // No email, no magic link — sign-in is a real Supabase Auth session
+  // (client-side only, no server round-trip a mail client could hijack
+  // into the wrong browser and away from the installed home-screen app)
+  // with zero user input. The invite code is the only real gate: it's
+  // checked at profile-creation time by profiles_insert_self's RLS
+  // policy, not by how the session was created. Attempted at most once
+  // per page load, and only once the Community tab is actually opened —
+  // never for someone who only ever uses the offline training log.
+  let anonSignInAttempted = false;
+  async function ensureAnonymousSession() {
+    if (!client || state.user || anonSignInAttempted) return;
+    anonSignInAttempted = true;
+    const { error } = await client.auth.signInAnonymously();
+    if (error) { setMessage("לא ניתן להתחבר לקהילה כרגע, נסו לרענן את הדף"); return; }
+    // onAuthStateChange below picks up the new session and loads everything.
   }
-  async function signOut() { if (client) await client.auth.signOut(); }
   async function saveProfile(form) {
     if (!state.user) return;
     const handle = String(form.handle.value || "").trim().toLowerCase();
@@ -297,7 +305,10 @@
 
   window.renderCommunityApp = function () {
     if (!configured) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:8px;">הקהילה מוכנה לחיבור</div><div style="color:var(--steel);font-size:13px;line-height:1.7;">יש ליצור פרויקט Supabase, להריץ את קובץ המיגרציה ולהכניס URL ומפתח publishable בקובץ cloud-config.js. אין להכניס מפתח secret.</div></div>`;
-    if (!state.user) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">כניסה לקהילה</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">קישור כניסה חד-פעמי יישלח לאימייל. האימונים נשארים פרטיים עד שתבחרו לשתף.</div><input id="communityEmail" class="text-input" type="email" dir="ltr" autocomplete="email" placeholder="name@example.com" aria-label="אימייל"/><button class="save-btn" style="margin-top:12px;" data-community-action="magic-link">שליחת קישור כניסה</button>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
+    if (!state.user) {
+      ensureAnonymousSession();
+      return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">מתחברים לקהילה…</div><div style="color:var(--steel);font-size:13px;">שנייה אחת.</div>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
+    }
     if (!state.redemption) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">קוד הזמנה למועדון</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">הקהילה פתוחה רק למי שקיבל/ה קוד הזמנה מהמאמן/ת. הקוד לא נוגע לרישום האימונים עצמו — הוא רק פותח את לשונית הקהילה.</div><form id="communityInviteCode"><input class="text-input" name="code" dir="ltr" placeholder="קוד הזמנה" required/><button class="save-btn" type="submit" style="margin-top:12px;">אישור קוד</button></form>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
     const p = state.profile || {};
     const staff = isStaff();
@@ -335,7 +346,7 @@
       <label class="field"><span class="field-label">שם משתמש (handle)</span><input class="text-input" name="handle" dir="ltr" value="${safeText(p.handle || "")}" placeholder="handle" required/></label>
       <label class="field"><span class="field-label">שם תצוגה</span><input class="text-input" name="displayName" value="${safeText(p.display_name || "")}" placeholder="שם תצוגה"/></label>
       <label class="field"><span class="field-label">קצת עליי</span><textarea class="text-input" name="bio" maxlength="160" placeholder="כמה מילים עליי">${safeText(p.bio || "")}</textarea></label>
-      <div class="chip-row"><button class="chip-btn primary" type="submit">שמירת פרופיל</button><button class="chip-btn" type="button" data-community-action="migrate">סנכרון היסטוריה פרטית</button><button class="chip-btn" type="button" data-community-action="sign-out">יציאה</button></div>
+      <div class="chip-row"><button class="chip-btn primary" type="submit">שמירת פרופיל</button><button class="chip-btn" type="button" data-community-action="migrate">סנכרון היסטוריה פרטית</button></div>
     </form>`;
 
     const people = `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--steel)", "מציאת מתאמנים")}<div class="search-box"><input id="communityPeopleSearch" placeholder="חיפוש לפי שם או @handle" aria-label="חיפוש מתאמנים" /></div>${state.people.length ? `<div class="log-list">${state.people.map((person) => `<div class="log-row"><div><div style="font-weight:700;">${safeText(person.display_name || "@" + person.handle)}</div><div style="color:var(--steel);font-size:12px;">@${safeText(person.handle)} ${safeText(person.bio || "")}</div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="follow" data-id="${safeText(person.id)}">מעקב</button><button class="chip-btn" data-community-action="block" data-id="${safeText(person.id)}">חסימה</button></div></div>`).join("")}</div>` : ""}</div>`;
@@ -369,9 +380,7 @@
   };
   window.handleCommunityClick = function (el) {
     const action = el.dataset.communityAction;
-    if (action === "magic-link") sendMagicLink(document.getElementById("communityEmail").value);
-    else if (action === "sign-out") signOut();
-    else if (action === "migrate") migrateLocalData();
+    if (action === "migrate") migrateLocalData();
     else if (action === "cheer") react(el.dataset.id);
     else if (action === "report") report(el.dataset.id);
     else if (action === "publish") {

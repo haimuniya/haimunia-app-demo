@@ -13,8 +13,10 @@ thing it still isn't.
   calendar, achievements) — everything `haimunia-app` has, plus a
   Community tab.
 - The Community tab talks to a real Supabase project once one is
-  configured in `cloud-config.js` (see `COMMUNITY_SETUP.md`): magic-link
-  sign-in, a profile, following/blocking, a workout feed with reactions
+  configured in `cloud-config.js` (see `COMMUNITY_SETUP.md`): sign-in is
+  invisible and instant (no email, no magic link — see "Sign-in has no
+  email" in `COMMUNITY_SETUP.md` for the tradeoff), gated by a box invite
+  code; a profile, following/blocking, a workout feed with reactions
   and comments, an optional photo on a shared result, sharing a strength/
   WOD PR or an achievement unlock, activity streaks, coach-posted
   announcements (with an optional "today's workout" pin), and a weekly

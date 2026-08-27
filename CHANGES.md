@@ -1,3 +1,87 @@
+# Remove email from community sign-in entirely — anonymous auth, invite code only — 2026-08-27
+
+Sign-in no longer collects an email address or sends a magic link.
+Opening the Community tab now silently creates a real Supabase Auth
+session via `client.auth.signInAnonymously()` — a genuine `auth.users`
+row, `auth.uid()` works normally, every existing RLS policy applies
+exactly as before (anonymous sessions carry `role: authenticated` with
+an `is_anonymous: true` JWT claim, not a lesser access level). The
+invite code remains the only real gate — unchanged, still enforced
+server-side by `profiles_insert_self`'s RLS policy at profile-creation
+time, not by how the session was created.
+
+Why: a magic-link email often opens in whatever the phone's default
+browser is, not inside the already-installed home-screen PWA — the auth
+session lands somewhere other than where the person meant to be. With no
+email step at all, there's nothing to hand off to the wrong app.
+
+Real tradeoff, not free: there's no "sign back in" path anymore — nothing
+external ties a person to their identity, so clearing site data or
+switching devices means a fresh anonymous session with no memory of the
+old one, and the previous profile/history/streak becomes unreachable.
+The Account tab's "sign out" button was removed for exactly this reason
+— it would have implied a reversibility that doesn't exist; "request
+account deletion" is still there for someone deliberately walking away.
+The admin-grant instruction in `COMMUNITY_SETUP.md` also had to change
+from an email lookup (`where email = ...`, meaningless now — anonymous
+users have no email at all) to `where handle = ...`.
+
+4 new tests in `test/community-anonymous-auth.test.mjs`. 185/185 tests
+pass; boot-smoke passes with zero console errors against the live
+project (Anonymous Sign-ins isn't enabled there yet — the failure path
+was verified to degrade to a message, not a crash); visually verified
+the connecting state via a mocked client, including that
+`signInAnonymously()` fires exactly once per load even across repeated
+re-renders and tab switches.
+
+# Catch-up entry: security hardening, DevOps, and accessibility batches not logged here at the time — 2026-08-27
+
+Three rounds of work landed as commits without a matching entry in this
+file — recorded here after the fact so the history stays complete.
+
+**Security hardening** (`202608270006_security_hardening.sql`, authored
+by a separate Codex-based session working in this same repo, merged in
+and then fixed through three live-testing rounds here): invite codes are
+now hashed (never stored plaintext), high-entropy (48 hex chars),
+expiring, bounded to a max redemption count, and rate-limited (5 attempts
+per 15 minutes); coach promotion moved from a redeemable code to a
+trusted `grant_coach_role()` service-role-only function; post photo paths
+are bound to their author by a database trigger, with a 20-photo upload
+quota; reports gained a real admin-only `review_report()` transition
+instead of just hiding a post for its reporter; `is_staff()` no longer
+accepts an arbitrary user id. Fixed afterward, in order, from live
+`SQL editor` failures: a primary-key/foreign-key creation-order bug, a
+`CREATE OR REPLACE FUNCTION` default-parameter removal Postgres
+disallows, an RLS-policy dependency-ordering bug, and unqualified
+pgcrypto calls that broke under the functions' own `search_path = ''`
+hardening.
+
+**DevOps**: `run-all.mjs` now auto-discovers browser-check scripts from
+disk instead of a hand-maintained list that had silently excluded three
+of them; running the full suite for the first time surfaced two scripts
+that had gone genuinely stale against the app's current behavior
+(unrelated to this work) and both were fixed. CI now runs the real-
+Chromium browser suite as a required job, not just unit tests;
+`actions/checkout`/`actions/setup-node` pinned to their exact current
+commit SHAs; a concurrency group cancels superseded runs. The service
+worker's install handler now fails outright if a *required* app-shell
+file (index.html/app.js/theme-init.js/cloud.js) can't be cached, instead
+of silently activating a broken shell the way every asset used to be
+treated.
+
+**Accessibility**: `:focus-visible` widened from `button, input` to
+every interactive element type; `.footer-note`/`.link-btn` were using a
+border color as text color, measuring under WCAG AA — fixed, and
+`--steel` itself retuned per theme to clear 4.5:1 with real margin
+everywhere it's already used as secondary text app-wide; two undersized
+touch targets (the numeric-field +/- buttons, calendar month navigation)
+brought up to 44×44px; the community photo picker gained real visible
+label text instead of an emoji-only, title-attribute-only button; and a
+real bug — a document-level focus handler was wiping every numeric
+field's value the instant it was focused — fixed to select the existing
+value instead (typing still replaces it in one keystroke, but the value
+is never destructively cleared just from focusing).
+
 # Build the coach access tier — 2026-08-27
 
 Three real tiers now, via new migration `202608270005_coach_tier.sql`:
