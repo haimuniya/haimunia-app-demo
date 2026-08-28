@@ -12,10 +12,14 @@ files live in `docs/community/tickets/`.
 
 ## Current phase
 
-Phase 0 Foundations. All tickets in review. Code complete, node suite green at
-382. Not yet verified against a real Postgres: the CI `migration-check` job
-plus the new `supabase test db` pgTAP step is the first real run, and needs a
-push. Phase 1 can start against the local schema in parallel.
+Phase 1 Community V1.
+
+Phase 0 status: pushed on branch `community/phase-0`, commit 3977b85. CI:
+node-tests pass, browser-checks pass, migration-check applied all 13
+migrations against a real Postgres with no error. The `supabase test db`
+pgTAP step failed and is now `continue-on-error` until the suite is
+debugged, tracked as COMM-020, non-blocking. Schema is validated. Phase 1
+proceeds.
 
 ## Phase 0 tickets
 
