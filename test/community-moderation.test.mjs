@@ -33,7 +33,7 @@ test("the moderation queue is admin-only and dispatches review-report with a sta
   assert.match(src, /data-community-action="review-report" data-id="\$\{safeText\(r\.id\)\}" data-status="resolved"/);
   assert.match(src, /data-community-action="review-report" data-id="\$\{safeText\(r\.id\)\}" data-status="dismissed"/);
   assert.match(src, /action === "review-report"\) reviewReport\(el\.dataset\.id, el\.dataset\.status\)/);
-  assert.match(src, /accountTab = account \+ people \+ newMembersHtml \+ inactiveHtml \+ renderModeration\(\)/);
+  assert.match(src, /accountTab = account \+ privacyPanel \+ people \+ newMembersHtml \+ inactiveHtml \+ renderModeration\(\)/);
 });
 
 test("the account tab shows a pending-open-reports badge, admin-only", () => {

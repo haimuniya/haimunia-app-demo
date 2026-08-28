@@ -44,3 +44,11 @@ jobs:
         # throwaway local Postgres + Auth + Storage stack. Fails the build
         # on the first migration that doesn't apply cleanly, so a broken
         # migration is caught here instead of against the real project.
+      - run: supabase test db
+        # Runs the pgTAP suite in supabase/tests/ against that same stack.
+        # Each NNNN_slug_test.sql impersonates two auth users in one
+        # transaction and asserts RLS allow or deny for real, per the
+        # boundary list in docs/community/backlog.md. This is coverage the
+        # static assertions in test/community-rls-boundaries.test.mjs cannot
+        # give, since the JS mock has no policy engine. pgTAP ships in the
+        # Supabase images.

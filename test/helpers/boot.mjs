@@ -32,6 +32,22 @@ const appSrcPaths = [
 function readAppSrc() {
   return appSrcPaths.map((p) => readFileSync(p, "utf8")).join("\n") + "\n" + readFileSync(appJsPath, "utf8");
 }
+// The shared platform modules (COMM-012 to COMM-015) load BEFORE cloud.js
+// in index.html, not after, because cloud.js reaches them through window.
+// They get their own eval() rather than joining the concatenation above
+// for exactly that reason - the order has to match index.html. Each one
+// is a self-contained IIFE that only publishes to window, so unlike the
+// app src files they do not depend on a top-level `let` being visible
+// across script tags, and the separate eval costs nothing.
+const platformSrcPaths = [
+  path.join(root, "src", "eventbus.js"),
+  path.join(root, "src", "analytics.js"),
+  path.join(root, "src", "realtime.js"),
+  path.join(root, "src", "image.js"),
+];
+function readPlatformSrc() {
+  return platformSrcPaths.map((p) => readFileSync(p, "utf8")).join("\n");
+}
 
 function newDom() {
   const html = readFileSync(htmlPath, "utf8");
@@ -68,6 +84,7 @@ function newDom() {
 
 export async function bootApp() {
   const window = newDom();
+  window.eval(readPlatformSrc());
   window.eval(readAppSrc());
 
   await waitFor(() => window.document.getElementById("loading").style.display === "none", 5000);
@@ -91,6 +108,7 @@ export async function bootCommunity(mock, opts = {}) {
   if (opts.syncEnabled) window.localStorage.setItem("haimunia-demo:cloudSyncEnabled", "1");
 
   const cloudJs = readFileSync(cloudJsPath, "utf8");
+  window.eval(readPlatformSrc());
   window.eval(cloudJs);
   window.eval(readAppSrc());
 

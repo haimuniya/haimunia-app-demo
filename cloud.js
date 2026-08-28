@@ -75,9 +75,13 @@
     }
     rerender();
   }
+  // recovery_verified_at drives the COMM-016 gate; the privacy columns
+  // (COMM-018) drive the Account > Privacy panel and are read straight off
+  // state.profile, so they have to be selected here too.
+  const PROFILE_COLUMNS = "id,handle,display_name,bio,avatar_url,is_admin,recovery_verified_at,visible_to_club,show_workout_results,show_prs,show_achievements,show_attendance,show_upcoming_booking,show_in_attendee_lists,in_leaderboards,allow_follows,allow_mentions,allow_messages";
   async function loadProfile() {
     if (!state.user) return;
-    const { data } = await client.from("profiles").select("id,handle,display_name,bio,avatar_url,is_admin").eq("id", state.user.id).maybeSingle();
+    const { data } = await client.from("profiles").select(PROFILE_COLUMNS).eq("id", state.user.id).maybeSingle();
     state.profile = data || null;
   }
   // A profile can only be created once a valid box invite code has been
@@ -88,12 +92,40 @@
     const { data } = await client.from("invite_redemptions").select("invite_id,role,redeemed_at").eq("user_id", state.user.id).maybeSingle();
     state.redemption = data || null;
   }
+  // COMM-017. A stable per-client identifier the invite throttle keys on
+  // in ADDITION to the Auth uid, so discarding an anonymous session and
+  // signing in again does not reset the five-attempts-per-15-minutes
+  // limit: the uid changes on every anonymous sign-in, this key does not,
+  // because it lives in localStorage and a sign-out never touches it.
+  // It is not a security boundary, only a cost floor against the trivial
+  // "clear the session and retry" guessing loop - a determined attacker
+  // rotates it, and the high-entropy codes remain the real protection.
+  // A full browser site-data clear (NOT the in-app "delete all data",
+  // which leaves this key alone) does reset it, which is acceptable:
+  // redemption then restarts from a fresh anonymous session anyway.
+  const ACTOR_KEY_STORAGE = "haimunia-demo:communityActorKey";
+  function communityActorKey() {
+    let key = null;
+    try { key = localStorage.getItem(ACTOR_KEY_STORAGE); } catch (e) { key = null; }
+    if (!key) {
+      const rnd = (window.crypto && window.crypto.randomUUID)
+        ? window.crypto.randomUUID() + window.crypto.randomUUID()
+        : String(Date.now()) + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+      key = rnd.replace(/-/g, "").slice(0, 128);
+      try { localStorage.setItem(ACTOR_KEY_STORAGE, key); } catch (e) {}
+    }
+    return key.slice(0, 128);
+  }
   async function redeemCode(form) {
     if (!state.user) return;
     const code = String(form.elements.code.value || "").trim();
     if (!code) return setFieldErrors("communityInviteCode", { code: "יש להזין קוד הזמנה" });
-    const { data, error } = await client.rpc("redeem_invite_code", { p_code: code });
-    if (error || data === "rate_limited") return setFieldErrors("communityInviteCode", { code: data === "rate_limited" ? "יותר מדי ניסיונות. יש לנסות שוב בעוד 15 דקות" : "קוד ההזמנה שגוי או לא פעיל" });
+    // Two-arg overload: passes the actor key so the throttle holds across
+    // session replacement. The server returns the same generic answer and
+    // applies the same increment whether or not this actor has been seen
+    // before, so the message here must not hint at a remaining count.
+    const { data, error } = await client.rpc("redeem_invite_code", { p_code: code, p_actor_key: communityActorKey() });
+    if (error || data === "rate_limited") return setFieldErrors("communityInviteCode", { code: data === "rate_limited" ? "יותר מדי ניסיונות. יש לנסות שוב מאוחר יותר" : "קוד ההזמנה שגוי או לא פעיל" });
     if (data !== "member") return setFieldErrors("communityInviteCode", { code: "קוד ההזמנה שגוי, פג תוקף או נוצל" });
     setFieldErrors("communityInviteCode", {});
     await loadRedemption();
@@ -301,6 +333,30 @@
     // onAuthStateChange below picks up the new session and loads everything.
   }
   function startSignup() { state.signupStarted = true; ensureAnonymousSession(); rerender(); }
+
+  // COMM-016. Community RLS (is_community_member()) requires
+  // profiles.recovery_verified_at, and mark_recovery_verified() is the
+  // only client-reachable way to set it - the RPC refuses unless Supabase
+  // Auth itself confirms a real email plus password on the user, so the
+  // gate cannot be self-certified from the client. It is idempotent, so a
+  // retry after a transient failure is safe. Called once the profile row
+  // exists (the insert policy forces recovery_verified_at to null, so it
+  // can only be stamped afterwards) and credentials are set. The one-shot
+  // guard mirrors anonSignInAttempted so a render loop cannot hammer the
+  // RPC while it is failing; the visible retry button passes { force }.
+  let recoveryVerifyAttempted = false;
+  async function verifyRecovery(opts) {
+    if (!state.user || state.user.is_anonymous || !state.profile) return false;
+    if (state.profile.recovery_verified_at) return true;
+    if (!(opts && opts.force) && recoveryVerifyAttempted) return false;
+    recoveryVerifyAttempted = true;
+    const { data, error } = await client.rpc("mark_recovery_verified");
+    if (error || !data) { setMessage("אימות החשבון נכשל, אפשר לנסות שוב"); return false; }
+    await loadProfile();
+    if (state.profile && state.profile.recovery_verified_at) setMessage("");
+    rerender();
+    return !!(state.profile && state.profile.recovery_verified_at);
+  }
   // A returning member logs into the exact same account (same auth.uid(),
   // same profile/history/streak) from any device - the one thing
   // anonymous-only sign-in structurally couldn't offer.
@@ -337,6 +393,12 @@
     state.user = data.user;
     setFieldErrors("communityCredentials", {});
     setMessage("החשבון נוצר, אפשר להתחבר איתו מכל מכשיר");
+    // For a member who already had a profile before setting a recovery
+    // method (an existing anonymous account after the Phase 0 migration),
+    // the method is verifiable the moment credentials exist. A brand-new
+    // signup has no profile row yet, so this no-ops and the stamp happens
+    // in saveProfile() instead.
+    if (state.profile && !state.profile.recovery_verified_at) await verifyRecovery({ force: true });
     rerender();
   }
   async function saveProfile(form) {
@@ -357,7 +419,14 @@
       return;
     }
     setFieldErrors(formId, {});
-    await loadProfile(); setMessage("הפרופיל נשמר");
+    await loadProfile();
+    // Right after the first profile insert (which the RLS policy forces to
+    // land with recovery_verified_at null), stamp the recovery method so
+    // the new member is a full community_member and never sees the
+    // COMM-016 gate. A returning member editing their profile from the
+    // Account tab is already verified, so this no-ops for them.
+    if (!state.user.is_anonymous && state.profile && !state.profile.recovery_verified_at) await verifyRecovery({ force: true });
+    setMessage("הפרופיל נשמר");
   }
   async function migrateLocalData() {
     if (!state.user || typeof window.queueAllLocalRecordsForSync !== "function") return;
@@ -416,8 +485,55 @@
     if (!state.user) return;
     const q = String(query || "").trim().replace(/[%_,()]/g, "");
     if (q.length < 2) { state.people = []; return rerender(); }
-    const { data, error } = await client.from("profiles").select("id,handle,display_name,bio,avatar_url").or(`handle.ilike.%${q}%,display_name.ilike.%${q}%`).neq("id", state.user.id).limit(20);
+    // allow_follows comes back so the follow button can be hidden for a
+    // member who turned follows off. The server still rejects the insert
+    // (follows_insert_self checks the same column plus block edges), this
+    // is only so the button does not lie.
+    const { data, error } = await client.from("profiles").select("id,handle,display_name,bio,avatar_url,allow_follows").or(`handle.ilike.%${q}%,display_name.ilike.%${q}%`).neq("id", state.user.id).limit(20);
     state.people = error ? [] : (data || []); rerender();
+  }
+  // COMM-018. The single client entry point to the server's per-field
+  // privacy resolver. Feed, profile, leaderboard and search all resolve a
+  // hidden field through this RPC (or the equivalent RLS policy) so one
+  // surface cannot leak what another hides. Returns false on any error or
+  // null caller, matching the function's own contract.
+  async function canViewProfileField(targetUserId, fieldName) {
+    if (!state.user || !targetUserId) return false;
+    const { data, error } = await client.rpc("can_view_profile_field", { p_target: targetUserId, p_field: fieldName });
+    return !error && data === true;
+  }
+  // Exposed so the feed, engagement and search surfaces owned by other
+  // agents resolve hidden fields through the same one place.
+  window.canViewProfileField = canViewProfileField;
+  // COMM-018. Every toggle is a direct own-row RLS upsert into profiles.
+  // protect_is_admin() pins is_admin, club_id and recovery_verified_at on
+  // any authenticated write, so sending just the one boolean is safe. The
+  // enforcement point is the server (profiles_read_authenticated,
+  // follows_insert_self, can_view_profile_field); this only records the
+  // member's choice. Optimistic, reverts the toggle on error.
+  const PRIVACY_FIELDS = [
+    { key: "visible_to_club", label: "הפרופיל שלי גלוי לחברי המועדון" },
+    { key: "show_workout_results", label: "תוצאות האימונים שלי גלויות לחברי המועדון" },
+    { key: "show_prs", label: "שיאים אישיים (PR) גלויים" },
+    { key: "show_achievements", label: "הישגים ועיטורים גלויים" },
+    { key: "show_attendance", label: "נוכחות בשיעורים גלויה" },
+    { key: "show_upcoming_booking", label: "רישום קרוב לשיעור גלוי" },
+    { key: "show_in_attendee_lists", label: "הופעה ברשימת הנרשמים לשיעור" },
+    { key: "in_leaderboards", label: "הכללה בטבלאות המובילים" },
+    { key: "allow_follows", label: "אפשר לחברי המועדון לעקוב אחריי" },
+    { key: "allow_mentions", label: "אפשר אזכור שלי בתגובות (@)" },
+    { key: "allow_messages", label: "אפשר הודעות פרטיות אליי" },
+  ];
+  const PRIVACY_KEYS = PRIVACY_FIELDS.map((f) => f.key);
+  async function savePrivacyField(field, value) {
+    if (!state.user || !state.profile || PRIVACY_KEYS.indexOf(field) < 0) return;
+    const prev = state.profile[field];
+    if (prev === value) return;
+    state.profile[field] = value;
+    rerender();
+    const { error } = await client.from("profiles").upsert({ id: state.user.id, [field]: value });
+    if (error) { state.profile[field] = prev; setMessage("לא ניתן לשמור הגדרה זו"); return; }
+    setMessage("הגדרת הפרטיות נשמרה");
   }
   async function follow(userId) {
     if (!state.user) return;
@@ -500,7 +616,16 @@
     if (error) return setMessage("בקשת המחיקה נכשלה");
     await client.auth.signOut();
   }
-  function setCommunityTab(tab) { state.communityTab = tab; rerender(); }
+  // COMM-014. Every realtime channel is scoped to the sub-tab that
+  // opened it, so leaving that sub-tab closes all of them here rather
+  // than in each feature. Phase 0 has no open subscriptions, so this is
+  // a no-op today - it is in place first so a Phase 2 feature cannot
+  // ship a leak by forgetting its own teardown.
+  function setCommunityTab(tab) {
+    if (window.HaimuniaRealtime && state.communityTab !== tab) window.HaimuniaRealtime.teardownAll();
+    state.communityTab = tab;
+    rerender();
+  }
 
   // A single in-app confirm dialog, replacing three different patterns
   // that used to exist for comparably serious actions: the native browser
@@ -632,7 +757,7 @@
       // invite code. Nothing happens silently here — the old
       // ensureAnonymousSession()-on-load only fires once "start-signup"
       // is actually chosen, below.
-      if (!state.signupStarted) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:14px;">כניסה לקהילה</div><form id="communityLogin">${field("communityLogin", "username", "שם משתמש", `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="שם משתמש" required/>`)}${field("communityLogin", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="current-password" placeholder="סיסמה" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">התחברות</button></form><button class="link-btn" data-community-action="start-signup" style="display:block;margin:18px auto 0;">חבר/ה חדש/ה? התחלת הרשמה עם קוד הזמנה</button>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
+      if (!state.signupStarted) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">כניסה לקהילה</div><div style="color:var(--steel);font-size:12.5px;line-height:1.7;margin-bottom:14px;">התחברות עם שם המשתמש והסיסמה משחזרת את הפרופיל, העוקבים, הסנכרון הפרטי והרשאות הצוות — גם ממכשיר חדש או אחרי מחיקת נתונים.</div><form id="communityLogin">${field("communityLogin", "username", "שם משתמש", `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="שם משתמש" required/>`)}${field("communityLogin", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="current-password" placeholder="סיסמה" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">התחברות ושחזור החשבון</button></form><button class="link-btn" data-community-action="start-signup" style="display:block;margin:18px auto 0;">חבר/ה חדש/ה? התחלת הרשמה עם קוד הזמנה</button>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
       ensureAnonymousSession();
       return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">מתחברים לקהילה…</div><div style="color:var(--steel);font-size:13px;">שנייה אחת.</div>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
     }
@@ -651,6 +776,20 @@
     // and the whole screen changing to the real tabbed UI afterward is the
     // confirmation, not just a toast that's easy to miss.
     if (!state.profile) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">השלמת פרופיל</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">כמעט סיימתם — עוד רגע אחד ותהיו בפנים.</div><form id="communityProfile">${field("communityProfile", "handle", "שם משתמש (handle)", `<input class="text-input" name="handle" dir="auto" placeholder="למשל דנה_כהן" required/>`)}<label class="field"><span class="field-label">שם תצוגה</span><input class="text-input" name="displayName" placeholder="שם תצוגה"/></label><label class="field"><span class="field-label">קצת עליי</span><textarea class="text-input" name="bio" maxlength="160" placeholder="כמה מילים עליי"></textarea></label><button class="save-btn" type="submit" style="margin-top:12px;">שמירת פרופיל</button></form>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
+    // COMM-016. Credentials are set and the profile row exists, but the
+    // account has not been stamped recoverable yet, so is_community_member()
+    // still blocks every write. Try once automatically (guarded inside
+    // verifyRecovery so it cannot loop), then leave a manual retry. The
+    // invite is already redeemed here and is never re-attempted, so a
+    // failed verification does not consume it - the member can retry or
+    // sign in again later on any device.
+    if (!state.profile.recovery_verified_at) {
+      verifyRecovery();
+      return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">אבטחת החשבון</div>
+        <div style="color:var(--steel);font-size:13px;line-height:1.7;margin-bottom:14px;">כדי להשתתף בקהילה — לפרסם, להגיב, לעודד ולהצטרף לאתגרים — נדרש חשבון שאפשר לשחזר. שם המשתמש והסיסמה שהגדרתם הם דרך השחזור: הם מאפשרים להתחבר לאותו פרופיל מכל מכשיר, גם אחרי החלפת טלפון או מחיקת נתונים. עד להשלמת האימות אפשר לצפות בקהילה בלבד.</div>
+        <button class="save-btn" data-community-action="verify-recovery" style="margin-top:2px;">אימות והמשך</button>
+        ${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
+    }
     const p = state.profile || {};
     const staff = isStaff();
 
@@ -690,7 +829,14 @@
     // ---- Boards tab: weekly challenge + streaks, top-3-plus-your-rank ----
     const challengeSetter = staff ? `<form id="communityWeeklyChallenge" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">קביעת אתגר שבועי<span class="admin-tag">ניהול</span></div>${field("communityWeeklyChallenge", "title", "שם האתגר", `<input class="text-input" name="title" placeholder="שם האתגר" required/>`)}${field("communityWeeklyChallenge", "comparisonKey", "מפתח השוואה", `<input class="text-input" name="comparisonKey" dir="ltr" placeholder="movement:back-squat:est1rm" required/>`)}<div style="color:var(--steel);font-size:11px;margin:-6px 0 10px;">חייב להתחיל ב-movement: (תרגיל) או wod: (אימון) — בדיוק כמו שהוא נשמר בשיתופים, למשל movement:back-squat:est1rm או wod:fran:time:rx</div><div class="flex gap-10 field">${field("communityWeeklyChallenge", "startsOn", "תאריך התחלה", `<input class="text-input" name="startsOn" type="date" required/>`)}${field("communityWeeklyChallenge", "endsOn", "תאריך סיום", `<input class="text-input" name="endsOn" type="date" required/>`)}</div><button class="chip-btn primary" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
     const weeklyLeaderboardList = state.weeklyChallenge ? renderRankedList(state.weeklyLeaderboard, (it) => it.author_id, (it) => safeText(it.result_text)) : `<div class="empty">אין אתגר פעיל כרגע</div>`;
-    const weeklyChallengeHtml = `<div class="ach-section">${sectionHead("var(--teal)", state.weeklyChallenge ? `אתגר השבוע: ${safeText(state.weeklyChallenge.title)}` : "אתגר השבוע")}${weeklyLeaderboardList}${challengeSetter}</div>`;
+    // COMM-018. A quick "hide my result" affordance right on the board.
+    // It flips in_leaderboards, the same column the Privacy panel toggles;
+    // full removal from the ranked views is enforced server-side once the
+    // leaderboard views filter on the column (see report notes).
+    const hideMyResult = state.profile && state.profile.in_leaderboards
+      ? `<button class="link-btn" data-community-action="hide-my-leaderboard-result" style="display:block;margin:8px auto 0;">הסתרת התוצאה שלי מהטבלאות</button>`
+      : (state.profile ? `<div class="footer-note" style="margin:8px 0 0;">התוצאה שלך מוסתרת מהטבלאות. אפשר להחזיר אותה בהגדרות הפרטיות.</div>` : "");
+    const weeklyChallengeHtml = `<div class="ach-section">${sectionHead("var(--teal)", state.weeklyChallenge ? `אתגר השבוע: ${safeText(state.weeklyChallenge.title)}` : "אתגר השבוע")}${weeklyLeaderboardList}${hideMyResult}${challengeSetter}</div>`;
 
     const streaksHtml = state.streaks.length ? `<div class="ach-section">${sectionHead("var(--purple)", "רצפי התמדה")}${renderRankedList(state.streaks, (it) => it.user_id, (it) => `🔥 ${Number(it.current_streak)}`)}</div>` : "";
 
@@ -704,12 +850,25 @@
       <div class="chip-row"><button class="chip-btn primary" type="submit">שמירת פרופיל</button><button class="chip-btn" type="button" data-community-action="migrate">סנכרון היסטוריה פרטית</button></div>
     </form>`;
 
-    const people = `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--steel)", "מציאת מתאמנים")}<div class="search-box"><input id="communityPeopleSearch" placeholder="חיפוש לפי שם או @handle" aria-label="חיפוש מתאמנים" /></div>${state.people.length ? `<div class="log-list">${state.people.map((person) => `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32)}<div><div style="font-weight:700;">${safeText(person.display_name || "@" + person.handle)}</div><div style="color:var(--steel);font-size:12px;">@${safeText(person.handle)} ${safeText(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="follow" data-id="${safeText(person.id)}">מעקב</button><button class="chip-btn" data-community-action="block" data-id="${safeText(person.id)}">חסימה</button></div></div>`).join("")}</div>` : ""}</div>`;
+    // COMM-018 Privacy panel. Values render straight off state.profile;
+    // each toggle change is persisted by savePrivacyField() as a direct
+    // own-row RLS upsert (listener wired in afterRenderCommunity). The
+    // skeleton branch is a formality - the gates above guarantee a loaded
+    // profile before this tab renders.
+    const privacyRows = state.profile
+      ? PRIVACY_FIELDS.map((f) => `<label class="log-row" style="justify-content:space-between;gap:12px;cursor:pointer;"><span style="font-size:13px;">${f.label}</span><input type="checkbox" data-privacy-field="${f.key}"${state.profile[f.key] ? " checked" : ""} aria-label="${safeText(f.label)}"/></label>`).join("")
+      : `<div class="log-row" aria-hidden="true"><span style="height:12px;width:62%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`.repeat(4);
+    const privacyPanel = `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--blue)", "פרטיות")}
+      <div style="color:var(--steel);font-size:12px;line-height:1.6;margin-bottom:8px;">כל שינוי נשמר מיד ונאכף בשרת. הגדרות הנוכחות והרישום לשיעור ייכנסו לתוקף כשמודול הנוכחות יעלה.</div>
+      <div class="log-list">${privacyRows}</div>
+    </div>`;
+
+    const people = `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--steel)", "מציאת מתאמנים")}<div class="search-box"><input id="communityPeopleSearch" placeholder="חיפוש לפי שם או @handle" aria-label="חיפוש מתאמנים" /></div>${state.people.length ? `<div class="log-list">${state.people.map((person) => `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32)}<div><div style="font-weight:700;">${safeText(person.display_name || "@" + person.handle)}</div><div style="color:var(--steel);font-size:12px;">@${safeText(person.handle)} ${safeText(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;">${person.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${safeText(person.id)}">מעקב</button>`}<button class="chip-btn" data-community-action="block" data-id="${safeText(person.id)}">חסימה</button></div></div>`).join("")}</div>` : ""}</div>`;
 
     const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מתאמנים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין מתאמנים חדשים לאחרונה</div>`}</div>` : "";
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
-    const accountTab = account + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement()
+    const accountTab = account + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement()
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
 
@@ -743,6 +902,10 @@
     if (input) input.addEventListener("input", () => searchPeople(input.value));
     const adminInput = document.getElementById("adminMemberSearch");
     if (adminInput) adminInput.addEventListener("input", () => searchMembers(adminInput.value));
+    // COMM-018. Each privacy toggle persists on change, no save button.
+    document.querySelectorAll("[data-privacy-field]").forEach((el) => {
+      el.addEventListener("change", () => savePrivacyField(el.dataset.privacyField, el.checked));
+    });
   };
   window.handleCommunityClick = function (el) {
     const action = el.dataset.communityAction;
@@ -766,6 +929,8 @@
     else if (action === "toggle-comments") toggleComments(el.dataset.id);
     else if (action === "delete-comment") deleteComment(el.dataset.id, el.dataset.post);
     else if (action === "set-tab") setCommunityTab(el.dataset.tab);
+    else if (action === "verify-recovery") verifyRecovery({ force: true });
+    else if (action === "hide-my-leaderboard-result") savePrivacyField("in_leaderboards", false);
     else if (action === "review-report") reviewReport(el.dataset.id, el.dataset.status);
     else if (action === "confirm-yes") runConfirm();
     else if (action === "confirm-no") closeConfirm();
@@ -803,6 +968,7 @@
       } else {
         state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = [];
         anonSignInAttempted = false;
+        recoveryVerifyAttempted = false;
         rerender();
       }
     });

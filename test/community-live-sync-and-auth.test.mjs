@@ -16,7 +16,7 @@ import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
 test("a queued local edit reaches the mock server before a stale remote copy would be pulled back - the exact scenario the sync-ordering bug corrupted", async () => {
   const mock = createMockSupabase({
-    profiles: [{ id: "u1", handle: "dana", display_name: "דנה", is_admin: false }],
+    profiles: [{ id: "u1", handle: "dana", display_name: "דנה", is_admin: false, recovery_verified_at: new Date().toISOString() }],
     invite_redemptions: [{ user_id: "u1", invite_id: "inv-1", role: "member", redeemed_at: new Date().toISOString() }],
   });
   mock.setUser({ id: "u1", is_anonymous: false, email: "dana@members.haimuniya.invalid" });
@@ -101,8 +101,8 @@ test("full signup lifecycle executes for real: bootstrap -> redeem code -> set c
 test("an admin can search for a member and grant coach, executing for real through the confirm dialog", async () => {
   const mock = createMockSupabase({
     profiles: [
-      { id: "admin-1", handle: "coach_admin", display_name: "מנהל", is_admin: true },
-      { id: "member-1", handle: "dana", display_name: "דנה", is_admin: false },
+      { id: "admin-1", handle: "coach_admin", display_name: "מנהל", is_admin: true, recovery_verified_at: new Date().toISOString() },
+      { id: "member-1", handle: "dana", display_name: "דנה", is_admin: false, recovery_verified_at: new Date().toISOString() },
     ],
     invite_redemptions: [
       { user_id: "admin-1", invite_id: "inv-1", role: "member", redeemed_at: new Date().toISOString() },

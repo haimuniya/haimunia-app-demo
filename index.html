@@ -660,6 +660,13 @@
 
 <script src="./vendor/supabase.js"></script>
 <script src="./cloud-config.js"></script>
+<!-- Shared platform modules (COMM-012 to COMM-015). Loaded before
+     cloud.js and app.js because both reach them through window, so
+     they have to exist by the time either one runs. -->
+<script src="./src/eventbus.js"></script>
+<script src="./src/analytics.js"></script>
+<script src="./src/realtime.js"></script>
+<script src="./src/image.js"></script>
 <script src="./cloud.js"></script>
 <script src="./src/constants.js"></script>
 <script src="./src/format.js"></script>

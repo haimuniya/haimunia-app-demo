@@ -76,8 +76,53 @@ export function createMockSupabase(seedTables = {}) {
     return api;
   }
 
+  // COMM-014. A minimal Realtime surface: channel(), removeChannel() and
+  // getChannels(), plus the bits of a RealtimeChannel the harness in
+  // src/realtime.js actually touches (on/subscribe/unsubscribe). Enough
+  // to observe that a subscription was opened, that a handler receives a
+  // payload, and - the part that matters - that teardown really removed
+  // the channel rather than only forgetting about it.
+  const channels = [];
+  function makeChannel(name) {
+    const ch = {
+      topic: name,
+      bindings: [],
+      subscribeCalls: 0,
+      statusCallback: null,
+      removed: false,
+      on(kind, filter, cb) { ch.bindings.push({ kind, filter, cb }); return ch; },
+      subscribe(cb) {
+        ch.subscribeCalls++;
+        ch.statusCallback = cb || null;
+        // The real client answers asynchronously; a microtask keeps the
+        // ordering honest without making every test await a timer.
+        if (cb) queueMicrotask(() => { if (!ch.removed) cb("SUBSCRIBED", null); });
+        return ch;
+      },
+      unsubscribe() { ch.removed = true; return Promise.resolve("ok"); },
+    };
+    return ch;
+  }
+
   const mock = {
     db,
+    channels,
+    // Deliver one payload to every binding on a channel whose kind
+    // matches, the way the server would push a postgres_changes row.
+    emitRealtime(name, payload, kind = "postgres_changes") {
+      const ch = channels.find((c) => c.topic === name && !c.removed);
+      if (!ch) return 0;
+      let delivered = 0;
+      for (const b of ch.bindings) if (b.kind === kind) { delivered++; b.cb(payload); }
+      return delivered;
+    },
+    // Drive a status callback by hand, for the reconnect and CLOSED paths.
+    pushRealtimeStatus(name, status, err = null) {
+      const ch = channels.find((c) => c.topic === name);
+      if (ch && ch.statusCallback) ch.statusCallback(status, err);
+      return !!ch;
+    },
+    openChannels() { return channels.filter((c) => !c.removed).map((c) => c.topic); },
     setUser(u) { currentUser = u; },
     getUser() { return currentUser; },
     // Register how a given RPC name should behave: (args, ctx) => ({ data, error }).
@@ -120,13 +165,31 @@ export function createMockSupabase(seedTables = {}) {
         onAuthStateChange: (cb) => { authCb = cb; return { data: { subscription: { unsubscribe() {} } } }; },
       },
       from: (table) => chain(table),
+      channel: (name) => { const ch = makeChannel(name); channels.push(ch); return ch; },
+      removeChannel: (ch) => { if (ch) ch.removed = true; return Promise.resolve("ok"); },
+      getChannels: () => channels.filter((c) => !c.removed),
       rpc: (name, args) => {
+        // A registered onRpc() handler wins over every built-in, so a test
+        // can make redeem_invite_code return "rate_limited" (COMM-017) or
+        // make mark_recovery_verified fail (COMM-016) without the built-in
+        // shortcut masking it.
+        const handler = rpcHandlers[name];
+        if (handler) return Promise.resolve(handler(args, { db, currentUser }));
         if (name === "redeem_invite_code") {
           rows("invite_redemptions").push({ user_id: currentUser.id, invite_id: "inv-1", role: "member", redeemed_at: new Date().toISOString() });
           return Promise.resolve({ data: "member", error: null });
         }
-        const handler = rpcHandlers[name];
-        if (handler) return Promise.resolve(handler(args, { db, currentUser }));
+        // COMM-016. The real RPC refuses unless Auth confirms a real email
+        // plus password; the mock stamps whenever the current user has a
+        // registered credential pair, which is the same precondition the
+        // app enforces before it ever calls this.
+        if (name === "mark_recovery_verified") {
+          const prof = rows("profiles").find((r) => currentUser && r.id === currentUser.id);
+          const hasCreds = currentUser && (currentUser.email || rows("__credentials").some((c) => c.userId === currentUser.id));
+          if (!prof || !hasCreds) return Promise.resolve({ data: null, error: { message: "recovery method not verified" } });
+          prof.recovery_verified_at = prof.recovery_verified_at || new Date().toISOString();
+          return Promise.resolve({ data: prof.recovery_verified_at, error: null });
+        }
         return Promise.resolve({ data: null, error: null });
       },
       storage: {

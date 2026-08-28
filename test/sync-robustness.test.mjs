@@ -41,7 +41,7 @@ test("shouldApplyRemote compares timestamps for the four record types that actua
 test("a real second pull only fetches records newer than the cursor left by the first one", async () => {
   const now = Date.now();
   const mock = createMockSupabase({
-    profiles: [{ id: "u1", handle: "dana", display_name: "דנה", is_admin: false }],
+    profiles: [{ id: "u1", handle: "dana", display_name: "דנה", is_admin: false, recovery_verified_at: new Date().toISOString() }],
     invite_redemptions: [{ user_id: "u1", invite_id: "inv-1", role: "member", redeemed_at: new Date().toISOString() }],
     private_records: [
       { user_id: "u1", record_type: "strength_entry", record_id: "e1", payload: { id: "e1", exerciseId: "back-squat", weight: 100, reps: 5, sets: 1, date: "2026-01-01", type: "reps", ts: now - 10000 }, deleted_at: null, updated_at: new Date(now - 10000).toISOString() },
