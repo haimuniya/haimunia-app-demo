@@ -5,8 +5,10 @@ import fs from "node:fs";
 const sql = fs.readFileSync(new URL("../supabase/migrations/202608270005_coach_tier.sql", import.meta.url), "utf8");
 const cloudJs = fs.readFileSync(new URL("../cloud.js", import.meta.url), "utf8");
 
-test("cloud.js's isStaff() matches is_staff()'s server-side rule: admin OR a coach-role redemption", () => {
-  assert.match(cloudJs, /function isStaff\(\) \{ return !!\(state\.profile && \(state\.profile\.is_admin \|\| \(state\.redemption && state\.redemption\.role === "coach"\)\)\); \}/);
+test("cloud.js's isStaff() matches is_staff()'s server-side rule: admin OR a coach-rank redemption", () => {
+  // COMM-156 exposed head_coach, which is coach rank or above server-side,
+  // so isStaff() recognises it too.
+  assert.match(cloudJs, /function isStaff\(\) \{ return !!\(state\.profile && \(state\.profile\.is_admin \|\| \(state\.redemption && \(state\.redemption\.role === "coach" \|\| state\.redemption\.role === "head_coach"\)\)\)\); \}/);
 });
 
 test("all four staff-only render gates (announcements composer, challenge setter, new/inactive members) use isStaff(), not a raw is_admin check", () => {

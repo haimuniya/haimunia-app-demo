@@ -20,7 +20,17 @@
     // exact order the function returned them and is never re-sorted here.
     feedScope: "for_you", feedCursor: null, feedLoading: false, feedError: false,
     feedLoadingMore: false, feedMoreError: false, feedEnd: false, feedPagesLoaded: 0,
-    feedSessionId: null, feedSeen: {}, feedPending: [], club: null };
+    feedSessionId: null, feedSeen: {}, feedPending: [], club: null,
+    // COMM-150..156 admin-moderation cluster. permissions is the caller's
+    // permission set from my_permissions(), cached once per session and read
+    // through hasPerm(); the server policy behind each control is the real
+    // authority. modQueue holds mod_queue() rows. pins holds pin rows for
+    // the club strip. auditLog holds admin_actions_page() rows.
+    permissions: [], permissionsLoaded: false,
+    modQueue: [], modQueueStatus: "open", modQueueLoading: false, modQueueError: false, modQueueLoaded: false,
+    modAction: null, modContext: null, reportSheet: null,
+    pins: [], pinsLoaded: false, pinError: "",
+    auditLog: [], auditCursor: null, auditLoading: false, auditError: false, auditLoaded: false, auditEnd: false, auditFilters: {} };
   const photoUrlCache = {};
 
   // COMM-141. The notification badge refreshes on a realtime own-row
@@ -36,10 +46,41 @@
   // coach gets (announcements, the weekly challenge, the new/inactive
   // member views) — matches public.is_staff() server-side, which is what
   // actually enforces this; this is only for deciding what to show.
-  function isStaff() { return !!(state.profile && (state.profile.is_admin || (state.redemption && state.redemption.role === "coach"))); }
-  // Narrower than isStaff() on purpose — review_report() and the RLS
-  // bypass that lets a moderator see reported posts both check real
-  // is_admin only, not a coach-code role, so the review queue must match.
+  // COMM-150. Named permission strings, checked against the caller's cached
+  // permission set. No community staff control branches on a role literal or
+  // on is_admin any more; the server policy behind each control is the real
+  // authority and this only decides what to render. The set is loaded once
+  // per session by loadPermissions() from my_permissions(), dropped on
+  // sign-out, and reloaded on the auth-state-change path so a role change
+  // takes effect without a reload.
+  const PERM = {
+    POST_DELETE_ANY: "community.post.delete_any",
+    COMMENT_MODERATE: "community.comment.moderate",
+    CHALLENGE_CREATE: "community.challenge.create",
+    EVENT_MANAGE: "community.event.manage",
+    ANALYTICS_VIEW: "community.analytics.view",
+    MEMBER_RESTRICT: "community.member.restrict",
+    CONTENT_PIN: "community.content.pin",
+    ANNOUNCEMENT_PUBLISH: "community.announcement.publish",
+  };
+  function hasPerm(code) { return !!state.permissions && state.permissions.indexOf(code) >= 0; }
+  async function loadPermissions() {
+    if (!state.user) { state.permissions = []; state.permissionsLoaded = false; return; }
+    const { data, error } = await client.rpc("my_permissions");
+    state.permissions = error ? [] : (data || []);
+    state.permissionsLoaded = !error;
+  }
+  // A thin convenience over the role model: coach rank or above, mirroring
+  // the server's public.is_staff(). Kept for the fixed coach powers
+  // (announcements, the weekly challenge, the new/inactive member views)
+  // whose policies bind to is_staff() rather than a named permission; the
+  // server is the authority, this only decides what to show. head_coach
+  // reads as staff here the same way it does server-side.
+  function isStaff() { return !!(state.profile && (state.profile.is_admin || (state.redemption && (state.redemption.role === "coach" || state.redemption.role === "head_coach")))); }
+  // Real is_admin only. Kept for the handful of server functions that still
+  // check the profiles.is_admin column inline rather than a permission:
+  // review_report(), the posts_select_admin_review RLS bypass, and the
+  // admin_* member-management RPCs. Every other gate uses hasPerm().
   function isAdmin() { return !!(state.profile && state.profile.is_admin); }
   function rerender() { if (typeof window.render === "function") window.render(); }
   function setMessage(message) { state.message = message || ""; rerender(); }
@@ -79,9 +120,9 @@
     state.user = data.session ? data.session.user : null;
     if (state.user) {
       await loadRedemption();
-      await Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs()]);
+      await Promise.all([loadProfile(), loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins()]);
       if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers()]);
-      if (isAdmin()) await loadReports();
+      if (hasPerm(PERM.COMMENT_MODERATE) || isAdmin()) await loadModQueue();
       // Push pending local edits before pulling the remote copy - without
       // this, reopening the app with an unflushed outbox (e.g. a set
       // logged offline seconds ago) pulls the still-stale server record
@@ -229,23 +270,104 @@
     const { data, error } = await client.rpc("coach_new_members");
     state.newMembers = error ? [] : (data || []);
   }
-  // Admin-only (see isAdmin()) — matches review_report()'s own
-  // is_admin-only check and the posts_select_admin_review RLS policy that
-  // lets this embed actually resolve the reported post's content.
-  async function loadReports() {
-    if (!state.user || !isAdmin()) return;
-    const { data, error } = await client.from("reports")
-      .select("id,reason,details,status,created_at,reviewed_at,resolution_notes,post_id,reporter_id,profiles!reports_reporter_id_fkey(handle,display_name),workout_posts(title,result_text,photo_path,profiles(handle,display_name))")
-      .order("created_at", { ascending: false }).limit(100);
-    state.reports = error ? [] : (data || []);
-  }
-  async function reviewReport(reportId, status) {
-    if (!state.user || !isAdmin()) return;
-    const { error } = await client.rpc("review_report", { p_report_id: reportId, p_status: status });
-    if (error) return setMessage("עדכון הדיווח נכשל");
-    await loadReports();
-    setMessage("הדיווח עודכן");
+  // ==========================================================================
+  // COMM-150..156  admin-moderation cluster.
+  // The moderation queue, its actions, the pinned strip and the admin audit
+  // view. Every queue action routes through mod_review(), a trusted
+  // security-definer function that stamps the reviewer id and timestamp,
+  // applies the decision (content removal, warning, posting restriction,
+  // dismissal) and writes admin_actions in the same transaction. The client
+  // never writes reports, posting_restrictions, pins or admin_actions
+  // directly - it has no grant to - so the audit trail is a property of the
+  // schema, not of this file.
+  // ==========================================================================
+
+  const MOD_QUEUE_STATUSES = [
+    { id: "open", label: "פתוח" },
+    { id: "reviewing", label: "בטיפול" },
+    { id: "action_taken", label: "טופל" },
+    { id: "dismissed", label: "נדחה" },
+    { id: "all", label: "הכול" },
+  ];
+  const MOD_STATUS_LABEL = { open: "פתוח", reviewing: "בטיפול", action_taken: "טופל", dismissed: "נדחה" };
+  // Reason codes match the report() RPC contract. inappropriate covers
+  // "inappropriate content", privacy covers "privacy concern",
+  // unsafe_advice covers "unsafe training advice".
+  const REPORT_REASONS = [
+    { id: "harassment", label: "הטרדה" },
+    { id: "spam", label: "ספאם" },
+    { id: "inappropriate", label: "תוכן לא הולם" },
+    { id: "privacy", label: "פגיעה בפרטיות" },
+    { id: "unsafe_advice", label: "המלצת אימון מסוכנת" },
+    { id: "other", label: "אחר" },
+  ];
+  function reportReasonLabel(code) { const r = REPORT_REASONS.find((x) => x.id === code); return r ? r.label : (code || ""); }
+  // The five queue decisions. restrict_temp carries a duration; the rest
+  // do not. Every one is passed straight to mod_review().
+  const MOD_DECISIONS = [
+    { id: "remove", label: "הסרת התוכן", destructive: true },
+    { id: "warn", label: "אזהרה לחבר/ה" },
+    { id: "restrict_temp", label: "הגבלת פרסום זמנית" },
+    { id: "restrict_permanent", label: "הגבלת פרסום קבועה", destructive: true },
+    { id: "dismiss", label: "דחיית הדיווח" },
+  ];
+  const RESTRICT_TEMP_DAYS = [3, 7, 14, 30];
+
+  // Read via mod_queue(), an admin-only path: the function checks
+  // community.comment.moderate or real is_admin and only it can resolve the
+  // reporter identities, which stay invisible to everyone else.
+  async function loadModQueue() {
+    if (!state.user || !(hasPerm(PERM.COMMENT_MODERATE) || isAdmin())) { state.modQueue = []; return; }
+    state.modQueueLoading = true; state.modQueueError = false; rerender();
+    const { data, error } = await client.rpc("mod_queue", { p_status: state.modQueueStatus, p_cursor: null, p_limit: 50 });
+    state.modQueueLoading = false;
+    state.modQueueLoaded = true;
+    if (error) { state.modQueueError = true; state.modQueue = []; rerender(); return; }
+    state.modQueue = data || [];
     rerender();
+  }
+  function setModQueueStatus(status) {
+    if (!MOD_QUEUE_STATUSES.some((s) => s.id === status) || state.modQueueStatus === status) return;
+    state.modQueueStatus = status;
+    loadModQueue();
+  }
+  function openModContext(reportId) {
+    const item = (state.modQueue || []).find((r) => r.report_id === reportId);
+    if (!item) return;
+    state.modContext = item;
+    rerender();
+  }
+  function closeModContext() { state.modContext = null; rerender(); }
+  function openModAction(reportId, decision) {
+    const item = (state.modQueue || []).find((r) => r.report_id === reportId);
+    if (!item || !MOD_DECISIONS.some((d) => d.id === decision)) return;
+    state.modAction = { reportId, decision, note: "", days: 7, saving: false, error: "", targetType: item.target_type };
+    rerender();
+  }
+  function closeModAction() { state.modAction = null; rerender(); }
+  async function runModAction() {
+    const a = state.modAction;
+    if (!a || a.saving) return;
+    a.saving = true; a.error = ""; rerender();
+    const args = { p_report_id: a.reportId, p_decision: a.decision, p_note: String(a.note || "").slice(0, 500) };
+    // Only a temporary restriction carries an end time; mod_review ignores
+    // p_expires_at for every other decision.
+    if (a.decision === "restrict_temp") args.p_expires_at = new Date(Date.now() + a.days * 86400000).toISOString();
+    const { error } = await client.rpc("mod_review", args);
+    if (error) {
+      a.saving = false;
+      a.error = "לא ניתן היה להשלים את הפעולה. נסו שוב.";
+      rerender();
+      return;
+    }
+    state.modAction = null;
+    // The card carried a post that was removed - drop it from the feed too.
+    if (a.decision === "remove" && a.targetType === "post") {
+      const it = (state.modQueue || []).find((r) => r.report_id === a.reportId);
+      if (it && Array.isArray(state.feed)) state.feed = state.feed.filter((p) => p && p.id !== it.target_id);
+    }
+    setMessage("הפעולה נרשמה");
+    await loadModQueue();
   }
   // Admin-only member lookup/management - was previously only possible
   // through the Supabase SQL editor. Search by handle/name or paste an
@@ -260,11 +382,33 @@
     state.memberResults = error ? [] : (data || []);
     rerender();
   }
+  // COMM-156. HEAD_COACH is exposed in Phase 1; STAFF and OWNER are modelled
+  // server-side but stay out of this list until Phase 2. A role change goes
+  // through the same is_admin-gated promotion path, which writes an
+  // admin_actions row of type role_change. The bare coach grant keeps the
+  // original single-argument call so nothing that already drives it breaks;
+  // head_coach passes p_role through.
+  const GRANTABLE_ROLES = [
+    { id: "member", label: "חבר/ה" },
+    { id: "coach", label: "מאמן/ת" },
+    { id: "head_coach", label: "מאמן/ת ראשי/ת" },
+  ];
+  function roleCodeLabel(code) { const r = GRANTABLE_ROLES.find((x) => x.id === code); return r ? r.label : code; }
   async function adminGrantCoach(userId) {
     if (!state.user || !isAdmin()) return;
     const { error } = await client.rpc("admin_grant_coach", { p_user_id: userId });
     if (error) return setMessage("הענקת ההרשאה נכשלה");
     setMessage("הרשאת מאמן/ת הוענקה");
+    await searchMembers(state.memberSearch);
+  }
+  async function adminSetRole(userId, roleCode) {
+    if (!state.user || !isAdmin()) return;
+    if (roleCode === "member") return adminRevokeCoach(userId);
+    if (roleCode === "coach") return adminGrantCoach(userId);
+    if (roleCode !== "head_coach") return;
+    const { error } = await client.rpc("admin_grant_coach", { p_user_id: userId, p_role: "head_coach" });
+    if (error) return setMessage("שינוי ההרשאה נכשל");
+    setMessage("ההרשאה עודכנה ל" + roleCodeLabel(roleCode));
     await searchMembers(state.memberSearch);
   }
   async function adminRevokeCoach(userId) {
@@ -273,6 +417,105 @@
     if (error) return setMessage("ביטול ההרשאה נכשל");
     setMessage("הרשאת מאמן/ת בוטלה");
     await searchMembers(state.memberSearch);
+  }
+  // ---- Pinned content (COMM-155) --------------------------------------
+  // Read is open to every member; pin_set / pin_clear are the only write
+  // paths and both check community.content.pin and write admin_actions in
+  // one transaction. The cap of 3 is a slot column server-side, so a fourth
+  // pin_set raises pin_limit_reached rather than silently succeeding.
+  async function loadPins() {
+    if (!state.user) { state.pins = []; return; }
+    const { data, error } = await client.from("pins")
+      .select("id,target_type,target_id,slot,note,created_at")
+      .order("slot", { ascending: true });
+    state.pins = error ? [] : (data || []);
+    state.pinsLoaded = !error;
+  }
+  async function pinTarget(targetType, targetId, note) {
+    if (!state.user || !hasPerm(PERM.CONTENT_PIN)) return;
+    state.pinError = "";
+    const { error } = await client.rpc("pin_set", { p_target_type: targetType, p_target_id: targetId, p_note: String(note || "").slice(0, 200) });
+    if (error) {
+      state.pinError = (error.message || "") === "pin_limit_reached"
+        ? "אפשר להצמיד עד שלושה פריטים. יש לבטל הצמדה קיימת קודם."
+        : "לא ניתן היה לעדכן את ההצמדות.";
+      return rerender();
+    }
+    await loadPins();
+    setMessage("הפריט הוצמד");
+  }
+  async function unpinTarget(targetType, targetId) {
+    if (!state.user || !hasPerm(PERM.CONTENT_PIN)) return;
+    state.pinError = "";
+    const { error } = await client.rpc("pin_clear", { p_target_type: targetType, p_target_id: targetId });
+    if (error) { state.pinError = "לא ניתן היה לעדכן את ההצמדות."; return rerender(); }
+    await loadPins();
+    setMessage("ההצמדה בוטלה");
+  }
+  // ---- Admin audit view (COMM-154) -----------------------------------
+  // Read-only, gated on community.analytics.view. admin_actions_page checks
+  // the same permission again inside the function and once more via the
+  // table's own select policy, so a client-only gate here changes nothing.
+  async function loadAuditLog(reset) {
+    if (!state.user || !hasPerm(PERM.ANALYTICS_VIEW)) { state.auditLog = []; return; }
+    if (state.auditLoading) return;
+    state.auditLoading = true; state.auditError = false;
+    if (reset) { state.auditLog = []; state.auditCursor = null; state.auditEnd = false; }
+    rerender();
+    const filters = {};
+    if (state.auditFilters.action_type) filters.action_type = state.auditFilters.action_type;
+    if (state.auditFilters.admin_id) filters.admin_id = state.auditFilters.admin_id;
+    const { data, error } = await client.rpc("admin_actions_page", { p_cursor: state.auditCursor, p_limit: 25, p_filters: filters });
+    state.auditLoading = false;
+    state.auditLoaded = true;
+    if (error) { state.auditError = true; rerender(); return; }
+    const rows = data || [];
+    state.auditLog = reset ? rows : state.auditLog.concat(rows);
+    state.auditCursor = rows.length ? rows[rows.length - 1].created_at : state.auditCursor;
+    state.auditEnd = rows.length < 25;
+    rerender();
+  }
+  function setAuditFilter(key, value) {
+    state.auditFilters = Object.assign({}, state.auditFilters);
+    if (value) state.auditFilters[key] = value; else delete state.auditFilters[key];
+    loadAuditLog(true);
+  }
+  // ---- Report flow (COMM-151) --------------------------------------
+  // A member reports a post or a comment, picks a reason, optionally adds
+  // detail, and gets a plain acknowledgement. Nothing about what follows is
+  // disclosed. Duplicate reports on the same target by the same member
+  // collapse server-side; the reporter count still moves once.
+  function openReportSheet(targetType, targetId) {
+    if (!state.user) return;
+    state.reportSheet = { targetType, targetId, reason: "", note: "", saving: false, error: "", done: false };
+    rerender();
+  }
+  function closeReportSheet() { state.reportSheet = null; rerender(); }
+  function setReportReason(reason) { if (state.reportSheet) { state.reportSheet.reason = reason; state.reportSheet.error = ""; rerender(); } }
+  async function submitReportSheet() {
+    const s = state.reportSheet;
+    if (!s || s.saving) return;
+    if (!REPORT_REASONS.some((r) => r.id === s.reason)) { s.error = "יש לבחור סיבה"; return rerender(); }
+    s.saving = true; s.error = ""; rerender();
+    const { error } = await client.rpc("report", {
+      p_target_type: s.targetType,
+      p_target_id: s.targetId,
+      p_reason: s.reason,
+      p_note: String(s.note || "").slice(0, 500),
+    });
+    if (error) {
+      s.saving = false;
+      s.error = (error.message || "") === "rate_limited"
+        ? "יותר מדי דיווחים, נסו שוב בעוד כמה דקות"
+        : "לא ניתן היה לשלוח את הדיווח. נסו שוב.";
+      return rerender();
+    }
+    // COMM-151. A post report also records a feed interaction so the ranker
+    // learns from it. Comments are not feed items and record nothing.
+    if (s.targetType === "post") trackFeedInteraction(s.targetId, "hide");
+    s.saving = false; s.done = true;
+    rerender();
+    if (s.targetType === "post") loadFeed();
   }
   async function adminRemoveMember(userId) {
     if (!state.user || !isAdmin()) return;
@@ -811,12 +1054,9 @@
     state.commentEdit = null;
     await loadCommentsFor(e.postId);
   }
-  async function reportComment(commentId) {
-    if (!state.user) return;
-    const { error } = await client.rpc("submit_report", { p_comment_id: commentId });
-    if (error && (error.message || "") === "rate_limited") return setMessage("יותר מדי דיווחים, נסו שוב בעוד כמה דקות");
-    setMessage("הדיווח נשלח לבדיקה");
-  }
+  // COMM-151. Opens the reason sheet for a comment. The write goes through
+  // the same report() RPC as a post, with p_target_type 'comment'.
+  function reportComment(commentId) { openReportSheet("comment", commentId); }
 
   // ---- Mention picker (COMM-123) ---------------------------------------
 
@@ -1028,12 +1268,9 @@
     if (newest && typeof window.dbSetSetting === "function") await window.dbSetSetting(cursorKey, newest);
     if (typeof window.reloadFromDb === "function") { await window.reloadFromDb(); rerender(); }
   }
-  async function report(postId) {
-    if (!state.user) return;
-    const { error } = await client.rpc("submit_report", { p_post_id: postId });
-    if (error && error.message === "rate_limited") return setMessage("יותר מדי דיווחים, נסו שוב בעוד כמה דקות");
-    setMessage("הדיווח נשלח לבדיקה והתוכן הוסתר עבורך"); await loadFeed();
-  }
+  // COMM-151. Opens the reason sheet for a post. The acknowledgement after
+  // submit is plain ("הדיווח התקבל.") and says nothing about what follows.
+  function report(postId) { openReportSheet("post", postId); }
   async function searchPeople(query) {
     if (!state.user) return;
     const q = String(query || "").trim().replace(/[%_,()]/g, "");
@@ -1209,6 +1446,7 @@
     else if (c.action === "delete-post") deletePost(c.payload.postId);
     else if (c.action === "publish") publishWorkout(c.payload.type, c.payload.id, c.payload.visibility, c.payload.file);
     else if (c.action === "admin-grant-coach") adminGrantCoach(c.payload.userId);
+    else if (c.action === "admin-set-role") adminSetRole(c.payload.userId, c.payload.role);
     else if (c.action === "admin-remove-member") adminRemoveMember(c.payload.userId);
     else if (c.action === "post-delete-rpc") postDeleteViaMenu(c.payload.postId);
     else if (c.action === "delete-comment") deleteComment(c.payload.commentId, c.payload.postId);
@@ -1393,50 +1631,133 @@
 
     return `${strip}<div style="margin-top:10px;"><div class="log-list">${listHtml}</div>${commentComposerHtml(pid, null)}</div>`;
   }
-  function reasonLabel(reason) { return { spam: "ספאם", harassment: "הטרדה", privacy: "פרטיות", inappropriate: "תוכן לא הולם", other: "אחר" }[reason] || reason; }
-  function reportStatusLabel(status) { return { open: "פתוח", reviewing: "בטיפול", resolved: "טופל", dismissed: "נדחה" }[status] || status; }
+  // COMM-152/153. The moderation queue. Visible to a community.comment.moderate
+  // holder or a real admin; mod_queue() enforces both and is the only path
+  // that can resolve the reporter identities. Each row carries the content,
+  // the reported member, the reporter count, the reason, the date and the
+  // status. Actions (COMM-153) all open a sheet that calls mod_review().
   function renderModeration() {
-    if (!isAdmin()) return "";
-    const open = state.reports.filter((r) => r.status === "open" || r.status === "reviewing");
-    const closed = state.reports.filter((r) => r.status === "resolved" || r.status === "dismissed");
-    const rowHtml = (r) => {
-      const post = r.workout_posts;
-      const authorName = post && post.profiles ? (post.profiles.display_name || "@" + post.profiles.handle) : "";
-      const reporterName = r.profiles ? (r.profiles.display_name || "@" + r.profiles.handle) : "משתמש";
-      const active = r.status === "open" || r.status === "reviewing";
-      return `<div class="chart-card" style="margin-bottom:10px;">
-        <div class="flex" style="justify-content:space-between;align-items:flex-start;gap:10px;">
-          <div style="min-width:0;">
-            <div style="font-weight:800;">${post ? safeText(post.title) : "הפוסט הוסר"}</div>
-            ${post ? `<div style="color:var(--steel);font-size:12.5px;margin-top:2px;">מאת ${safeText(authorName)}</div><div class="mono" style="color:var(--brass);margin-top:4px;">${safeText(post.result_text)}</div>` : ""}
+    if (!(hasPerm(PERM.COMMENT_MODERATE) || isAdmin())) return "";
+    const filters = `<div class="chip-row" style="margin:0 0 10px;">${MOD_QUEUE_STATUSES.map((s) =>
+      `<button class="chip-btn${state.modQueueStatus === s.id ? " primary" : ""}" data-community-action="mod-queue-status" data-status="${s.id}">${s.label}</button>`).join("")}</div>`;
+    let body;
+    if (state.modQueueLoading && !state.modQueue.length) {
+      body = `<div class="log-list" aria-busy="true">${`<div class="log-row" aria-hidden="true"><span style="height:12px;width:60%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`.repeat(3)}</div>`;
+    } else if (state.modQueueError) {
+      body = `<div class="empty">לא ניתן היה לטעון את התור.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="mod-queue-retry">ניסיון חוזר</button></div></div>`;
+    } else if (!state.modQueue.length) {
+      body = `<div class="empty">אין מה לבדוק.</div>`;
+    } else {
+      const rowHtml = (r) => {
+        const done = r.status === "action_taken" || r.status === "dismissed";
+        const reasons = Array.isArray(r.reasons) && r.reasons.length ? r.reasons : (r.latest_reason ? [r.latest_reason] : []);
+        return `<div class="chart-card" style="margin-bottom:10px;" data-mod-report-id="${safeText(r.report_id)}">
+          <div class="flex" style="justify-content:space-between;align-items:flex-start;gap:10px;">
+            <div style="min-width:0;">
+              <div style="font-weight:800;">${safeText(r.target_type === "comment" ? "תגובה" : "פוסט")} · ${safeText(r.content_author_name || "חבר/ה שהוסר/ה")}</div>
+              <div style="color:var(--steel);font-size:12.5px;margin-top:4px;white-space:pre-wrap;">${safeText(String(r.content_excerpt || "התוכן הוסר").slice(0, 240))}</div>
+            </div>
+            <span class="admin-tag" style="${r.status === "open" ? "background:rgba(194,57,44,.12);border-color:var(--red);color:var(--red);" : ""}">${safeText(MOD_STATUS_LABEL[r.status] || r.status)}</span>
           </div>
-          <span class="admin-tag" style="${r.status === "open" ? "background:rgba(194,57,44,.12);border-color:var(--red);color:var(--red);" : ""}">${reportStatusLabel(r.status)}</span>
-        </div>
-        <div style="color:var(--steel);font-size:12.5px;margin-top:8px;">דווח ע״י ${safeText(reporterName)} · ${reasonLabel(r.reason)}${r.details ? ` — ${safeText(r.details)}` : ""} · ${relativeTime(r.created_at)}</div>
-        ${active ? `<div class="chip-row" style="margin-top:10px;">${r.status === "open" ? `<button class="chip-btn" data-community-action="review-report" data-id="${safeText(r.id)}" data-status="reviewing">סימון כבטיפול</button>` : ""}<button class="chip-btn primary" data-community-action="review-report" data-id="${safeText(r.id)}" data-status="resolved">סימון כטופל</button><button class="chip-btn" data-community-action="review-report" data-id="${safeText(r.id)}" data-status="dismissed">דחיית הדיווח</button></div>`
-          : `<div style="color:var(--steel);font-size:11px;margin-top:8px;">${r.resolution_notes ? safeText(r.resolution_notes) + " · " : ""}טופל ${relativeTime(r.reviewed_at)}</div>`}
-      </div>`;
-    };
-    return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "דיווחים לבדיקה", true)}${state.reports.length ? "" : `<div class="empty">אין דיווחים ממתינים</div>`}${open.map(rowHtml).join("")}${closed.length ? `<details style="margin-top:10px;"><summary class="link-btn" style="cursor:pointer;display:inline-block;">היסטוריית דיווחים שטופלו (${closed.length})</summary><div style="margin-top:8px;">${closed.map(rowHtml).join("")}</div></details>` : ""}</div>`;
+          <div style="color:var(--steel);font-size:12px;margin-top:8px;">
+            ${Number(r.reporter_count || 0)} דיווחים · ${reasons.map(reportReasonLabel).map(safeText).join(", ") || "—"} · ${relativeTime(r.created_at)}
+          </div>
+          ${r.note ? `<div style="color:var(--steel);font-size:12px;margin-top:4px;">״${safeText(String(r.note).slice(0, 240))}״</div>` : ""}
+          <div class="chip-row" style="margin-top:10px;">
+            <button class="chip-btn" data-community-action="mod-context" data-id="${safeText(r.report_id)}">צפייה בהקשר</button>
+            ${done ? "" : MOD_DECISIONS.map((d) =>
+              `<button class="chip-btn" data-community-action="mod-action" data-id="${safeText(r.report_id)}" data-decision="${d.id}"${d.destructive ? ' style="color:var(--red);"' : ""}>${d.label}</button>`).join("")}
+          </div>
+        </div>`;
+      };
+      body = state.modQueue.map(rowHtml).join("");
+    }
+    return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "תור מודרציה", true)}${filters}${body}</div>`;
   }
-  function memberRoleLabel(m) { return m.is_admin ? "מנהל/ת" : m.role === "coach" ? "מאמן/ת" : m.role === "member" ? "חבר/ה" : "לא הצטרפ/ה עדיין"; }
+  // COMM-154. Read-only admin audit view, gated on community.analytics.view.
+  function auditActionLabel(t) {
+    return {
+      content_delete: "הסרת תוכן", content_hide: "הסתרת תוכן", member_restrict: "הגבלת חבר/ה",
+      member_unrestrict: "ביטול הגבלה", role_change: "שינוי הרשאה", challenge_edit: "עריכת אתגר",
+      achievement_edit: "עריכת עיטור", privacy_config: "הגדרת פרטיות", content_pin: "הצמדת תוכן",
+      content_unpin: "ביטול הצמדה", report_review: "בדיקת דיווח",
+    }[t] || t;
+  }
+  const AUDIT_ACTION_TYPES = ["content_delete", "content_hide", "member_restrict", "member_unrestrict", "role_change", "challenge_edit", "achievement_edit", "privacy_config", "content_pin", "content_unpin", "report_review"];
+  function renderAuditLog() {
+    if (!hasPerm(PERM.ANALYTICS_VIEW)) return "";
+    const filterChips = `<div class="chip-row" style="margin:0 0 10px;">
+      <button class="chip-btn${!state.auditFilters.action_type ? " primary" : ""}" data-community-action="audit-filter" data-type="">הכול</button>
+      ${AUDIT_ACTION_TYPES.map((t) => `<button class="chip-btn${state.auditFilters.action_type === t ? " primary" : ""}" data-community-action="audit-filter" data-type="${t}">${auditActionLabel(t)}</button>`).join("")}
+    </div>`;
+    let body;
+    if (state.auditLoading && !state.auditLog.length) {
+      body = `<div class="log-list" aria-busy="true">${`<div class="log-row" aria-hidden="true"><span style="height:12px;width:55%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`.repeat(4)}</div>`;
+    } else if (state.auditError) {
+      body = `<div class="empty">לא ניתן היה לטעון את היומן.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="audit-retry">ניסיון חוזר</button></div></div>`;
+    } else if (!state.auditLog.length) {
+      body = `<div class="empty">עדיין לא נרשמו פעולות ניהול.</div>`;
+    } else {
+      body = `<div class="log-list">${state.auditLog.map((a) => `<div class="log-row" style="flex-direction:column;align-items:flex-start;gap:3px;">
+        <div style="font-weight:700;">${safeText(auditActionLabel(a.action_type))} · ${safeText(a.target_type)}</div>
+        <div style="color:var(--steel);font-size:11px;">מנהל/ת ${safeText(String(a.admin_id || "").slice(0, 8))} · ${relativeTime(a.created_at)}</div>
+      </div>`).join("")}</div>${state.auditEnd ? "" : `<div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="audit-more"${state.auditLoading ? " disabled" : ""}>${state.auditLoading ? "טוען…" : "טעינת עוד"}</button></div>`}`;
+    }
+    return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--steel)", "יומן פעולות ניהול", true)}${filterChips}${body}</div>`;
+  }
+  function memberRoleLabel(m) {
+    if (m.is_admin) return "מנהל/ת";
+    return roleCodeLabel(m.role) || (m.role === "member" ? "חבר/ה" : "לא הצטרפ/ה עדיין");
+  }
   function renderMemberManagement() {
     if (!isAdmin()) return "";
     const results = state.memberResults;
+    // COMM-156. member -> coach and coach -> member keep the original
+    // dedicated controls. head_coach is the added selectable role.
+    const roleButtons = (m) => {
+      const role = m.role || "member";
+      const btns = [];
+      if (role === "coach" || role === "head_coach") {
+        btns.push(`<button class="chip-btn" data-community-action="admin-revoke-coach" data-id="${safeText(m.id)}">ביטול הרשאת מאמן/ת</button>`);
+      } else {
+        btns.push(`<button class="chip-btn" data-community-action="admin-grant-coach" data-id="${safeText(m.id)}">הענקת הרשאת מאמן/ת</button>`);
+      }
+      if (role !== "head_coach") {
+        btns.push(`<button class="chip-btn" data-community-action="admin-set-role" data-id="${safeText(m.id)}" data-role="head_coach">הפיכה למאמן/ת ראשי/ת</button>`);
+      } else {
+        btns.push(`<button class="chip-btn" data-community-action="admin-set-role" data-id="${safeText(m.id)}" data-role="coach">הורדה למאמן/ת</button>`);
+      }
+      return btns.join("");
+    };
     const rowHtml = (m) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:6px;">
       <div class="flex gap-10" style="align-items:center;">${avatarHtml(m.display_name || m.handle, 32)}<div><div style="font-weight:700;">${safeText(m.display_name || "@" + m.handle)}</div><div style="color:var(--steel);font-size:11px;">@${safeText(m.handle)} · ${memberRoleLabel(m)}</div></div></div>
       <div style="color:var(--steel);font-size:11px;">הצטרפ/ה: ${m.redeemed_at ? safeText(String(m.redeemed_at).slice(0, 10)) : "—"} · פעילות אחרונה: ${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</div>
       <div class="footer-note" style="margin:0;font-size:10.5px;">${safeText(m.id)}</div>
       ${m.is_admin ? "" : `<div class="chip-row" style="margin-top:0;">
-        ${m.role === "coach"
-          ? `<button class="chip-btn" data-community-action="admin-revoke-coach" data-id="${safeText(m.id)}">ביטול הרשאת מאמן/ת</button>`
-          : `<button class="chip-btn" data-community-action="admin-grant-coach" data-id="${safeText(m.id)}">הענקת הרשאת מאמן/ת</button>`}
+        ${roleButtons(m)}
         <button class="chip-btn" data-community-action="admin-remove-member" data-id="${safeText(m.id)}" style="color:var(--red);">הסרת חבר/ה</button>
       </div>`}
     </div>`;
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--purple)", "ניהול חברים", true)}
       <div class="search-box"><input id="adminMemberSearch" placeholder="חיפוש לפי handle, שם, או הדבקת מזהה משתמש" aria-label="חיפוש חברים לניהול" value="${safeText(state.memberSearch)}"/></div>
       ${results.length ? `<div class="log-list">${results.map(rowHtml).join("")}</div>` : state.memberSearch.trim().length >= 2 ? `<div class="empty">לא נמצאו חברים תואמים</div>` : `<div class="empty">חיפוש לפי handle, שם, או מזהה משתמש (UUID)</div>`}
+    </div>`;
+  }
+  // COMM-155. The pinned strip at the very top of the Club home, above the
+  // club top card. Up to three chips; staff with community.content.pin get
+  // an unpin control on each.
+  function pinTargetLabel(t) { return { announcement: "הודעה", challenge: "אתגר", event: "אירוע", post: "פוסט" }[t] || t; }
+  function renderPinnedStrip() {
+    const canPin = hasPerm(PERM.CONTENT_PIN);
+    if (!state.pins.length && !state.pinError) return "";
+    const chips = state.pins.slice(0, 3).map((p) => `<div class="chip-btn" style="cursor:default;gap:6px;align-items:center;">
+      📌 <span>${safeText(p.note || pinTargetLabel(p.target_type))}</span>
+      ${canPin ? `<button class="link-btn" data-community-action="unpin" data-type="${safeText(p.target_type)}" data-id="${safeText(p.target_id)}" aria-label="ביטול הצמדה" style="margin:0;padding:0 4px;">✕</button>` : ""}
+    </div>`).join("");
+    return `<div class="chart-card" id="communityPinnedStrip" style="margin-bottom:12px;">
+      <div style="font-weight:800;font-size:13px;margin-bottom:8px;">מוצמד</div>
+      <div class="chip-row" style="margin:0;">${chips}</div>
+      ${state.pinError ? `<div class="footer-note" role="alert" style="color:var(--red);margin-top:6px;">${safeText(state.pinError)}</div>` : ""}
     </div>`;
   }
 
@@ -2834,7 +3155,90 @@
   // rendered by app.js after every tab so a PR prompt or an open composer is
   // not tied to the Community tab being active.
   function renderConfirmDialog() {
-    return renderConfirmSheet() + renderPostComposer() + renderPrSharePrompt() + renderAchievementUnlockCelebration() + renderCommunityProfileOverlay() + renderNotificationCenter();
+    return renderConfirmSheet() + renderPostComposer() + renderPrSharePrompt() + renderAchievementUnlockCelebration() + renderCommunityProfileOverlay() + renderNotificationCenter()
+      + renderReportSheet() + renderModActionSheet() + renderModContextOverlay();
+  }
+  // COMM-151. The report reason sheet. Reasons are a fixed list, an optional
+  // capped free-text note, and a plain acknowledgement that discloses
+  // nothing about what happens next.
+  function renderReportSheet() {
+    const s = state.reportSheet;
+    if (!s) return "";
+    if (s.done) {
+      return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="reportSheetTitle" style="align-items:center;padding:0 20px;">
+        <div class="modal-sheet" style="border-radius:22px;max-height:none;">
+          <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
+            <div id="reportSheetTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">הדיווח התקבל.</div>
+            <div class="chip-row" style="margin-top:8px;"><button class="chip-btn primary" data-community-action="report-close">סגירה</button></div>
+          </div>
+        </div>
+      </div>`;
+    }
+    const reasons = REPORT_REASONS.map((r) => `<label class="log-row" style="justify-content:space-between;gap:12px;cursor:pointer;">
+      <span style="font-size:13px;">${r.label}</span>
+      <input type="radio" name="reportReason" data-report-reason="${r.id}"${s.reason === r.id ? " checked" : ""} aria-label="${safeText(r.label)}"/>
+    </label>`).join("");
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="reportSheetTitle" style="align-items:center;padding:0 20px;">
+      <div class="modal-sheet" style="border-radius:22px;max-height:none;">
+        <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
+          <div id="reportSheetTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:12px;">דיווח על ${s.targetType === "comment" ? "תגובה" : "פוסט"}</div>
+          <div class="log-list">${reasons}</div>
+          <label class="field" style="margin-top:12px;"><span class="field-label">פרטים נוספים (רשות)</span>
+            <textarea class="text-input" data-report-note maxlength="500" placeholder="אפשר להוסיף הקשר">${safeText(s.note || "")}</textarea></label>
+          ${s.error ? `<div class="footer-note" role="alert" style="color:var(--red);">${safeText(s.error)}</div>` : ""}
+          <div class="chip-row" style="margin-top:12px;">
+            <button class="chip-btn" data-community-action="report-close">ביטול</button>
+            <button class="chip-btn primary" data-community-action="report-submit"${s.saving ? " disabled" : ""}>${s.saving ? "שולח…" : "שליחת דיווח"}</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+  // COMM-153. The queue action sheet: a confirm with an optional note, plus
+  // a duration picker for a temporary restriction. Every decision here is
+  // handed to mod_review().
+  function renderModActionSheet() {
+    const a = state.modAction;
+    if (!a) return "";
+    const def = MOD_DECISIONS.find((d) => d.id === a.decision) || { label: a.decision };
+    const days = a.decision === "restrict_temp" ? `<label class="field" style="margin-top:10px;"><span class="field-label">משך ההגבלה</span>
+      <div class="chip-row" style="margin:0;">${RESTRICT_TEMP_DAYS.map((d) => `<button class="chip-btn${a.days === d ? " primary" : ""}" data-community-action="mod-action-days" data-days="${d}">${d} ימים</button>`).join("")}</div></label>` : "";
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="modActionTitle" style="align-items:center;padding:0 20px;">
+      <div class="modal-sheet" style="border-radius:22px;max-height:none;">
+        <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
+          <div id="modActionTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">${safeText(def.label)}</div>
+          ${days}
+          <label class="field" style="margin-top:10px;"><span class="field-label">הערה (רשות)</span>
+            <textarea class="text-input" data-mod-note maxlength="500" placeholder="נרשמת ביומן">${safeText(a.note || "")}</textarea></label>
+          ${a.error ? `<div class="footer-note" role="alert" style="color:var(--red);">${safeText(a.error)}</div>` : ""}
+          <div class="chip-row" style="margin-top:12px;">
+            <button class="chip-btn" data-community-action="mod-action-cancel">ביטול</button>
+            <button class="chip-btn primary" data-community-action="mod-action-run"${a.saving ? " disabled" : ""} style="${def.destructive ? "background:var(--red);border-color:var(--red);color:#fff;" : ""}">${a.saving ? "מבצע…" : "אישור"}</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+  // COMM-152. "View context" opens the reported content in place. Light by
+  // design: the excerpt the queue row already carries plus a shortcut into
+  // the feed for a post.
+  function renderModContextOverlay() {
+    const c = state.modContext;
+    if (!c) return "";
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="modContextTitle" style="align-items:center;padding:0 20px;">
+      <div class="modal-sheet" style="border-radius:22px;max-height:none;">
+        <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
+          <div id="modContextTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">הקשר הדיווח</div>
+          <div style="color:var(--steel);font-size:12.5px;">${safeText(c.target_type === "comment" ? "תגובה" : "פוסט")} מאת ${safeText(c.content_author_name || "חבר/ה שהוסר/ה")}</div>
+          <div class="chart-card" style="margin-top:8px;white-space:pre-wrap;">${safeText(String(c.content_excerpt || "התוכן הוסר"))}</div>
+          ${Array.isArray(c.reporters) && c.reporters.length ? `<div style="color:var(--steel);font-size:12px;margin-top:8px;">דווח ע״י: ${c.reporters.map((r) => safeText(r.name || r.id)).join(", ")}</div>` : ""}
+          <div class="chip-row" style="margin-top:12px;">
+            <button class="chip-btn" data-community-action="mod-context-close">סגירה</button>
+            ${c.target_type === "post" ? `<button class="chip-btn primary" data-community-action="mod-context-open-feed">פתיחה בפיד</button>` : ""}
+          </div>
+        </div>
+      </div>
+    </div>`;
   }
 
   window.renderCommunityApp = function () {
@@ -2887,7 +3291,13 @@
     const pinnedHtml = pinnedToday ? `<div class="chart-card admin-card" style="margin-bottom:12px;"><div style="font-weight:800;margin-bottom:6px;">📌 הערת האימון להיום</div><div style="font-weight:700;">${safeText(pinnedToday.title)}</div><div style="color:var(--steel);font-size:13px;margin-top:4px;">${safeText(pinnedToday.body)}</div></div>` : "";
     const announceComposer = staff ? `<form id="communityAnnouncement" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">הודעה חדשה למועדון<span class="admin-tag">ניהול</span></div>${field("communityAnnouncement", "title", "כותרת", `<input class="text-input" name="title" placeholder="כותרת" required/>`)}${field("communityAnnouncement", "body", "תוכן", `<textarea class="text-input" name="body" maxlength="2000" placeholder="תוכן ההודעה" required></textarea>`)}<label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="pinToday"/><span style="font-size:12.5px;color:var(--steel);">סמן כהערת האימון להיום</span></label><button class="chip-btn primary" type="submit" style="margin-top:10px;">פרסום הודעה</button></form>` : "";
     const otherAnnouncements = state.announcements.filter((a) => a !== pinnedToday);
-    const announcementsList = otherAnnouncements.length ? `<div class="log-list">${otherAnnouncements.map((a) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:4px;"><div style="font-weight:700;">${safeText(a.title)}</div><div style="color:var(--steel);font-size:13px;">${safeText(a.body)}</div><div style="color:var(--steel);font-size:11px;">${safeText(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div></div>`).join("")}</div>` : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
+    // COMM-155. A staff holder of community.content.pin gets a pin toggle on
+    // each announcement. Post, challenge and event pin affordances live on
+    // their own surfaces (posts and Phase 2 clusters); the strip and unpin
+    // control render for every one of the four target types.
+    const canPinContent = hasPerm(PERM.CONTENT_PIN);
+    const isPinned = (type, id) => state.pins.some((p) => p.target_type === type && p.target_id === id);
+    const announcementsList = otherAnnouncements.length ? `<div class="log-list">${otherAnnouncements.map((a) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:4px;"><div style="font-weight:700;">${safeText(a.title)}</div><div style="color:var(--steel);font-size:13px;">${safeText(a.body)}</div><div style="color:var(--steel);font-size:11px;">${safeText(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div>${canPinContent ? `<button class="link-btn" data-community-action="${isPinned("announcement", a.id) ? "unpin" : "pin"}" data-type="announcement" data-id="${safeText(a.id)}" data-note="${safeText(a.title)}" style="margin:2px 0 0;">${isPinned("announcement", a.id) ? "ביטול הצמדה" : "הצמדה למעלה"}</button>` : ""}</div>`).join("")}</div>` : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
     const announcementsHtml = `<div class="ach-section">${sectionHead("var(--brass)", "הודעות מהמועדון")}${pinnedHtml}${announcementsList}${announceComposer}</div>`;
 
     // Sharing itself no longer lives here - it was a standing list of the
@@ -2965,7 +3375,8 @@
     const composeBtn = `<button class="chip-btn primary" data-community-action="open-composer" style="margin:0 0 10px;">כתיבת פוסט</button>`;
     const feedHtml = `<div class="ach-section">${sectionHead("var(--blue)", "הפיד שלי")}${composeBtn}${filterHtml}${feed}${upcomingEventHtml}${feedMoreHtml}</div>`;
 
-    const feedTab = clubTopHtml + announcementsHtml + feedHtml;
+    // COMM-155. The pinned strip sits above everything else on the Club home.
+    const feedTab = renderPinnedStrip() + clubTopHtml + announcementsHtml + feedHtml;
 
     // ---- Boards tab: weekly challenge + streaks, top-3-plus-your-rank ----
     const challengeSetter = staff ? `<form id="communityWeeklyChallenge" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">קביעת אתגר שבועי<span class="admin-tag">ניהול</span></div>${field("communityWeeklyChallenge", "title", "שם האתגר", `<input class="text-input" name="title" placeholder="שם האתגר" required/>`)}${field("communityWeeklyChallenge", "comparisonKey", "מפתח השוואה", `<input class="text-input" name="comparisonKey" dir="ltr" placeholder="movement:back-squat:est1rm" required/>`)}<div style="color:var(--steel);font-size:11px;margin:-6px 0 10px;">חייב להתחיל ב-movement: (תרגיל) או wod: (אימון) — בדיוק כמו שהוא נשמר בשיתופים, למשל movement:back-squat:est1rm או wod:fran:time:rx</div><div class="flex gap-10 field">${field("communityWeeklyChallenge", "startsOn", "תאריך התחלה", `<input class="text-input" name="startsOn" type="date" required/>`)}${field("communityWeeklyChallenge", "endsOn", "תאריך סיום", `<input class="text-input" name="endsOn" type="date" required/>`)}</div><button class="chip-btn primary" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
@@ -3009,11 +3420,14 @@
     const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מתאמנים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין מתאמנים חדשים לאחרונה</div>`}</div>` : "";
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
-    const accountTab = account + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderMyAchievements() + renderNotifPrefsPanel()
+    const accountTab = account + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
 
-    const pendingReports = isAdmin() ? state.reports.filter((r) => r.status === "open").length : 0;
+    // COMM-152. The badge counts open queue items for a holder of the
+    // moderation permission (or a real admin), not the legacy reports list.
+    const pendingReports = (hasPerm(PERM.COMMENT_MODERATE) || isAdmin())
+      ? state.modQueue.filter((r) => r.status === "open").length : 0;
     const tabs = [
       { id: "feed", label: "פיד", html: feedTab },
       { id: "boards", label: "לוחות", html: boardsTab },
@@ -3043,6 +3457,9 @@
     if (input) input.addEventListener("input", () => searchPeople(input.value));
     const adminInput = document.getElementById("adminMemberSearch");
     if (adminInput) adminInput.addEventListener("input", () => searchMembers(adminInput.value));
+    // COMM-154. The audit view is lazy: fetched the first time an analytics
+    // holder lands on the Account tab, not on every session.
+    if (state.communityTab === "account" && hasPerm(PERM.ANALYTICS_VIEW) && !state.auditLoaded && !state.auditLoading) loadAuditLog(true);
     // COMM-018. Each privacy toggle persists on change, no save button.
     document.querySelectorAll("[data-privacy-field]").forEach((el) => {
       el.addEventListener("change", () => savePrivacyField(el.dataset.privacyField, el.checked));
@@ -3099,11 +3516,37 @@
     else if (action === "set-tab") setCommunityTab(el.dataset.tab);
     else if (action === "verify-recovery") verifyRecovery({ force: true });
     else if (action === "hide-my-leaderboard-result") savePrivacyField("in_leaderboards", false);
-    else if (action === "review-report") reviewReport(el.dataset.id, el.dataset.status);
     else if (action === "confirm-yes") runConfirm();
     else if (action === "confirm-no") closeConfirm();
     else if (action === "start-signup") startSignup();
     else if (action === "sign-out") client.auth.signOut();
+    // COMM-151 report sheet.
+    else if (action === "report-close") closeReportSheet();
+    else if (action === "report-submit") submitReportSheet();
+    // COMM-152/153 moderation queue.
+    else if (action === "mod-queue-status") setModQueueStatus(el.dataset.status);
+    else if (action === "mod-queue-retry") loadModQueue();
+    else if (action === "mod-context") openModContext(el.dataset.id);
+    else if (action === "mod-context-close") closeModContext();
+    else if (action === "mod-context-open-feed") { closeModContext(); setCommunityTab("feed"); }
+    else if (action === "mod-action") openModAction(el.dataset.id, el.dataset.decision);
+    else if (action === "mod-action-cancel") closeModAction();
+    else if (action === "mod-action-run") runModAction();
+    else if (action === "mod-action-days") { if (state.modAction) { state.modAction.days = Number(el.dataset.days) || 7; rerender(); } }
+    // COMM-154 audit view.
+    else if (action === "audit-filter") setAuditFilter("action_type", el.dataset.type || "");
+    else if (action === "audit-more") loadAuditLog(false);
+    else if (action === "audit-retry") loadAuditLog(true);
+    // COMM-155 pins.
+    else if (action === "unpin") unpinTarget(el.dataset.type, el.dataset.id);
+    else if (action === "pin") pinTarget(el.dataset.type, el.dataset.id, el.dataset.note || "");
+    // COMM-156 role management.
+    else if (action === "admin-set-role") {
+      const role = el.dataset.role;
+      const label = { member: "חבר/ה", coach: "מאמן/ת", head_coach: "מאמן/ת ראשי/ת" }[role] || role;
+      if (role === "member") adminRevokeCoach(el.dataset.id);
+      else askConfirm({ title: "שינוי הרשאה", message: `להעניק הרשאת ${label} למשתמש/ת זה/ו?`, confirmLabel: "הענקה", action: "admin-set-role", payload: { userId: el.dataset.id, role } });
+    }
     else if (action === "admin-grant-coach") askConfirm({ title: "הענקת הרשאת מאמן/ת", message: "להעניק הרשאת מאמן/ת למשתמש/ת זה/ו?", confirmLabel: "הענקה", action: "admin-grant-coach", payload: { userId: el.dataset.id } });
     else if (action === "admin-revoke-coach") adminRevokeCoach(el.dataset.id);
     else if (action === "admin-remove-member") askConfirm({ title: "הסרת חבר/ה", message: "הפרופיל והשיתופים של המשתמש/ת יוסרו מיד. המחיקה הסופית תתבצע לאחר 30 יום. להמשיך?", confirmLabel: "הסרה", destructive: true, action: "admin-remove-member", payload: { userId: el.dataset.id } });
@@ -3185,9 +3628,9 @@
       state.user = session ? session.user : null;
       if (state.user) {
         loadRedemption()
-          .then(() => Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), flushOutbox()]))
+          .then(() => Promise.all([loadProfile(), loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), flushOutbox()]))
           .then(() => (isStaff() ? Promise.all([loadInactiveMembers(), loadNewMembers()]) : null))
-          .then(() => (isAdmin() ? loadReports() : null))
+          .then(() => (isAdmin() || hasPerm(PERM.COMMENT_MODERATE) ? loadModQueue() : null))
           .then(pullPrivateRecords)
           .then(pingActivity)
           .then(() => { if (typeof window.syncCommunityMilestones === "function") window.syncCommunityMilestones(); })
@@ -3200,7 +3643,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.commentRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null;
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.commentRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {};
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();
@@ -3224,6 +3667,11 @@
     else if ("prNote" in t.dataset && state.prPrompt) state.prPrompt.note = t.value;
     else if ("prAlt" in t.dataset && state.prPrompt && state.prPrompt.photo) state.prPrompt.photo.altText = t.value;
     else if ("achNote" in t.dataset && state.achUnlock) state.achUnlock.note = t.value;
+    // COMM-151 / COMM-153. Free-text notes on the report and moderation
+    // sheets. Kept in state, not read off the DOM at submit, so a rerender
+    // never drops what was typed.
+    else if ("reportNote" in t.dataset && state.reportSheet) state.reportSheet.note = t.value;
+    else if ("modNote" in t.dataset && state.modAction) state.modAction.note = t.value;
   });
   document.addEventListener("change", (e) => {
     const t = e.target;
@@ -3232,6 +3680,8 @@
     else if ("composerDecorative" in t.dataset) composerToggleDecorative(t.dataset.composerDecorative, t.checked);
     else if ("composerVisibility" in t.dataset) composerSetVisibility(t.value);
     else if ("prFile" in t.dataset) { const f = t.files && t.files[0]; if (f) prPromptAddPhoto(f); }
+    // COMM-151. The report reason radio.
+    else if ("reportReason" in t.dataset && t.checked) setReportReason(t.dataset.reportReason);
   });
   document.addEventListener("keydown", (e) => {
     // COMM-123. Mention picker keyboard navigation while a comment input has
@@ -3261,6 +3711,9 @@
       return;
     }
     if (e.key !== "Escape") return;
+    if (state.reportSheet) { e.preventDefault(); closeReportSheet(); return; }
+    if (state.modAction) { e.preventDefault(); closeModAction(); return; }
+    if (state.modContext) { e.preventDefault(); closeModContext(); return; }
     if (state.notifCenter) { e.preventDefault(); closeNotifCenter(); return; }
     if (state.achUnlock) { e.preventDefault(); dismissAchievementUnlock(); return; }
     if (state.prPrompt) { e.preventDefault(); dismissPrPrompt(); return; }

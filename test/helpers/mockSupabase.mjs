@@ -24,6 +24,32 @@ export function createMockSupabase(seedTables = {}) {
   const rpcCalls = [];
 
   function rows(table) { return (db[table] = db[table] || []); }
+  // COMM-150..156. Shared helpers for the admin-moderation stand-ins below.
+  const MOCK_ROLE_PERMS = {
+    member: ["community.post.create"],
+    coach: ["community.post.create", "community.comment.moderate", "community.challenge.create", "community.event.manage", "community.announcement.publish"],
+    head_coach: ["community.post.create", "community.comment.moderate", "community.challenge.create", "community.event.manage", "community.announcement.publish", "community.post.delete_any", "community.member.restrict", "community.content.pin"],
+    staff: ["community.post.create", "community.event.manage", "community.announcement.publish", "community.content.pin"],
+    admin: ["community.post.create", "community.post.delete_any", "community.comment.moderate", "community.challenge.create", "community.event.manage", "community.analytics.view", "community.member.restrict", "community.announcement.publish", "community.content.pin"],
+  };
+  MOCK_ROLE_PERMS.owner = MOCK_ROLE_PERMS.admin.slice();
+  function roleOf(uid) {
+    const prof = rows("profiles").find((p) => p.id === uid);
+    if (prof && prof.is_admin) return "admin";
+    const red = rows("invite_redemptions").find((r) => r.user_id === uid);
+    return (red && red.role) || null;
+  }
+  function permHas(uid, code) {
+    const role = roleOf(uid);
+    return !!role && (MOCK_ROLE_PERMS[role] || []).indexOf(code) >= 0;
+  }
+  function auditRow(adminId, actionType, targetType, targetId, before, after) {
+    return {
+      id: `aa-${++uidCounter}`, admin_id: adminId, action_type: actionType,
+      target_type: targetType, target_id: targetId, before_data: before || null,
+      after_data: after || null, created_at: new Date().toISOString(),
+    };
+  }
   // The real cursor carries the session anchor so every page of one session
   // scores against the same now(). The mock has no scoring, but it carries
   // the same field so a test reading a cursor sees the same shape.
@@ -393,6 +419,209 @@ export function createMockSupabase(seedTables = {}) {
         if (name === "notif_unread_count") {
           const uid = currentUser && currentUser.id;
           return Promise.resolve({ data: rows("notifications").filter((n) => n.user_id === uid && !n.read_at).length, error: null });
+        }
+        // COMM-150..156 admin-moderation cluster. In-memory stand-ins for
+        // the trusted functions the client calls. A test-supplied onRpc()
+        // still wins over every one of these.
+        //
+        // The role -> permission mapping mirrors migration 202608280001.
+        // owner short-circuits to every permission the same way has_perm()
+        // does server-side.
+        if (name === "my_permissions") {
+          const role = roleOf(currentUser && currentUser.id);
+          return Promise.resolve({ data: role ? (MOCK_ROLE_PERMS[role] || []).slice() : [], error: null });
+        }
+        if (name === "report") {
+          const uid = currentUser && currentUser.id;
+          if (!uid) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          const tt = args && args.p_target_type;
+          const tid = args && args.p_target_id;
+          const reason = args && args.p_reason;
+          if (!["post", "comment"].includes(tt)) return Promise.resolve({ data: null, error: { message: "unknown target type" } });
+          if (!["harassment", "spam", "inappropriate", "privacy", "unsafe_advice", "other"].includes(reason)) {
+            return Promise.resolve({ data: null, error: { message: "unknown reason" } });
+          }
+          const rs = rows("reports");
+          const existing = rs.find((r) => r.reporter_id === uid && r.target_type === tt && r.target_id === tid);
+          if (existing) {
+            // Duplicate by the same reporter collapses - reason/note refresh,
+            // reporter_count does not move.
+            existing.reason = reason;
+            existing.note = String((args && args.p_note) || "").slice(0, 500);
+            return Promise.resolve({ data: null, error: null });
+          }
+          rs.push({
+            id: `rep-${++uidCounter}`, reporter_id: uid, target_type: tt, target_id: tid,
+            reason, note: String((args && args.p_note) || "").slice(0, 500),
+            status: "open", created_at: new Date().toISOString(),
+          });
+          return Promise.resolve({ data: null, error: null });
+        }
+        if (name === "mod_queue") {
+          const uid = currentUser && currentUser.id;
+          const prof = rows("profiles").find((p) => p.id === uid);
+          const red = rows("invite_redemptions").find((r) => r.user_id === uid);
+          const role = (prof && prof.is_admin) ? "admin" : (red && red.role) || null;
+          const canModerate = ["coach", "head_coach", "admin", "owner"].includes(role);
+          if (!canModerate) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          const status = (args && args.p_status) || "open";
+          const limit = Math.min(Number((args && args.p_limit) || 50), 50);
+          // Group the raw report rows by target, the way the real function
+          // returns one queue row per reported item.
+          const byTarget = {};
+          for (const r of rows("reports")) {
+            const key = `${r.target_type}:${r.target_id}`;
+            if (!byTarget[key]) byTarget[key] = { rows: [], reporters: new Set() };
+            byTarget[key].rows.push(r);
+            byTarget[key].reporters.add(r.reporter_id);
+          }
+          let items = Object.keys(byTarget).map((key) => {
+            const g = byTarget[key];
+            const first = g.rows[0];
+            const content = first.target_type === "post"
+              ? rows("workout_posts").find((p) => p.id === first.target_id)
+              : rows("post_comments").find((c) => c.id === first.target_id);
+            const authorId = content && (content.author_id);
+            const authorProf = rows("profiles").find((p) => p.id === authorId);
+            const qStatus = g.rows.some((x) => x.status === "open") ? "open"
+              : g.rows.some((x) => x.status === "reviewing") ? "reviewing"
+              : g.rows.some((x) => x.status === "dismissed") ? "dismissed" : "action_taken";
+            return {
+              report_id: first.id,
+              target_type: first.target_type,
+              target_id: first.target_id,
+              content_excerpt: content ? (content.body || content.title || "") : "",
+              content_author_id: authorId || null,
+              content_author_name: authorProf ? (authorProf.display_name || "@" + authorProf.handle) : null,
+              reporter_count: g.reporters.size,
+              reasons: Array.from(new Set(g.rows.map((x) => x.reason))),
+              latest_reason: g.rows[g.rows.length - 1].reason,
+              note: g.rows.map((x) => x.note).filter(Boolean).slice(-1)[0] || "",
+              status: qStatus,
+              created_at: first.created_at,
+              reporters: Array.from(g.reporters).map((id) => {
+                const rp = rows("profiles").find((p) => p.id === id);
+                return { id, name: rp ? (rp.display_name || "@" + rp.handle) : id };
+              }),
+            };
+          });
+          if (status !== "all") items = items.filter((it) => it.status === status);
+          items.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+          return Promise.resolve({ data: items.slice(0, limit), error: null });
+        }
+        if (name === "mod_review") {
+          const uid = currentUser && currentUser.id;
+          const prof = rows("profiles").find((p) => p.id === uid);
+          const red = rows("invite_redemptions").find((r) => r.user_id === uid);
+          const role = (prof && prof.is_admin) ? "admin" : (red && red.role) || null;
+          if (!["coach", "head_coach", "admin", "owner"].includes(role)) {
+            return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          }
+          const decision = args && args.p_decision;
+          if (!["remove", "warn", "restrict_temp", "restrict_permanent", "dismiss"].includes(decision)) {
+            return Promise.resolve({ data: null, error: { message: "unknown decision" } });
+          }
+          const report = rows("reports").find((r) => r.id === (args && args.p_report_id));
+          if (!report) return Promise.resolve({ data: null, error: { message: "report not found" } });
+          const before = { status: report.status };
+          // Content removal.
+          if (decision === "remove") {
+            if (report.target_type === "post") {
+              const p = rows("workout_posts").find((x) => x.id === report.target_id);
+              if (p) { p.status = "removed"; p.deleted_at = new Date().toISOString(); }
+              rows("admin_actions").push(auditRow(uid, "content_delete", "post", report.target_id, null, { via: "mod_review" }));
+            } else {
+              const c = rows("post_comments").find((x) => x.id === report.target_id);
+              if (c) { c.status = "removed"; c.deleted_at = new Date().toISOString(); }
+              rows("admin_actions").push(auditRow(uid, "content_delete", "comment", report.target_id, null, { via: "comment_moderate" }));
+            }
+          }
+          // Posting restriction.
+          if (decision === "restrict_temp" || decision === "restrict_permanent") {
+            const content = report.target_type === "post"
+              ? rows("workout_posts").find((x) => x.id === report.target_id)
+              : rows("post_comments").find((x) => x.id === report.target_id);
+            const targetUser = content && content.author_id;
+            rows("posting_restrictions").push({
+              id: `pr-${++uidCounter}`, user_id: targetUser,
+              restriction_type: decision === "restrict_temp" ? "temporary" : "permanent",
+              expires_at: decision === "restrict_temp" ? (args && args.p_expires_at) || null : null,
+              reason: String((args && args.p_note) || "").slice(0, 500),
+              moderator_id: uid, source_report_id: report.id, created_at: new Date().toISOString(), lifted_at: null,
+            });
+            rows("admin_actions").push(auditRow(uid, "member_restrict", "member", targetUser, null, { decision }));
+          }
+          // Every decision records the trusted transition and one audit row.
+          report.status = decision === "dismiss" ? "dismissed" : "action_taken";
+          report.reviewed_by = uid;
+          report.reviewed_at = new Date().toISOString();
+          report.review_note = String((args && args.p_note) || "").slice(0, 500);
+          rows("admin_actions").push(auditRow(uid, "report_review", "report", report.id, before, { status: report.status, decision }));
+          return Promise.resolve({ data: null, error: null });
+        }
+        if (name === "pin_set") {
+          const uid = currentUser && currentUser.id;
+          if (!permHas(uid, "community.content.pin")) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          const tt = args && args.p_target_type;
+          const tid = args && args.p_target_id;
+          if (!["announcement", "challenge", "event", "post"].includes(tt)) {
+            return Promise.resolve({ data: null, error: { message: "unknown pin target type" } });
+          }
+          const ps = rows("pins");
+          if (ps.some((p) => p.target_type === tt && p.target_id === tid)) return Promise.resolve({ data: null, error: null });
+          const used = new Set(ps.map((p) => p.slot));
+          let slot = null;
+          for (let s = 0; s <= 2; s++) if (!used.has(s)) { slot = s; break; }
+          if (slot === null) return Promise.resolve({ data: null, error: { message: "pin_limit_reached" } });
+          ps.push({ id: `pin-${++uidCounter}`, target_type: tt, target_id: tid, slot, note: String((args && args.p_note) || "").slice(0, 200), pinned_by: uid, created_at: new Date().toISOString() });
+          rows("admin_actions").push(auditRow(uid, "content_pin", tt, tid, null, { slot }));
+          return Promise.resolve({ data: null, error: null });
+        }
+        if (name === "pin_clear") {
+          const uid = currentUser && currentUser.id;
+          if (!permHas(uid, "community.content.pin")) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          const tt = args && args.p_target_type;
+          const tid = args && args.p_target_id;
+          const ps = rows("pins");
+          const idx = ps.findIndex((p) => p.target_type === tt && p.target_id === tid);
+          if (idx < 0) return Promise.resolve({ data: null, error: null });
+          const [removed] = ps.splice(idx, 1);
+          rows("admin_actions").push(auditRow(uid, "content_unpin", tt, tid, { slot: removed.slot }, null));
+          return Promise.resolve({ data: null, error: null });
+        }
+        if (name === "admin_actions_page") {
+          const uid = currentUser && currentUser.id;
+          if (!permHas(uid, "community.analytics.view")) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          const limit = Math.min(Math.max(Number((args && args.p_limit) || 25), 1), 100);
+          const filters = (args && args.p_filters) || {};
+          let list = rows("admin_actions").slice().sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+          if (args && args.p_cursor) list = list.filter((a) => a.created_at < args.p_cursor);
+          if (filters.action_type) list = list.filter((a) => a.action_type === filters.action_type);
+          if (filters.admin_id) list = list.filter((a) => a.admin_id === filters.admin_id);
+          return Promise.resolve({ data: list.slice(0, limit), error: null });
+        }
+        if (name === "admin_grant_coach") {
+          const uid = currentUser && currentUser.id;
+          const prof = rows("profiles").find((p) => p.id === uid);
+          if (!prof || !prof.is_admin) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          const role = (args && args.p_role) || "coach";
+          const target = args && args.p_user_id;
+          const red = rows("invite_redemptions").find((r) => r.user_id === target);
+          const before = red ? { role: red.role } : null;
+          if (red) red.role = role; else rows("invite_redemptions").push({ user_id: target, invite_id: "inv-x", role, redeemed_at: new Date().toISOString() });
+          rows("admin_actions").push(auditRow(uid, "role_change", "member", target, before, { role }));
+          return Promise.resolve({ data: null, error: null });
+        }
+        if (name === "admin_revoke_coach") {
+          const uid = currentUser && currentUser.id;
+          const prof = rows("profiles").find((p) => p.id === uid);
+          if (!prof || !prof.is_admin) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          const target = args && args.p_user_id;
+          const red = rows("invite_redemptions").find((r) => r.user_id === target);
+          const before = red ? { role: red.role } : null;
+          if (red) red.role = "member";
+          rows("admin_actions").push(auditRow(uid, "role_change", "member", target, before, { role: "member" }));
+          return Promise.resolve({ data: null, error: null });
         }
         if (name === "mark_recovery_verified") {
           const prof = rows("profiles").find((r) => currentUser && r.id === currentUser.id);

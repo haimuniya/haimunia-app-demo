@@ -48,7 +48,10 @@ test("cloud.js calls the new RPCs instead of writing to the tables directly, and
   // any older caller (asserted above), but the client uses the new one.
   assert.match(cloudJs, /client\.rpc\("add_post_comment", \{ p_post_id: postId, p_body: resolved\.stored, p_parent_comment_id: parentCommentId \|\| null \}\)/);
   assert.match(cloudJs, /client\.rpc\("toggle_reaction", \{ p_post_id: postId \}\)/);
-  assert.match(cloudJs, /client\.rpc\("submit_report", \{ p_post_id: postId \}\)/);
+  // COMM-151 replaced submit_report with report(p_target_type, p_target_id,
+  // p_reason, p_note), so a comment can be reported too. The two-argument
+  // submit_report still exists in SQL (asserted above) for any older caller.
+  assert.match(cloudJs, /client\.rpc\("report", \{\s*p_target_type: s\.targetType,/);
   assert.doesNotMatch(cloudJs, /\.from\("post_comments"\)\.insert\(/);
   assert.doesNotMatch(cloudJs, /\.from\("reactions"\)\.insert\(/);
   assert.doesNotMatch(cloudJs, /\.from\("reports"\)\.insert\(/);
