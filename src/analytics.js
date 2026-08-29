@@ -9,35 +9,11 @@
 // own-row or a null user_id, and reads are gated on
 // community.analytics.view, so a member cannot read back what they wrote.
 //
-// Phase 0 ships the helper, the constants, and the bus bridge. Wiring the
-// actual surfaces (a club tab view, a feed impression, a post open) is
-// COMM-170 in Phase 1.
+// Phase 0 ships the helper, the constants, and the bus bridge. COMM-170
+// in Phase 1 calls configure() from cloud.js and wires the surfaces.
 //
-// ---------------------------------------------------------------------
-// Weekly Community Active Members (WCAM), spec section 78
-// ---------------------------------------------------------------------
-// The core community health metric. One agreed definition, so the client
-// event stream and any later server-side rollup cannot disagree.
-//
-//   WCAM for a calendar week = the count of unique members who, inside
-//   that week, did at least ONE of:
-//     - created a post
-//     - created a comment
-//     - added a reaction
-//     - joined a challenge
-//     - participated in an event (an RSVP of going, or attending)
-//     - shared an achievement
-//     - interacted with a coach or with a community item (opened a post,
-//       opened a member profile, opened an announcement, opened a
-//       notification)
-//
-// Passive views alone do not count: opening the club tab or scrolling
-// the feed is not membership activity. Uniqueness is per member per
-// week, not per action, so ten comments from one member is one active
-// member. Week boundaries follow the club's local week, not UTC.
-//
-// The event names below that qualify are listed in ACTIVE_MEMBER_EVENTS.
-// ---------------------------------------------------------------------
+// Every tracked event, its trigger surface, its props, and the Weekly
+// Community Active Members definition: docs/community/metrics.md.
 //
 // Schema versioning: adding a prop to an existing event is additive and
 // does not move SCHEMA_VERSION. Removing or renaming a prop, or changing
@@ -78,8 +54,8 @@
   const KNOWN = new Set(Object.values(EVENTS));
 
   // The subset of the above that counts a member as active for the week,
-  // per the WCAM definition at the top of this file. Kept as data so a
-  // rollup query and this client cannot drift apart.
+  // per the WCAM definition in docs/community/metrics.md. Kept as data so
+  // a rollup query and this client cannot drift apart.
   const ACTIVE_MEMBER_EVENTS = Object.freeze([
     EVENTS.POST_CREATED,
     EVENTS.WORKOUT_SHARED,
@@ -120,9 +96,52 @@
     EVENT_REGISTERED: EVENTS.EVENT_RSVP,
   });
 
+  // COMM-170. What each bridged bus payload contributes to the analytics
+  // row, key by key. A bus payload is built for its consumers
+  // (notifications needs the mention list, achievements needs the author),
+  // not for this table, so it is projected rather than stored whole. Two
+  // reasons: the props shape stays a stable, documented contract that a
+  // producer cannot widen by accident, and member-authored text (a
+  // mention's display name, a caption) never reaches analytics. Anything
+  // not listed here is dropped, including a key a future producer adds.
+  const BUS_PROP_KEYS = Object.freeze({
+    POST_CREATED: ["post_id", "post_type", "visibility", "has_media"],
+    COMMENT_CREATED: ["post_id", "comment_id", "parent_comment_id"],
+    REACTION_CREATED: ["post_id", "reaction_type"],
+    CHALLENGE_JOINED: ["challenge_id", "challenge_type"],
+    CHALLENGE_COMPLETED: ["challenge_id", "challenge_type"],
+    EVENT_REGISTERED: ["event_id", "rsvp_status"],
+  });
+  // Counted, not carried: an array prop is stored as its length so the
+  // signal survives without the contents. `mentions` is the live case.
+  const BUS_COUNT_KEYS = Object.freeze({ COMMENT_CREATED: { mentions: "mention_count" } });
+
+  function projectBusPayload(productEvent, payload) {
+    const body = (payload && typeof payload === "object" && !Array.isArray(payload)) ? payload : {};
+    const out = {};
+    for (const key of BUS_PROP_KEYS[productEvent] || []) {
+      if (body[key] !== undefined && body[key] !== null) out[key] = body[key];
+    }
+    const counts = BUS_COUNT_KEYS[productEvent];
+    for (const key of Object.keys(counts || {})) {
+      if (Array.isArray(body[key])) out[counts[key]] = body[key].length;
+    }
+    return out;
+  }
+
   let getClient = () => null;
   let getUserId = () => null;
   let busUnsubscribes = [];
+  // The dev switch. When on, a tracked event is logged to the console and
+  // nothing is written, so a developer can watch the stream on a real
+  // device without polluting the table. Flipping the global at runtime
+  // wins over whatever configure() was given, which is what makes it
+  // usable from a console on a device that is already running.
+  let debugMode = false;
+  function isDebug() {
+    if (typeof window.HAIMUNIA_ANALYTICS_DEBUG === "boolean") return window.HAIMUNIA_ANALYTICS_DEBUG;
+    return debugMode;
+  }
 
   function byteLength(text) {
     if (typeof TextEncoder === "function") return new TextEncoder().encode(text).length;
@@ -169,12 +188,19 @@
         console.warn("[analytics] unknown event name, dropped: " + String(eventName));
         return Promise.resolve(false);
       }
-      const client = getClient();
-      if (!client || typeof client.from !== "function") return Promise.resolve(false);
-
       const fitted = fitProps(props);
       let userId = null;
       try { userId = getUserId() || null; } catch (err) { userId = null; }
+
+      // The dev switch is checked before the client, so it works on an
+      // unconfigured helper too - watching the stream is exactly what a
+      // developer wants before the session is ready.
+      if (isDebug()) {
+        console.log("[analytics] " + eventName, { props: fitted.props, user_id: userId, schema_version: SCHEMA_VERSION });
+        return Promise.resolve(true);
+      }
+      const client = getClient();
+      if (!client || typeof client.from !== "function") return Promise.resolve(false);
 
       const row = {
         event_name: eventName,
@@ -200,7 +226,7 @@
     if (!bus || typeof bus.on !== "function") return 0;
     detachFromBus();
     for (const [productEvent, analyticsName] of Object.entries(BUS_EVENT_MAP)) {
-      busUnsubscribes.push(bus.on(productEvent, (payload) => analyticsTrack(analyticsName, payload)));
+      busUnsubscribes.push(bus.on(productEvent, (payload) => analyticsTrack(analyticsName, projectBusPayload(productEvent, payload))));
     }
     return busUnsubscribes.length;
   }
@@ -216,13 +242,15 @@
   // returns false without touching the network.
   //
   // Passing attachToBus:false configures the writer without the bus
-  // bridge, for a caller that wants to emit analytics by hand.
+  // bridge, for a caller that wants to emit analytics by hand. Passing
+  // debug:true turns on the console-only dev switch.
   function configure(opts) {
     const o = opts || {};
     if (o.client) getClient = () => o.client;
     else if (typeof o.getClient === "function") getClient = o.getClient;
     if (typeof o.getUserId === "function") getUserId = o.getUserId;
     else if ("userId" in o) getUserId = () => o.userId;
+    if (typeof o.debug === "boolean") debugMode = o.debug;
     if (o.attachToBus !== false) attachToBus();
     return true;
   }
@@ -231,6 +259,7 @@
     detachFromBus();
     getClient = () => null;
     getUserId = () => null;
+    debugMode = false;
   }
 
   function isActiveMemberEvent(eventName) { return ACTIVE_MEMBER_EVENT_SET.has(eventName); }
@@ -239,6 +268,7 @@
     EVENTS,
     ACTIVE_MEMBER_EVENTS,
     BUS_EVENT_MAP,
+    BUS_PROP_KEYS,
     SCHEMA_VERSION,
     MAX_PROPS_BYTES,
     PROPS_BUDGET_BYTES,
@@ -249,7 +279,9 @@
     reset,
     isActiveMemberEvent,
     isKnown: (name) => KNOWN.has(name),
+    isDebug,
     fitProps,
+    projectBusPayload,
   };
   window.analyticsTrack = analyticsTrack;
   window.ANALYTICS_EVENTS = EVENTS;

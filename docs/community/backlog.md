@@ -56,11 +56,11 @@ COMM-012 to COMM-015 note: platform shipped four classic scripts under
 `sw.js`, and loaded in the same order by `test/helpers/boot.mjs`. Contracts
 are in `docs/community/contracts.md` under "Client platform helpers". Phase
 0 wires no producer, no consumer, no subscription and no upload to any of
-them, so there is no user-facing change. Two follow-ups for planner: the
-WCAM definition currently lives in a comment at the top of
-`src/analytics.js` and `docs/community/metrics.md` is still unwritten, and
-COMM-170 is the ticket that calls `HaimuniaAnalytics.configure()` for the
-first time.
+them, so there is no user-facing change. Both follow-ups are closed by
+COMM-170: it is the first `HaimuniaAnalytics.configure()` call, and it moved
+the WCAM definition out of the `src/analytics.js` comment into
+`docs/community/metrics.md`, which now also carries the event-to-surface
+table. The module keeps a one-line pointer at the doc.
 
 COMM-019 note: qa delivered static assertions that pin each policy, trigger,
 and constraint so a widening edit fails CI. The JS mock cannot run Postgres,

@@ -45,6 +45,34 @@
     window.HaimuniaRealtime.configure({ client });
   }
 
+  // --- COMM-170 analytics ------------------------------------------------
+  // The tracked event names (COMM-013) and the one call into the helper.
+  // Every call below is a measurement of something that already happened:
+  // nothing is awaited, nothing sets a message, and nothing here can fail
+  // in a way a member sees. Props carry ids, enums, counts and booleans
+  // only - never a display name, a handle, a caption, a comment body or a
+  // report note. The full event-to-surface table is in
+  // docs/community/metrics.md.
+  const A = window.ANALYTICS_EVENTS || {};
+  function track(eventName, props) {
+    if (!eventName) return;
+    try { if (typeof window.analyticsTrack === "function") window.analyticsTrack(eventName, props); } catch (e) {}
+  }
+  // configure() has to run BEFORE the first track(): an unconfigured
+  // analyticsTrack() is an inert no-op that silently drops the event. So
+  // it sits at the head of the session-ready path, not the tail. getUserId
+  // is a getter over state.user rather than a snapshot, which is why one
+  // configure covers every later sign-out and sign-in without a second
+  // call - and a second call would only replace the bus bridge anyway,
+  // never stack it.
+  let analyticsConfigured = false;
+  function ensureAnalyticsConfigured() {
+    if (analyticsConfigured || !client || !window.HaimuniaAnalytics) return false;
+    analyticsConfigured = true;
+    window.HaimuniaAnalytics.configure({ client, getUserId: () => (state.user ? state.user.id : null) });
+    return true;
+  }
+
   function safeText(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
   // Coach and admin are both "staff" for the fixed set of powers every
   // coach gets (announcements, the weekly challenge, the new/inactive
@@ -123,6 +151,9 @@
     const { data } = await client.auth.getSession();
     state.user = data.session ? data.session.user : null;
     if (state.user) {
+      // COMM-170. First thing in the session-ready path, so every track()
+      // below it writes instead of dropping.
+      ensureAnalyticsConfigured();
       await loadRedemption();
       await Promise.all([loadProfile(), loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins()]);
       if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers()]);
@@ -517,6 +548,9 @@
     // COMM-151. A post report also records a feed interaction so the ranker
     // learns from it. Comments are not feed items and record nothing.
     if (s.targetType === "post") trackFeedInteraction(s.targetId, "hide");
+    // COMM-170. The reason code only. The free-text note is member-authored
+    // content about another member and never enters the analytics table.
+    track(A.REPORT_SUBMITTED, { target_type: s.targetType, reason: s.reason });
     s.saving = false; s.done = true;
     rerender();
     if (s.targetType === "post") loadFeed();
@@ -533,6 +567,9 @@
     const payload = { author_id: state.user.id, source_type: "achievement", source_record_id: achievementId, visibility: "followers", title: String(title || "עיטור חדש").slice(0, 120), result_text: String(rule || "עיטור חדש נפתח").slice(0, 240), occurred_on: todayIso() };
     const { error } = await client.from("workout_posts").upsert(payload, { onConflict: "author_id,source_type,source_record_id" });
     if (error) return setMessage("שיתוף העיטור נכשל");
+    // COMM-170. The app.js entry point (window.shareAchievementToCommunity),
+    // distinct from the unlock sheet below and never both in one action.
+    track(A.ACHIEVEMENT_SHARED, { member_achievement_id: null, code: null, source: "app_share_button" });
     await loadFeed(); setMessage("העיטור שותף לעוקבים שלכם"); rerender();
   }
   async function uploadPostPhoto(file) {
@@ -669,6 +706,11 @@
     if (!def || def.parked || def.id === state.feedScope) return;
     state.feedScope = def.id;
     state.feedPagesLoaded = 0;
+    // COMM-170. A scope change is a new read of the feed, so it is a second
+    // feed_viewed, distinguished from the tab entry by `source`. It is not
+    // tracked in loadFeed(), which also runs after a reaction, a comment or
+    // a block, none of which is a member viewing the feed.
+    track(A.FEED_VIEWED, { scope: def.id, source: "scope_change" });
     loadFeed().then(rerender);
     rerender();
   }
@@ -690,6 +732,11 @@
     if (!postId || !state.feedSessionId) return;
     if (state.feedSeen[postId]) return;
     state.feedSeen[postId] = true;
+    // COMM-170. The ranking pipeline reads feed_impressions (COMM-114);
+    // the product metric reads analytics_events. Two tables, two consumers,
+    // one trigger - and the state.feedSeen guard above is what makes both
+    // of them exactly once per post per feed session.
+    track(A.POST_IMPRESSION, { post_id: postId, position: Math.max(0, Number(position) || 0), feed_session_id: state.feedSessionId });
     state.feedPending.push({
       post_id: postId,
       position: Math.max(0, Number(position) || 0),
@@ -943,6 +990,11 @@
   function toggleComments(postId) {
     if (state.openComments[postId]) { delete state.openComments[postId]; rerender(); return; }
     state.openComments[postId] = true;
+    // COMM-170. Opening the thread is what "opened a post" means on this
+    // feed - there is no separate post detail view in V1. The early return
+    // above is what keeps a close from counting as a second open.
+    const opened = findFeedPost(postId);
+    track(A.POST_OPENED, { post_id: postId, post_type: (opened && opened.post_type) || null, source: "feed" });
     if (!state.blocksLoaded) loadBlockedIds().then(rerender);
     if (!state.comments[postId]) loadCommentsFor(postId); else rerender();
   }
@@ -1346,6 +1398,10 @@
     if (!state.user) return;
     const { error } = await client.from("follows").insert({ follower_id: state.user.id, followed_id: userId });
     if (error && error.code === "23505") await client.from("follows").delete().eq("follower_id", state.user.id).eq("followed_id", userId);
+    // COMM-170. This control toggles: the 23505 branch above is an
+    // unfollow, and a rejected insert is neither. Only a real new follow
+    // edge is tracked, and there is no member_unfollowed in the event set.
+    else if (!error) track(A.MEMBER_FOLLOWED, { user_id: userId });
     await loadFeed(); setMessage(error && error.code !== "23505" ? "עדכון המעקב נכשל" : "המעקב עודכן");
   }
   async function block(userId) {
@@ -1384,6 +1440,10 @@
     if (photoPath) payload.photo_path = photoPath;
     const { error } = await client.from("workout_posts").upsert(payload, { onConflict: "author_id,source_type,source_record_id" });
     if (error) return setMessage("שיתוף התוצאה נכשל");
+    // COMM-170. After the write, so a failed share is not counted as one.
+    // This path predates the composer and does not emit POST_CREATED, so
+    // workout_shared is the only record of it.
+    track(A.WORKOUT_SHARED, { source_type: item.type, visibility: payload.visibility, has_photo: !!photoPath });
     delete state.openShare[shareKey(type, id)];
     await loadFeed(); setMessage("התוצאה שותפה בלי הערות, מדדים או פרטים אישיים");
   }
@@ -1442,6 +1502,35 @@
     if (state.communityTab !== tab) flushFeedImpressions();
     state.communityTab = tab;
     rerender();
+  }
+
+  // COMM-170. One club_tab_viewed per entry into a sub-tab, never one per
+  // render. afterRenderCommunity() runs on every re-render of the Community
+  // tab - a reaction, a comment, a photo URL resolving - so the sub-tab
+  // that was last counted is remembered and a repeat render of the same one
+  // records nothing. Leaving the Community tab clears that memory (the
+  // capture-phase listener further down), so coming back counts as a new
+  // view, which is the honest reading of "viewed" and the only signal
+  // cloud.js can see without app.js telling it which top-level tab is up.
+  let lastClubTabView = null;
+  function resetClubTabView() { lastClubTabView = null; }
+  function noteClubTabView() {
+    if (!state.user || !state.profile) return;
+    const tab = state.communityTab || "feed";
+    if (lastClubTabView === tab) return;
+    lastClubTabView = tab;
+    track(A.CLUB_TAB_VIEWED, { tab });
+    // The feed and the boards are surfaces in their own right, measured
+    // separately from the tab that happens to contain them. Two different
+    // event names on one action is not double counting.
+    if (tab === "feed") track(A.FEED_VIEWED, { scope: state.feedScope, source: "club_tab" });
+    if (tab === "boards") {
+      // Only when there is one. An empty board is not a challenge view.
+      if (state.weeklyChallenge) {
+        track(A.CHALLENGE_VIEWED, { challenge_id: null, challenge_key: state.weeklyChallenge.comparisonKey || null, source: "boards" });
+      }
+      track(A.LEADERBOARD_VIEWED, { board: "weekly_challenge", rows: (state.weeklyLeaderboard || []).length, source: "boards" });
+    }
   }
 
   // A single in-app confirm dialog, replacing three different patterns
@@ -2608,6 +2697,11 @@
       const row = state.myAchievements.find((r) => r.id === a.memberAchievementId);
       if (row) row.shared_at = new Date().toISOString();
     }
+    // COMM-170. Sharing an achievement is a WCAM-qualifying action in its
+    // own right, which is why it is tracked here and not left to the
+    // POST_CREATED bridge below: the bus event records that a post exists,
+    // this records that a member chose to share a decoration.
+    track(A.ACHIEVEMENT_SHARED, { member_achievement_id: a.memberAchievementId, code: a.code || null, source: "unlock_sheet" });
     state.achUnlock = null;
     setMessage("העיטור שותף למועדון");
     if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.POST_CREATED) {
@@ -2662,6 +2756,11 @@
   async function viewCommunityProfile(userId) {
     if (!userId) return;
     state.openPostMenu = null;
+    // COMM-170. Counted on the open, not on the RPC answering: a member who
+    // opened a profile that then failed to load still opened it. The
+    // overlay is torn down and rebuilt on each open, so a re-render of an
+    // already-open profile does not reach this line.
+    track(A.PROFILE_OPENED, { user_id: userId, self: userId === (state.user && state.user.id) });
     state.profileView = { userId, loading: true, tab: "overview", data: null, error: false };
     rerender();
     const { data, error } = await client.rpc("community_profile", { user_id: userId });
@@ -3010,6 +3109,12 @@
     const row = c && c.rows.find((r) => r.id === id);
     if (!row) return;
     const target = resolveNotifTarget(row);
+    // COMM-170. Before the await, so a slow mark-read cannot lose the
+    // event, and once per row because the centre closes right after.
+    // was_unread reads the flag the fetch stamped, not read_at: opening
+    // the centre already marks every row it showed as seen, so read_at is
+    // false for everything by the time a member taps one.
+    track(A.NOTIFICATION_OPENED, { notification_id: id, type: row.type || null, target: target.tab || null, was_unread: !!row._wasUnread });
     await markNotifRead(id);
     closeNotifCenter();
     setCommunityTab(target.tab || "feed");
@@ -3496,6 +3601,12 @@
     // are no longer in the document.
     observeFeedImpressions();
     observeFeedSentinel();
+    // COMM-170. This hook is the only place cloud.js learns that the
+    // Community tab is actually on screen, so the club_tab_viewed event is
+    // recorded from here rather than from setCommunityTab - which also
+    // runs when a notification routes to a tab the member never looked at.
+    // noteClubTabView() de-dupes, so running on every render is harmless.
+    noteClubTabView();
     // COMM-141. Re-arm the own-row notification channel; setCommunityTab
     // tears every channel down, so this self-heals the same way the feed
     // observers above do.
@@ -3620,6 +3731,13 @@
     // TODO COMM-201: the challenge module is Phase 2. The shortcut lands on
     // the Boards sub-tab, which is where the active challenge lives today.
     else if (action === "open-active-challenge") setCommunityTab("boards");
+    // COMM-170. The challenge and event link cards (COMM-101) have no
+    // detail view to open until COMM-201 and COMM-217 land in Phase 2.
+    // The tap is still the member asking to see the item, which is what
+    // challenge_viewed and event_viewed measure, so `source` says where it
+    // came from and the Phase 2 detail surfaces will record their own.
+    else if (action === "open-challenge") track(A.CHALLENGE_VIEWED, { challenge_id: el.dataset.id || null, challenge_key: null, source: "post_card" });
+    else if (action === "open-event") track(A.EVENT_VIEWED, { event_id: el.dataset.id || null, source: "post_card" });
   };
   window.isCommunitySignedIn = function () { return !!(state.user && state.profile); };
   window.shareAchievementToCommunity = function (achievementId, title, rule) { publishAchievement(achievementId, title, rule); };
@@ -3647,6 +3765,15 @@
     else if (document.visibilityState === "visible" && state.user) loadNotifUnread();
   });
   window.addEventListener("focus", () => { if (state.user) loadNotifUnread(); });
+  // COMM-170. Leaving the Community tab ends the current club_tab_viewed,
+  // so returning to the same sub-tab later counts as a new view instead of
+  // being swallowed by the de-dupe. Capture phase, because app.js's own
+  // click handler re-renders and this has to have run first. It reads two
+  // stable ids and never touches the event.
+  document.addEventListener("click", (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest(".tabbtn") : null;
+    if (btn && btn.id !== "tabCommunityBtn") resetClubTabView();
+  }, true);
   window.addEventListener("pagehide", flushFeedImpressions);
   window.addEventListener("online", flushOutbox);
   window.addEventListener("haimunia-sync-needed", () => { flushOutbox(); pingActivity(); });
@@ -3654,6 +3781,9 @@
     client.auth.onAuthStateChange((_event, session) => {
       state.user = session ? session.user : null;
       if (state.user) {
+        // COMM-170. Same reason as refreshSession: configure before the
+        // first track(). Idempotent, so whichever path arrives first wins.
+        ensureAnalyticsConfigured();
         loadRedemption()
           .then(() => Promise.all([loadProfile(), loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), flushOutbox()]))
           .then(() => (isStaff() ? Promise.all([loadInactiveMembers(), loadNewMembers()]) : null))
@@ -3667,6 +3797,8 @@
         // COMM-114. Whatever the signed-out member had seen is written
         // before the session id is dropped, not discarded with it.
         flushFeedImpressions();
+        // COMM-170. The next session starts its own club_tab_viewed.
+        resetClubTabView();
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;

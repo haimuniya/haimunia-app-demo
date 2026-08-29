@@ -1148,25 +1148,38 @@ reaches another feature's internals to learn that something happened.
   text the client sends.
 - `SCHEMA_VERSION` is 1. Adding a prop is additive. Removing or renaming a
   prop, or changing what one means, bumps it.
-- `configure({ client, userId | getUserId, attachToBus })` hands the helper
-  a Supabase client and a way to read the current user id, and attaches the
-  bus bridge unless `attachToBus` is false. Nothing calls this in Phase 0,
-  so an unconfigured `track()` is an inert no-op that touches no network.
-  COMM-170 wires it.
+- `configure({ client, userId | getUserId, attachToBus, debug })` hands the
+  helper a Supabase client and a way to read the current user id, and
+  attaches the bus bridge unless `attachToBus` is false. An unconfigured
+  `track()` is an inert no-op that touches no network, which is why COMM-170
+  calls it at the head of the session-ready path in `cloud.js`
+  (`refreshSession` and `onAuthStateChange`) rather than the tail. `getUserId`
+  is a getter over `state.user`, so one call covers every later sign-out and
+  sign-in.
+- The dev switch: `window.HAIMUNIA_ANALYTICS_DEBUG = true`, or
+  `configure({ debug: true })`. Every event is logged to the console and
+  nothing is written. The global wins over the configure option so it can be
+  flipped on a device that is already running. `isDebug()` reports the state.
 - `BUS_EVENT_MAP` is the one-to-one product-event to analytics-name map:
   POST_CREATED, COMMENT_CREATED, REACTION_CREATED, CHALLENGE_JOINED,
   CHALLENGE_COMPLETED, EVENT_REGISTERED. WORKOUT_COMPLETED, PR_CREATED,
   MEMBER_JOINED, ACHIEVEMENT_UNLOCKED and ATTENDANCE_RECORDED are
   deliberately unmapped: completing a workout is not sharing one, and
   unlocking an achievement is not sharing it.
+- `BUS_PROP_KEYS` is the per-event prop allow-list the bridge projects each
+  payload through, with `projectBusPayload(productEvent, payload)` doing the
+  work. A bus payload is built for its consumers, not for this table, so a
+  key that is not on the list is dropped and an array prop is stored as its
+  length (`mentions` becomes `mention_count`). That is what keeps the props
+  shape a stable contract and keeps member-authored text out of analytics.
+  A feature agent never hand-tracks one of the six bridged names: the bridge
+  already wrote the row, and a second call would double count.
 - `ACTIVE_MEMBER_EVENTS` and `isActiveMemberEvent(name)` are the qualifying
-  subset for Weekly Community Active Members, spec section 78. The full
-  definition is documented at the top of `src/analytics.js`: a unique
-  member who in a calendar week posted, commented, reacted, joined a
-  challenge, participated in an event, shared an achievement, or interacted
-  with a coach or a community item. Passive views do not count.
-  `docs/community/metrics.md` is still to be written by planner and should
-  copy that definition rather than restate it.
+  subset for Weekly Community Active Members, spec section 78.
+- `docs/community/metrics.md` is the metrics contract: the WCAM definition,
+  every tracked event with its trigger surface and props, the core and
+  additional metrics, and what is deliberately unwired. A feature agent that
+  adds a surface adds its row there in the same change.
 
 ### window.HaimuniaRealtime, COMM-014
 

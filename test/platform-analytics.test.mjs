@@ -42,15 +42,22 @@ test("every tracked event name from spec section 77 is defined as a constant", a
   assert.strictEqual(typeof window.analyticsTrack, "function", "the flat helper alias must exist");
 });
 
-test("the Weekly Community Active Members definition is documented with the module", () => {
-  const src = fs.readFileSync(new URL("../src/analytics.js", import.meta.url), "utf8");
-  assert.match(src, /Weekly Community Active Members/);
-  assert.match(src, /spec section 78/);
+// COMM-170 moved the definition out of the module comment and into the
+// doc. The module keeps a one-line pointer, so the two cannot both exist
+// and disagree - which is the failure this test now guards.
+test("the Weekly Community Active Members definition is documented in docs/community/metrics.md", () => {
+  const doc = fs.readFileSync(new URL("../docs/community/metrics.md", import.meta.url), "utf8");
+  assert.match(doc, /Weekly Community Active Members/);
+  assert.match(doc, /section 78/);
   // The seven qualifying actions from the definition.
   for (const action of ["created a post", "created a comment", "added a reaction", "joined a challenge", "participated in an event", "shared an achievement", "interacted with a coach"]) {
-    assert.ok(src.includes(action), `the WCAM definition must name "${action}"`);
+    assert.ok(doc.includes(action), `the WCAM definition must name "${action}"`);
   }
-  assert.ok(src.includes("Passive views alone do not count"), "the definition must say what does NOT count");
+  assert.ok(doc.includes("Passive views alone do not count"), "the definition must say what does NOT count");
+
+  const src = fs.readFileSync(new URL("../src/analytics.js", import.meta.url), "utf8");
+  assert.ok(src.includes("docs/community/metrics.md"), "the module must point at the doc");
+  assert.ok(!src.includes("Passive views alone do not count"), "the definition must live in exactly one place, not two that can drift");
 });
 
 test("the active-member event set matches the WCAM definition and excludes passive views", async () => {
@@ -186,6 +193,71 @@ test("configuring twice does not double-track, and detach stops the bridge", asy
   bus.emit(bus.EVENTS.POST_CREATED, { post_id: "p2" });
   await new Promise((r) => setTimeout(r, 10));
   assert.strictEqual(mock.db.analytics_events.length, 1);
+});
+
+// COMM-170. The dev switch and the bus prop projection.
+
+test("the dev switch logs the event to the console and writes nothing", async () => {
+  const window = await bootApp();
+  const mock = createMockSupabase();
+  const logged = [];
+  window.console.log = (...args) => logged.push(args);
+  window.HaimuniaAnalytics.configure({ client: mock.client, userId: "user-1", debug: true });
+
+  assert.strictEqual(await window.analyticsTrack("feed_viewed", { scope: "for_you" }), true);
+  assert.strictEqual(mock.db.analytics_events, undefined, "debug mode must not write");
+  assert.strictEqual(logged.length, 1);
+  assert.match(logged[0][0], /feed_viewed/);
+  assert.deepStrictEqual(plain(logged[0][1].props), { scope: "for_you" });
+  assert.strictEqual(logged[0][1].user_id, "user-1");
+
+  // Flipping the global at runtime wins over what configure was given,
+  // which is what makes it usable from a console on a live device.
+  window.HAIMUNIA_ANALYTICS_DEBUG = false;
+  await window.analyticsTrack("feed_viewed", {});
+  assert.strictEqual(mock.db.analytics_events.length, 1, "turning it off resumes writing");
+  window.HAIMUNIA_ANALYTICS_DEBUG = true;
+  await window.analyticsTrack("feed_viewed", {});
+  assert.strictEqual(mock.db.analytics_events.length, 1, "turning it on stops writing again");
+});
+
+test("a bridged bus payload is projected onto the documented props, so a producer cannot widen the row", async () => {
+  const window = await bootApp();
+  const mock = createMockSupabase();
+  const bus = window.HaimuniaEvents;
+  window.HaimuniaAnalytics.configure({ client: mock.client, userId: "user-1" });
+
+  // A payload built for the notification consumer: it carries the author
+  // and the resolved mention objects, neither of which belongs in
+  // analytics.
+  bus.emit(bus.EVENTS.COMMENT_CREATED, {
+    post_id: "p1", comment_id: "c1", parent_comment_id: null,
+    author_id: "user-1",
+    mentions: [{ user_id: "user-2", name: "נועם" }, { user_id: "user-3", name: "דנה" }],
+  });
+  await new Promise((r) => setTimeout(r, 10));
+
+  const props = plain(mock.db.analytics_events[0].props);
+  assert.deepStrictEqual(props, { post_id: "p1", comment_id: "c1", mention_count: 2 });
+  assert.ok(!JSON.stringify(props).includes("נועם"), "member-authored text must never reach the table");
+
+  // A key no allow-list mentions is dropped, not stored.
+  bus.emit(bus.EVENTS.POST_CREATED, { post_id: "p2", post_type: "POST_TEXT", body: "the whole caption" });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepStrictEqual(plain(mock.db.analytics_events[1].props), { post_id: "p2", post_type: "POST_TEXT" });
+});
+
+test("every bridged event has a declared prop allow-list, so a new mapping cannot ship unprojected", async () => {
+  const window = await bootApp();
+  const a = window.HaimuniaAnalytics;
+  for (const productEvent of Object.keys(a.BUS_EVENT_MAP)) {
+    const keys = a.BUS_PROP_KEYS[productEvent];
+    assert.ok(Array.isArray(keys) && keys.length, `${productEvent} is bridged but has no BUS_PROP_KEYS entry`);
+  }
+  // An unmapped or unknown event projects to nothing rather than passing
+  // the payload through.
+  assert.deepStrictEqual(plain(a.projectBusPayload("WORKOUT_COMPLETED", { anything: 1 })), {});
+  assert.deepStrictEqual(plain(a.projectBusPayload("POST_CREATED", null)), {});
 });
 
 test("attachToBus:false configures the writer without the bridge", async () => {
