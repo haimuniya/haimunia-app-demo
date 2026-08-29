@@ -530,6 +530,43 @@ No new table. One new column and one new function.
 | community_profile(user_id uuid) | A fully private target (`visible_to_club` off) returns name, role, and member since and nothing else, and specifically no `posts`, `prs`, `achievements`, or counts. A target with `show_prs` off omits the `prs` key entirely rather than returning an empty array, and with it on and no PRs returns `[]`: hidden and empty must stay distinguishable. Same for `achievements`. A block edge in either direction raises `not authorized` rather than returning the header. A deleted target raises `profile not found`. The `posts` array never contains an only_me or friends post the caller cannot see, and `result_text` plus the numeric `metadata` keys are stripped when `show_workout_results` is off. An anonymous or signed-out caller raises. |
 | post_media.decorative | Defaults false, so every existing row is unchanged. An insert marked decorative with alt text stores a null `alt_text`, and so does an insert with whitespace-only alt text. Updating a row to decorative clears its alt text in the same statement. |
 
+### Post create (202608280023)
+
+No new table. One new function, `post_create(text, post_visibility, jsonb,
+jsonb)`, which closes the composer's end-to-end break.
+
+| Function | Boundary to assert |
+|---|---|
+| post_create(body, visibility, media, links) | A null caller raises `not authorized`; a caller without `community.post.create` raises `not authorized`; a member with a null `recovery_verified_at` raises `recovery method required`; a member with an active `posting_restrictions` row raises `posting_restricted`, and that check runs before the rate limit so a restricted member burns no budget; the 21st call in 10 minutes raises `rate_limited`. An empty body with empty `media` raises. A `media` array of 5 raises; each item needs a `storage_path`. A media `storage_path` whose first path segment is not the caller's uid is rejected by `enforce_post_media_ownership` and the whole call rolls back, post row included. A decorative item stores a null `alt_text` (the `post_media_normalize_alt` trigger). `post_type` is `POST_PHOTO` only when there is media and no text, else `POST_TEXT`. `visibility` round-trips `club`, `friends`, `only_me`. The row and its `post_media` rows either all land or none do. |
+
+### Reports target and status (202608280024)
+
+No new table. New columns on `reports`, a wider `reason` CHECK, a swapped
+unique key, and a new `report_status` label.
+
+| Column or constraint | Boundary to assert |
+|---|---|
+| reports.target_type, reports.target_id | `target_type` is `post` or `comment`; anything else fails the CHECK. `target_id` is NOT NULL. Every pre-existing row has `target_type = 'post'` and `target_id = post_id`. `post_id` is now nullable and a `comment` report written through `report()` leaves it null, which is what keeps `feed_page`'s reporter self-hide (keyed to `post_id`) from hiding the post a comment sits on. |
+| reports unique key | `(reporter_id, target_type, target_id)` is unique; the old `(reporter_id, post_id)` is gone. A second `report()` by the same reporter on the same target updates the row rather than inserting a second one. |
+| reports.review_note | Defaults `''`, capped at 500 chars, separate from `details` (the reporter's own note). |
+| report_status | `action_taken` is a valid label; `resolved` is still present and no row was remapped. |
+
+### Moderation reshape (202608280025)
+
+One new composite type `mod_queue_item`, and the functions `report`,
+`submit_report` (rewritten as a wrapper), `post_delete`, `comment_moderate`,
+`mod_queue`, `mod_review`, `admin_grant_coach(uuid, text)`, plus rewrites of
+`admin_grant_coach(uuid)` and `admin_revoke_coach`.
+
+| Function | Boundary to assert |
+|---|---|
+| report(p_target_type, p_target_id, p_reason, p_note) | Requires `is_community_member()`. Unknown `p_target_type` or `p_reason` raises. Rate limited at 10 per 10 minutes. A post target sets `post_id = target_id`; a comment target leaves `post_id` null. A duplicate by the same reporter on the same target refreshes `reason` and `details` and does not add a row or move the distinct-reporter count or reopen `status`. `submit_report(post_id, reason)` still resolves and routes here. |
+| post_delete(post_id) | The author always. A non-author only with `community.post.delete_any` OR `community.comment.moderate` OR real `is_admin`; anyone else raises. Sets `deleted_at` and status `removed`, idempotent on a second call. A moderator removal writes one `content_delete` audit row; an author removing their own post writes none. |
+| comment_moderate(p_comment_id, p_action) | Requires `community.comment.moderate` OR real `is_admin`. `remove` sets status `removed`, `deleted_at`, and `deleted_by = auth.uid()`; `restore` clears all three. An unknown action raises. Idempotent: a second `remove` returns before touching `deleted_by`, so it never overwrites a self-delete stamp and a self-delete never overwrites it. Each call writes one `content_delete` audit row, target_type `comment`. |
+| mod_queue(p_status, p_cursor, p_limit) | Requires `community.comment.moderate` OR real `is_admin`; a plain member raises `not authorized`. One row per `(target_type, target_id)`. `reporter_count` is distinct reporters, `reasons` is the distinct set, `status` is `open` if any report is open then `reviewing` then `dismissed` then `action_taken`. `p_status = 'all'` returns every group; `p_limit` clamps to 1..50. `reporters` jsonb carries `{id, name}` and is only ever returned here. |
+| mod_review(p_report_id, p_decision, p_note, p_expires_at) | Requires `community.comment.moderate` OR real `is_admin`. `remove` on a post routes through `post_delete`, on a comment through `comment_moderate('remove')`, so a remove leaves two audit rows (`content_delete` + `report_review`). `restrict_temp` / `restrict_permanent` route through `mod_restrict_member` against the content author, which itself needs `community.member.restrict`, so a `comment.moderate`-only caller can pick them and the call then raises. Every decision stamps every `reports` row for the target with `reviewed_by`, `reviewed_at`, `review_note`, sets `status` to `dismissed` for `dismiss` and `action_taken` otherwise, and writes one `report_review` audit row (`before {status}`, `after {status, decision}`). `p_expires_at` is read only for `restrict_temp`. |
+| admin_grant_coach(uuid, text) / admin_grant_coach(uuid) / admin_revoke_coach(uuid) | Real `is_admin` inline. The two-argument form takes `p_role` in `coach` or `head_coach` only; `staff`, `owner`, or anything else raises. The one-argument form still resolves (no default on the two-argument `p_role`, so `admin_grant_coach(uuid)` is not ambiguous) and grants `coach`. Every grant and revoke writes one `role_change` audit row, target_type `member`, `before {role: <prior>}`, `after {role: <new>}`. A revoke of someone already `member` writes nothing. |
+
 ## Open questions for the user
 
 Logged by planner while writing tickets.

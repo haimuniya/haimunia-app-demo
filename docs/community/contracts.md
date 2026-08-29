@@ -188,20 +188,33 @@ client was already built against.
 
 ### post_create(body text, visibility post_visibility, media jsonb, links jsonb) returns uuid
 
-- Status: not built. The client (COMM-102, COMM-103) calls it. No migration
-  creates it yet, so publishing from the composer fails end to end until it
-  lands. It is the largest remaining posts gap.
+- Shipped in 202608280023. The client (COMM-102, COMM-103) calls it with all
+  four params by name (`body`, `visibility`, `media`, `links`), so the
+  signature has no defaults.
 - Purpose: create a POST_TEXT or POST_PHOTO post with optional media and
   source links, one consistent write path.
-- Params: `body` up to 1000 chars. `media` up to 4 {storage_path, alt_text,
-  decorative, position, width, height}. `decorative` is a boolean and is
-  passed straight through to `post_media.decorative` (202608280022). The
-  `post_media_normalize_alt` trigger owns the alt-text rule, so the function
-  does not have to reconcile a decorative item that still carries alt text.
-  `links` optional {workout_id, achievement_id, event_id}.
+- Params: `body` control chars stripped (tab and newline kept), trimmed, then
+  capped at 1000. `visibility` a `post_visibility` label, defaulting to `club`
+  when null. `media` up to 4 {storage_path, alt_text, decorative, position,
+  width, height}; over 4 raises, an item with no `storage_path` raises.
+  `decorative` is passed straight through to `post_media.decorative`
+  (202608280022); the `post_media_normalize_alt` trigger owns the alt-text
+  rule, so the function does not reconcile a decorative item that still
+  carries alt text, and `position` defaults to the array index. `links`
+  optional {workout_id, achievement_id, event_id}; the present keys are merged
+  into `metadata` as top-level ids.
+- `post_type` is `POST_PHOTO` only when there is media and no text, otherwise
+  `POST_TEXT`, matching the client's optimistic rule.
 - Returns: the new post id.
-- Auth: caller has `community.post.create` and no active posting restriction.
-- Side effects: inserts posts and post_media, emits POST_CREATED.
+- Auth: security definer. Raises `not authorized` for a null caller or one
+  without `community.post.create`, `recovery method required` when not
+  `is_community_member()`, `posting_restricted` under an active restriction,
+  `rate_limited` past 20 calls per 10 minutes under the `post_create` key.
+  Empty body with no media raises.
+- Side effects: one `workout_posts` row plus one `post_media` row per media
+  item, in one transaction. `POST_CREATED` is emitted by the client after this
+  returns (there is no server event bus), the same way `COMMENT_CREATED` and
+  `REACTION_CREATED` are.
 
 ### post_set_visibility(post_id uuid, visibility post_visibility) returns void
 
@@ -214,8 +227,17 @@ client was already built against.
 
 ### post_delete(post_id uuid) returns void
 
-- Auth: author or `community.post.delete_any`. Sets `deleted_at`, status
-  removed. Writes admin_actions when done by a moderator.
+- Shipped in 202608280025. The client's own-post menu (COMM-108) and
+  `mod_review`'s `remove` decision both call it.
+- Auth: security definer. The author always. A moderator when they hold
+  `community.post.delete_any` OR `community.comment.moderate` OR real
+  `is_admin`. The `community.comment.moderate` branch is wider than the
+  original "author or `community.post.delete_any`" line, on purpose: every
+  queue action routes through `mod_review`, so a coach who can see a reported
+  post has to be able to remove it.
+- Side effects: sets `deleted_at` and status `removed`. Idempotent on an
+  already-removed post. A moderator removal writes one `content_delete`
+  `admin_actions` row; an author removing their own post writes none.
 
 ### post_hide(post_id uuid) returns void
 
@@ -940,33 +962,74 @@ The single split, so the trigger set and the client `notifRoute()` agree.
 
 ## Moderation and admin
 
-### report(target_type text, target_id uuid, reason text, note text) returns void
+### report(p_target_type text, p_target_id uuid, p_reason text, p_note text) returns void
 
+- Shipped in 202608280025. Supersedes `submit_report(p_post_id, p_reason)`,
+  which stays as a thin wrapper. The client calls this by name with all four
+  params, so the signature has no defaults.
 - Purpose: file a report on a post or comment.
-- Params: `target_type` post or comment. `reason` one of harassment, spam,
-  inappropriate, privacy, unsafe_advice, other. `note` up to 500 chars.
-- Auth: any member. Duplicate reports by the same member on the same target
-  collapse, reporter count increments once per unique reporter.
+- Params: `p_target_type` `post` or `comment`, an unknown value raises.
+  `p_reason` one of harassment, spam, inappropriate, privacy, unsafe_advice,
+  other, an unknown value raises. `p_note` trimmed to 500 chars, may be empty,
+  stored in `reports.details`.
+- Auth: security definer, requires `is_community_member()`. Rate limited at 10
+  per 10 minutes under the `report` key. Grant execute to `authenticated`.
+- Side effects: one `reports` row. For a `post` target `post_id` is set equal
+  to `target_id`; a `comment` target leaves `post_id` null. A duplicate by the
+  same reporter on the same target collapses on the unique
+  `(reporter_id, target_type, target_id)`, refreshing `reason` and `details`
+  without moving the distinct-reporter count and without reopening `status`.
+- The client also records `feed_record_interaction(p_target_id, 'hide')` when
+  the target is a post (COMM-151). A comment records nothing.
 
-### mod_queue(status text, cursor timestamptz, limit int) returns setof mod_queue_item
+### mod_queue(p_status text, p_cursor timestamptz, p_limit int) returns setof mod_queue_item
 
-- Purpose: the moderation review queue.
-- Params: `status` open, reviewing, action_taken, dismissed, or all.
-- Auth: `community.comment.moderate` or real `is_admin`. `limit` capped at
-  50. Reporter identities visible to the reviewer only.
+- Shipped in 202608280025, with the composite type `public.mod_queue_item`
+  (`report_id uuid, target_type text, target_id uuid, content_excerpt text,
+  content_author_id uuid, content_author_name text, reporter_count integer,
+  reasons text[], latest_reason text, note text, status text, created_at
+  timestamptz, reporters jsonb`).
+- Purpose: the moderation review queue, one row per reported item, grouped by
+  `(target_type, target_id)`.
+- Params: `p_status` open, reviewing, action_taken, dismissed, or all.
+  `p_limit` clamped to 1..50. `p_cursor` pages by the group's earliest
+  `created_at`.
+- `report_id` is the earliest report in the group, a stable id for it.
+  `status` is the group status: open if any report is open, else reviewing,
+  else dismissed, else action_taken. `note` is the most recent non-empty
+  reporter note. `content_excerpt` is the post or comment body, first 240
+  chars, empty when the content is gone. `reporters` is `[{id, name}]`.
+- Auth: security definer, requires `has_perm('community.comment.moderate')` OR
+  real `is_admin`. Grant execute to `authenticated`; the permission check
+  inside is the gate. Reporter identities are only ever returned here.
 
-### mod_review(report_id uuid, decision text, note text) returns void
+### mod_review(p_report_id uuid, p_decision text, p_note text, p_expires_at timestamptz default null) returns void
 
+- Shipped in 202608280025. Four-argument. `p_expires_at` is read only for
+  `p_decision = 'restrict_temp'`; every other decision ignores it. The client
+  sends it only for `restrict_temp`.
 - Purpose: record a trusted status transition and apply the decision.
-- Params: `decision` one of remove, warn, restrict_temp, restrict_permanent,
-  dismiss. `note` up to 500 chars.
-- Auth: real `is_admin`. Writes reviewer id and timestamp.
-- Side effects: sets content status, calls `mod_restrict_member` for a
-  `restrict_temp` or `restrict_permanent` decision, calls `log_admin_action`
-  with before and after.
-- Note: `posting_restrictions` has no write grant, so `mod_review` cannot
-  insert into it directly. It calls `mod_restrict_member` below, which
-  writes its own audit row.
+- Params: `p_decision` one of remove, warn, restrict_temp, restrict_permanent,
+  dismiss. `p_note` up to 500 chars.
+- Auth: security definer, `has_perm('community.comment.moderate')` OR real
+  `is_admin`, matching `mod_queue`. Grant execute to `authenticated`.
+- Side effects, per decision:
+  - `remove`: a post target calls `post_delete(target_id)`, a comment target
+    calls `comment_moderate(target_id, 'remove')`. Each writes its own
+    `content_delete` `admin_actions` row, so a remove leaves two audit rows.
+  - `restrict_temp` / `restrict_permanent`: calls
+    `mod_restrict_member(content_author_id, 'temporary' | 'permanent',
+    p_expires_at | null, p_note, p_report_id)`, which writes its own
+    `member_restrict` row. Raises if the content author is gone. Note the
+    restrict decisions need `community.member.restrict`, which a
+    `community.comment.moderate`-only role does not hold, so a coach can pick
+    them but the call raises.
+  - `warn`, `dismiss`: no content or member change.
+- Every decision stamps every `reports` row for `(target_type, target_id)`
+  with `reviewed_by`, `reviewed_at`, `review_note = left(p_note, 500)`, sets
+  `status` to `dismissed` for `dismiss` and `action_taken` otherwise, and
+  writes one `report_review` `admin_actions` row with `before_data` `{status}`
+  and `after_data` `{status, decision}`.
 
 ### mod_restrict_member(p_user uuid, p_type text, p_expires_at timestamptz, p_reason text, p_report_id uuid) returns uuid
 
@@ -1067,141 +1130,79 @@ The single split, so the trigger set and the client `notifRoute()` agree.
 
 ## Needs from schema, admin-moderation
 
-Functions, columns and policy edits the admin-moderation cluster (COMM-150 to
-COMM-156) calls or relies on and that schema still owns. No migration is
-written here. The client is built against these signatures and
-`test/helpers/mockSupabase.mjs` registers a stand-in for each so
-`npm test` passes. `has_perm`, `my_permissions`, `my_role_code`,
-`log_admin_action`, `admin_actions_page`, `mod_restrict_member`,
-`mod_lift_restriction`, `is_posting_restricted`, `pin_set` and `pin_clear`
-are already shipped and are used as documented above.
+Shipped by schema in 202608280024 and 202608280025. The admin-moderation
+cluster (COMM-150 to COMM-156) is now fully backed. `has_perm`,
+`my_permissions`, `my_role_code`, `log_admin_action`, `admin_actions_page`,
+`mod_restrict_member`, `mod_lift_restriction`, `is_posting_restricted`,
+`pin_set` and `pin_clear` were already shipped and are used as documented
+above. `report`, `mod_queue`, `mod_review`, `post_delete` and
+`comment_moderate` are documented under "Moderation and admin" and "Posts";
+this section records the table and enum changes and the two remaining notes.
 
-### report(p_target_type text, p_target_id uuid, p_reason text, p_note text) returns void
+### reports table changes (202608280024)
 
-- Needed from schema, not built yet. Supersedes `submit_report(p_post_id
-  uuid, p_reason text)` (202608270010), which stays as a wrapper so the
-  current two-argument call keeps working, same pattern as
-  `add_post_comment` and `redeem_invite_code`.
-- Client RPC name is `report`, params `p_target_type`, `p_target_id`,
-  `p_reason`, `p_note`. `p_target_type` one of `post`, `comment`.
-  `p_reason` one of `harassment`, `spam`, `inappropriate`, `privacy`,
-  `unsafe_advice`, `other`. `p_note` trimmed to 500 chars, may be empty.
-- Auth: security definer, requires `is_community_member()`. Rate limited the
-  same way `submit_report` is today. Grant execute to `authenticated`.
-- Side effects: inserts one `reports` row. A duplicate by the same reporter
-  on the same target collapses on a unique `(reporter_id, target_type,
-  target_id)` constraint, refreshing `reason` and `note` without moving the
-  reporter count.
-- The client also records a `feed_interactions` row via
-  `feed_record_interaction(p_post_id, 'hide')` when the target is a post,
-  per COMM-151. A comment records nothing.
+- `target_type text not null default 'post'` with a CHECK of `post`,
+  `comment`, and `target_id uuid not null` (backfilled from `post_id` for the
+  existing rows). `post_id` loses its NOT NULL and stays populated for a
+  `post` target (equal to `target_id`); a `comment` target leaves it null.
+- The `reason` CHECK gains `unsafe_advice`.
+- Unique `(reporter_id, target_type, target_id)` replaces the old
+  `(reporter_id, post_id)`.
+- `review_note text not null default ''` (<= 500 chars) for the reviewer note
+  `mod_review` writes. It is separate from `details`, which is the reporter's
+  own note that `report()` writes.
+- `report_status` gains `action_taken`. `resolved` stays in the enum for the
+  older `review_report` path and no row was remapped.
+- The `posts_feed_select` policy edit in the old draft does not apply: that
+  policy carries no reports predicate (it was rebuilt without one in
+  202608280005). The reporter self-hide lives in `feed_page` (202608280019)
+  and the two legacy feed views, all keyed to `reports.post_id`, and because
+  `post_id` stays populated for a post report and null for a comment report,
+  they keep working with no change - a comment report correctly does not hide
+  the post it sits on.
 
-### reports table changes
+### submit_report(p_post_id uuid, p_reason text default 'inappropriate') returns void
 
-- Add `target_type text not null default 'post'` with a CHECK of `post`,
-  `comment`, and `target_id uuid`. `post_id` stays for the existing rows and
-  the existing foreign-key embed; new rows set `target_id` (equal to
-  `post_id` for a post).
-- Extend the `reason` CHECK with `unsafe_advice`.
-- Unique `(reporter_id, target_type, target_id)` replacing the current
-  unique `(reporter_id, post_id)`.
-- Add `review_note text not null default ''` (<= 500 chars) for the
-  reviewer note `mod_review` writes.
-- Contract mismatch to resolve: `report_status` (202608260001) is
-  `open`, `reviewing`, `resolved`, `dismissed`. COMM-152 and the client use
-  `action_taken` for a report that had a decision applied. Either add
-  `action_taken` to the enum (recommended) or map `resolved` to it on the
-  read side. The client renders `action_taken`.
-- Policy edit: the `posts_feed_select` self-hide predicate in 202608260001
-  reads `rp.post_id = p.id and rp.reporter_id = auth.uid()`. With the new
-  shape it should read `rp.target_type = 'post' and rp.target_id = p.id and
-  rp.reporter_id = auth.uid()` so reporting a post still drops it from the
-  reporter's own feed.
-
-### mod_queue(p_status text, p_cursor timestamptz, p_limit int) returns setof mod_queue_item
-
-- Needed from schema, not built yet.
-- `p_status` one of `open`, `reviewing`, `action_taken`, `dismissed`,
-  `all`. `p_limit` clamped to 1..50.
-- Auth: security definer. Requires `has_perm('community.comment.moderate')`
-  OR real `is_admin` (the `profiles.is_admin` column, matching the
-  `posts_select_admin_review` bypass). Returns nothing for anyone else.
-- Groups the raw `reports` rows by `(target_type, target_id)` and returns
-  one row per reported item. `mod_queue_item` composite the client reads:
-  `report_id uuid` (a stable id for the group, the earliest report is
-  fine), `target_type text`, `target_id uuid`, `content_excerpt text` (the
-  post body or comment body, first ~240 chars, empty when the content is
-  already gone), `content_author_id uuid`, `content_author_name text`,
-  `reporter_count int` (distinct reporters), `reasons text[]` (distinct
-  reasons across the group), `latest_reason text`, `note text` (the most
-  recent non-empty reporter note), `status text` (the group status: `open`
-  if any report is open, else `reviewing`, else `dismissed`, else
-  `action_taken`), `created_at timestamptz` (earliest report), `reporters
-  jsonb` (`[{id, name}]`, visible to the reviewer only).
-- Grant execute to `authenticated`; the permission check inside is the real
-  gate.
-
-### mod_review(p_report_id uuid, p_decision text, p_note text, p_expires_at timestamptz default null) returns void
-
-- Extension of the documented three-argument `mod_review`. `p_expires_at` is
-  new and is read only for `p_decision = 'restrict_temp'`; every other
-  decision ignores it. The client sends it only for `restrict_temp`.
-- `p_decision` one of `remove`, `warn`, `restrict_temp`,
-  `restrict_permanent`, `dismiss`.
-- Contract mismatch to resolve: the current text says "Auth: real
-  `is_admin`". COMM-152/153 make the queue visible to a
-  `community.comment.moderate` holder and require every queue action to
-  route through `mod_review`, so a head_coach that can see the queue cannot
-  act on it under that rule. Recommend `mod_review` accept
-  `has_perm('community.comment.moderate')` OR real `is_admin`, matching
-  `mod_queue`.
-- Side effects, per decision:
-  - `remove`: for a post target, `perform public.post_delete(target_id)` as
-    a moderator (which already sets `deleted_at`, status `removed`, and
-    writes its own `content_delete` `admin_actions` row). For a comment
-    target, `perform public.comment_moderate(target_id, 'remove')` (below).
-  - `restrict_temp` / `restrict_permanent`: `perform
-    public.mod_restrict_member(content_author_id, 'temporary' |
-    'permanent', p_expires_at, p_note, p_report_id)`, which writes its own
-    `member_restrict` `admin_actions` row.
-  - `warn`, `dismiss`: no content or member change.
-- Every decision, including `warn` and `dismiss`, stamps the matching
-  `reports` rows with `reviewed_by = auth.uid()`, `reviewed_at = now()`,
-  `review_note = left(p_note, 500)`, sets `status` to `dismissed` for
-  `dismiss` and `action_taken` otherwise, and writes one `report_review`
-  `admin_actions` row with `before_data` `{status}` and `after_data`
-  `{status, decision}`.
+- Rewritten in 202608280025 as a thin wrapper that calls
+  `report('post', p_post_id, p_reason, '')`, so the old two-argument shape
+  keeps resolving. `cloud.js` no longer calls it.
 
 ### comment_moderate(p_comment_id uuid, p_action text) returns void
 
-- Needed from schema, not built yet. The comment equivalent of a moderator
+- Shipped in 202608280025. The comment equivalent of a moderator
   `post_delete`. `post_comments` has no UPDATE grant, so this is the only
   moderator path to a comment's `status`.
-- `p_action` one of `remove`, `restore`.
-- Auth: security definer. Requires `has_perm('community.comment.moderate')`
-  OR real `is_admin`. Grant execute to `authenticated`.
-- Side effects: `remove` sets `status = 'removed'` and `deleted_at = now()`;
-  `restore` clears both. Writes one `content_delete` `admin_actions` row
-  (target_type `comment`) with the before and after status. Idempotent.
+- `p_action` one of `remove`, `restore`, an unknown value raises.
+- Auth: security definer. `has_perm('community.comment.moderate')` OR real
+  `is_admin`. Grant execute to `authenticated`.
+- Side effects: `remove` sets `status = 'removed'`, `deleted_at = now()`, and
+  `deleted_by = auth.uid()` (the mirror of `comment_delete` stamping the
+  author); `restore` clears all three. Each writes one `content_delete`
+  `admin_actions` row (target_type `comment`) with before and after status.
+  Idempotent: an already-removed comment returns before touching `deleted_by`,
+  so a moderator removal is never overwritten by a later restore-then-remove
+  race, and vice versa.
 - In Phase 1 the client calls this only through `mod_review`'s `remove`
-  decision, never directly, so no new comment-thread UI is added.
+  decision on a comment target, never directly.
 
-### admin_grant_coach(p_user_id uuid, p_role text default 'coach') returns void
+### admin_grant_coach(p_user_id uuid, p_role text) returns void
 
-- Extension of the shipped `admin_grant_coach(p_user_id uuid)` from
-  202608270011. The one-argument form stays and keeps its exact behaviour
-  (grant `coach`). The two-argument form accepts `p_role` in `coach` and
-  `head_coach` only for Phase 1; `staff` and `owner` raise.
+- Shipped in 202608280025. `p_role` carries no default: a default would make
+  `admin_grant_coach(uuid)` ambiguous against the one-argument overload and
+  every one-argument call would fail. The one-argument
+  `admin_grant_coach(p_user_id)` from 202608270011 stays as the "grant coach"
+  shorthand and now delegates here, so it audits too. The two-argument form
+  accepts `p_role` in `coach` and `head_coach` only; `staff`, `owner`, and any
+  other value raise.
 - Auth unchanged: real `is_admin` inline, not `is_staff()`.
-- New side effect COMM-154 requires: write one `role_change`
-  `admin_actions` row with `before_data` `{role}` (the prior
-  `invite_redemptions.role`) and `after_data` `{role}`. `admin_revoke_coach`
-  should write the same, `after_data` `{role: 'member'}`. Neither audits
-  today.
-- Seed the `head_coach` -> permission mapping. Already present in
-  202608280001 `role_permissions`: `head_coach` holds the coach set plus
-  `community.post.delete_any`, `community.member.restrict`,
-  `community.content.pin`. Nothing to add there.
+- Side effect (COMM-154): one `role_change` `admin_actions` row, target_type
+  `member`, `before_data` `{role: <prior invite_redemptions.role>}`,
+  `after_data` `{role: <granted>}`. `admin_revoke_coach` was rewritten the
+  same way, `after_data` `{role: 'member'}`, and returns without an audit row
+  when the target was already `member` or had no redemption.
+- The `head_coach` -> permission mapping is already in 202608280001
+  `role_permissions` (coach set plus `community.post.delete_any`,
+  `community.member.restrict`, `community.content.pin`). Nothing to add.
 
 ### my_permissions() returns setof text
 
