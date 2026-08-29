@@ -46,6 +46,14 @@ and when.
 
 - `posting_restrictions` table, `mod_review` extended to handle restrictions
   and to call `log_admin_action`. schema lands it.
+- `posting_restrictions` landed in 202608280015 with a select policy and no
+  write grant. `mod_review` cannot insert into it directly and should call
+  `mod_restrict_member()` or `mod_lift_restriction()`, which check
+  `community.member.restrict` and write their own `admin_actions` row.
+  Enforcement is live already: `posts_insert_self` and `add_post_comment`
+  both refuse a restricted member, and `comment_edit` does too, so an old
+  comment cannot be rewritten into new content. `post_comments` gained a
+  `status` column in 202608280016 for the remove-content decision.
 
 ## Dependencies
 

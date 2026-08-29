@@ -42,6 +42,15 @@ Staff can keep up to three important items at the top of the club surface.
 - `pins` table with a row-count trigger and RLS keyed to
   `community.content.pin`. schema lands it. Phase 0 schema list omitted
   `pins`, logged in backlog open questions.
+- Landed in 202608280017. One change from the outline: the cap of 3 is a
+  `slot` column bounded to 0 through 2 with a unique `(club_id, slot)`
+  rather than a row-count trigger, because a counting trigger reads a
+  snapshot and two concurrent pins can both see 2. `slot` doubles as the
+  display order of the pinned strip. Read is open to every member, and there
+  is no write grant at all: `pin_set(p_target_type, p_target_id, p_note)`
+  and `pin_clear(p_target_type, p_target_id)` check `community.content.pin`
+  and write `admin_actions` in the same transaction. Auto-unpin on a
+  deleted, removed, cancelled, or archived target is already wired.
 
 ## Dependencies
 

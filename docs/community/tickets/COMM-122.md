@@ -41,6 +41,13 @@ A member can fix a typo in their comment or remove it.
 ## Migration outline
 
 - `comments` gains `edited_at timestamptz null`. schema lands it.
+- Landed in 202608280016. `post_comments` gained `edited_at`, `deleted_at`,
+  and `status` (the `post_status` enum posts already use).
+  `comment_edit(p_comment_id, p_body)` is the only edit path and always
+  stamps `edited_at`. The "comment removed" placeholder needs no removed row
+  on the wire: a reply carries `parent_comment_id`, so an absent parent is
+  the signal. `deleteComment` still hard deletes under the unchanged
+  author-only policy, switching it to the soft path needs no migration.
 
 ## Dependencies
 

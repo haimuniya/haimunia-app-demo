@@ -52,7 +52,68 @@ writing against any of the tables below.
   `hidden_posts`, `saved_posts`, `pins`, `posting_restrictions`,
   `notification_batches`, and the `parent_comment_id` plus `edited_at`
   columns on comments. Each lands as a small migration at the start of its
-  owning Phase 1 ticket.
+  owning Phase 1 ticket. All of them shipped in 202608280014 through
+  202608280018, see "Phase 1 schema notes" below.
+
+## Phase 1 schema notes
+
+Landed by schema in 202608280014 through 202608280018. Five small
+migrations, one per concern, closing the list Phase 0 deferred. Read these
+before writing against any of the tables below.
+
+- The comments table is `public.post_comments`. Tickets call it `comments`,
+  the same way they call `workout_posts` `posts`. It was not renamed, for
+  the same reason.
+- Comment reply depth is capped at 2 by the `post_comments_depth` trigger,
+  not by a CHECK, because a CHECK cannot see another row. The trigger closes
+  both directions. A reply cannot be given a parent that already has a
+  parent, and a comment that already has replies cannot itself become a
+  reply. Without the second rule a depth-3 thread is one UPDATE away.
+- `post_comments.parent_comment_id` is `on delete set null`, not cascade. A
+  hard delete of a parent flattens its replies to top level rather than
+  destroying other members' content. The intended removal path is the soft
+  one, `status` plus `deleted_at`.
+- The comment body limit widened from 280 to 1000, matching the post body
+  limit and what COMM-121 and COMM-122 both specify. Widening only ever
+  accepts more rows, so nothing already stored was invalidated.
+- A removed or soft-deleted comment is not readable by anyone but its author
+  and a `community.comment.moderate` holder. The "comment removed"
+  placeholder does not need the row: a reply carries `parent_comment_id`, so
+  a client holding a reply whose parent is absent from the same page knows
+  to render the placeholder. No removed text crosses the wire.
+- A posting restriction is applied to post creation and comment creation
+  only. It is deliberately not folded into `is_community_member()`, which
+  also gates challenge joins, event RSVPs, reactions, and post_media. A
+  restriction is a speech sanction, not an expulsion.
+- `posting_restrictions` and `pins` have a select policy and no write grant
+  at all. Every write goes through a security definer function that checks
+  the permission and calls `log_admin_action()` in the same transaction.
+  That is what makes the COMM-153 and COMM-155 audit requirement a property
+  of the schema rather than of whichever client made the call.
+- The `pins` cap of 3 is a `slot` column bounded to 0 through 2 with a
+  unique `(club_id, slot)`, not a counting trigger. COMM-155 says trigger.
+  This is the version of that intent that survives concurrency, the same
+  reasoning `post_media` used for its 0 through 3 position cap. `slot`
+  doubles as the display order of the pinned strip.
+- `pins.target_id` has no foreign key, because it points at one of four
+  tables. Existence and pinnability are checked on write by
+  `enforce_pin_target()`, and eight `unpin_target()` triggers do the job a
+  cascade would have done plus the soft-delete and status cases a foreign
+  key cannot see.
+- `notification_batches` holds counters only. It is not a second
+  notification stream. Own-row read, no write grant, so a member cannot set
+  their own `next_flush_at` to now and turn the batched channel back into a
+  stream of pings.
+- `hidden_posts` and `saved_posts` are strictly own-row on all verbs. There
+  is no count and no aggregate anywhere. Knowing who muted you is exactly
+  the signal a hide feature must never leak back to the author.
+- Open point for identity-privacy: `hidden_posts_self_insert` carries
+  `is_community_member()`, so an account that has not set a recovery method
+  cannot mute a post even though the row it would write is invisible to
+  everyone but itself. The gate is there because the standing rule says
+  member write paths keep it. If muting should be available earlier,
+  dropping the predicate from that one policy is a one-line later migration
+  and changes no other boundary.
 
 ## Feed
 
@@ -122,14 +183,25 @@ writing against any of the tables below.
 
 ### post_hide(post_id uuid) returns void
 
+- Not a function. Superseded by a direct RLS write in 202608280014.
 - Purpose: hide a post from the caller's feed only.
-- Auth: any member. Side effects: inserts into `hidden_posts`. feed_page
-  filters these out.
+- Path: insert `{user_id: <self>, post_id}` into `hidden_posts`, delete the
+  same row to unhide. Primary key `(user_id, post_id)` makes a repeat hide
+  a conflict rather than a duplicate.
+- Auth: own-row select, insert, and delete. Insert also requires
+  `is_community_member()` and `post_visible_to_viewer(post_id)`, so a member
+  cannot seed a row for a post they were never allowed to see and use it as
+  an existence oracle. No update grant, since the only meaningful edit is
+  deleting the row.
+- Side effects: feed_page filters these out, COMM-110.
 
 ### post_save(post_id uuid) returns boolean
 
-- Purpose: toggle a personal bookmark. Returns the new saved state.
-- Auth: any member. Side effects: inserts or deletes a `saved_posts` row.
+- Not a function. Superseded by a direct RLS write in 202608280014.
+- Purpose: toggle a personal bookmark.
+- Path: insert or delete a `saved_posts` row, same shape and same policy set
+  as `hidden_posts`. The client owns the toggle, the table has no state
+  beyond the row existing.
 
 ### pr_share(record_id uuid, note text, media jsonb) returns uuid
 
@@ -143,6 +215,66 @@ writing against any of the tables below.
   `can_view_profile_field` against the caller.
 - Auth: any member. A fully private target returns name, role, member since
   only.
+- Client shape consumed by COMM-180 `renderCommunityProfileOverlay`. Every key
+  is optional and an absent key means the field is hidden, so the client omits
+  it rather than rendering a blank. Read keys: `first_name`, `last_name`,
+  `display_name`, `handle`, `role`, `member_since`, `allow_follows`,
+  `follower_count`, `following_count`, `training_frequency`, `current_streak`,
+  `active_challenge` (`{title}` or a string), `recent_achievement` (`{title}`
+  or a string), `recent_workouts` (`[{title|name, date|occurred_on}]`), `prs`
+  (`[{movement|title, result|value}]`, a missing key hides the Progress tab,
+  an empty array shows the no-PRs state), `achievements`
+  (`[{title, badge_icon}]`, same missing versus empty rule), `posts` (an array
+  of the card contract below).
+
+## Client card contract (renderPostCard)
+
+`window.renderPostCard(post)` is owned by posts (COMM-101) and consumed by
+feed (COMM-110) and engagement (COMM-120 to 125). It returns an HTML string
+for one feed card and never throws. `window.renderPostCardSkeleton()` returns
+the loading placeholder.
+
+Each `post` row the feed passes in carries:
+
+- `id` text, `post_type` one of the twelve labels, `author_id` uuid or null
+  for authorless system, new member, announcement and coach club posts.
+- `author` `{display_name, handle, avatar_url}` when known. The legacy flat
+  `display_name` and `handle` on the row are read as a fallback.
+- `created_at` or `published_at` for the timestamp. `body` the caption or
+  text, capped at 1000 on render. `visibility` one of club, friends,
+  only_me, with public and followers read as legacy aliases.
+- `media` `[{url | storage_path, alt_text, decorative, position, width,
+  height}]`, up to 4. A `storage_path` with no `url` is resolved through the
+  existing signed-url cache.
+- `reaction_count` and `comment_count` integers. `reaction_count` falls back
+  to the legacy `cheer_count`.
+- `metadata` a per-type object. POST_WORKOUT: `workout_name`, `workout_date`,
+  `result_text`, `score_type`, `effort` (rx, scaled, level), `level`,
+  `is_pr`, `source_type`, `source_id`. POST_PR: `movement`, `new_result`,
+  `previous_result`, `improvement`, `achieved_on`. POST_ACHIEVEMENT:
+  `title`, `badge_icon`, `earned_on`, `explanation`. POST_CHALLENGE:
+  `challenge_title`, `challenge_id`. POST_EVENT: `event_title`, `event_id`,
+  `starts_at`. POST_ANNOUNCEMENT: `title`. POST_NEW_MEMBER: `member_id`,
+  `member_name`, `joined_on`. POST_ATTENDANCE_MILESTONE: `milestone_label`,
+  `count` (parked, never produced yet).
+
+Markup feed and engagement can rely on:
+
+- Root is `<article class="chart-card post-card" data-post-type="..."
+  data-post-id="...">`. An unknown type adds `data-post-unknown="1"` and a
+  failed render is `<article class="chart-card post-card"
+  data-post-error="1">`.
+- The engagement bar is `<div class="chip-row post-actions">` with
+  `data-community-action="cheer"` and `data-community-action="toggle-comments"`
+  each carrying `data-id="<post id>"`. POST_SYSTEM omits the bar entirely.
+- The comment thread slot is the existing `renderComments(post)` output,
+  appended inside the article, keyed on `state.openComments[post.id]`.
+- The action menu trigger is `data-community-action="toggle-post-menu"` in the
+  card head. Own post items: `post-edit-caption`, `post-change-visibility`,
+  `post-delete`. Other: `post-save`, `post-hide`, `report`, `block`. `report`
+  and `post-*` carry the post id, `block` carries the author id.
+- `post_hide` and `post_save` are direct RLS writes to `hidden_posts` and
+  `saved_posts` with the row shape `{user_id, post_id}`, toggled by presence.
 
 ## Achievements
 
@@ -182,12 +314,55 @@ writing against any of the tables below.
 
 ## Engagement
 
-### comment_edit(comment_id uuid, body text) returns void
+### comment_edit(p_comment_id uuid, p_body text) returns void
 
-- Auth: author only. Sets `edited_at`. `body` up to 1000 chars.
+- Shipped in 202608280016.
+- Purpose: the only edit path for a comment body. `post_comments` has no
+  UPDATE grant, which is what makes it the only one.
+- Params: `p_body` trimmed to 1000 chars. An all-whitespace body raises.
+- Auth: security definer, author only. It also re-checks
+  `is_community_member()` and `is_posting_restricted()`, because otherwise
+  rewriting an old comment into new content is the obvious way around a
+  COMM-153 restriction. Rate limited at 30 per 10 minutes under the
+  `comment_edit` action key.
+- Side effects: always stamps `edited_at`, so an edit can never be silent.
+  Refuses a comment that is already removed or soft-deleted.
+
+### add_post_comment(p_post_id uuid, p_body text, p_parent_comment_id uuid) returns uuid
+
+- Shipped in 202608280016. Three-argument form.
+- Purpose: create a top-level comment or a reply, one write path.
+- Params: `p_body` trimmed to 1000 chars, up from 280. A null
+  `p_parent_comment_id` is a top-level comment.
+- Auth: security definer. Requires `is_community_member()`, then refuses a
+  member with an active posting restriction, then the existing rate limit of
+  20 per 10 minutes, then `post_visible_to_viewer()`. The restriction check
+  runs before the rate limit so a restricted member burns no budget and gets
+  the accurate reason.
+- Raises: `posting_restricted`, `rate_limited`, `reply depth is capped at
+  2`, `parent comment is on another post`, `parent comment is no longer
+  available`.
+- Side effects: one `post_comments` row. Depth is checked here and again by
+  the `post_comments_depth` trigger, so a future write path cannot skip it.
+
+### add_post_comment(p_post_id uuid, p_body text) returns uuid
+
+- Shipped in 202608270010, rewritten in 202608280005 and again in
+  202608280016 as a wrapper passing a null parent. Kept so the current
+  client keeps working while engagement wires the parent argument through
+  COMM-121. It is a separate two-argument function rather than a default
+  parameter on the three-argument one: a default would make the client's
+  existing two-argument call ambiguous and fail at call time. Same pattern
+  `redeem_invite_code` used in 202608280013.
+
 - Note: comment create and delete keep the existing `addComment` and
   `deleteComment` client functions, `addComment` gains an optional
-  `parentCommentId`. Reply depth cap 2 is enforced by a check.
+  `parentCommentId`. Reply depth cap 2 is enforced by the
+  `post_comments_depth` trigger, not by a CHECK. `deleteComment` still hard
+  deletes under the author-only `post_comments_delete_self` policy, which
+  flattens replies to top level. Switching it to the soft path,
+  `status = 'removed'` plus `deleted_at`, is COMM-122 client work and needs
+  no further migration.
 
 ## Notifications
 
@@ -209,10 +384,47 @@ writing against any of the tables below.
 - Shipped in 202608280008.
 - Auth: security invoker, own-row.
 
+### notification_batch_window() returns interval
+
+- Shipped in 202608280018. Immutable, returns 6 hours.
+- Purpose: the batching window in one place, so the column default and a
+  test assert against the same value and neither can drift. COMM-142 fixes
+  it at 6 hours.
+- Auth: security invoker, granted to authenticated so a test can read it.
+
+### notif_queue_batched(p_user uuid, p_category text, p_type text, p_source_id uuid) returns void
+
+- Shipped in 202608280018. `p_source_id` defaults to null.
+- Purpose: add one item to a member's open batch for a category. Upserts on
+  `(user_id, category)`, increments `pending_count`, and increments the
+  per-type counter inside `pending`.
+- Auth: security definer with no grant to anon or authenticated, so it is
+  callable only from inside another server function or by the service role.
+  It does not check `auth.uid()`, deliberately: it always acts on a member
+  other than the actor, so a caller identity test would assert nothing. The
+  missing grant is the boundary here.
+- Side effects: an empty batch starts a fresh window. A batch that already
+  holds something keeps its original `next_flush_at`, so a steady trickle
+  cannot push the flush out forever.
+- Raises: on an unknown category or a type that does not match the same
+  pattern `notifications.type` uses.
+
+### notif_batch_flushed(p_user uuid, p_category text) returns void
+
+- Shipped in 202608280018.
+- Purpose: called by the flusher after it has written the rolled-up
+  `notifications` row. Zeroes the counters, stamps `last_flushed_at`, and
+  arms the next window.
+- Auth: same as `notif_queue_batched`, no grant to anon or authenticated.
+- Side effects: idempotent. A second call on an already-empty batch changes
+  nothing but `last_flushed_at`.
+
 - Note: notifications are created only server-side, by triggers and event-bus
   consumers. There is no insert policy and no insert grant on the table.
-  Batching state lives in `notification_batches`, which is a Phase 1
-  migration under COMM-142. `notification_preferences` is a direct RLS
+  Batching state lives in `notification_batches`, shipped in 202608280018
+  under COMM-142. It holds counters only, never notification content, has an
+  own-row select policy and no write grant, and the flush routing itself is
+  notifications agent work. `notification_preferences` is a direct RLS
   upsert, and a missing row means in_app.
 - Note: the own-row UPDATE policy exists for `read_at`. A
   `notifications_protect_content` trigger pins every other column on an
@@ -368,8 +580,52 @@ writing against any of the tables below.
 - Params: `decision` one of remove, warn, restrict_temp, restrict_permanent,
   dismiss. `note` up to 500 chars.
 - Auth: real `is_admin`. Writes reviewer id and timestamp.
-- Side effects: sets content status, writes `posting_restrictions` for a
-  restriction, calls `log_admin_action` with before and after.
+- Side effects: sets content status, calls `mod_restrict_member` for a
+  `restrict_temp` or `restrict_permanent` decision, calls `log_admin_action`
+  with before and after.
+- Note: `posting_restrictions` has no write grant, so `mod_review` cannot
+  insert into it directly. It calls `mod_restrict_member` below, which
+  writes its own audit row.
+
+### mod_restrict_member(p_user uuid, p_type text, p_expires_at timestamptz, p_reason text, p_report_id uuid) returns uuid
+
+- Shipped in 202608280015. `p_expires_at`, `p_reason`, and `p_report_id`
+  default to null, empty string, and null.
+- Purpose: the only way to create a posting restriction. Returns the new
+  restriction id.
+- Params: `p_type` is temporary or permanent. A temporary restriction needs
+  `p_expires_at` in the future. A permanent one ignores any expiry passed
+  rather than rejecting it, so a UI that always sends its date picker value
+  cannot create a row the CHECK refuses. `p_reason` capped at 500 chars.
+- Auth: security definer. Requires `community.member.restrict`. Refuses a
+  self-restriction and a member with no live profile.
+- Side effects: one `posting_restrictions` row plus one `admin_actions` row
+  of type `member_restrict`, in the same transaction, so a failed log fails
+  the restriction.
+
+### mod_lift_restriction(p_restriction_id uuid, p_reason text) returns void
+
+- Shipped in 202608280015. `p_reason` defaults to an empty string.
+- Purpose: end a restriction early. Sets `lifted_at`, `lifted_by`, and
+  `lift_reason` rather than deleting the row.
+- Auth: security definer. Requires `community.member.restrict`.
+- Side effects: one `admin_actions` row of type `member_unrestrict`.
+  Idempotent, an already-lifted restriction returns without a second audit
+  row.
+
+### is_posting_restricted(p_user uuid) returns boolean
+
+- Shipped in 202608280015. `p_user` defaults to null, which means the
+  caller.
+- Purpose: the predicate the post insert policy and `add_post_comment` are
+  keyed to. True when the member has a restriction that is not lifted and
+  either has no expiry or has not expired.
+- Auth: security definer, false for a null caller. A caller asking about
+  anybody but themselves is refused unless they hold
+  `community.member.restrict` or `community.comment.moderate`, so this
+  cannot become an "is member X in trouble" oracle for the whole club.
+- Notes: expiry is evaluated at read time, not by a scheduled job, so a
+  temporary restriction ends on its own with no cron and no backfill.
 
 ### log_admin_action(p_action_type text, p_target_type text, p_target_id uuid, p_before jsonb, p_after jsonb) returns void
 
@@ -397,16 +653,36 @@ writing against any of the tables below.
 - Auth: `community.analytics.view`, checked inside the function and again by
   the table's own select policy.
 
-### pin_set(target_type text, target_id uuid) returns void
+### pin_set(p_target_type text, p_target_id uuid, p_note text) returns void
 
-- Purpose: pin an item to the club home. `target_type` announcement,
-  challenge, event, post.
-- Auth: `community.content.pin`. Hard cap 3 enforced by a trigger. Writes
-  `log_admin_action`.
+- Shipped in 202608280017. `p_note` defaults to an empty string, capped at
+  200 chars.
+- Purpose: pin an item to the club home. `p_target_type` is announcement,
+  challenge, event, or post.
+- Auth: security definer. Requires `community.content.pin`.
+- Raises: `pin_limit_reached` when all three slots are taken, and `pin
+  target not found or not pinnable` when the target does not exist, is
+  deleted, is a removed post, a cancelled event, or an archived challenge.
+- Side effects: one `pins` row in the lowest free slot, plus one
+  `admin_actions` row of type `content_pin`. Idempotent, pinning something
+  already pinned returns without a second row or a second audit entry.
+- Notes: the cap is the unique `(club_id, slot)` with `slot` bounded to 0
+  through 2, so it holds under concurrency. `pin_set` takes a transaction
+  advisory lock while choosing a slot only so a race surfaces
+  `pin_limit_reached` instead of a raw unique violation.
 
-### pin_clear(target_type text, target_id uuid) returns void
+### pin_clear(p_target_type text, p_target_id uuid) returns void
 
-- Auth: `community.content.pin`. Writes `log_admin_action`.
+- Shipped in 202608280017.
+- Auth: security definer. Requires `community.content.pin`.
+- Side effects: deletes the `pins` row and writes an `admin_actions` row of
+  type `content_unpin`. Unpinning something already unpinned is a no-op, not
+  an error.
+- Notes: a target that is deleted, removed, cancelled, or archived is
+  unpinned automatically by the `unpin_target()` triggers on
+  `workout_posts`, `announcements`, `events`, and `challenges`. Those
+  deletes are not audited, because the action that caused them is already in
+  the log.
 
 ## Analytics
 

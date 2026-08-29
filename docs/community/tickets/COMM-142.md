@@ -44,6 +44,12 @@ Not applicable. Routing logic. Verified through the center and tests.
 
 - Consumer functions or triggers that write `notifications`. schema lands the
   trigger set. Batching state in a small `notification_batches` table.
+- `notification_batches` landed in 202608280018 with own-row read and no
+  write grant, plus `notification_batch_window()` returning 6 hours,
+  `notif_queue_batched()`, and `notif_batch_flushed()`. The routing itself,
+  which types are immediate and which are batched, and the flusher that
+  turns a batch into one `notifications` row, is still notifications agent
+  work. No further migration is needed for it.
 
 ## Dependencies
 

@@ -47,6 +47,12 @@ never deeply nested.
 - `alter table comments add column parent_comment_id uuid references
   comments(id)`. RLS unchanged in spirit. schema lands it. Phase 0 schema
   list did not include this column, logged in backlog open questions.
+- Landed in 202608280016 on `public.post_comments`. `parent_comment_id` is
+  `on delete set null`, so a hard-deleted parent flattens its replies
+  instead of destroying them. Depth 2 is enforced by the
+  `post_comments_depth` trigger in both directions. Body limit widened to
+  1000. Use `add_post_comment(p_post_id, p_body, p_parent_comment_id)`, the
+  existing two-argument form still works unchanged.
 
 ## Dependencies
 

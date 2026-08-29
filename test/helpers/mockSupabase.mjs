@@ -18,8 +18,17 @@ export function createMockSupabase(seedTables = {}) {
   let authCb = null;
   let uidCounter = 0;
   const rpcHandlers = {};
+  // COMM-110..114. Every feed_page/club_summary/telemetry call the client
+  // made, in order, so a test can assert the arguments it sent rather than
+  // only the rows it rendered.
+  const rpcCalls = [];
 
   function rows(table) { return (db[table] = db[table] || []); }
+  // The real cursor carries the session anchor so every page of one session
+  // scores against the same now(). The mock has no scoring, but it carries
+  // the same field so a test reading a cursor sees the same shape.
+  const anchor = new Date().toISOString();
+  function tokenAnchor() { return anchor; }
 
   function chain(table) {
     let filters = [];
@@ -123,6 +132,8 @@ export function createMockSupabase(seedTables = {}) {
       return !!ch;
     },
     openChannels() { return channels.filter((c) => !c.removed).map((c) => c.topic); },
+    rpcCalls,
+    callsTo(name) { return rpcCalls.filter((c) => c.name === name).map((c) => c.args); },
     setUser(u) { currentUser = u; },
     getUser() { return currentUser; },
     // Register how a given RPC name should behave: (args, ctx) => ({ data, error }).
@@ -169,12 +180,98 @@ export function createMockSupabase(seedTables = {}) {
       removeChannel: (ch) => { if (ch) ch.removed = true; return Promise.resolve("ok"); },
       getChannels: () => channels.filter((c) => !c.removed),
       rpc: (name, args) => {
+        rpcCalls.push({ name, args });
         // A registered onRpc() handler wins over every built-in, so a test
         // can make redeem_invite_code return "rate_limited" (COMM-017) or
         // make mark_recovery_verified fail (COMM-016) without the built-in
         // shortcut masking it.
         const handler = rpcHandlers[name];
         if (handler) return Promise.resolve(handler(args, { db, currentUser }));
+        // COMM-110..113. A stand-in for public.feed_page() that is honest
+        // about what it is: it serves fixture rows in the order the fixture
+        // lists them, cuts pages on an opaque cursor, and answers the scope
+        // and limit it was given. It does NOT rank and does NOT diversify.
+        // Ranking and diversity are Postgres, are unit-tested in
+        // supabase/tests/0019_feed_page_test.sql, and a JS re-implementation
+        // here would only ever assert itself. What this DOES let a test
+        // assert for real is the client half: that the returned order is
+        // rendered untouched, that the cursor round-trips, that a page is
+        // twenty rows, and that a scope reaches the server.
+        if (name === "feed_page") {
+          const all = rows("feed_page_rows").length ? rows("feed_page_rows") : rows("community_feed");
+          const scope = (args && args.p_scope) || "for_you";
+          const limit = Math.min(Math.max(Number((args && args.p_limit) || 20), 1), 40);
+          const following = new Set(rows("follows").filter((f) => currentUser && f.follower_id === currentUser.id).map((f) => f.followed_id));
+          const hidden = new Set(rows("hidden_posts").filter((h) => currentUser && h.user_id === currentUser.id).map((h) => h.post_id));
+          const inScope = (r) => {
+            if (hidden.has(r.id)) return false;
+            if (scope === "following") return following.has(r.author_id);
+            if (scope === "achievements") return ["POST_PR", "POST_ACHIEVEMENT", "POST_ATTENDANCE_MILESTONE"].includes(r.post_type);
+            if (scope === "coach") return ["POST_COACH", "POST_ANNOUNCEMENT"].includes(r.post_type);
+            if (scope === "my_classes") return false; // COMM-P01, parked server-side too
+            return true;
+          };
+          const pool = all.filter(inScope);
+          let start = 0;
+          if (args && args.p_cursor) {
+            try {
+              const tok = JSON.parse(Buffer.from(String(args.p_cursor), "base64").toString("utf8"));
+              // Same property the real cursor has: the boundary is a row
+              // identity, not an offset, so a row inserted at the top while
+              // paginating cannot shift a later page.
+              const at = pool.findIndex((r) => String(r.id) === String(tok.i));
+              start = at < 0 ? pool.length : at + 1;
+            } catch (e) { start = 0; }
+          }
+          const page = pool.slice(start, start + limit);
+          const more = start + limit < pool.length;
+          const next = more && page.length
+            ? Buffer.from(JSON.stringify({ a: tokenAnchor(), i: page[page.length - 1].id }), "utf8").toString("base64")
+            : null;
+          return Promise.resolve({ data: page.map((r) => ({ ...r, next_cursor: next })), error: null });
+        }
+        if (name === "club_summary") {
+          const club = rows("clubs")[0] || null;
+          if (!club) return Promise.resolve({ data: null, error: null });
+          return Promise.resolve({
+            data: {
+              name: club.name || "",
+              image_url: club.image_url || null,
+              member_count: rows("profiles").filter((p) => !p.deleted_at).length,
+              active_challenge: club.active_challenge || null,
+              unread_notifications: rows("notifications").filter((n) => currentUser && n.user_id === currentUser.id && !n.read_at).length,
+            },
+            error: null,
+          });
+        }
+        // COMM-003 telemetry. The real functions are definer-side; these
+        // record what the client actually sent, including the de-dupe the
+        // unique (user_id, feed_session_id, post_id) gives for free.
+        if (name === "feed_record_impressions") {
+          const payload = (args && args.p_rows) || [];
+          if (payload.length > 50) return Promise.resolve({ data: null, error: { message: "at most 50 impressions per call" } });
+          for (const r of payload) {
+            if (!r || !r.post_id || !r.feed_session_id) continue;
+            const dupe = rows("feed_impressions").some((x) => x.user_id === (currentUser && currentUser.id) && x.feed_session_id === r.feed_session_id && x.post_id === r.post_id);
+            if (dupe) continue;
+            rows("feed_impressions").push({ user_id: currentUser && currentUser.id, post_id: r.post_id, position: r.position, feed_session_id: r.feed_session_id, shown_at: r.shown_at, opened: false, engaged: false });
+          }
+          return Promise.resolve({ data: null, error: null });
+        }
+        if (name === "feed_record_interaction") {
+          const kind = args && args.p_kind;
+          const postId = args && args.p_post_id;
+          if (!["open", "react", "comment", "share", "hide", "save", "profile_open"].includes(kind)) {
+            return Promise.resolve({ data: null, error: { message: `unknown interaction kind ${kind}` } });
+          }
+          rows("feed_interactions").push({ user_id: currentUser && currentUser.id, post_id: postId, kind });
+          for (const imp of rows("feed_impressions")) {
+            if (imp.user_id !== (currentUser && currentUser.id) || imp.post_id !== postId) continue;
+            if (kind === "open") imp.opened = true;
+            if (["react", "comment", "share", "save"].includes(kind)) imp.engaged = true;
+          }
+          return Promise.resolve({ data: null, error: null });
+        }
         if (name === "redeem_invite_code") {
           rows("invite_redemptions").push({ user_id: currentUser.id, invite_id: "inv-1", role: "member", redeemed_at: new Date().toISOString() });
           return Promise.resolve({ data: "member", error: null });

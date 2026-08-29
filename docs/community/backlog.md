@@ -413,6 +413,74 @@ reaction you already left still works for that member.
 |---|---|
 | invite_attempts | Still unreachable by any client: no grant and no policy for anon or authenticated. The behaviour test is the one that matters: five wrong codes, then discard the session and sign in anonymously again with the same `actor_key`, and the sixth attempt still returns `rate_limited`. A wrong code returns the same answer and increments the same way whether the actor is new or not. |
 
+## Phase 1 schema handoff for qa
+
+Migrations 202608280014 through 202608280018, the five tables and two
+columns Phase 0 deferred. Same rule as the Phase 0 handoff: one line per new
+table saying the boundary a test has to assert, every table has RLS enabled
+and at least one policy, and a table reachable with no policy is a test
+failure.
+
+Read `docs/community/contracts.md`, section "Phase 1 schema notes", first.
+Three things there change what a test should expect. The comments table is
+`public.post_comments`. The comment body limit is now 1000, not 280.
+`posting_restrictions` and `pins` have no write grant at all, so the correct
+assertion is that a direct PostgREST insert fails for everyone including an
+admin, and the permission check lives in the function.
+
+### Hidden and saved posts (202608280014)
+
+| Table | Boundary to assert |
+|---|---|
+| hidden_posts | Strictly own-row on select, insert, and delete. Member B can never read, count, or infer member A's hides, so a hide is invisible to the post author. There is no UPDATE grant and no update policy. An insert naming another member's user_id fails, and an insert for a post the caller cannot see fails on `post_visible_to_viewer`, which is what stops it being an existence oracle for an `only_me` post. A member with a null `recovery_verified_at` cannot insert. |
+| saved_posts | Same four assertions as hidden_posts. Additionally, a repeat save collides on the `(user_id, post_id)` primary key rather than creating a second row. |
+
+### Posting restrictions (202608280015)
+
+| Table | Boundary to assert |
+|---|---|
+| posting_restrictions | No client can insert, update, or delete, a `community.member.restrict` holder included: there is no policy and no grant for any of the three. A member reads their own restrictions and nobody else's unless they hold `community.member.restrict` or `community.comment.moderate`. A temporary row with a null `expires_at` fails the CHECK, and so does a permanent row with one. |
+
+Four behaviour assertions belong here and matter more than the table shape.
+A restricted member's `workout_posts` insert is refused by
+`posts_insert_self`. Their `add_post_comment` raises `posting_restricted`.
+Their `comment_edit` raises the same, so an old comment cannot be rewritten
+into new content. A restriction whose `expires_at` has passed stops
+applying with no cron run and no backfill, because expiry is evaluated at
+read time. One more: `is_posting_restricted(<someone else>)` must raise for
+a plain member and answer for a moderator.
+
+`mod_restrict_member` and `mod_lift_restriction` each need a test that the
+matching `admin_actions` row exists after the call, since that is the whole
+reason the table has no write grant.
+
+### Comment threads (202608280016)
+
+| Table | Boundary to assert |
+|---|---|
+| post_comments (new columns) | Reply depth is capped at 2 in both directions. A reply to a reply fails. Giving a parent to a comment that already has replies fails, which is the UPDATE path that would otherwise create depth 3. A reply whose parent sits on another post fails. A removed or soft-deleted comment is invisible to every member but its author and a `community.comment.moderate` holder, and the reply that pointed at it is still returned with its `parent_comment_id` intact so the client can render the placeholder. A 1000-character body is accepted and a 1001-character one is truncated by the function, not rejected. There is still no INSERT and no UPDATE grant, so a direct `.insert()` or `.update()` on the table fails for everyone. |
+
+`comment_edit` needs its own three: a non-author is refused, the author's
+edit always stamps `edited_at`, and an all-whitespace body raises. The
+two-argument `add_post_comment` must still resolve and still behave exactly
+as it did, which is the regression that would break the current client.
+
+### Pins (202608280017)
+
+| Table | Boundary to assert |
+|---|---|
+| pins | Any signed-in member reads. No client can insert, update, or delete, a `community.content.pin` holder included: select is the only policy and the only grant. A fourth `pin_set` raises `pin_limit_reached`. `pin_set` and `pin_clear` both refuse a caller without `community.content.pin` and both write an `admin_actions` row. Pinning a deleted post, a removed post, a cancelled event, or an archived challenge raises. Soft-deleting or removing a pinned target auto-unpins it and frees the slot, and that auto-unpin writes no audit row. |
+
+The concurrency assertion is worth one test even though it is awkward: two
+`pin_set` calls racing for the last slot must produce one success and one
+`pin_limit_reached`, never two rows in the same slot.
+
+### Notification batches (202608280018)
+
+| Table | Boundary to assert |
+|---|---|
+| notification_batches | Own-row read only. No client can insert, update, or delete, which is the assertion that matters: a member who could write here would set their own `next_flush_at` to now and turn the batched channel back into a stream of pings. A second `notif_queue_batched` for the same member, category, and type increments the counter in place rather than adding a row, and does not move `next_flush_at`. A queue call on an empty batch does start a fresh window. `notification_batch_window()` returns 6 hours and matches the column default. |
+
 ## Open questions for the user
 
 Logged by planner while writing tickets.

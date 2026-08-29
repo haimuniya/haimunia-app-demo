@@ -46,6 +46,11 @@ A member can manage their own posts and control what they see from others.
 - New migration: `hidden_posts` and `saved_posts` tables, own-row RLS. Feed
   read filters out hidden rows. schema lands it. Phase 0 schema list omitted
   these two, logged in backlog open questions.
+- Landed in 202608280014. Both tables are own-row on select, insert, and
+  delete, with no update grant. `post_hide` and `post_save` are not
+  functions: they are direct RLS writes, see contracts. Insert also requires
+  `post_visible_to_viewer`, so a hide or save cannot be seeded for a post
+  the caller never saw.
 
 ## Dependencies
 
