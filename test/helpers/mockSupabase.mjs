@@ -329,6 +329,45 @@ export function createMockSupabase(seedTables = {}) {
           if (prof && field in prof && prof[field] === false) return Promise.resolve({ data: false, error: null });
           return Promise.resolve({ data: true, error: null });
         }
+        // COMM-130. Client-trust claim path for non-attendance milestones.
+        // Honours enabled + non-attendance + client_claimable when
+        // achievement_definitions is seeded; accepts any code as a
+        // non-repeatable unlock when it is not, so a test can skip seeding.
+        if (name === "ach_claim") {
+          const uid = currentUser && currentUser.id;
+          if (!uid) return Promise.resolve({ data: null, error: { message: "auth required" } });
+          const codes = Array.isArray(args && args.p_codes) ? args.p_codes.map(String) : [];
+          if (codes.length > 50) return Promise.resolve({ data: null, error: { message: "at most 50 codes per call" } });
+          const defs = rows("achievement_definitions");
+          const ma = rows("member_achievements");
+          const out = [];
+          for (const code of codes) {
+            const def = defs.length ? defs.find((d) => d.code === code) : null;
+            if (defs.length) {
+              if (!def || def.enabled === false) continue;
+              if (def.trigger_type === "ATTENDANCE_RECORDED") continue;
+              if (!(def.config && def.config.client_claimable === true)) continue;
+            }
+            const repeatable = def ? !!def.repeatable : false;
+            if (!repeatable && ma.some((r) => r.user_id === uid && r.code === code)) continue;
+            const id = `ma-${++uidCounter}`;
+            const visibility = (def && def.visibility) || "club";
+            ma.push({ id, user_id: uid, achievement_id: def ? def.id : null, code, visibility, shared_at: null, unlocked_at: new Date().toISOString(), repeatable, achievement_definitions: { code, name: def ? def.name : code, icon: def ? def.icon : null } });
+            out.push({ code, member_achievement_id: id, visibility });
+          }
+          return Promise.resolve({ data: out, error: null });
+        }
+        if (name === "ach_share") {
+          const uid = currentUser && currentUser.id;
+          const rec = rows("member_achievements").find((r) => r.id === (args && args.member_achievement_id));
+          if (!rec) return Promise.resolve({ data: null, error: { message: "achievement not found" } });
+          if (rec.user_id !== uid) return Promise.resolve({ data: null, error: { message: "not the owner" } });
+          if (rec.visibility === "only_me") return Promise.resolve({ data: null, error: { message: "private achievement" } });
+          rec.shared_at = new Date().toISOString();
+          const id = `ach-post-${++uidCounter}`;
+          rows("workout_posts").push({ id, author_id: uid, post_type: "POST_ACHIEVEMENT", source_type: "achievement", source_id: rec.achievement_id, created_at: rec.shared_at });
+          return Promise.resolve({ data: id, error: null });
+        }
         if (name === "mark_recovery_verified") {
           const prof = rows("profiles").find((r) => currentUser && r.id === currentUser.id);
           const hasCreds = currentUser && (currentUser.email || rows("__credentials").some((c) => c.userId === currentUser.id));

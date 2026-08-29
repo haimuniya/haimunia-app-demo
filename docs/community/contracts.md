@@ -293,6 +293,58 @@ Markup feed and engagement can rely on:
 - Purpose: create a POST_ACHIEVEMENT and set `shared_at`.
 - Auth: the achievement owner. Rejects a private-visibility achievement.
 
+### ach_claim(p_codes text[]) returns setof ach_claim_row
+
+- Status: needed from schema, not built yet. See "Needs from schema,
+  achievements" below. The client (COMM-130) is built against this signature
+  and the mock registers it so tests pass.
+- Purpose: record client-detected non-attendance milestones for the calling
+  member. The offline app already computes session counts, summed PR counts,
+  week streaks, first Rx, and membership tenure from data on the device. The
+  browser cannot call `ach_evaluate` (service role only) and never emits a
+  server event for a privately logged lift, so this is how those crossings
+  reach `member_achievements`.
+- Params: `p_codes` up to 50 `achievement_definitions.code` values. A null or
+  empty array is a no-op that returns nothing. Over 50 raises.
+- Returns: one `ach_claim_row(code text, member_achievement_id uuid,
+  visibility text)` per row this call newly wrote, so the client celebrates
+  only genuine new unlocks and stays silent on replay. A code that was
+  already held (non-repeatable) or that did not qualify is simply absent from
+  the result, never an error.
+- Auth: security definer. Raises when `auth.uid()` is null. Requires
+  `is_community_member()`. Every row is written with the caller's own
+  `user_id`, never a value from the payload.
+- Accepts a code only when its definition is `enabled`, its `trigger_type` is
+  not `ATTENDANCE_RECORDED`, and its `config->>'client_claimable'` is
+  `'true'`. Every other code in the array is ignored, not rejected. This is
+  what keeps `community`, `challenge`, and `club` unlocks, which are gameable
+  from the client, on the `ach_evaluate` event-bus path where the server owns
+  the count.
+- Side effects: inserts one `member_achievements` row per accepted, newly
+  qualifying code, copying `visibility` from the definition. The partial
+  unique index `member_achievements_once_idx` enforces once-per-non-repeatable
+  under concurrency, so a lost race is swallowed, not surfaced. A repeatable
+  definition writes a fresh row each call. Emits `ACHIEVEMENT_UNLOCKED`
+  server-side per inserted row. Idempotent for non-repeatable codes.
+
+## Needs from schema, achievements
+
+Functions and data the achievements cluster (COMM-130 to COMM-134) calls or
+relies on and that schema still owns. No migration is written here.
+
+- `ach_claim(p_codes text[]) returns setof ach_claim_row` and the
+  `ach_claim_row(code text, member_achievement_id uuid, visibility text)`
+  composite type. Full behaviour above. Grant execute to `authenticated`.
+  `ach_evaluate` and `ach_share` stay as already documented.
+- The non-attendance seed rows for `achievement_definitions`. Content is in
+  `docs/community/achievement-seed.md` as an `on conflict (code) do update`
+  block. Every client-claimable row carries `config` key
+  `client_claimable: true`. The four attendance rows from 202608280007 stay
+  seeded and `enabled = false`, untouched.
+- `ach_evaluate` should emit `ACHIEVEMENT_UNLOCKED` on the same server bus
+  `ach_claim` uses, so the notifications consumer sees one shape regardless of
+  which path unlocked the row.
+
 ## Challenges
 
 ### chal_progress(challenge_id uuid) returns challenge_progress_view

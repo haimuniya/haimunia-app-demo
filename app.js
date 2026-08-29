@@ -485,7 +485,61 @@ async function loadSeenAchievements() {
 function newlyEarnedAchievements() {
   return ACHIEVEMENTS.filter((a) => a.earned() && !seenAchievementIds.has(a.id));
 }
+// COMM-130/131. The non-attendance community achievement engine, client
+// half. ach_evaluate is service-role only and no server event is emitted for
+// a privately logged lift, so the offline numbers this app already computes
+// (session count, week streak, summed PR count, first Rx, tenure) are what
+// reach member_achievements - through the ach_claim RPC, only when the member
+// is in the community. This never posts anything: a claimed unlock only
+// offers a share, see COMM-134 in cloud.js. Codes and thresholds mirror
+// docs/community/achievement-seed.md; the schema follow-up inserts the rows.
+function communityMilestoneCodes() {
+  const codes = [];
+  const sessions = totalSessions();
+  for (const n of [1, 10, 25, 50, 100, 250]) {
+    if (sessions >= n) codes.push(n === 1 ? "first_workout" : `sessions_${n}`);
+  }
+  // longestWeekStreak() counts consecutive ISO weeks that carry any logged
+  // training, so a member who trains three times a week clears the same bar
+  // as one who trains daily - the 3x-per-week tolerance the ticket asks for
+  // is a property of this number, nothing here re-checks a daily cadence.
+  const streak = longestWeekStreak();
+  for (const n of [4, 12, 26, 52]) if (streak >= n) codes.push(`consistency_weeks_${n}`);
+  const prTotal = Object.values(categoryPRCounts()).reduce((s, n) => s + n, 0);
+  for (const n of [1, 10, 25, 50, 100]) {
+    if (prTotal >= n) codes.push(n === 1 ? "first_pr" : `pr_${n}`);
+  }
+  if (isWellRounded()) codes.push("well_rounded");
+  if (earnedRxWodIds().size >= 1) codes.push("first_rx");
+  const tenure = daysSinceBoxStart();
+  if (tenure !== null) {
+    for (const y of [1, 2, 3, 5]) if (tenure >= y * 365) codes.push(`anniversary_year_${y}`);
+  }
+  return codes;
+}
+const COMMUNITY_CLAIMED_KEY = "haimunia-demo:communityClaimedAchievements";
+let communityClaimedCodes = new Set();
+async function loadCommunityClaimed() {
+  try {
+    const v = await dbGetSetting(COMMUNITY_CLAIMED_KEY);
+    if (Array.isArray(v)) communityClaimedCodes = new Set(v);
+  } catch (e) { /* first run, nothing claimed yet */ }
+}
+// Sends only the codes not sent before from this device. ach_claim is
+// idempotent for non-repeatable codes, so a stale local set never
+// double-writes server-side; the guard just keeps the call small and quiet.
+function syncCommunityMilestones() {
+  if (typeof window.isCommunitySignedIn !== "function" || !window.isCommunitySignedIn()) return;
+  if (typeof window.claimCommunityAchievements !== "function") return;
+  const fresh = communityMilestoneCodes().filter((c) => !communityClaimedCodes.has(c));
+  if (!fresh.length) return;
+  for (const c of fresh) communityClaimedCodes.add(c);
+  dbSetSetting(COMMUNITY_CLAIMED_KEY, [...communityClaimedCodes]).catch(noteStorageError);
+  try { window.claimCommunityAchievements(fresh); } catch (e) { /* offline or not wired */ }
+}
+
 function checkForNewAchievements() {
+  syncCommunityMilestones();
   const newlyEarned = newlyEarnedAchievements();
   if (!newlyEarned.length) return;
   for (const a of newlyEarned) seenAchievementIds.add(a.id);
@@ -497,6 +551,7 @@ function checkForNewAchievements() {
 // same save (a PR that also crosses a tier threshold) - one popup covers
 // both instead of firing twice back to back.
 function celebrateAfterSave(prLabel) {
+  syncCommunityMilestones();
   const newBadges = newlyEarnedAchievements();
   if (!prLabel && !newBadges.length) return;
   for (const a of newBadges) seenAchievementIds.add(a.id);
@@ -660,6 +715,45 @@ async function addMovement(name, category) {
   closePicker();
   render();
 }
+// COMM-132. On a detected strength or rep PR, and only when the community
+// layer reports a signed-in session, announce it on the product event bus so
+// the PR share prompt (COMM-133, cloud.js) can offer - never force - a post.
+// Detection itself is unchanged and still runs offline; this only adds the
+// signal. Fires at most once per saved entry id, so re-editing the same
+// record into another PR never opens a second prompt for it, and does
+// nothing at all when the community is not signed in.
+const communityPrEmitted = new Set();
+function emitCommunityPrCreated(entry, mov, detail) {
+  if (!entry || !mov || !detail) return;
+  if (communityPrEmitted.has(entry.id)) return;
+  if (typeof window.isCommunitySignedIn !== "function" || !window.isCommunitySignedIn()) return;
+  const bus = window.HaimuniaEvents;
+  const events = window.PRODUCT_EVENTS;
+  if (!bus || !events || !events.PR_CREATED) return;
+  const kg = (n) => `${Math.round(n * 10) / 10} ק"ג`;
+  let newResult, prevResult = "", improvement = "";
+  if (detail.repRecordPR) {
+    newResult = `${Math.round(detail.weight * 10) / 10} ק"ג × ${detail.reps}`;
+    if (detail.prevRepRecord) {
+      prevResult = `${Math.round(detail.prevRepRecord * 10) / 10} ק"ג × ${detail.reps}`;
+      improvement = `+${kg(detail.weight - detail.prevRepRecord)}`;
+    }
+  } else {
+    newResult = `~${kg(detail.est)} (1RM משוער)`;
+    if (detail.prevEst1RM) {
+      prevResult = `~${kg(detail.prevEst1RM)} (1RM משוער)`;
+      improvement = `+${kg(detail.est - detail.prevEst1RM)}`;
+    }
+  }
+  // Keys match exactly what the posts-cluster PR prompt reads
+  // (record_id, movement, new_result, previous_result, improvement).
+  // Server recomputes improvement from the record before any post.
+  const record = { record_id: entry.id, movement: mov.name, new_result: newResult };
+  if (prevResult) record.previous_result = prevResult;
+  if (improvement) record.improvement = improvement;
+  communityPrEmitted.add(entry.id);
+  try { bus.emit(events.PR_CREATED, { record }); } catch (e) { /* bus dropped it */ }
+}
 async function saveSet() {
   const date = clampLogDate(logDate);
   const editId = editingEntryId;
@@ -668,7 +762,7 @@ async function saveSet() {
   // the active ladder/superset (if any) — see toggleLadderMode().
   const groupId = existing ? (existing.groupId ?? null) : (ladderMode ? ladderGroupId : null);
   const blockLabel = existing ? (existing.blockLabel ?? null) : (ladderMode ? ladderBlockLabel : null);
-  let entry, isPR, celebrationLabel;
+  let entry, isPR, celebrationLabel, prDetail = null;
   if (logEntryType === "duration") {
     if (!isFinite(durationSeconds) || durationSeconds <= 0 || !isFinite(sets)) return;
     const prevBest = bestDurationFor(selectedId, editId) || 0;
@@ -686,6 +780,7 @@ async function saveSet() {
     const prevEst1RM = bestEst1RM(selectedId, editId) || 0;
     const est = estimate1RM(weight, reps);
     isPR = weight > prevRepRecord || est > prevEst1RM;
+    prDetail = { repRecordPR: weight > prevRepRecord, est1rmPR: est > prevEst1RM, weight, reps, est, prevRepRecord, prevEst1RM };
     entry = {
       id: existing ? existing.id : uid("set"),
       ts: existing ? existing.ts : Date.now(),
@@ -713,6 +808,7 @@ async function saveSet() {
   if (!ladderMode) {
     const mov = movementById(entry.exerciseId);
     celebrateAfterSave(isPR && mov ? `${mov.name} — ${celebrationLabel}` : null);
+    if (isPR && prDetail) emitCommunityPrCreated(entry, mov, prDetail);
   }
 }
 // A ladder (working-set session: same exercise/day, different weight+reps
@@ -3603,6 +3699,7 @@ async function init() {
   await loadBarWeight();
   await loadBoxStartDate();
   await loadSeenAchievements();
+  await loadCommunityClaimed();
   await loadLastSeenVersion();
   await loadOnboardedFlag();
   document.getElementById("loading").style.display = "none";

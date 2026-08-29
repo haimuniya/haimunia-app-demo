@@ -12,6 +12,8 @@
     commentDrafts: {}, commentErrors: {}, commentSending: null, commentEdit: null, openReplies: {}, replyTo: {}, commentRoles: {},
     reactions: {}, reactionError: null, blockedIds: [], blocksLoaded: false, mentionPicker: null,
     composer: null, composerTrigger: null, openPostMenu: null, savedPostIds: {}, captionEdit: null, visibilityEdit: null, prPrompt: null, profileView: null,
+    // COMM-130/134 achievements cluster.
+    myAchievements: [], achUnlock: null,
     // COMM-110..115 feed cluster. state.feed holds feed_page() rows in the
     // exact order the function returned them and is never re-sorted here.
     feedScope: "for_you", feedCursor: null, feedLoading: false, feedError: false,
@@ -67,7 +69,7 @@
     state.user = data.session ? data.session.user : null;
     if (state.user) {
       await loadRedemption();
-      await Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds()]);
+      await Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements()]);
       if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers()]);
       if (isAdmin()) await loadReports();
       // Push pending local edits before pulling the remote copy - without
@@ -81,6 +83,9 @@
       await flushOutbox();
       await pullPrivateRecords();
       await pingActivity();
+      // COMM-130. Claim any non-attendance milestone this device already
+      // crossed before the member joined the community.
+      if (typeof window.syncCommunityMilestones === "function") window.syncCommunityMilestones();
     }
     rerender();
   }
@@ -2137,6 +2142,169 @@
     </div>`;
   }
 
+  // ---- Achievement engine client wiring + unlock celebration ----------
+  // COMM-130/131/134. The offline app detects non-attendance milestones
+  // (session count, week streak, PR count, first Rx, tenure) and hands the
+  // crossed codes to claimCommunityAchievements(). That records them with the
+  // ach_claim RPC (service-role ach_evaluate is unreachable from the browser
+  // and never fires for a privately logged lift), then announces each row it
+  // actually wrote on the product bus. onAchievementUnlocked() turns that
+  // into a small in-app celebration with an optional share through ach_share.
+  // Nothing here ever auto-posts.
+
+  // Hebrew display copy for the celebration, keyed by definition code. The
+  // canonical seed is docs/community/achievement-seed.md; keep this in step.
+  const COMMUNITY_ACHIEVEMENT_META = {
+    first_workout: { title: "האימון הראשון", explanation: "רשמת אימון ראשון ביומן.", icon: "🔥" },
+    sessions_10: { title: "10 אימונים", explanation: "10 ימי אימון מתועדים.", icon: "🔥" },
+    sessions_25: { title: "25 אימונים", explanation: "25 ימי אימון מתועדים.", icon: "🔥" },
+    sessions_50: { title: "50 אימונים", explanation: "50 ימי אימון מתועדים.", icon: "🥉" },
+    sessions_100: { title: "100 אימונים", explanation: "100 ימי אימון מתועדים.", icon: "🥈" },
+    sessions_250: { title: "250 אימונים", explanation: "250 ימי אימון מתועדים.", icon: "🥇" },
+    consistency_weeks_4: { title: "חודש ברצף", explanation: "רשמת אימון בכל שבוע, ארבעה שבועות ברצף.", icon: "📅" },
+    consistency_weeks_12: { title: "רבעון ברצף", explanation: "רשמת אימון בכל שבוע, שנים עשר שבועות ברצף.", icon: "📅" },
+    consistency_weeks_26: { title: "חצי שנה ברצף", explanation: "רשמת אימון בכל שבוע, עשרים ושישה שבועות ברצף.", icon: "📆" },
+    consistency_weeks_52: { title: "שנה ברצף", explanation: "רשמת אימון בכל שבוע, חמישים ושניים שבועות ברצף.", icon: "🏆" },
+    first_pr: { title: "השיא הראשון", explanation: "שיא אישי ראשון.", icon: "⭐" },
+    pr_10: { title: "10 שיאים", explanation: "10 שיאים אישיים.", icon: "⭐" },
+    pr_25: { title: "25 שיאים", explanation: "25 שיאים אישיים.", icon: "🌟" },
+    pr_50: { title: "50 שיאים", explanation: "50 שיאים אישיים.", icon: "🌟" },
+    pr_100: { title: "100 שיאים", explanation: "100 שיאים אישיים.", icon: "💫" },
+    first_rx: { title: "Rx ראשון", explanation: "רשמת אימון ראשון כ-Rx.", icon: "🏋️" },
+    well_rounded: { title: "אתלט שלם", explanation: "שיא לפחות בכל אחת מחמש קבוצות התרגילים.", icon: "🧩" },
+    anniversary_year_1: { title: "שנה במועדון", explanation: "שנה מתאריך ההצטרפות.", icon: "🎉" },
+    anniversary_year_2: { title: "שנתיים במועדון", explanation: "שנתיים מתאריך ההצטרפות.", icon: "🎉" },
+    anniversary_year_3: { title: "שלוש שנים במועדון", explanation: "שלוש שנים מתאריך ההצטרפות.", icon: "🎉" },
+    anniversary_year_5: { title: "חמש שנים במועדון", explanation: "חמש שנים מתאריך ההצטרפות.", icon: "🎖️" },
+    first_cheer: { title: "עידוד ראשון", explanation: "שלחת עידוד ראשון לחבר/ה.", icon: "👏" },
+    first_comment: { title: "תגובה ראשונה", explanation: "כתבת תגובה ראשונה.", icon: "💬" },
+    supportive_10: { title: "10 עידודים", explanation: "10 עידודים ותגובות תומכות.", icon: "🤝" },
+    welcomed_member: { title: "קבלת פנים", explanation: "עזרת לקבל חבר/ה חדש/ה במועדון.", icon: "🙌" },
+    challenge_finisher: { title: "סיום אתגר", explanation: "השלמת אתגר מועדון.", icon: "🏁" },
+    challenge_winner: { title: "מנצח/ת אתגר", explanation: "מקום ראשון באתגר מועדון.", icon: "🥇" },
+  };
+  function achMeta(code) { return COMMUNITY_ACHIEVEMENT_META[code] || { title: code || "עיטור חדש", explanation: "", icon: "🏅" }; }
+  function achCodeOf(row) { return row && (row.code || (row.achievement_definitions && row.achievement_definitions.code)) || ""; }
+
+  async function loadMyAchievements() {
+    if (!state.user) return;
+    const { data, error } = await client.from("member_achievements")
+      .select("id,visibility,shared_at,unlocked_at,achievement_id,achievement_definitions(code,name,icon)")
+      .eq("user_id", state.user.id)
+      .order("unlocked_at", { ascending: false });
+    state.myAchievements = error ? [] : (data || []);
+  }
+
+  // Called from app.js (window.claimCommunityAchievements) with the codes it
+  // just saw cross their threshold on this device. Returns the rows ach_claim
+  // actually wrote, and fans each out as an ACHIEVEMENT_UNLOCKED product
+  // event so the celebration and the notifications consumer both see it.
+  async function claimCommunityAchievements(codes) {
+    if (!state.user || !state.profile) return [];
+    const list = Array.from(new Set((codes || []).map((c) => String(c)).filter(Boolean))).slice(0, 50);
+    if (!list.length) return [];
+    const { data, error } = await client.rpc("ach_claim", { p_codes: list });
+    if (error) return [];
+    const written = Array.isArray(data) ? data : (data ? [data] : []);
+    if (written.length && Array.isArray(state.myAchievements)) {
+      for (const r of written) {
+        if (!state.myAchievements.some((x) => x.id === r.member_achievement_id)) {
+          state.myAchievements.unshift({ id: r.member_achievement_id, visibility: r.visibility, shared_at: null, unlocked_at: new Date().toISOString(), achievement_definitions: { code: r.code } });
+        }
+      }
+    }
+    for (const r of written) {
+      if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.ACHIEVEMENT_UNLOCKED) {
+        try { window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.ACHIEVEMENT_UNLOCKED, { code: r.code, member_achievement_id: r.member_achievement_id, visibility: r.visibility }); } catch (e) {}
+      }
+    }
+    if (written.length) rerender();
+    return written;
+  }
+  window.claimCommunityAchievements = claimCommunityAchievements;
+
+  function onAchievementUnlocked(payload) {
+    const code = payload && payload.code;
+    if (!code) return;
+    const meta = achMeta(code);
+    state.achUnlock = {
+      code,
+      memberAchievementId: (payload && payload.member_achievement_id) || null,
+      visibility: (payload && payload.visibility) || "club",
+      title: meta.title,
+      explanation: meta.explanation,
+      icon: meta.icon,
+      sharing: false,
+      error: "",
+      showNote: false,
+      note: "",
+    };
+    rerender();
+  }
+  function dismissAchievementUnlock() { state.achUnlock = null; rerender(); }
+  async function shareAchievementUnlock() {
+    const a = state.achUnlock;
+    if (!a || a.sharing) return;
+    if (!a.memberAchievementId || a.visibility === "only_me") { a.error = "לא ניתן לשתף. נסו שוב."; return rerender(); }
+    a.sharing = true;
+    a.error = "";
+    rerender();
+    const { data, error } = await client.rpc("ach_share", { member_achievement_id: a.memberAchievementId, caption: cleanPostBody(a.note), media: [] });
+    if (error || !data) { a.sharing = false; a.error = "לא ניתן לשתף. נסו שוב."; return rerender(); }
+    if (Array.isArray(state.myAchievements)) {
+      const row = state.myAchievements.find((r) => r.id === a.memberAchievementId);
+      if (row) row.shared_at = new Date().toISOString();
+    }
+    state.achUnlock = null;
+    setMessage("העיטור שותף למועדון");
+    if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.POST_CREATED) {
+      try { window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.POST_CREATED, { post_id: data, post_type: "POST_ACHIEVEMENT" }); } catch (e) {}
+    }
+    rerender();
+  }
+  function shareEarnedAchievement(memberAchievementId, code) {
+    const row = (state.myAchievements || []).find((r) => r.id === memberAchievementId);
+    onAchievementUnlocked({ code: code || achCodeOf(row), member_achievement_id: memberAchievementId, visibility: row ? row.visibility : "club" });
+  }
+
+  function renderAchievementUnlockCelebration() {
+    const a = state.achUnlock;
+    if (!a) return "";
+    const canShare = !!a.memberAchievementId && a.visibility !== "only_me";
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="achUnlockTitle" style="align-items:center;padding:0 16px;">
+      <div class="modal-sheet" id="achUnlock" style="border-radius:22px;max-height:90vh;overflow:auto;">
+        <div style="padding:22px 20px calc(env(safe-area-inset-bottom,0px) + 18px);text-align:center;">
+          <div style="font-size:44px;line-height:1;margin-bottom:8px;" aria-hidden="true">${safeText(a.icon)}</div>
+          <div id="achUnlockTitle" style="color:var(--chalk);font-weight:800;font-size:18px;margin-bottom:4px;">עיטור חדש נפתח</div>
+          <div style="color:var(--brass);font-weight:800;font-size:15px;">${safeText(a.title)}</div>
+          ${a.explanation ? `<div style="color:var(--steel);font-size:12.5px;margin-top:6px;">${safeText(a.explanation)}</div>` : ""}
+          ${a.showNote ? `<label class="field" style="margin-top:10px;text-align:right;"><span class="field-label">הערה</span><textarea class="text-input" data-ach-note maxlength="${POST_BODY_MAX}" rows="3">${safeText(a.note || "")}</textarea></label>` : ""}
+          ${a.error ? `<div class="field-error" role="alert" style="margin-top:8px;">${safeText(a.error)}</div>` : ""}
+          <div class="chip-row" style="margin-top:14px;justify-content:center;">
+            ${canShare ? `<button class="chip-btn primary" data-community-action="ach-share"${a.sharing ? " disabled" : ""}>${a.sharing ? "משתף…" : "שיתוף למועדון"}</button>` : ""}
+            ${canShare && !a.showNote ? `<button class="chip-btn" data-community-action="ach-add-note">הוספת הערה</button>` : ""}
+            <button class="chip-btn" data-community-action="ach-not-now">לא עכשיו</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+  function renderMyAchievements() {
+    if (!state.user || !state.profile) return "";
+    const list = Array.isArray(state.myAchievements) ? state.myAchievements : [];
+    const rowsHtml = list.map((r) => {
+      const code = achCodeOf(r);
+      const meta = achMeta(code);
+      const share = r.shared_at
+        ? `<span style="color:var(--steel);font-size:12px;">שותף</span>`
+        : r.visibility === "only_me"
+          ? ""
+          : `<button class="chip-btn" data-community-action="ach-share-later" data-id="${safeText(r.id)}" data-code="${safeText(code)}">שיתוף</button>`;
+      return `<div class="log-row"><span>${safeText(meta.icon)} ${safeText(meta.title)}</span>${share}</div>`;
+    }).join("");
+    return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--brass)", "ההישגים שלי")}${list.length ? `<div class="log-list">${rowsHtml}</div>` : `<div class="empty">אין עדיין הישגים במועדון</div>`}</div>`;
+  }
+
   // ---- Member profile community section (COMM-180) --------------------
   async function viewCommunityProfile(userId) {
     if (!userId) return;
@@ -2221,7 +2389,7 @@
   // rendered by app.js after every tab so a PR prompt or an open composer is
   // not tied to the Community tab being active.
   function renderConfirmDialog() {
-    return renderConfirmSheet() + renderPostComposer() + renderPrSharePrompt() + renderCommunityProfileOverlay();
+    return renderConfirmSheet() + renderPostComposer() + renderPrSharePrompt() + renderAchievementUnlockCelebration() + renderCommunityProfileOverlay();
   }
 
   window.renderCommunityApp = function () {
@@ -2394,7 +2562,7 @@
     const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מתאמנים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין מתאמנים חדשים לאחרונה</div>`}</div>` : "";
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
-    const accountTab = account + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement()
+    const accountTab = account + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderMyAchievements()
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
 
@@ -2505,6 +2673,10 @@
     else if (action === "pr-share") sharePrPrompt();
     else if (action === "pr-not-now") dismissPrPrompt();
     else if (action === "pr-add-note") { if (state.prPrompt) { state.prPrompt.showNote = true; rerender(); } }
+    else if (action === "ach-share") shareAchievementUnlock();
+    else if (action === "ach-not-now") dismissAchievementUnlock();
+    else if (action === "ach-add-note") { if (state.achUnlock) { state.achUnlock.showNote = true; rerender(); } }
+    else if (action === "ach-share-later") shareEarnedAchievement(el.dataset.id, el.dataset.code);
     else if (action === "feed-scope") setFeedScope(el.dataset.scope);
     else if (action === "feed-load-more") loadMoreFeed();
     else if (action === "feed-retry") { state.feedPagesLoaded = 0; loadFeed().then(rerender); rerender(); }
@@ -2546,11 +2718,12 @@
       state.user = session ? session.user : null;
       if (state.user) {
         loadRedemption()
-          .then(() => Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), flushOutbox()]))
+          .then(() => Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), flushOutbox()]))
           .then(() => (isStaff() ? Promise.all([loadInactiveMembers(), loadNewMembers()]) : null))
           .then(() => (isAdmin() ? loadReports() : null))
           .then(pullPrivateRecords)
           .then(pingActivity)
+          .then(() => { if (typeof window.syncCommunityMilestones === "function") window.syncCommunityMilestones(); })
           .then(rerender);
       } else {
         // COMM-114. Whatever the signed-out member had seen is written
@@ -2559,7 +2732,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.commentRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null;
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.commentRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null;
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();
@@ -2582,6 +2755,7 @@
     else if ("captionEdit" in t.dataset && state.captionEdit) state.captionEdit.body = t.value;
     else if ("prNote" in t.dataset && state.prPrompt) state.prPrompt.note = t.value;
     else if ("prAlt" in t.dataset && state.prPrompt && state.prPrompt.photo) state.prPrompt.photo.altText = t.value;
+    else if ("achNote" in t.dataset && state.achUnlock) state.achUnlock.note = t.value;
   });
   document.addEventListener("change", (e) => {
     const t = e.target;
@@ -2605,6 +2779,7 @@
       }
     }
     if (e.key !== "Escape") return;
+    if (state.achUnlock) { e.preventDefault(); dismissAchievementUnlock(); return; }
     if (state.prPrompt) { e.preventDefault(); dismissPrPrompt(); return; }
     if (state.composer) { e.preventDefault(); tryCloseComposer(); return; }
     if (state.profileView) { e.preventDefault(); closeCommunityProfile(); return; }
@@ -2614,5 +2789,12 @@
   // achievements agent's COMM-132; this only reacts to the record it passes.
   if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.PR_CREATED) {
     window.HaimuniaEvents.on(window.PRODUCT_EVENTS.PR_CREATED, onPrCreated);
+  }
+  // COMM-134. Consume ACHIEVEMENT_UNLOCKED from the product bus (COMM-012).
+  // The producer is claimCommunityAchievements() above for client-detected
+  // milestones, or ach_evaluate server-side for community and challenge
+  // unlocks once that path lands. Either way this shows one celebration.
+  if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.ACHIEVEMENT_UNLOCKED) {
+    window.HaimuniaEvents.on(window.PRODUCT_EVENTS.ACHIEVEMENT_UNLOCKED, onAchievementUnlocked);
   }
 })();
