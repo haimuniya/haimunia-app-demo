@@ -9,7 +9,11 @@
     streaks: [], announcements: [], weeklyChallenge: null, weeklyLeaderboard: [], inactiveMembers: [], newMembers: [], redemption: null,
     communityTab: "feed", comments: {}, openComments: {}, fieldErrors: {}, reports: [], confirmDialog: null, signupStarted: false, memberSearch: "", memberResults: [], openShare: {},
     // COMM-120..125 engagement cluster.
-    commentDrafts: {}, commentErrors: {}, commentSending: null, commentEdit: null, openReplies: {}, replyTo: {}, commentRoles: {},
+    commentDrafts: {}, commentErrors: {}, commentSending: null, commentEdit: null, openReplies: {}, replyTo: {},
+    // COMM-124 / COMM-160. One batched, cached user-id -> server role map,
+    // shared by the comment coach emphasis and the coach badge on every
+    // other surface a member is shown.
+    memberRoles: {},
     reactions: {}, reactionError: null, blockedIds: [], blocksLoaded: false, mentionPicker: null,
     composer: null, composerTrigger: null, openPostMenu: null, savedPostIds: {}, captionEdit: null, visibilityEdit: null, prPrompt: null, profileView: null,
     // COMM-130/134 achievements cluster.
@@ -611,6 +615,10 @@
       if (row && row.photo_path) resolvePhotoUrl(row.photo_path);
       for (const m of (row && row.media) || []) if (m && m.storage_path && !m.url) resolvePhotoUrl(m.storage_path);
     }
+    // COMM-160. The post author coach badge reads the same cached server
+    // role set the comments do. One lookup per page; a re-render follows
+    // when it resolves so the badge is not gated on the feed round-trip.
+    if (rows.length) loadMemberRoles(rows.map((r) => r && r.author_id)).then(() => rerender());
     return true;
   }
 
@@ -914,18 +922,23 @@
       .eq("post_id", postId).order("created_at", { ascending: true }).limit(400);
     const rows = error ? [] : (data || []);
     state.comments[postId] = rows;
-    await loadCommentRoles(rows.map((c) => c.author_id));
+    await loadMemberRoles(rows.map((c) => c.author_id));
     rerender();
   }
-  // COMM-124. The coach badge is driven by the server role, not a client
-  // guess: invite_redemptions.role for each comment author, cached.
-  async function loadCommentRoles(ids) {
+  // COMM-124 / COMM-160. The coach badge on every surface a member is shown
+  // (comment, feed post author, profile header, people search, member
+  // directory) is driven by the server role set, never a client guess:
+  // invite_redemptions.role for each user id, looked up once and cached.
+  // Batched so a feed page or a comment thread is a single query.
+  function memberRole(userId) { return (userId && state.memberRoles[userId]) || null; }
+  function isCoachRole(role) { return role === "coach" || role === "head_coach"; }
+  async function loadMemberRoles(ids) {
     const need = [];
-    for (const id of ids) if (id && !(id in state.commentRoles)) need.push(id);
+    for (const id of ids || []) if (id && !(id in state.memberRoles)) need.push(id);
     if (!need.length) return;
-    for (const id of need) state.commentRoles[id] = null;
+    for (const id of need) state.memberRoles[id] = null;
     const { data } = await client.from("invite_redemptions").select("user_id,role").in("user_id", need);
-    for (const r of (data || [])) state.commentRoles[r.user_id] = r.role || null;
+    for (const r of (data || [])) state.memberRoles[r.user_id] = r.role || null;
   }
   function toggleComments(postId) {
     if (state.openComments[postId]) { delete state.openComments[postId]; rerender(); return; }
@@ -1280,7 +1293,11 @@
     // (follows_insert_self checks the same column plus block edges), this
     // is only so the button does not lie.
     const { data, error } = await client.from("profiles").select("id,handle,display_name,bio,avatar_url,allow_follows").or(`handle.ilike.%${q}%,display_name.ilike.%${q}%`).neq("id", state.user.id).limit(20);
-    state.people = error ? [] : (data || []); rerender();
+    state.people = error ? [] : (data || []);
+    rerender();
+    // COMM-160. Resolve the coach badge for the result set from the shared
+    // server role cache, then re-render.
+    loadMemberRoles(state.people.map((p) => p.id)).then(() => rerender());
   }
   // COMM-018. The single client entry point to the server's per-field
   // privacy resolver. Feed, profile, leaderboard and search all resolve a
@@ -1531,8 +1548,8 @@
     const removed = !!c.deleted_at || (!!c.status && c.status !== "active");
     if (isBlockedUser(c.author_id)) return commentPlaceholder("תגובה מוסתרת", opts.reply);
     if (removed) return commentPlaceholder("התגובה נמחקה", opts.reply);
-    const role = state.commentRoles[c.author_id] || null;
-    const isCoach = role === "coach" || role === "head_coach";
+    const role = memberRole(c.author_id);
+    const isCoach = isCoachRole(role);
     const name = c.profiles ? (c.profiles.display_name || "@" + c.profiles.handle) : "חבר/ה";
     const own = c.author_id === meId;
     const editing = state.commentEdit && state.commentEdit.commentId === c.id;
@@ -1730,7 +1747,7 @@
       return btns.join("");
     };
     const rowHtml = (m) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:6px;">
-      <div class="flex gap-10" style="align-items:center;">${avatarHtml(m.display_name || m.handle, 32)}<div><div style="font-weight:700;">${safeText(m.display_name || "@" + m.handle)}</div><div style="color:var(--steel);font-size:11px;">@${safeText(m.handle)} · ${memberRoleLabel(m)}</div></div></div>
+      <div class="flex gap-10" style="align-items:center;">${avatarHtml(m.display_name || m.handle, 32)}<div><div style="font-weight:700;">${safeText(m.display_name || "@" + m.handle)}${isCoachRole(m.role) ? " " + coachBadgeHtml(m.role) : ""}</div><div style="color:var(--steel);font-size:11px;">@${safeText(m.handle)} · ${memberRoleLabel(m)}</div></div></div>
       <div style="color:var(--steel);font-size:11px;">הצטרפ/ה: ${m.redeemed_at ? safeText(String(m.redeemed_at).slice(0, 10)) : "—"} · פעילות אחרונה: ${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</div>
       <div class="footer-note" style="margin:0;font-size:10.5px;">${safeText(m.id)}</div>
       ${m.is_admin ? "" : `<div class="chip-row" style="margin-top:0;">
@@ -1822,9 +1839,12 @@
     const name = authorless ? (opts.clubName || "המועדון") : (postAuthorName(post) || "חבר/ה");
     const avatar = authorless ? CLUB_MARK_HTML : avatarHtml(name);
     const authorId = !authorless && post && post.author_id;
+    // COMM-160. Same coach badge the comments carry, on the post author.
+    const roleBadge = authorId ? coachBadgeHtml(memberRole(authorId)) : "";
+    const nameInner = `${safeText(name)}${roleBadge ? " " + roleBadge : ""}`;
     const nameHtml = authorId
-      ? `<button class="post-author link-btn" data-community-action="view-profile" data-id="${safeText(authorId)}" style="padding:0;font:inherit;color:inherit;font-weight:800;">${safeText(name)}</button>`
-      : `<div class="post-author">${safeText(name)}</div>`;
+      ? `<button class="post-author link-btn" data-community-action="view-profile" data-id="${safeText(authorId)}" style="padding:0;font:inherit;color:inherit;font-weight:800;">${nameInner}</button>`
+      : `<div class="post-author">${nameInner}</div>`;
     return `<div class="post-head">${avatar}<div class="post-head-text">${nameHtml}<div class="post-time">${safeText(relativeTime(postTimestamp(post)))}${opts.badge ? ` · ${safeText(opts.badge)}` : ""}</div></div>${opts.hideMenu ? "" : postMenuHtml(post)}</div>`;
   }
 
@@ -2648,7 +2668,14 @@
     if (!state.profileView || state.profileView.userId !== userId) return;
     state.profileView.loading = false;
     if (error || !data) state.profileView.error = true;
-    else state.profileView.data = data;
+    else {
+      state.profileView.data = data;
+      // COMM-160. community_profile already returns the server role; seed the
+      // shared cache so the same badge shows here and on any surface opened
+      // next, and resolve the roles of the authors on the Posts tab.
+      if (data.role != null) state.memberRoles[userId] = data.role;
+      loadMemberRoles((Array.isArray(data.posts) ? data.posts : []).map((p) => p && p.author_id)).then(() => rerender());
+    }
     rerender();
   }
   function closeCommunityProfile() { state.profileView = null; rerender(); }
@@ -2704,7 +2731,7 @@
             <div class="flex gap-10" style="align-items:center;min-width:0;">
               ${avatarHtml(name, 44)}
               <div style="min-width:0;">
-                <div id="profileViewTitle" style="font-weight:800;font-size:16px;">${safeText(name)}</div>
+                <div id="profileViewTitle" style="font-weight:800;font-size:16px;">${safeText(name)}${isCoachRole(d.role) ? " " + coachBadgeHtml(d.role) : ""}</div>
                 <div style="color:var(--steel);font-size:12px;">${roleLabel ? safeText(roleLabel) : ""}${d.member_since ? ` · חבר/ה מאז ${safeText(String(d.member_since).slice(0, 10))}` : ""}</div>
               </div>
             </div>
@@ -3415,7 +3442,7 @@
       <div class="log-list">${privacyRows}</div>
     </div>`;
 
-    const people = `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--steel)", "מציאת מתאמנים")}<div class="search-box"><input id="communityPeopleSearch" placeholder="חיפוש לפי שם או @handle" aria-label="חיפוש מתאמנים" /></div>${state.people.length ? `<div class="log-list">${state.people.map((person) => `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32)}<div><div style="font-weight:700;">${safeText(person.display_name || "@" + person.handle)}</div><div style="color:var(--steel);font-size:12px;">@${safeText(person.handle)} ${safeText(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="view-profile" data-id="${safeText(person.id)}">פרופיל</button>${person.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${safeText(person.id)}">מעקב</button>`}<button class="chip-btn" data-community-action="block" data-id="${safeText(person.id)}">חסימה</button></div></div>`).join("")}</div>` : ""}</div>`;
+    const people = `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--steel)", "מציאת מתאמנים")}<div class="search-box"><input id="communityPeopleSearch" placeholder="חיפוש לפי שם או @handle" aria-label="חיפוש מתאמנים" /></div>${state.people.length ? `<div class="log-list">${state.people.map((person) => `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32)}<div><div style="font-weight:700;">${safeText(person.display_name || "@" + person.handle)}${isCoachRole(memberRole(person.id)) ? " " + coachBadgeHtml(memberRole(person.id)) : ""}</div><div style="color:var(--steel);font-size:12px;">@${safeText(person.handle)} ${safeText(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="view-profile" data-id="${safeText(person.id)}">פרופיל</button>${person.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${safeText(person.id)}">מעקב</button>`}<button class="chip-btn" data-community-action="block" data-id="${safeText(person.id)}">חסימה</button></div></div>`).join("")}</div>` : ""}</div>`;
 
     const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מתאמנים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין מתאמנים חדשים לאחרונה</div>`}</div>` : "";
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
@@ -3643,7 +3670,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.commentRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {};
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {};
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();
