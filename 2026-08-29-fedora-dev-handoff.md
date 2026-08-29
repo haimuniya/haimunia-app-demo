@@ -179,12 +179,17 @@ Everything else is in the repo: all code, migrations, tests,
 
 ### Finish Phase 1
 
-1. Schema follow-up run 1, may be mid-flight or committed when you arrive:
-   `ach_claim` and the 27-row achievement seed, `add_post_comment` gaining
-   `p_mentions` plus a comment self-delete path, the `community_profile`
-   view finalized to the documented keys, and a `post_media.decorative`
-   column.
-2. Schema follow-up run 2, moderation reshape: `reports` table gains
+1. Schema follow-up run 1: DONE, commit `db7a6ba`. `ach_claim` and the
+   27-row seed, a 4-arg `add_post_comment` writing `comment_mentions`,
+   `comment_delete` for author soft-delete, the `community_profile(user_id)`
+   jsonb function, and `post_media.decorative`.
+2. Schema follow-up run 2, moderation reshape plus the missing post write
+   path. `post_create` does not exist in the database, so publishing a post
+   fails end to end. Add it first: it inserts `workout_posts` and
+   `post_media` rows, checks `community.post.create` and
+   `is_posting_restricted`, emits `POST_CREATED`, and takes the media item
+   shape with `decorative`. Then the moderation reshape: `reports` table
+   gains
    `target_type` and `target_id`, `report_status` enum gains
    `action_taken`, `report()` supersedes `submit_report`, `mod_queue()`,
    `mod_review` becomes 4-arg with `p_expires_at` and a
