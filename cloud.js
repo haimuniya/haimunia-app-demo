@@ -14,12 +14,22 @@
     composer: null, composerTrigger: null, openPostMenu: null, savedPostIds: {}, captionEdit: null, visibilityEdit: null, prPrompt: null, profileView: null,
     // COMM-130/134 achievements cluster.
     myAchievements: [], achUnlock: null,
+    // COMM-140..144 notifications cluster.
+    notifCenter: null, notifUnread: 0, notifUnreadLoaded: false, notifPrefs: {}, notifPrefsLoaded: false, notifPrefSaving: {}, _notifRtUid: null,
     // COMM-110..115 feed cluster. state.feed holds feed_page() rows in the
     // exact order the function returned them and is never re-sorted here.
     feedScope: "for_you", feedCursor: null, feedLoading: false, feedError: false,
     feedLoadingMore: false, feedMoreError: false, feedEnd: false, feedPagesLoaded: 0,
     feedSessionId: null, feedSeen: {}, feedPending: [], club: null };
   const photoUrlCache = {};
+
+  // COMM-141. The notification badge refreshes on a realtime own-row
+  // event. Realtime replication for public.notifications is a Phase 2
+  // schema change (COMM-227); until then subscribe() is a working no-op,
+  // wired now so the badge goes live the moment replication lands.
+  if (client && window.HaimuniaRealtime && typeof window.HaimuniaRealtime.configure === "function") {
+    window.HaimuniaRealtime.configure({ client });
+  }
 
   function safeText(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
   // Coach and admin are both "staff" for the fixed set of powers every
@@ -69,7 +79,7 @@
     state.user = data.session ? data.session.user : null;
     if (state.user) {
       await loadRedemption();
-      await Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements()]);
+      await Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs()]);
       if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers()]);
       if (isAdmin()) await loadReports();
       // Push pending local edits before pulling the remote copy - without
@@ -86,6 +96,8 @@
       // COMM-130. Claim any non-attendance milestone this device already
       // crossed before the member joined the community.
       if (typeof window.syncCommunityMilestones === "function") window.syncCommunityMilestones();
+      // COMM-141. Arm the own-row notification channel for this session.
+      ensureNotifRealtime();
     }
     rerender();
   }
@@ -2385,11 +2397,444 @@
     </div>`;
   }
 
+  // ==== COMM-140..144 notifications ====================================
+  //
+  // The client renders and marks read. Every notification row is created
+  // server-side by a trigger or an event-bus consumer (the table has no
+  // insert grant) - the full trigger set is documented in
+  // docs/community/contracts.md under "Needs from schema, notifications".
+  // Web push is Phase 2 (COMM-229): NOTIF_PUSH_ENABLED stays false, the
+  // Push option renders disabled, no push_subscriptions write happens, and
+  // a stored channel of "push" is read as "in_app".
+  const NOTIF_PUSH_ENABLED = false;
+  const NOTIF_PAGE_SIZE = 20;
+  // COMM-141. Rows older than this are not walked by default.
+  const NOTIF_RECENT_DAYS = 90;
+
+  // The five categories, in display order, with the Hebrew heading each
+  // shows in the centre.
+  const NOTIF_CATEGORIES = [
+    { id: "community", label: "קהילה" },
+    { id: "training", label: "אימונים" },
+    { id: "challenges", label: "אתגרים" },
+    { id: "events", label: "אירועים" },
+    { id: "club", label: "מועדון" },
+  ];
+
+  // Every notification type the server can send in V1. `mode` is how the
+  // centre renders it: an immediate row stands alone, a batched row is one
+  // collapsed group that expands. `pref` is the notification_preferences
+  // key its delivery is gated on (COMM-144). `operational: true` means it
+  // always lands in-app regardless of that preference. `icon` and `title`
+  // are the client copy; the server fills `body` and `deep_link`. The
+  // immediate/batched split here MUST match the server trigger set - see
+  // the routing table in contracts.md.
+  const NOTIF_TYPES = {
+    comment_reply:         { category: "community",  mode: "immediate", pref: "replies",             icon: "↩️", title: "תגובה חדשה לתגובה שלך" },
+    comment_on_post:       { category: "community",  mode: "immediate", pref: "comments",            icon: "💬", title: "תגובה חדשה על הפוסט שלך" },
+    comment_also:          { category: "community",  mode: "batched",   pref: "comments",            icon: "💬", title: "תגובות חדשות בשיחה שהשתתפת בה" },
+    mention:               { category: "community",  mode: "immediate", pref: "mentions",            icon: "@",  title: "תייגו אותך בתגובה" },
+    coach_mention:         { category: "community",  mode: "immediate", pref: "mentions",            icon: "@",  title: "מאמן/ת תייג/ה אותך" },
+    reaction:              { category: "community",  mode: "batched",   pref: "reactions",           icon: "🔥", title: "עידודים חדשים על הפוסט שלך" },
+    feed_activity:         { category: "community",  mode: "batched",   pref: "comments",            icon: "📣", title: "פעילות חדשה בפיד" },
+    achievement_unlocked:  { category: "training",   mode: "immediate", pref: "achievements",        icon: "🏅", title: "פתחת הישג חדש" },
+    friend_achievement:    { category: "training",   mode: "batched",   pref: "friend_achievements", icon: "🎉", title: "חברים פתחו הישגים" },
+    challenge_ending_soon: { category: "challenges", mode: "immediate", pref: "challenges",          icon: "⏳", title: "אתגר מסתיים בקרוב" },
+    challenge_update:      { category: "challenges", mode: "batched",   pref: "challenges",          icon: "🏆", title: "עדכונים באתגר" },
+    event_cancelled:       { category: "events",     mode: "immediate", pref: "events",              icon: "🚫", title: "אירוע בוטל" },
+    announcement:          { category: "club",       mode: "immediate", pref: "announcements", operational: true, icon: "📢", title: "הודעה חשובה מהמועדון" },
+    weekly_recap:          { category: "club",       mode: "batched",   pref: "weekly_recap",        icon: "📅", title: "הסיכום השבועי שלך" },
+  };
+  function notifTypeDef(type) { return NOTIF_TYPES[type] || null; }
+
+  // The Preferences panel in Account lists exactly these, in this order
+  // (COMM-144). Defaults: everything in_app (a missing row means in_app).
+  const NOTIF_PREF_TYPES = [
+    { key: "comments",            label: "תגובות על הפוסטים שלי" },
+    { key: "replies",             label: "תגובות לתגובות שלי" },
+    { key: "mentions",            label: "תיוגים" },
+    { key: "reactions",           label: "עידודים" },
+    { key: "achievements",        label: "הישגים שנפתחו" },
+    { key: "friend_achievements", label: "הישגים של חברים" },
+    { key: "challenges",          label: "אתגרים" },
+    { key: "events",              label: "אירועים" },
+    { key: "announcements",       label: "הודעות מהמועדון" },
+    { key: "weekly_recap",        label: "סיכום שבועי" },
+  ];
+  const NOTIF_PREF_KEYS = new Set(NOTIF_PREF_TYPES.map((t) => t.key));
+  const NOTIF_CHANNELS = ["push", "in_app", "off"];
+
+  // The one place that says how a type is delivered given the member's
+  // stored preferences. The server trigger set applies the same rule
+  // (documented in contracts.md); this copy lets the centre explain a
+  // type and a test pin the mapping. Returns { channel, mode, suppressed }.
+  function notifRoute(type, prefs) {
+    const def = NOTIF_TYPES[type];
+    if (!def) return { channel: "off", mode: "immediate", suppressed: true };
+    let channel = (prefs && prefs[def.pref]) || "in_app";
+    if (NOTIF_CHANNELS.indexOf(channel) < 0) channel = "in_app";
+    if (channel === "push" && !NOTIF_PUSH_ENABLED) channel = "in_app";
+    // Operational announcements always land in-app, muted or not.
+    if (channel === "off" && def.operational) return { channel: "in_app", mode: def.mode, suppressed: false };
+    return { channel: channel, mode: def.mode, suppressed: channel === "off" };
+  }
+  function classifyNotification(row) {
+    const def = notifTypeDef(row && row.type);
+    return def ? def.mode : "immediate";
+  }
+
+  function notifCutoffIso() {
+    return new Date(Date.now() - NOTIF_RECENT_DAYS * 86400000).toISOString();
+  }
+
+  // --- COMM-141 unread badge -------------------------------------------
+  async function loadNotifUnread() {
+    if (!state.user || !client) return;
+    const { data, error } = await client.rpc("notif_unread_count");
+    if (!error) { state.notifUnread = Number(data) || 0; state.notifUnreadLoaded = true; rerender(); }
+  }
+
+  // --- COMM-144 per-type preferences (direct own-row RLS upsert) -------
+  async function loadNotifPrefs() {
+    if (!state.user || !client) return;
+    const { data, error } = await client.from("notification_preferences")
+      .select("type,channel").eq("user_id", state.user.id);
+    const next = {};
+    if (!error && Array.isArray(data)) for (const r of data) next[r.type] = r.channel;
+    state.notifPrefs = next;
+    state.notifPrefsLoaded = !error;
+    rerender();
+  }
+  async function setNotifPref(type, channel) {
+    if (!state.user || !NOTIF_PREF_KEYS.has(type)) return;          // unknown type is ignored
+    if (NOTIF_CHANNELS.indexOf(channel) < 0) return;
+    if (channel === "push" && !NOTIF_PUSH_ENABLED) return;         // push is disabled in V1
+    const prev = state.notifPrefs[type];
+    if (prev === channel) return;
+    state.notifPrefs[type] = channel;
+    state.notifPrefSaving[type] = true;
+    rerender();
+    const { error } = await client.from("notification_preferences").upsert(
+      { user_id: state.user.id, type: type, channel: channel, updated_at: new Date().toISOString() },
+      { onConflict: "user_id,type" });
+    delete state.notifPrefSaving[type];
+    if (error) {
+      if (prev == null) delete state.notifPrefs[type]; else state.notifPrefs[type] = prev;
+      setMessage("לא ניתן לשמור העדפה זו");
+      return;
+    }
+    rerender();
+  }
+
+  // --- COMM-140 the centre: open, page, mark read --------------------
+  async function openNotifCenter() {
+    if (!state.user || !client) return;
+    state.notifCenter = {
+      loading: true, error: false, rows: [], cursor: null, end: false, hasOlder: false,
+      loadingMore: false, moreError: false, expanded: {}, showOlder: false, _focused: false,
+      returnFocus: "feed-notifications",
+    };
+    rerender();
+    await fetchNotifPage(true);
+  }
+  function closeNotifCenter() {
+    const back = state.notifCenter && state.notifCenter.returnFocus;
+    state.notifCenter = null;
+    rerender();
+    if (back) {
+      const el = document.querySelector('[data-community-action="' + back + '"]');
+      if (el && el.focus) el.focus();
+    }
+  }
+  async function fetchNotifPage(first) {
+    const c = state.notifCenter;
+    if (!c) return;
+    if (!first && (c.loadingMore || c.end)) return;
+    if (first) { c.loading = true; c.error = false; } else { c.loadingMore = true; c.moreError = false; }
+    rerender();
+    const { data, error } = await client.rpc("notif_list", { p_cursor: c.cursor, p_limit: NOTIF_PAGE_SIZE });
+    if (!state.notifCenter || state.notifCenter !== c) return;
+    if (error) {
+      if (first) { c.loading = false; c.error = true; } else { c.loadingMore = false; c.moreError = true; }
+      rerender();
+      return;
+    }
+    const raw = Array.isArray(data) ? data : [];
+    let rows = raw.slice();
+    let hitOld = false;
+    if (!c.showOlder) {
+      const cut = notifCutoffIso();
+      const keep = [];
+      for (const r of rows) { if (r.created_at && r.created_at < cut) { hitOld = true; break; } keep.push(r); }
+      rows = keep;
+    }
+    for (const r of rows) { r._wasUnread = !r.read_at; c.rows.push(r); }
+    if (rows.length) c.cursor = rows[rows.length - 1].created_at;
+    c.end = hitOld || raw.length < NOTIF_PAGE_SIZE;
+    c.hasOlder = hitOld;
+    c.loading = false; c.loadingMore = false;
+    rerender();
+    // COMM-140. Opening the centre marks the rows it just showed as seen.
+    if (first) markNotifsSeen(rows);
+  }
+  async function loadMoreNotifs() { await fetchNotifPage(false); }
+  async function notifShowOlder() {
+    const c = state.notifCenter;
+    if (!c) return;
+    c.showOlder = true; c.end = false; c.hasOlder = false;
+    await fetchNotifPage(false);
+  }
+  async function markNotifsSeen(rows) {
+    const targets = (rows || []).filter((r) => !r.read_at);
+    if (!targets.length) return;
+    const ids = targets.map((r) => r.id);
+    const stamp = new Date().toISOString();
+    for (const r of targets) r.read_at = stamp;
+    const prevUnread = Number(state.notifUnread) || 0;
+    state.notifUnread = Math.max(0, prevUnread - ids.length);
+    rerender();
+    for (let i = 0; i < ids.length; i += 100) {
+      const { error } = await client.rpc("notif_mark_read", { p_ids: ids.slice(i, i + 100) });
+      if (error) { for (const r of targets) r.read_at = null; state.notifUnread = prevUnread; rerender(); return; }
+    }
+  }
+  async function markAllNotifsRead() {
+    const c = state.notifCenter;
+    if (!c) return;
+    const targets = c.rows.filter((r) => !r.read_at);
+    if (!targets.length) return;
+    const ids = targets.map((r) => r.id);
+    const stamp = new Date().toISOString();
+    for (const r of targets) r.read_at = stamp;
+    const prevUnread = Number(state.notifUnread) || 0;
+    state.notifUnread = Math.max(0, prevUnread - ids.length);
+    rerender();
+    for (let i = 0; i < ids.length; i += 100) {
+      const { error } = await client.rpc("notif_mark_read", { p_ids: ids.slice(i, i + 100) });
+      if (error) { for (const r of targets) r.read_at = null; state.notifUnread = prevUnread; loadNotifUnread(); rerender(); return; }
+    }
+  }
+  async function markNotifRead(id) {
+    const c = state.notifCenter;
+    const row = c && c.rows.find((r) => r.id === id);
+    if (!row || row.read_at) return;
+    // Optimistic with rollback (COMM-141).
+    row.read_at = new Date().toISOString();
+    state.notifUnread = Math.max(0, (Number(state.notifUnread) || 0) - 1);
+    rerender();
+    const { error } = await client.rpc("notif_mark_read", { p_ids: [id] });
+    if (error) {
+      row.read_at = null;
+      state.notifUnread = (Number(state.notifUnread) || 0) + 1;
+      setMessage("לא ניתן לסמן כנקרא");
+      rerender();
+    }
+  }
+
+  // --- COMM-140/141 deep links ---------------------------------------
+  // The one place that turns a stored in-app route into a real
+  // navigation. The route convention is documented in contracts.md;
+  // source_type/source_id is the fallback when deep_link is absent.
+  function resolveNotifTarget(row) {
+    const link = String((row && row.deep_link) || "");
+    const qi = link.indexOf("?");
+    const path = (qi >= 0 ? link.slice(0, qi) : link).replace(/\/+$/, "");
+    const q = {};
+    if (qi >= 0) for (const part of link.slice(qi + 1).split("&")) {
+      const eqp = part.indexOf("=");
+      if (eqp < 0) continue;
+      q[decodeURIComponent(part.slice(0, eqp))] = decodeURIComponent(part.slice(eqp + 1));
+    }
+    const st = row && row.source_type;
+    const sid = row && row.source_id;
+    if (q.post || st === "post" || st === "comment" || /\/feed(\/|$)/.test(path) && !q.announcement) {
+      return { tab: "feed", post: q.post || (st === "post" ? sid : null), comment: q.comment || (st === "comment" ? sid : null) };
+    }
+    if (q.user || st === "profile") return { tab: "account", profile: q.user || sid };
+    if (q.challenge || st === "challenge" || /\/boards(\/|$)/.test(path)) return { tab: "boards", challenge: q.challenge || sid };
+    if (q.ma || q.achievement || st === "achievement" || /\/achievements(\/|$)/.test(path)) return { tab: "account", achievement: q.ma || q.achievement || sid };
+    if (q.announcement || st === "announcement" || /\/announcement/.test(path)) return { tab: "feed", announcement: q.announcement || sid };
+    if (q.event || st === "event" || /\/events(\/|$)/.test(path)) return { tab: "feed", event: q.event || sid };
+    return { tab: "feed" };
+  }
+  async function openNotif(id) {
+    const c = state.notifCenter;
+    const row = c && c.rows.find((r) => r.id === id);
+    if (!row) return;
+    const target = resolveNotifTarget(row);
+    await markNotifRead(id);
+    closeNotifCenter();
+    setCommunityTab(target.tab || "feed");
+    if (target.post) {
+      state.openComments[target.post] = true;
+      if (target.comment) state.openReplies[target.comment] = true;
+      rerender();
+      setTimeout(() => {
+        const sel = '[data-post-id="' + String(target.post).replace(/"/g, '\\"') + '"]';
+        const node = document.querySelector(sel);
+        if (node && node.scrollIntoView) node.scrollIntoView({ block: "center" });
+      }, 60);
+    } else if (target.profile) {
+      viewCommunityProfile(target.profile);
+    } else {
+      rerender();
+    }
+  }
+
+  // --- COMM-141 realtime own-row refresh ----------------------------
+  function ensureNotifRealtime() {
+    if (!state.user || !client || !window.HaimuniaRealtime) return;
+    const name = "notif-" + state.user.id;
+    const listed = typeof window.HaimuniaRealtime.list === "function"
+      ? window.HaimuniaRealtime.list().some((ch) => ch.name === name) : false;
+    if (state._notifRtUid === state.user.id && listed) return;
+    window.HaimuniaRealtime.subscribe(name,
+      { table: "notifications", event: "*", filter: "user_id=eq." + state.user.id },
+      onNotifRealtime);
+    state._notifRtUid = state.user.id;
+  }
+  function onNotifRealtime(payload) {
+    const evt = payload && (payload.eventType || payload.type);
+    const rec = payload && (payload.new || payload.record);
+    if (evt === "INSERT" && rec) {
+      if (!rec.read_at) state.notifUnread = (Number(state.notifUnread) || 0) + 1;
+      const c = state.notifCenter;
+      if (c && !c.rows.some((r) => r.id === rec.id)) { rec._wasUnread = !rec.read_at; c.rows.unshift(rec); }
+      rerender();
+      return;
+    }
+    // UPDATE or DELETE or an unknown shape: reconcile against the server.
+    loadNotifUnread();
+  }
+
+  // --- COMM-140/142 rendering --------------------------------------
+  function renderNotifRow(r) {
+    const def = notifTypeDef(r.type) || { icon: "🔔", title: r.title || "התראה" };
+    const emphasise = !!r._wasUnread;
+    const title = safeText(r.title || def.title || "");
+    const bodyHtml = r.body ? `<span style="display:block;color:var(--steel);font-size:12.5px;margin-top:2px;">${safeText(r.body)}</span>` : "";
+    return `<button class="log-row" data-community-action="notif-open" data-id="${safeText(r.id)}" data-notif-mode="${safeText(def.mode || "immediate")}" style="width:100%;text-align:right;background:none;border:0;border-inline-start:3px solid ${emphasise ? "var(--energy)" : "transparent"};padding:8px 10px;cursor:pointer;display:flex;gap:10px;align-items:flex-start;">
+      <span aria-hidden="true" style="font-size:18px;line-height:1.2;">${safeText(def.icon)}</span>
+      <span style="flex:1;min-width:0;">
+        <span style="display:block;font-weight:${emphasise ? "800" : "600"};font-size:13px;">${title}</span>
+        ${bodyHtml}
+        <span style="display:block;color:var(--steel);font-size:11px;margin-top:3px;">${safeText(relativeTime(r.created_at))}</span>
+      </span>
+    </button>`;
+  }
+  // COMM-142. A batched notification renders as one collapsed row that
+  // expands. Consecutive rows of the same batched type fold into one
+  // group. Windows are server-side; this only renders what came back.
+  function renderNotifBatchGroup(group, c) {
+    const def = notifTypeDef(group[0].type) || { icon: "🔔", title: group[0].title || "התראה" };
+    const key = group[0].type + ":" + group[0].id;
+    const open = !!c.expanded[key];
+    const emphasise = group.some((g) => g._wasUnread);
+    return `<div class="notif-group" data-notif-group="${safeText(key)}" style="border-inline-start:3px solid ${emphasise ? "var(--energy)" : "transparent"};">
+      <button class="link-btn" data-community-action="notif-toggle-group" data-key="${safeText(key)}" aria-expanded="${open ? "true" : "false"}" style="display:flex;gap:10px;align-items:center;width:100%;text-align:right;padding:8px 10px;">
+        <span aria-hidden="true" style="font-size:18px;">${safeText(def.icon)}</span>
+        <span style="flex:1;min-width:0;">
+          <span style="display:block;font-weight:${emphasise ? "800" : "600"};font-size:13px;">${safeText(def.title)}${group.length > 1 ? " · " + group.length : ""}</span>
+          <span style="display:block;color:var(--steel);font-size:11px;margin-top:3px;">${safeText(relativeTime(group[0].created_at))}</span>
+        </span>
+        <span aria-hidden="true">${open ? "▲" : "▼"}</span>
+      </button>
+      ${open ? `<div class="notif-group-body" style="padding-inline-start:8px;">${group.map(renderNotifRow).join("")}</div>` : ""}
+    </div>`;
+  }
+  function renderNotifCategoryRows(rows, c) {
+    const out = [];
+    let i = 0;
+    while (i < rows.length) {
+      const r = rows[i];
+      if (classifyNotification(r) !== "batched") { out.push(renderNotifRow(r)); i++; continue; }
+      const group = [r];
+      let j = i + 1;
+      while (j < rows.length && rows[j].type === r.type) { group.push(rows[j]); j++; }
+      i = j;
+      out.push(renderNotifBatchGroup(group, c));
+    }
+    return out.join("");
+  }
+  function notifRowCategory(r) {
+    const def = notifTypeDef(r.type);
+    return (def && def.category) || r.category || "community";
+  }
+  function renderNotificationCenter() {
+    const c = state.notifCenter;
+    if (!c) return "";
+    let body;
+    if (c.loading && !c.rows.length) {
+      body = `<div class="log-list" aria-busy="true">${`<div class="log-row" aria-hidden="true"><span style="height:12px;width:70%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`.repeat(5)}</div>`;
+    } else if (c.error && !c.rows.length) {
+      body = `<div class="empty">לא ניתן לטעון התראות.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="notif-retry">ניסיון חוזר</button></div></div>`;
+    } else if (!c.rows.length) {
+      body = `<div class="empty">אין עדיין התראות.</div>`;
+    } else {
+      body = NOTIF_CATEGORIES.map((cat) => {
+        const rows = c.rows.filter((r) => notifRowCategory(r) === cat.id);
+        if (!rows.length) return "";
+        return `<div class="ach-section" style="margin-top:14px;">${sectionHead("var(--blue)", cat.label)}<div class="log-list">${renderNotifCategoryRows(rows, c)}</div></div>`;
+      }).join("");
+    }
+    const moreHtml = c.rows.length && !c.end
+      ? `<div class="chip-row" style="justify-content:center;margin-top:10px;"><button class="chip-btn" data-community-action="notif-load-more"${c.loadingMore ? " disabled" : ""}>${c.loadingMore ? "טוען…" : c.moreError ? "ניסיון חוזר" : "טעינת עוד"}</button></div>`
+      : "";
+    const olderHtml = c.end && c.hasOlder && !c.showOlder
+      ? `<div class="chip-row" style="justify-content:center;margin-top:6px;"><button class="link-btn" data-community-action="notif-show-older">הצגת התראות ישנות יותר</button></div>`
+      : "";
+    const canMarkAll = c.rows.some((r) => !r.read_at);
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="notifCenterTitle" data-notif-center style="align-items:flex-start;padding:20px 12px;">
+      <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:520px;">
+        <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
+          <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <div id="notifCenterTitle" style="font-weight:800;font-size:16px;">התראות</div>
+            <button class="link-btn" data-community-action="notif-close" aria-label="סגירה">סגירה</button>
+          </div>
+          <div class="chip-row" style="margin-top:0;margin-bottom:4px;"><button class="link-btn" data-community-action="notif-mark-all"${canMarkAll ? "" : " disabled"}>סימון הכול כנקרא</button></div>
+          ${body}
+          ${moreHtml}
+          ${olderHtml}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // COMM-144. The Preferences panel, rendered in the Account tab.
+  function renderNotifPrefsPanel() {
+    const rowFor = (t) => {
+      const stored = state.notifPrefs[t.key] || "in_app";
+      const eff = (stored === "push" && !NOTIF_PUSH_ENABLED) ? "in_app" : stored;
+      const saving = !!state.notifPrefSaving[t.key];
+      const btn = (ch, label, disabled) =>
+        `<button type="button" class="chip-btn${eff === ch ? " primary" : ""}" data-community-action="notif-pref" data-type="${t.key}" data-channel="${ch}"${(disabled || saving) ? " disabled" : ""}${disabled ? ' aria-disabled="true" title="בקרוב"' : ""}>${label}</button>`;
+      return `<div class="log-row" style="flex-direction:column;align-items:stretch;gap:6px;">
+        <span style="font-size:13px;">${safeText(t.label)}</span>
+        <div class="chip-row" role="group" aria-label="${safeText(t.label)}" style="margin-top:0;">
+          ${btn("push", "התראת דחיפה · בקרוב", true)}
+          ${btn("in_app", "באפליקציה", false)}
+          ${btn("off", "כבוי", false)}
+        </div>
+      </div>`;
+    };
+    const rows = state.notifPrefsLoaded
+      ? NOTIF_PREF_TYPES.map(rowFor).join("")
+      : `<div class="log-row" aria-hidden="true"><span style="height:12px;width:60%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`.repeat(4);
+    return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--brass)", "העדפות התראות")}
+      <div style="color:var(--steel);font-size:12px;line-height:1.6;margin-bottom:8px;">בחרו איך כל סוג התראה מגיע אליכם. התראות דחיפה יגיעו בגרסה הבאה. הודעות תפעוליות מהמועדון תמיד יופיעו כאן, גם אם כיביתם אותן.</div>
+      <div class="log-list">${rows}</div>
+    </div>`;
+  }
+
+  window.notifRoute = notifRoute;
+  window.classifyNotification = classifyNotification;
+  window.notifResolveTarget = resolveNotifTarget;
+
   // Composed cloud overlay: the confirm sheet plus every posts-cluster dialog,
   // rendered by app.js after every tab so a PR prompt or an open composer is
   // not tied to the Community tab being active.
   function renderConfirmDialog() {
-    return renderConfirmSheet() + renderPostComposer() + renderPrSharePrompt() + renderAchievementUnlockCelebration() + renderCommunityProfileOverlay();
+    return renderConfirmSheet() + renderPostComposer() + renderPrSharePrompt() + renderAchievementUnlockCelebration() + renderCommunityProfileOverlay() + renderNotificationCenter();
   }
 
   window.renderCommunityApp = function () {
@@ -2461,11 +2906,13 @@
       ? `<img src="${safeText(club.image_url)}" alt="" style="width:44px;height:44px;border-radius:14px;object-fit:cover;"/>`
       : avatarHtml((club && club.name) || "המועדון", 44);
     const activeChallenge = club && club.active_challenge ? club.active_challenge : null;
-    const unread = club ? Number(club.unread_notifications || 0) : 0;
-    // TODO COMM-140: the bell opens the notification centre once
-    // notifications ships it. Until then it is a live unread count and a
-    // short note, not a dead icon and not a stolen action name.
-    const bellHtml = `<button class="chip-btn" data-community-action="feed-notifications" aria-label="התראות${unread ? `, ${unread} חדשות` : ""}" style="position:relative;">🔔${unread ? `<span class="tab-badge" aria-hidden="true">${unread}</span>` : ""}</button>`;
+    // COMM-141. notif_unread_count() drives the badge; club_summary's
+    // count is only a first-paint fallback until that RPC resolves.
+    const unread = state.notifUnreadLoaded
+      ? Number(state.notifUnread) || 0
+      : Number((club && club.unread_notifications) || 0);
+    // COMM-140. The bell opens the notification centre.
+    const bellHtml = `<button class="chip-btn" data-community-action="feed-notifications" aria-label="התראות${unread ? `, ${unread} חדשות` : ""}" aria-haspopup="dialog" style="position:relative;">🔔${unread ? `<span class="tab-badge" aria-hidden="true">${unread}</span>` : ""}</button>`;
     const clubTopHtml = club ? `<div class="chart-card" id="communityClubTop" style="margin-bottom:12px;">
       <div class="flex" style="justify-content:space-between;align-items:center;gap:10px;">
         <div class="flex gap-10" style="align-items:center;min-width:0;">
@@ -2562,7 +3009,7 @@
     const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מתאמנים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין מתאמנים חדשים לאחרונה</div>`}</div>` : "";
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
-    const accountTab = account + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderMyAchievements()
+    const accountTab = account + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderMyAchievements() + renderNotifPrefsPanel()
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
 
@@ -2605,6 +3052,16 @@
     // are no longer in the document.
     observeFeedImpressions();
     observeFeedSentinel();
+    // COMM-141. Re-arm the own-row notification channel; setCommunityTab
+    // tears every channel down, so this self-heals the same way the feed
+    // observers above do.
+    ensureNotifRealtime();
+    // COMM-140. Move focus into the notification centre once, when it opens.
+    if (state.notifCenter && !state.notifCenter._focused) {
+      const dlg = document.querySelector("[data-notif-center]");
+      const first = dlg && dlg.querySelector('[data-community-action="notif-close"]');
+      if (first) { first.focus(); state.notifCenter._focused = true; }
+    }
   };
   window.handleCommunityClick = function (el) {
     const action = el.dataset.communityAction;
@@ -2680,9 +3137,16 @@
     else if (action === "feed-scope") setFeedScope(el.dataset.scope);
     else if (action === "feed-load-more") loadMoreFeed();
     else if (action === "feed-retry") { state.feedPagesLoaded = 0; loadFeed().then(rerender); rerender(); }
-    // TODO COMM-140: routes to the notification centre once notifications
-    // ships it. Until then it says so rather than doing nothing at all.
-    else if (action === "feed-notifications") setMessage("מרכז ההתראות יגיע בקרוב");
+    // COMM-140..142 notification centre.
+    else if (action === "feed-notifications") openNotifCenter();
+    else if (action === "notif-close") closeNotifCenter();
+    else if (action === "notif-retry") fetchNotifPage(true);
+    else if (action === "notif-load-more") loadMoreNotifs();
+    else if (action === "notif-show-older") notifShowOlder();
+    else if (action === "notif-mark-all") markAllNotifsRead();
+    else if (action === "notif-open") openNotif(el.dataset.id);
+    else if (action === "notif-toggle-group") { const c = state.notifCenter; if (c) { c.expanded[el.dataset.key] = !c.expanded[el.dataset.key]; rerender(); } }
+    else if (action === "notif-pref") setNotifPref(el.dataset.type, el.dataset.channel);
     // TODO COMM-201: the challenge module is Phase 2. The shortcut lands on
     // the Boards sub-tab, which is where the active challenge lives today.
     else if (action === "open-active-challenge") setCommunityTab("boards");
@@ -2709,7 +3173,10 @@
   // comes first" - backgrounding the app is the last chance to write.
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") flushFeedImpressions();
+    // COMM-141. The unread count refreshes on app focus.
+    else if (document.visibilityState === "visible" && state.user) loadNotifUnread();
   });
+  window.addEventListener("focus", () => { if (state.user) loadNotifUnread(); });
   window.addEventListener("pagehide", flushFeedImpressions);
   window.addEventListener("online", flushOutbox);
   window.addEventListener("haimunia-sync-needed", () => { flushOutbox(); pingActivity(); });
@@ -2718,12 +3185,13 @@
       state.user = session ? session.user : null;
       if (state.user) {
         loadRedemption()
-          .then(() => Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), flushOutbox()]))
+          .then(() => Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), flushOutbox()]))
           .then(() => (isStaff() ? Promise.all([loadInactiveMembers(), loadNewMembers()]) : null))
           .then(() => (isAdmin() ? loadReports() : null))
           .then(pullPrivateRecords)
           .then(pingActivity)
           .then(() => { if (typeof window.syncCommunityMilestones === "function") window.syncCommunityMilestones(); })
+          .then(ensureNotifRealtime)
           .then(rerender);
       } else {
         // COMM-114. Whatever the signed-out member had seen is written
@@ -2732,7 +3200,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.commentRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null;
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.commentRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null;
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();
@@ -2778,7 +3246,22 @@
         if (e.key === "Escape") { e.preventDefault(); const k = state.mentionPicker.key; state.mentionPicker = null; rerender(); restoreCommentFocus(k, t.selectionStart); return; }
       }
     }
+    // COMM-140. The notification centre is a focus-trapped dialog.
+    if (state.notifCenter && e.key === "Tab") {
+      const dlg = document.querySelector("[data-notif-center]");
+      if (dlg) {
+        const nodes = Array.prototype.slice.call(dlg.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+          .filter((n) => !n.disabled && n.getAttribute("aria-hidden") !== "true");
+        if (nodes.length) {
+          const first = nodes[0], last = nodes[nodes.length - 1];
+          if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+          else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }
+      }
+      return;
+    }
     if (e.key !== "Escape") return;
+    if (state.notifCenter) { e.preventDefault(); closeNotifCenter(); return; }
     if (state.achUnlock) { e.preventDefault(); dismissAchievementUnlock(); return; }
     if (state.prPrompt) { e.preventDefault(); dismissPrPrompt(); return; }
     if (state.composer) { e.preventDefault(); tryCloseComposer(); return; }

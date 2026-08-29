@@ -529,6 +529,166 @@ appends `renderComments(post)` inside the article and exposes
   authenticated request, so a member cannot rewrite the body of a
   notification the server sent them.
 
+- Client contract, COMM-140 to 144. The client reads with `notif_list`,
+  marks read with `notif_mark_read`, and reads the badge from
+  `notif_unread_count`. It never selects `notifications` directly. It
+  refreshes the badge on centre open, on app focus, and on a realtime
+  own-row event on `notifications` filtered to `user_id=eq.<self>`
+  (replication for that table is COMM-227, so the subscription is a no-op
+  until then). `notification_preferences` is a direct own-row RLS upsert on
+  `(user_id, type)` with `channel` in `push`, `in_app`, `off`; a missing
+  row is `in_app`. `push` is disabled in the V1 client (`NOTIF_PUSH_ENABLED
+  = false`) and a stored `push` is read as `in_app`. The client renders an
+  immediate notification as its own row and folds a run of same-type
+  batched rows into one collapsed group. It resolves `deep_link` (or
+  `source_type`/`source_id` as a fallback) to a screen and item with the
+  route convention below.
+
+- Deep link route convention (client `resolveNotifTarget`). All routes are
+  `^/[A-Za-z0-9_/?=&.%-]{0,300}$`, matching the `deep_link` CHECK:
+  - `/community/feed?post=<post_id>&comment=<comment_id>` - a comment,
+    reply, mention, or reaction. `comment` is optional.
+  - `/community/account/achievements?ma=<member_achievement_id>` - an
+    achievement unlock.
+  - `/community/feed?announcement=<announcement_id>` - an announcement.
+  - `/community/boards?challenge=<challenge_id>` - a challenge item.
+  - `/community/account/profile?user=<user_id>` - a friend's achievement.
+  - `/community/feed?event=<event_id>` - an event cancellation.
+  A row with no `deep_link` falls back to `source_type` in `post`,
+  `comment`, `achievement`, `announcement`, `challenge`, `event`,
+  `profile` with `source_id`.
+
+## Needs from schema, notifications
+
+Triggers and functions the notifications cluster (COMM-140 to 144) relies
+on and that schema still owns. No migration is written here. The client is
+built against these and the mock registers `notif_list`, `notif_mark_read`
+and `notif_unread_count` so tests pass.
+
+### The immediate / batched / never routing table
+
+The single split, so the trigger set and the client `notifRoute()` agree.
+`notification_batch_window()` is 6 hours.
+
+- Immediate (its own `notifications` row, written now): `comment_reply`,
+  `comment_on_post`, `mention`, `coach_mention`, `achievement_unlocked`,
+  `announcement` (operational, always), `challenge_ending_soon` (joined
+  participants only), `event_cancelled`.
+- Batched (`notif_queue_batched`, rolled up by the flusher into one row per
+  type per window): `reaction`, `comment_also`, `friend_achievement`,
+  `challenge_update`, `feed_activity`, `weekly_recap`.
+- Never generated: a notification per post, per workout, per leaderboard
+  movement. No type exists for these and no trigger enqueues them.
+- A `notification_preferences.channel = 'off'` row suppresses both the
+  immediate insert and the batch enqueue, except `announcement` when the
+  announcement is operational. A missing preference row is `in_app`.
+- Every recipient is filtered by a block edge in either direction. The
+  recipient is never the actor.
+
+### notif_create(p_user uuid, p_type text, p_category text, p_title text, p_body text, p_source_type text, p_source_id uuid, p_deep_link text) returns uuid
+
+- Needed from schema, not built yet.
+- Purpose: the one definer insert path into `notifications` (the table has
+  no insert grant). Called only from a trigger, another definer function,
+  or the service role. No grant to anon or authenticated.
+- De-dupes on `(user_id, type, source_id)` within a short window so a
+  double event does not double-notify (COMM-143 "no duplicate
+  notification for the same event"). Returns null when it de-duped or when
+  the recipient equals the actor.
+- Applies the recipient's `notification_preferences` for the type's `pref`
+  key: an `off` row is a no-op unless the type is operational.
+- Grant execute to nothing; revoke from public, anon, authenticated.
+
+### AFTER INSERT on public.post_comments - notif_on_comment()
+
+- Reply: when `NEW.parent_comment_id` is not null and the parent's
+  `author_id <> NEW.author_id`, `notif_create` for the parent author,
+  type `comment_reply`, category `community`, deep link
+  `/community/feed?post=<NEW.post_id>&comment=<NEW.parent_comment_id>`.
+- Post author (when `<> NEW.author_id`): `comment_on_post` immediate when
+  the author has not previously commented on this post, otherwise
+  `notif_queue_batched(post_author, 'community', 'comment_also',
+  NEW.post_id)`.
+- Mentions: one `mention` per mentioned user (`coach_mention` when the
+  actor's `invite_redemptions.role` is coach or head_coach), gated by
+  `can_view_profile_field(target, 'allow_mentions')` (already false across
+  a block edge) and by the target's `mentions` preference.
+- Contract mismatch to resolve: the mention list is client-only. The
+  engagement contract says `COMMENT_CREATED` carrying `mentions:
+  [{user_id, name}]` is "the whole mention signal" and there is "no
+  `comment_mentions` table in V1 and no client-reachable notification
+  enqueue". A DB trigger on `post_comments` cannot see that array.
+  Options, recommend the third:
+  1. Add a `comment_mentions` table the trigger reads.
+  2. Add a `mentions uuid[]` (or jsonb) column on `post_comments` the
+     client writes and the trigger reads.
+  3. Give `add_post_comment` a `p_mentions uuid[]` argument and have that
+     definer function create the mention notifications itself, after the
+     same `can_view_profile_field` re-check it already implies.
+  Until one lands, COMM-143 "a mention creates an immediate notification"
+  is not wired end to end. The client renders `mention` and `coach_mention`
+  rows correctly the moment the server produces them.
+
+### AFTER INSERT on public.reactions - notif_on_reaction()
+
+- Reads `NEW.user_id` (actor) and the post's `author_id` (recipient). The
+  bus event `REACTION_CREATED` carries only `{ post_id }` and no actor id,
+  which is why this must be a DB trigger built from the row.
+- When `author_id <> NEW.user_id` and no block edge:
+  `notif_queue_batched(author, 'community', 'reaction', NEW.post_id)`.
+  Never immediate. An `off` `reactions` preference suppresses the enqueue.
+
+### Announcement path - notif_on_announcement()
+
+- AFTER INSERT, and AFTER UPDATE of the publish or priority column, on
+  `public.announcements`.
+- Normal priority: fan out `announcement` immediate to members whose
+  `announcements` preference is not `off`, deep link
+  `/community/feed?announcement=<id>`.
+- Operational / important / urgent: fan out to every member regardless of
+  preference (the COMM-142 and COMM-144 operational override). Priority
+  levels themselves are COMM-218 and the urgent path is COMM-219, both
+  Phase 2; in Phase 1 the single important flag is enough.
+- Fan-out cost and any batching for a large club is a schema concern.
+
+### ACHIEVEMENT_UNLOCKED server consumer
+
+- A server-side consumer on the same server bus `ach_evaluate` and
+  `ach_claim` emit on (see "Needs from schema, achievements"). The client
+  bus event of the same name only drives the celebration UI - it is not a
+  notification enqueue and must not become one.
+- For the unlocker: `notif_create(U, 'achievement_unlocked', 'training',
+  ...)` immediate, deep link
+  `/community/account/achievements?ma=<member_achievement_id>`.
+- For each friend of U (`are_friends`) with `show_achievements` on, no
+  block edge, and `friend_achievements` not `off`:
+  `notif_queue_batched(friend, 'training', 'friend_achievement',
+  member_achievement_id)`.
+
+### The batch flusher
+
+- A scheduled job (pg_cron or an Edge Function). Selects
+  `notification_batches` where `next_flush_at <= now() and pending_count >
+  0`. For each row, writes one `notifications` row per type in `pending`
+  (title and body composed from the per-type `count`), keeping the batched
+  type key as `notifications.type` so the client renders it as a batched
+  group, then calls `notif_batch_flushed(user_id, category)`. Deep link
+  points at the category surface, or at `last_source_id` when one type
+  dominates. This is the "flush routing" the 202608280018 note assigns to
+  the notifications agent; it needs a scheduler, which is infra, so it is
+  listed here rather than built.
+
+### Later-phase types, named for completeness
+
+- `challenge_ending_soon` (immediate, joined participants only) and
+  `challenge_update` (batched): COMM-208, Phase 2.
+- `event_cancelled` (immediate): COMM-214 and COMM-215, Phase 2.
+- `weekly_recap` (batched): the `recap_weekly` Edge Function (COMM-220)
+  calls `notif_create(U, 'weekly_recap', 'club', ...)` once per user per
+  week, deep link to the recap surface.
+- `feed_activity` (batched): a catch-all, only ever enqueued, never
+  immediate, never per-post.
+
 ## Identity and privacy
 
 ### redeem_invite_code(p_code text, p_actor_key text) returns text

@@ -198,11 +198,20 @@ ID range COMM-101 to COMM-191.
 
 | ID | Title | Agent | Status |
 |---|---|---|---|
-| COMM-140 | Notification center | notifications | todo |
-| COMM-141 | Notification model read and mark-read wiring | notifications | todo |
-| COMM-142 | Immediate versus batched routing | notifications | todo |
-| COMM-143 | Phase 1 notifications wired | notifications | todo |
-| COMM-144 | Notification preferences per type | notifications | todo |
+| COMM-140 | Notification center | notifications | review |
+| COMM-141 | Notification model read and mark-read wiring | notifications | review |
+| COMM-142 | Immediate versus batched routing | notifications | review |
+| COMM-143 | Phase 1 notifications wired | notifications | partial |
+| COMM-144 | Notification preferences per type | notifications | review |
+
+COMM-143 is `partial`: the client renders every Phase 1 type with the
+right icon, category, copy and deep link, and the mock produces the rows.
+The server trigger set that creates them is documented in
+`docs/community/contracts.md` under "Needs from schema, notifications" and
+is not built here. One open item there: a `post_comments` trigger cannot
+see the client-only mention list, so `add_post_comment` needs a
+`p_mentions uuid[]` argument (or a mentions column) before the mention
+notification is wired end to end.
 
 ### admin-moderation
 

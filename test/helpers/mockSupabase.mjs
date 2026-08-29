@@ -368,6 +368,32 @@ export function createMockSupabase(seedTables = {}) {
           rows("workout_posts").push({ id, author_id: uid, post_type: "POST_ACHIEVEMENT", source_type: "achievement", source_id: rec.achievement_id, created_at: rec.shared_at });
           return Promise.resolve({ data: id, error: null });
         }
+        // COMM-140..144. The three notification RPCs. Notification rows
+        // are created only server-side (the table has no insert grant), so
+        // a test seeds `notifications` directly; these read and mark-read
+        // the caller's own rows the way the shipped functions do.
+        if (name === "notif_list") {
+          const uid = currentUser && currentUser.id;
+          const limit = Math.min(Math.max(Number((args && args.p_limit) || 20), 1), 40);
+          let list = rows("notifications").filter((n) => n.user_id === uid);
+          list = list.slice().sort((a, b) => (a.created_at > b.created_at ? -1 : a.created_at < b.created_at ? 1 : 0));
+          if (args && args.p_cursor) list = list.filter((n) => n.created_at < args.p_cursor);
+          return Promise.resolve({ data: list.slice(0, limit), error: null });
+        }
+        if (name === "notif_mark_read") {
+          const uid = currentUser && currentUser.id;
+          const ids = (args && args.p_ids) || [];
+          if (ids.length > 100) return Promise.resolve({ data: null, error: { message: "at most 100 ids per call" } });
+          const stamp = new Date().toISOString();
+          for (const n of rows("notifications")) {
+            if (n.user_id === uid && ids.indexOf(n.id) >= 0 && !n.read_at) n.read_at = stamp;
+          }
+          return Promise.resolve({ data: null, error: null });
+        }
+        if (name === "notif_unread_count") {
+          const uid = currentUser && currentUser.id;
+          return Promise.resolve({ data: rows("notifications").filter((n) => n.user_id === uid && !n.read_at).length, error: null });
+        }
         if (name === "mark_recovery_verified") {
           const prof = rows("profiles").find((r) => currentUser && r.id === currentUser.id);
           const hasCreds = currentUser && (currentUser.email || rows("__credentials").some((c) => c.userId === currentUser.id));
