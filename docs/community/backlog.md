@@ -208,10 +208,11 @@ COMM-143 is `partial`: the client renders every Phase 1 type with the
 right icon, category, copy and deep link, and the mock produces the rows.
 The server trigger set that creates them is documented in
 `docs/community/contracts.md` under "Needs from schema, notifications" and
-is not built here. One open item there: a `post_comments` trigger cannot
-see the client-only mention list, so `add_post_comment` needs a
-`p_mentions uuid[]` argument (or a mentions column) before the mention
-notification is wired end to end.
+is not built here. The one open item there, that a `post_comments` trigger
+cannot see the client-only mention list, is closed by 202608280021: the
+four-argument `add_post_comment` writes `comment_mentions` and the mention
+notification hangs off an AFTER INSERT trigger on that table, not on
+`post_comments`.
 
 ### admin-moderation
 
@@ -489,6 +490,45 @@ The concurrency assertion is worth one test even though it is awkward: two
 | Table | Boundary to assert |
 |---|---|
 | notification_batches | Own-row read only. No client can insert, update, or delete, which is the assertion that matters: a member who could write here would set their own `next_flush_at` to now and turn the batched channel back into a stream of pings. A second `notif_queue_batched` for the same member, category, and type increments the counter in place rather than adding a row, and does not move `next_flush_at`. A queue call on an empty batch does start a fresh window. `notification_batch_window()` returns 6 hours and matches the column default. |
+
+### Achievement claim and seed (202608280020)
+
+One new type, one new function, no new table.
+
+| Function or data | Boundary to assert |
+|---|---|
+| ach_claim(p_codes text[]) | Writes `user_id` from `auth.uid()` only, never from the payload. A null or empty array returns nothing and raises nothing. 51 codes raises. A code whose definition is disabled, is `ATTENDANCE_RECORDED`, or lacks `config->>'client_claimable' = 'true'` is absent from the result and writes no row, and it is ignored rather than raised alongside a valid code in the same array. A second claim of a non-repeatable code returns nothing the second time. A member with a null `recovery_verified_at` raises `recovery method required`. The 31st call in 10 minutes raises `rate_limited`. |
+| achievement_definitions seed | 27 non-attendance rows are present and enabled. Every `community`, `challenge`, and `club` category row has no `client_claimable` key, so `ach_claim` refuses it: this is the assertion that keeps a gameable count off the client path. The four attendance rows are still present, still `enabled = false`, and untouched by the seed. Re-running the seed changes no row count. |
+
+### Comment mentions and self-delete (202608280021)
+
+| Table | Boundary to assert |
+|---|---|
+| comment_mentions | Select is the only grant and the only policy: a direct insert, update, or delete fails for everyone, an author and a moderator included. A member reads a row only when they are the mentioned user or the comment author. A third member who can read the comment still reads no mention rows for it, which is the leak that matters. |
+
+Four behaviour assertions on the four-argument `add_post_comment`. A target
+with `allow_mentions` off gets no row while the comment itself still lands.
+A target behind a block edge in either direction gets no row. Self-mention
+and duplicate ids write nothing extra. Eleven mentions raises. The two- and
+three-argument forms must still resolve and behave exactly as before, which
+is the regression that would break the current client.
+
+`comment_delete` needs three: a non-author is refused, the author's call
+sets `status`, `deleted_at`, and `deleted_by` together, and a second call on
+an already-removed comment is a silent no-op that does not overwrite a
+moderator's `deleted_by`. One more that matters more than the shape: the
+soft-deleted comment drops out of `post_comments_visible` for everyone but
+its author and a `community.comment.moderate` holder, and its replies are
+still returned with `parent_comment_id` intact.
+
+### Profile view and decorative media (202608280022)
+
+No new table. One new column and one new function.
+
+| Function or column | Boundary to assert |
+|---|---|
+| community_profile(user_id uuid) | A fully private target (`visible_to_club` off) returns name, role, and member since and nothing else, and specifically no `posts`, `prs`, `achievements`, or counts. A target with `show_prs` off omits the `prs` key entirely rather than returning an empty array, and with it on and no PRs returns `[]`: hidden and empty must stay distinguishable. Same for `achievements`. A block edge in either direction raises `not authorized` rather than returning the header. A deleted target raises `profile not found`. The `posts` array never contains an only_me or friends post the caller cannot see, and `result_text` plus the numeric `metadata` keys are stripped when `show_workout_results` is off. An anonymous or signed-out caller raises. |
+| post_media.decorative | Defaults false, so every existing row is unchanged. An insert marked decorative with alt text stores a null `alt_text`, and so does an insert with whitespace-only alt text. Updating a row to decorative clears its alt text in the same statement. |
 
 ## Open questions for the user
 

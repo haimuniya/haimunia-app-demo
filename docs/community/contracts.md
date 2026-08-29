@@ -115,6 +115,36 @@ before writing against any of the tables below.
   dropping the predicate from that one policy is a one-line later migration
   and changes no other boundary.
 
+## Phase 1 schema notes, continued
+
+Landed by schema in 202608280020 through 202608280022, the RPCs the Phase 1
+client was already built against.
+
+- `ach_claim` is the only client-reachable way to write
+  `member_achievements`, and what keeps it honest is the definition row, not
+  the caller. Anything gameable from a browser is seeded
+  `client_claimable: false` and stays on the `ach_evaluate` path.
+- `comment_mentions` is a select-only table for the mentioned member and the
+  comment author. A third member cannot enumerate who was tagged in a
+  thread. Only the four-argument `add_post_comment` writes it.
+- The mention marker in a comment body, `@[Display Name](uuid)`, is never
+  parsed server-side. Parsing it would make the mention list editable
+  through `comment_edit`, which is exactly the "rewrite an old comment into
+  a new ping" path the posting restriction closes elsewhere.
+- `post_comments.deleted_by` is what lets self-delete and moderator removal
+  coexist on the same two columns. `comment_delete` stamps the author,
+  `comment_moderate` will stamp the moderator, and neither overwrites the
+  other because both return early on an already-removed comment.
+- `post_media.decorative` plus the `post_media_normalize_alt` trigger make
+  "decorative" and "has alt text" impossible to disagree in one row. A
+  decorative item stores a null `alt_text`, and a whitespace-only alt text
+  is stored as null so "no alt on a non-decorative image" is one queryable
+  state.
+- `feed_page` still builds its media objects without `decorative`. Nothing
+  renders differently, because the client blanks `alt_text` for a decorative
+  photo before it is stored, so the alt attribute is empty either way. The
+  key is added the next time that function is re-created.
+
 ## Feed
 
 ### feed_page(cursor timestamptz, limit int, scope text) returns setof feed_item plus next_cursor
@@ -158,11 +188,17 @@ before writing against any of the tables below.
 
 ### post_create(body text, visibility post_visibility, media jsonb, links jsonb) returns uuid
 
+- Status: not built. The client (COMM-102, COMM-103) calls it. No migration
+  creates it yet, so publishing from the composer fails end to end until it
+  lands. It is the largest remaining posts gap.
 - Purpose: create a POST_TEXT or POST_PHOTO post with optional media and
   source links, one consistent write path.
 - Params: `body` up to 1000 chars. `media` up to 4 {storage_path, alt_text,
-  position, width, height}. `links` optional {workout_id, achievement_id,
-  event_id}.
+  decorative, position, width, height}. `decorative` is a boolean and is
+  passed straight through to `post_media.decorative` (202608280022). The
+  `post_media_normalize_alt` trigger owns the alt-text rule, so the function
+  does not have to reconcile a decorative item that still carries alt text.
+  `links` optional {workout_id, achievement_id, event_id}.
 - Returns: the new post id.
 - Auth: caller has `community.post.create` and no active posting restriction.
 - Side effects: inserts posts and post_media, emits POST_CREATED.
@@ -209,23 +245,55 @@ before writing against any of the tables below.
 - Auth: the record owner. Side effects: inserts a POST_PR, improvement is
   recomputed server-side from the record, not trusted from the client.
 
-### community_profile(user_id uuid) returns community_profile_view
+### community_profile(user_id uuid) returns jsonb
 
-- Purpose: the profile community section, with each field filtered by
-  `can_view_profile_field` against the caller.
-- Auth: any member. A fully private target returns name, role, member since
-  only.
-- Client shape consumed by COMM-180 `renderCommunityProfileOverlay`. Every key
-  is optional and an absent key means the field is hidden, so the client omits
-  it rather than rendering a blank. Read keys: `first_name`, `last_name`,
-  `display_name`, `handle`, `role`, `member_since`, `allow_follows`,
-  `follower_count`, `following_count`, `training_frequency`, `current_streak`,
-  `active_challenge` (`{title}` or a string), `recent_achievement` (`{title}`
-  or a string), `recent_workouts` (`[{title|name, date|occurred_on}]`), `prs`
-  (`[{movement|title, result|value}]`, a missing key hides the Progress tab,
-  an empty array shows the no-PRs state), `achievements`
-  (`[{title, badge_icon}]`, same missing versus empty rule), `posts` (an array
-  of the card contract below).
+- Shipped in 202608280022. A function, not a view: it has to answer per
+  caller. The argument is named `user_id`, not `p_user_id`, because
+  PostgREST matches RPC arguments by name and the client already calls
+  `rpc("community_profile", { user_id })`.
+- Purpose: the profile community section in one call, with each field
+  filtered by `can_view_profile_field` against the caller.
+- Auth: security definer, raises `not authorized` when `auth.uid()` is null
+  and when a block edge sits in either direction, raises `profile not found`
+  for a deleted or unknown target. Definer buys exactly one thing: a target
+  with `visible_to_club` off is not selectable through
+  `profiles_read_authenticated`, and the contract still says a fully private
+  member returns name, role, and member since.
+- Returns one jsonb object. Every key past the header is optional and an
+  absent key means the field is hidden, so the client omits it rather than
+  rendering a blank.
+- Always present: `id`, `display_name`, `handle`, `avatar_url`, `role`,
+  `member_since`, `allow_follows`. `role` and `member_since` come from the
+  first `invite_redemptions` row, falling back to `profiles.created_at`.
+  `allow_follows` is false on your own profile so the overlay does not offer
+  a Follow button pointed at yourself. `first_name` and `last_name` stay in
+  the client contract but are never returned: `profiles` has no such
+  columns, and the client already falls back to `display_name` then
+  `handle`.
+- Present only when `visible_to_club` passes: `follower_count`,
+  `following_count`, `active_challenge` (`{id, title, ends_at}`, omitted
+  when there is none), `posts`.
+- Present only when `show_workout_results` passes: `training_frequency` (a
+  display string, sessions per week over the last 28 days, omitted at zero),
+  `current_streak` (consecutive ISO weeks with a logged session, counted the
+  same way the consistency achievements count it, and a week not yet trained
+  does not break it), `recent_workouts` (`[{title, date}]`, up to 5).
+- Present only when `show_prs` passes: `prs` (`[{movement, result,
+  achieved_on}]`, up to 20). A missing key hides the Progress tab, an empty
+  array shows the no-PRs state.
+- Present only when `show_achievements` passes: `achievements`
+  (`[{title, badge_icon, code, unlocked_at}]`, up to 24) and
+  `recent_achievement` (`{title, badge_icon}`, omitted when the list is
+  empty). The per-unlock `visibility` column is applied on top of the
+  toggle, the same three-way rule `member_achievements_read` spells out.
+- `posts` is up to 10 card-contract rows for the target, each still passing
+  `post_visible_to_viewer`, so an only_me or friends post never reaches a
+  viewer the author did not choose. `result_text` and the numeric
+  `metadata` keys are stripped when `show_workout_results` is off, the same
+  way `feed_page` strips them.
+- Every number is derived from posts the member published, not from
+  attendance, which has no source yet (COMM-P03). A member who trains and
+  never posts reads as zero here.
 
 ## Client card contract (renderPostCard)
 
@@ -295,9 +363,9 @@ Markup feed and engagement can rely on:
 
 ### ach_claim(p_codes text[]) returns setof ach_claim_row
 
-- Status: needed from schema, not built yet. See "Needs from schema,
-  achievements" below. The client (COMM-130) is built against this signature
-  and the mock registers it so tests pass.
+- Shipped in 202608280020, with the composite type
+  `public.ach_claim_row(code text, member_achievement_id uuid, visibility
+  text)`. Execute granted to `authenticated`.
 - Purpose: record client-detected non-attendance milestones for the calling
   member. The offline app already computes session counts, summed PR counts,
   week streaks, first Rx, and membership tenure from data on the device. The
@@ -313,7 +381,10 @@ Markup feed and engagement can rely on:
   the result, never an error.
 - Auth: security definer. Raises when `auth.uid()` is null. Requires
   `is_community_member()`. Every row is written with the caller's own
-  `user_id`, never a value from the payload.
+  `user_id`, never a value from the payload. Rate limited at 30 calls per 10
+  minutes under the `ach_claim` action key, which raises `rate_limited`. The
+  limit exists because a repeatable client-claimable definition would
+  otherwise be an unbounded insert loop.
 - Accepts a code only when its definition is `enabled`, its `trigger_type` is
   not `ATTENDANCE_RECORDED`, and its `config->>'client_claimable'` is
   `'true'`. Every other code in the array is ignored, not rejected. This is
@@ -324,26 +395,34 @@ Markup feed and engagement can rely on:
   qualifying code, copying `visibility` from the definition. The partial
   unique index `member_achievements_once_idx` enforces once-per-non-repeatable
   under concurrency, so a lost race is swallowed, not surfaced. A repeatable
-  definition writes a fresh row each call. Emits `ACHIEVEMENT_UNLOCKED`
-  server-side per inserted row. Idempotent for non-repeatable codes.
+  definition writes a fresh row each call. Idempotent for non-repeatable
+  codes.
+- It does not emit `ACHIEVEMENT_UNLOCKED` itself. Both unlock paths write one
+  `member_achievements` row, so the single place that sees every unlock is an
+  AFTER INSERT trigger on that table. See "Needs from schema, achievements".
+
+### achievement_definitions seed
+
+- Shipped in 202608280020. The 27 non-attendance rows from
+  `docs/community/achievement-seed.md`, inserted as `on conflict (code) do
+  update` so a re-run converges. Every client-claimable row carries `config`
+  key `client_claimable: true`. The four attendance rows from 202608280007
+  are not repeated and stay `enabled = false` until COMM-P03.
 
 ## Needs from schema, achievements
 
-Functions and data the achievements cluster (COMM-130 to COMM-134) calls or
-relies on and that schema still owns. No migration is written here.
+Functions the achievements cluster (COMM-130 to COMM-134) relies on and that
+schema still owns. No migration is written here.
 
-- `ach_claim(p_codes text[]) returns setof ach_claim_row` and the
-  `ach_claim_row(code text, member_achievement_id uuid, visibility text)`
-  composite type. Full behaviour above. Grant execute to `authenticated`.
-  `ach_evaluate` and `ach_share` stay as already documented.
-- The non-attendance seed rows for `achievement_definitions`. Content is in
-  `docs/community/achievement-seed.md` as an `on conflict (code) do update`
-  block. Every client-claimable row carries `config` key
-  `client_claimable: true`. The four attendance rows from 202608280007 stay
-  seeded and `enabled = false`, untouched.
-- `ach_evaluate` should emit `ACHIEVEMENT_UNLOCKED` on the same server bus
-  `ach_claim` uses, so the notifications consumer sees one shape regardless of
-  which path unlocked the row.
+- `ach_evaluate(user_id uuid, trigger text, payload jsonb)`, the service-role
+  event-bus path. Not built. Everything community, challenge, and club shaped
+  in the seed is `client_claimable: false` and unlocks only through it, so
+  those rows cannot be earned at all until it lands.
+- The `ACHIEVEMENT_UNLOCKED` consumer is an AFTER INSERT trigger on
+  `public.member_achievements`, not a per-function emit. That way `ach_claim`
+  and `ach_evaluate` produce one shape and neither can forget to fire. It
+  needs `notif_create`, which notifications still owns, so it lands with that
+  function. See "Needs from schema, notifications".
 
 ## Challenges
 
@@ -397,6 +476,51 @@ relies on and that schema still owns. No migration is written here.
 - Side effects: one `post_comments` row. Depth is checked here and again by
   the `post_comments_depth` trigger, so a future write path cannot skip it.
 
+### add_post_comment(p_post_id uuid, p_body text, p_parent_comment_id uuid, p_mentions uuid[]) returns uuid
+
+- Shipped in 202608280021. Four-argument form, the one the mention path uses.
+- Purpose: create a comment or reply and record its accepted mentions in the
+  same transaction.
+- Params: the first three are the three-argument form, unchanged. `p_mentions`
+  is up to 10 user ids. Null or empty is the same call as the three-argument
+  form. Over 10 raises `at most 10 mentions per comment`, checked before the
+  comment row is written, because a comment that mentions 40 members is a
+  fan-out, not a mention.
+- Auth: security definer. It delegates the whole create path to the
+  three-argument function, so the recovery gate, the posting restriction, the
+  rate limit, the visibility check, and the depth cap are checked in one
+  place and cannot drift between signatures.
+- Each target is de-duplicated, the caller's own id is dropped, and each
+  remaining id must be a live profile and pass
+  `can_view_profile_field(target, 'allow_mentions')`, which is already false
+  across a block edge. A target that fails is skipped, not raised: the client
+  has already rewritten those to plain text, so a raise would turn "your
+  mention did not go through" into "your comment did not go through".
+- Side effects: one `post_comments` row plus one `comment_mentions` row per
+  accepted target.
+
+### comment_delete(p_comment_id uuid) returns void
+
+- Shipped in 202608280021.
+- Purpose: the soft self-delete path. Sets `status = 'removed'`,
+  `deleted_at = now()`, and `deleted_by = auth.uid()`.
+- Auth: security definer, author only. Deliberately carries no
+  `is_community_member()` and no `is_posting_restricted()` gate: removing
+  your own words is not a community write, and a restricted or not yet
+  verified member must always be able to take their content down. Same
+  reasoning `toggle_reaction` uses for removing your own reaction.
+- Idempotent, and it does not re-stamp. A comment already removed by a
+  moderator returns quietly and keeps its `deleted_by`, so the `admin_actions`
+  row still points at a comment that agrees with it.
+- It is a function rather than a narrow own-row UPDATE policy because a
+  policy sees whole rows, not columns. An own-row UPDATE policy would also
+  hand the author a second body-edit path that skips `comment_edit`'s
+  restriction check and its mandatory `edited_at` stamp. `post_comments`
+  still has no UPDATE grant, so `comment_edit` and `comment_delete` are the
+  complete list of ways a comment can change.
+- The hard-delete policy `post_comments_delete_self` is untouched, so the
+  current `deleteComment` keeps working until the client switches over.
+
 ### add_post_comment(p_post_id uuid, p_body text) returns uuid
 
 - Shipped in 202608270010, rewritten in 202608280005 and again in
@@ -412,9 +536,9 @@ relies on and that schema still owns. No migration is written here.
   `parentCommentId`. Reply depth cap 2 is enforced by the
   `post_comments_depth` trigger, not by a CHECK. `deleteComment` still hard
   deletes under the author-only `post_comments_delete_self` policy, which
-  flattens replies to top level. Switching it to the soft path,
-  `status = 'removed'` plus `deleted_at`, is COMM-122 client work and needs
-  no further migration.
+  flattens replies to top level. The soft path now exists server-side as
+  `comment_delete(p_comment_id)`, shipped in 202608280021, so switching
+  `deleteComment` to call it is client work and needs no further migration.
 
 ### Engagement client contract (renderComments and react), COMM-120 to 125
 
@@ -456,11 +580,15 @@ appends `renderComments(post)` inside the article and exposes
   also false across a block edge. A mention that fails the check is rewritten
   to plain `@Name` text before the write. The surviving mentions ride
   `COMMENT_CREATED` as `mentions: [{ user_id, name }]` (max 10), alongside
-  `{ post_id, comment_id, parent_comment_id, author_id }`. There is no
-  `comment_mentions` table in V1 and no client-reachable notification
-  enqueue, so this event is the whole mention signal. notifications consumes
-  `COMMENT_CREATED` and routes the immediate mention notification per
-  COMM-142.
+  `{ post_id, comment_id, parent_comment_id, author_id }`, and drive the
+  client-side celebration and draft handling only.
+- Superseded in part by 202608280021: the surviving mention ids are also
+  sent as `p_mentions` on the four-argument `add_post_comment`, which
+  re-checks each one with `can_view_profile_field(target, 'allow_mentions')`
+  and writes a `comment_mentions` row per accepted target. That table, not
+  the client event, is what the notification trigger reads, so the mention
+  notification does not depend on the browser telling the truth. The bus
+  event stays as it is and remains client-only.
 
 ## Notifications
 
@@ -612,22 +740,17 @@ The single split, so the trigger set and the client `notifRoute()` agree.
 - Mentions: one `mention` per mentioned user (`coach_mention` when the
   actor's `invite_redemptions.role` is coach or head_coach), gated by
   `can_view_profile_field(target, 'allow_mentions')` (already false across
-  a block edge) and by the target's `mentions` preference.
-- Contract mismatch to resolve: the mention list is client-only. The
-  engagement contract says `COMMENT_CREATED` carrying `mentions:
-  [{user_id, name}]` is "the whole mention signal" and there is "no
-  `comment_mentions` table in V1 and no client-reachable notification
-  enqueue". A DB trigger on `post_comments` cannot see that array.
-  Options, recommend the third:
-  1. Add a `comment_mentions` table the trigger reads.
-  2. Add a `mentions uuid[]` (or jsonb) column on `post_comments` the
-     client writes and the trigger reads.
-  3. Give `add_post_comment` a `p_mentions uuid[]` argument and have that
-     definer function create the mention notifications itself, after the
-     same `can_view_profile_field` re-check it already implies.
-  Until one lands, COMM-143 "a mention creates an immediate notification"
-  is not wired end to end. The client renders `mention` and `coach_mention`
-  rows correctly the moment the server produces them.
+  a block edge) and by the target's `mentions` preference. This part moves
+  to its own trigger, see the next bullet.
+- Mention source, resolved in 202608280021. The trigger reads
+  `public.comment_mentions(comment_id, mentioned_user_id)`, one row per
+  accepted target, written only by the four-argument `add_post_comment`
+  after it re-checks `can_view_profile_field(target, 'allow_mentions')`.
+  The client `COMMENT_CREATED` array is not the source and must not be
+  trusted by any server path. The trigger still applies the target's
+  `mentions` preference, and it must fire AFTER INSERT on
+  `comment_mentions` rather than on `post_comments`, because the mention
+  rows are written after the comment row inside the same transaction.
 
 ### AFTER INSERT on public.reactions - notif_on_reaction()
 
