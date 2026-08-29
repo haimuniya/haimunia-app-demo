@@ -567,6 +567,44 @@ One new composite type `mod_queue_item`, and the functions `report`,
 | mod_review(p_report_id, p_decision, p_note, p_expires_at) | Requires `community.comment.moderate` OR real `is_admin`. `remove` on a post routes through `post_delete`, on a comment through `comment_moderate('remove')`, so a remove leaves two audit rows (`content_delete` + `report_review`). `restrict_temp` / `restrict_permanent` route through `mod_restrict_member` against the content author, which itself needs `community.member.restrict`, so a `comment.moderate`-only caller can pick them and the call then raises. Every decision stamps every `reports` row for the target with `reviewed_by`, `reviewed_at`, `review_note`, sets `status` to `dismissed` for `dismiss` and `action_taken` otherwise, and writes one `report_review` audit row (`before {status}`, `after {status, decision}`). `p_expires_at` is read only for `restrict_temp`. |
 | admin_grant_coach(uuid, text) / admin_grant_coach(uuid) / admin_revoke_coach(uuid) | Real `is_admin` inline. The two-argument form takes `p_role` in `coach` or `head_coach` only; `staff`, `owner`, or anything else raises. The one-argument form still resolves (no default on the two-argument `p_role`, so `admin_grant_coach(uuid)` is not ambiguous) and grants `coach`. Every grant and revoke writes one `role_change` audit row, target_type `member`, `before {role: <prior>}`, `after {role: <new>}`. A revoke of someone already `member` writes nothing. |
 
+### Notification create path (202608280026)
+
+No new table. One column `announcements.important`, `notif_create`, and the
+helpers `notif_dedupe_window`, `notif_pref_key`, `notif_pref_allows`,
+`notif_blocked_between`, `notif_is_operational`. Also re-creates
+`notifications_deep_link_check` with a `{0,255}` regex bound (the
+`{0,300}` original raised `invalid repetition count(s)` on every insert
+with a non-null `deep_link`).
+
+| Function or column | Boundary to assert |
+|---|---|
+| notif_create(...) | No client can call it: `revoke execute` from public, anon, and authenticated, no grant to anyone, so a PostgREST RPC to `notif_create` fails for a member, a coach, and an admin alike. Its effects are only observable through the trigger set. Returns NULL and writes nothing when recipient == actor (except `achievement_unlocked` / `weekly_recap`), when a block edge sits either way, when the recipient has an `off` preference on the mapped key and the row is not operational, or when an identical `(user_id, type, source_id)` row exists inside `notif_dedupe_window()`. Truncates title to 160 and body to 500. |
+| notif_dedupe_window() | Immutable, returns `1 hour`, granted to `authenticated`. |
+| announcements.important | Defaults false. Only `is_staff()` can set it (the existing `announcements_insert_admin` / `announcements_update_admin` policies). A member cannot flip it. |
+| notifications_deep_link_check | A row with `deep_link = '/community/feed?post=<uuid>&comment=<uuid>'` inserts (via a trigger) without raising; a `deep_link` not starting with `/` still fails the CHECK. |
+
+### Notification trigger set (202608280027)
+
+No new table. Five AFTER INSERT / UPDATE triggers plus
+`notif_announcement_fanout`. All trigger functions are `revoke execute`
+from every client role.
+
+| Trigger | Boundary to assert |
+|---|---|
+| notif_on_comment (post_comments) | A first comment by member X on Y's post writes one immediate `comment_on_post` for Y. A second comment by X on the same post writes no `notifications` row and increments `comment_also` in Y's `community` batch in place. A reply writes one `comment_reply` for the parent author (unless that is the replier). X commenting on X's own post writes nothing. A block edge between X and Y suppresses both the immediate row and the batch enqueue. |
+| notif_on_mention (comment_mentions) | Fires on `comment_mentions`, never on `post_comments`: a bare comment with an `@name` string in the body but no accepted `comment_mentions` row produces no `mention` notification. One row per accepted mention. `coach_mention` when the comment author holds `coach` or `head_coach`, else `mention`. A target with `mentions` preference `off`, or a block edge, gets nothing. |
+| notif_on_reaction (reactions) | Never writes an immediate `notifications` row. Increments `reaction` in the post author's `community` batch when author `<> NEW.user_id`, no block edge, and the author's `reactions` preference is not `off`. A reaction on your own post does nothing. |
+| notif_on_announcement (announcements) | A normal announcement writes one immediate `announcement` row for every club member except the author whose `announcements` preference is not `off`. An `important` announcement reaches every member including those with the preference `off`. Flipping `important` false -> true fans out only to members with an explicit `off` row, so no member ever gets two rows for one announcement. The deep link is `/community/feed?announcement=<id>`. |
+| notif_on_achievement (member_achievements) | A `member_achievements` insert for member U writes one immediate `achievement_unlocked` for U (recipient == actor is allowed for this type). Each member in a mutual-follow edge with U, with U's `visible_to_club` and `show_achievements` on, `NEW.visibility <> 'only_me'`, no block edge, and `friend_achievements` not `off`, gets a `friend_achievement` entry in their `training` batch. `only_me` visibility fans out to nobody. |
+
+### Notification batch flusher (202608280028)
+
+No new table. `notif_batch_flush_due` and `notif_category_surface`.
+
+| Function | Boundary to assert |
+|---|---|
+| notif_batch_flush_due(p_limit) | Granted to `service_role` only: no client can call it. Processes only `notification_batches` rows with `next_flush_at <= now()` and `pending_count > 0`. Writes one `notifications` row per key in `pending`, using the batched type key as `notifications.type`, then calls `notif_batch_flushed` so the row's `pending_count` returns to 0. Deep link is `/community/feed?post=<last_source_id>` only when that type is the whole batch and is `reaction` or `comment_also`, otherwise the category surface. Returns the count of rows written. A second call with nothing due returns 0 and writes nothing. NOTE: nothing schedules this yet - a pg_cron entry or scheduled Edge Function is still needed for batched notifications to be delivered. |
+
 ## Open questions for the user
 
 Logged by planner while writing tickets.
