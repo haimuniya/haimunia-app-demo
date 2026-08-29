@@ -27,10 +27,12 @@ test("streaks and the weekly challenge use the top-3-plus-your-rank framing, not
 
 test("comments expand/collapse per post and post through a per-post form, not a shared one", () => {
   assert.match(src, /function toggleComments\(postId\)/);
-  assert.match(src, /async function addComment\(postId, form\)/);
+  // COMM-121: addComment gained an optional parentCommentId for replies.
+  assert.match(src, /async function addComment\(postId, form, parentCommentId\)/);
   assert.match(src, /async function deleteComment\(commentId, postId\)/);
-  assert.match(src, /data-comment-post-id="\$\{safeText\(post\.id\)\}"/);
+  assert.match(src, /data-comment-post-id="\$\{safeText\(postId\)\}"/);
   assert.match(src, /event\.target\.dataset\.commentPostId/);
+  assert.match(src, /event\.target\.dataset\.commentParentId \|\| null/);
 });
 
 test("a photo can be attached when sharing a result, uploaded to the private post-photos bucket under the user's own folder", () => {

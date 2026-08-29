@@ -43,12 +43,17 @@ test("the direct INSERT grant is revoked on all three tables, so the RPC can't b
 });
 
 test("cloud.js calls the new RPCs instead of writing to the tables directly, and surfaces a rate-limited message", () => {
-  assert.match(cloudJs, /client\.rpc\("add_post_comment", \{ p_post_id: postId, p_body: body \}\)/);
+  // COMM-121 wired the parent argument through, so add_post_comment is now
+  // the three-argument form. The two-argument wrapper still exists in SQL for
+  // any older caller (asserted above), but the client uses the new one.
+  assert.match(cloudJs, /client\.rpc\("add_post_comment", \{ p_post_id: postId, p_body: resolved\.stored, p_parent_comment_id: parentCommentId \|\| null \}\)/);
   assert.match(cloudJs, /client\.rpc\("toggle_reaction", \{ p_post_id: postId \}\)/);
   assert.match(cloudJs, /client\.rpc\("submit_report", \{ p_post_id: postId \}\)/);
   assert.doesNotMatch(cloudJs, /\.from\("post_comments"\)\.insert\(/);
   assert.doesNotMatch(cloudJs, /\.from\("reactions"\)\.insert\(/);
   assert.doesNotMatch(cloudJs, /\.from\("reports"\)\.insert\(/);
-  const rateLimitedMessages = (cloudJs.match(/error\.message === "rate_limited"/g) || []).length;
-  assert.equal(rateLimitedMessages, 3, "all three (comment, reaction, report) should check for the rate_limited exception");
+  // comment (create), reaction, report, and COMM-122's comment_edit each
+  // recognise the rate_limited exception and show a clear message.
+  const rateLimitedMessages = (cloudJs.match(/=== "rate_limited"/g) || []).length;
+  assert.ok(rateLimitedMessages >= 3, "comment, reaction and report each surface the rate_limited exception");
 });

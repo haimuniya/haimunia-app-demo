@@ -39,6 +39,7 @@ export function createMockSupabase(seedTables = {}) {
       eq(col, val) { filters.push((r) => r[col] === val); return api; },
       neq(col, val) { filters.push((r) => r[col] !== val); return api; },
       gt(col, val) { filters.push((r) => r[col] > val); return api; },
+      in(col, vals) { const set = new Set(vals || []); filters.push((r) => set.has(r[col])); return api; },
       or() { return api; },
       order(col, opts) { api._orderCol = col; api._orderAsc = !opts || opts.ascending !== false; return api; },
       limit() { return api; },
@@ -280,6 +281,54 @@ export function createMockSupabase(seedTables = {}) {
         // plus password; the mock stamps whenever the current user has a
         // registered credential pair, which is the same precondition the
         // app enforces before it ever calls this.
+        // COMM-120..125 engagement cluster. In-memory stand-ins for the
+        // definer functions so an engagement test does not have to re-register
+        // each one. A test-supplied onRpc() still wins over all of these.
+        if (name === "toggle_reaction") {
+          const pid = args && args.p_post_id;
+          const uid = currentUser && currentUser.id;
+          const rs = rows("reactions");
+          const idx = rs.findIndex((r) => r.post_id === pid && r.user_id === uid && (r.kind || "cheer") === "cheer");
+          if (idx >= 0) { rs.splice(idx, 1); return Promise.resolve({ data: false, error: null }); }
+          rs.push({ post_id: pid, user_id: uid, kind: "cheer", created_at: new Date().toISOString() });
+          return Promise.resolve({ data: true, error: null });
+        }
+        if (name === "add_post_comment") {
+          const pid = args && args.p_post_id;
+          const parent = (args && args.p_parent_comment_id) || null;
+          const body = String((args && args.p_body) || "").slice(0, 1000);
+          const cs = rows("post_comments");
+          if (parent) {
+            const p = cs.find((c) => c.id === parent);
+            if (!p) return Promise.resolve({ data: null, error: { message: "parent comment not found" } });
+            if (p.post_id !== pid) return Promise.resolve({ data: null, error: { message: "parent comment is on another post" } });
+            if (p.parent_comment_id) return Promise.resolve({ data: null, error: { message: "reply depth is capped at 2" } });
+          }
+          const id = `c-${++uidCounter}`;
+          cs.push({ id, post_id: pid, author_id: currentUser && currentUser.id, body, parent_comment_id: parent, created_at: new Date().toISOString(), edited_at: null, deleted_at: null, status: "active" });
+          return Promise.resolve({ data: id, error: null });
+        }
+        if (name === "comment_edit") {
+          const c = rows("post_comments").find((x) => x.id === (args && args.p_comment_id));
+          if (!c) return Promise.resolve({ data: null, error: { message: "comment not found" } });
+          if (c.author_id !== (currentUser && currentUser.id)) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          const body = String((args && args.p_body) || "").slice(0, 1000);
+          if (!body.trim()) return Promise.resolve({ data: null, error: { message: "comment body required" } });
+          c.body = body;
+          c.edited_at = new Date().toISOString();
+          return Promise.resolve({ data: null, error: null });
+        }
+        if (name === "can_view_profile_field") {
+          const target = args && args.p_target;
+          const field = args && args.p_field;
+          const me = currentUser && currentUser.id;
+          if (!target || target === me) return Promise.resolve({ data: true, error: null });
+          const blocked = rows("blocks").some((b) => (b.blocker_id === me && b.blocked_id === target) || (b.blocker_id === target && b.blocked_id === me));
+          if (blocked) return Promise.resolve({ data: false, error: null });
+          const prof = rows("profiles").find((p) => p.id === target);
+          if (prof && field in prof && prof[field] === false) return Promise.resolve({ data: false, error: null });
+          return Promise.resolve({ data: true, error: null });
+        }
         if (name === "mark_recovery_verified") {
           const prof = rows("profiles").find((r) => currentUser && r.id === currentUser.id);
           const hasCreds = currentUser && (currentUser.email || rows("__credentials").some((c) => c.userId === currentUser.id));

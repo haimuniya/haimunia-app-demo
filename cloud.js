@@ -8,6 +8,9 @@
   const state = { configured, client, user: null, profile: null, feed: [], people: [], comparison: [], comparisonForPostId: null, loading: false, message: "", syncEnabled: localStorage.getItem("haimunia-demo:cloudSyncEnabled") === "1",
     streaks: [], announcements: [], weeklyChallenge: null, weeklyLeaderboard: [], inactiveMembers: [], newMembers: [], redemption: null,
     communityTab: "feed", comments: {}, openComments: {}, fieldErrors: {}, reports: [], confirmDialog: null, signupStarted: false, memberSearch: "", memberResults: [], openShare: {},
+    // COMM-120..125 engagement cluster.
+    commentDrafts: {}, commentErrors: {}, commentSending: null, commentEdit: null, openReplies: {}, replyTo: {}, commentRoles: {},
+    reactions: {}, reactionError: null, blockedIds: [], blocksLoaded: false, mentionPicker: null,
     composer: null, composerTrigger: null, openPostMenu: null, savedPostIds: {}, captionEdit: null, visibilityEdit: null, prPrompt: null, profileView: null,
     // COMM-110..115 feed cluster. state.feed holds feed_page() rows in the
     // exact order the function returned them and is never re-sorted here.
@@ -64,7 +67,7 @@
     state.user = data.session ? data.session.user : null;
     if (state.user) {
       await loadRedemption();
-      await Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary()]);
+      await Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds()]);
       if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers()]);
       if (isAdmin()) await loadReports();
       // Push pending local edits before pulling the remote copy - without
@@ -525,31 +528,332 @@
     }, { rootMargin: "200px" });
     feedSentinelObserver.observe(sentinel);
   }
-  async function loadCommentsFor(postId) {
-    const { data, error } = await client.from("post_comments").select("id,body,created_at,author_id,profiles(handle,display_name)").eq("post_id", postId).order("created_at", { ascending: true }).limit(200);
-    state.comments[postId] = error ? [] : (data || []);
+  // ==========================================================================
+  // COMM-120..125  engagement cluster: reactions, comments, replies, mentions,
+  // coach comment emphasis, block effects. The post card (posts cluster) only
+  // exposes the `cheer` / `toggle-comments` hooks and a slot that renders
+  // renderComments(post); everything below is engagement-owned.
+  // ==========================================================================
+
+  const COMMENT_BODY_MAX = 1000;
+  const MENTION_MAX = 10;
+  const REACTOR_AVATARS_SHOWN = 5;
+  // @[Display Name](uuid). Stored verbatim in the comment body and resolved to
+  // a profile link on render. Keyed by member id, so a later display-name
+  // change keeps the link pointing at the right member (COMM-123).
+  const MENTION_MARKER_RE = /@\[([^\]\n]{1,200})\]\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)/g;
+
+  function commentKey(postId, parentId) { return parentId ? String(postId) + ":" + String(parentId) : String(postId); }
+  function selfDisplayName() {
+    return (state.profile && (state.profile.display_name || (state.profile.handle ? "@" + state.profile.handle : ""))) || "אני";
+  }
+  function extractMentions(body) {
+    const re = new RegExp(MENTION_MARKER_RE.source, "g");
+    const seen = {};
+    const out = [];
+    let m;
+    while ((m = re.exec(body))) {
+      if (seen[m[2]]) continue;
+      seen[m[2]] = true;
+      out.push({ user_id: m[2], name: m[1] });
+      if (out.length >= MENTION_MAX) break;
+    }
+    return out;
+  }
+  function mentionMarkersToHtml(body) {
+    return safeText(String(body == null ? "" : body)).replace(new RegExp(MENTION_MARKER_RE.source, "g"),
+      function (full, name, id) {
+        return '<button type="button" class="link-btn mention-chip" data-community-action="view-profile" data-id="' + id + '" style="padding:0;font-weight:700;color:var(--blue);">@' + name + "</button>";
+      });
+  }
+
+  // COMM-125. A block edge in EITHER direction hides that member's comments
+  // and reaction avatars from the viewer. feed_page already anti-joins blocked
+  // authors server-side; this is the comment and reaction read half, a client
+  // echo of the same rule rather than the enforcement point.
+  async function loadBlockedIds() {
+    if (!state.user) { state.blockedIds = []; state.blocksLoaded = true; return; }
+    const ids = {};
+    const a = await client.from("blocks").select("blocked_id").eq("blocker_id", state.user.id);
+    for (const r of (a.data || [])) ids[r.blocked_id] = true;
+    const b = await client.from("blocks").select("blocker_id").eq("blocked_id", state.user.id);
+    for (const r of (b.data || [])) ids[r.blocker_id] = true;
+    state.blockedIds = Object.keys(ids);
+    state.blocksLoaded = true;
+  }
+  function isBlockedUser(userId) { return !!userId && state.blockedIds.indexOf(userId) >= 0; }
+
+  // ---- Reactions (COMM-120) ----------------------------------------------
+
+  function reactionState(postId) {
+    if (state.reactions[postId]) return state.reactions[postId];
+    const row = findFeedPost(postId);
+    const count = row ? Number((row.reaction_count != null ? row.reaction_count : row.cheer_count) || 0) : 0;
+    return { loaded: false, mine: false, list: [], count: count };
+  }
+  function ensureReactionsLoaded(postId) {
+    if (!postId || state.reactions[postId]) return;
+    state.reactions[postId] = { loaded: false, loading: true, mine: false, list: [], count: reactionState(postId).count };
+    loadReactionsFor(postId);
+  }
+  async function loadReactionsFor(postId) {
+    const { data, error } = await client.from("reactions")
+      .select("user_id,profiles(handle,display_name,avatar_url)")
+      .eq("post_id", postId).eq("kind", "cheer").order("created_at", { ascending: true }).limit(200);
+    if (error) { delete state.reactions[postId]; return; }
+    const rows = data || [];
+    state.reactions[postId] = {
+      loaded: true,
+      mine: !!(state.user && rows.some((r) => r.user_id === state.user.id)),
+      list: rows.map((r) => ({ id: r.user_id, name: r.profiles ? (r.profiles.display_name || "@" + r.profiles.handle) : "" })),
+      count: rows.length,
+    };
     rerender();
+  }
+  function syncFeedReactionCount(postId, count) {
+    const row = findFeedPost(postId);
+    if (row) { row.reaction_count = count; row.cheer_count = count; }
+  }
+  async function react(postId) {
+    if (!state.user) return;
+    const before = reactionState(postId);
+    const wasMine = !!before.mine;
+    const others = (before.list || []).filter((r) => r.id !== state.user.id);
+    // Optimistic. Tap adds, tap again removes; the button and the avatar
+    // strip both reflect it before the server answers (COMM-120).
+    const optimistic = {
+      loaded: before.loaded,
+      mine: !wasMine,
+      list: wasMine ? others : [{ id: state.user.id, name: selfDisplayName() }].concat(others),
+      count: Math.max(0, before.count + (wasMine ? -1 : 1)),
+    };
+    state.reactions[postId] = optimistic;
+    syncFeedReactionCount(postId, optimistic.count);
+    state.reactionError = null;
+    rerender();
+    const { error } = await client.rpc("toggle_reaction", { p_post_id: postId });
+    if (error) {
+      state.reactions[postId] = before;
+      syncFeedReactionCount(postId, before.count);
+      state.reactionError = postId;
+      setMessage(error.message === "rate_limited" ? "יותר מדי לחיצות, נסו שוב בעוד כמה דקות" : "לא ניתן היה להגיב כרגע");
+      rerender();
+      return;
+    }
+    if (!wasMine && window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.REACTION_CREATED) {
+      try { window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.REACTION_CREATED, { post_id: postId }); } catch (e) {}
+    }
+    loadReactionsFor(postId);
+  }
+
+  // ---- Comments and replies (COMM-121, COMM-122, COMM-124) --------------
+
+  async function loadCommentsFor(postId) {
+    const { data, error } = await client.from("post_comments")
+      .select("id,body,created_at,edited_at,deleted_at,status,author_id,parent_comment_id,profiles(handle,display_name,avatar_url)")
+      .eq("post_id", postId).order("created_at", { ascending: true }).limit(400);
+    const rows = error ? [] : (data || []);
+    state.comments[postId] = rows;
+    await loadCommentRoles(rows.map((c) => c.author_id));
+    rerender();
+  }
+  // COMM-124. The coach badge is driven by the server role, not a client
+  // guess: invite_redemptions.role for each comment author, cached.
+  async function loadCommentRoles(ids) {
+    const need = [];
+    for (const id of ids) if (id && !(id in state.commentRoles)) need.push(id);
+    if (!need.length) return;
+    for (const id of need) state.commentRoles[id] = null;
+    const { data } = await client.from("invite_redemptions").select("user_id,role").in("user_id", need);
+    for (const r of (data || [])) state.commentRoles[r.user_id] = r.role || null;
   }
   function toggleComments(postId) {
     if (state.openComments[postId]) { delete state.openComments[postId]; rerender(); return; }
     state.openComments[postId] = true;
+    if (!state.blocksLoaded) loadBlockedIds().then(rerender);
     if (!state.comments[postId]) loadCommentsFor(postId); else rerender();
   }
-  async function addComment(postId, form) {
+  function commentErrorMessage(error) {
+    const msg = (error && error.message) || "";
+    if (msg === "rate_limited") return "יותר מדי תגובות, נסו שוב בעוד כמה דקות";
+    if (msg === "posting_restricted") return "החשבון שלכם מוגבל כרגע משליחת תגובות";
+    if (/depth is capped|already has replies/.test(msg)) return "אי אפשר להשיב לתשובה. אפשר להגיב על התגובה המקורית";
+    if (/another post/.test(msg)) return "התגובה שאליה ניסיתם להשיב שייכת לפוסט אחר";
+    if (/no longer available|not found/.test(msg)) return "התגובה שאליה ניסיתם להשיב כבר אינה זמינה";
+    return "שליחת התגובה נכשלה";
+  }
+  // COMM-123. Resolve @[Name](id) markers before the write: a member whose
+  // allow_mentions is off, or on either side of a block edge, is stripped
+  // back to plain "@Name" text and never enters the mention signal.
+  async function resolveCommentMentions(body) {
+    let stored = body;
+    const allowed = [];
+    for (const mn of extractMentions(body)) {
+      let ok = false;
+      try { ok = await canViewProfileField(mn.user_id, "allow_mentions"); } catch (e) { ok = false; }
+      if (ok && !isBlockedUser(mn.user_id)) allowed.push(mn);
+      else stored = stored.split("@[" + mn.name + "](" + mn.user_id + ")").join("@" + mn.name);
+    }
+    return { stored: stored, mentions: allowed };
+  }
+  async function addComment(postId, form, parentCommentId) {
     if (!state.user) return;
-    const body = String(form.elements.body.value || "").trim();
+    const key = commentKey(postId, parentCommentId || null);
+    const raw = String((form.elements && form.elements.body && form.elements.body.value) || "");
+    const body = raw.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "").trim().slice(0, COMMENT_BODY_MAX);
     if (!body) return;
-    const { error } = await client.rpc("add_post_comment", { p_post_id: postId, p_body: body });
-    if (error) return setMessage(error.message === "rate_limited" ? "יותר מדי תגובות, נסו שוב בעוד כמה דקות" : "שליחת התגובה נכשלה");
-    form.reset();
+    // The draft is held in state until the server confirms the write, so a
+    // failed send never drops what the member typed (COMM-121).
+    state.commentDrafts[key] = raw;
+    delete state.commentErrors[key];
+    state.commentSending = key;
+    state.mentionPicker = null;
+    rerender();
+
+    const resolved = await resolveCommentMentions(body);
+    const { data, error } = await client.rpc("add_post_comment", { p_post_id: postId, p_body: resolved.stored, p_parent_comment_id: parentCommentId || null });
+    state.commentSending = null;
+    if (error) {
+      state.commentErrors[key] = commentErrorMessage(error);
+      rerender();
+      return;
+    }
+    delete state.commentDrafts[key];
+    delete state.commentErrors[key];
+    if (parentCommentId) { state.openReplies[parentCommentId] = true; state.replyTo[postId] = null; }
+    if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.COMMENT_CREATED) {
+      try {
+        window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.COMMENT_CREATED, {
+          post_id: postId, comment_id: data || null, parent_comment_id: parentCommentId || null,
+          author_id: state.user.id, mentions: resolved.mentions,
+        });
+      } catch (e) {}
+    }
+    if (typeof form.reset === "function") form.reset();
     await loadCommentsFor(postId);
     await loadFeed();
+  }
+  function retryComment(postId, parentId) {
+    const key = commentKey(postId, parentId || null);
+    const draft = state.commentDrafts[key];
+    if (draft == null) return;
+    addComment(postId, { elements: { body: { value: draft } }, reset: function () {} }, parentId || null);
   }
   async function deleteComment(commentId, postId) {
     if (!state.user) return;
-    await client.from("post_comments").delete().eq("id", commentId).eq("author_id", state.user.id);
+    const list = state.comments[postId] || [];
+    const target = list.find((c) => c.id === commentId);
+    // post_comments_delete_self is author-only. A moderator removal is a
+    // status change through mod_review (COMM-153), not a client delete, so it
+    // is not offered here.
+    if (target && target.author_id !== state.user.id) return;
+    const snapshot = list.slice();
+    state.comments[postId] = list.filter((c) => c.id !== commentId);
+    rerender();
+    const { error } = await client.from("post_comments").delete().eq("id", commentId).eq("author_id", state.user.id);
+    if (error) {
+      state.comments[postId] = snapshot;
+      setMessage("מחיקת התגובה נכשלה");
+      rerender();
+      return;
+    }
     await loadCommentsFor(postId);
     await loadFeed();
+  }
+  function startCommentEdit(commentId, postId) {
+    const list = state.comments[postId] || [];
+    const c = list.find((x) => x.id === commentId);
+    if (!c || c.author_id !== (state.user && state.user.id)) return;
+    state.commentEdit = { commentId: commentId, postId: postId, body: String(c.body || ""), saving: false, error: "" };
+    state.mentionPicker = null;
+    rerender();
+  }
+  function cancelCommentEdit() { state.commentEdit = null; rerender(); }
+  async function saveCommentEdit() {
+    const e = state.commentEdit;
+    if (!e || e.saving) return;
+    const body = String(e.body || "").replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "").trim().slice(0, COMMENT_BODY_MAX);
+    if (!body) { e.error = "אי אפשר לשמור תגובה ריקה"; rerender(); return; }
+    const resolved = await resolveCommentMentions(body);
+    e.saving = true; e.error = ""; rerender();
+    const list = state.comments[e.postId] || [];
+    const target = list.find((x) => x.id === e.commentId);
+    const prev = target ? { body: target.body, edited_at: target.edited_at } : null;
+    if (target) { target.body = resolved.stored; target.edited_at = new Date().toISOString(); }
+    rerender();
+    const { error } = await client.rpc("comment_edit", { p_comment_id: e.commentId, p_body: resolved.stored });
+    if (error) {
+      if (target && prev) { target.body = prev.body; target.edited_at = prev.edited_at; }
+      e.saving = false;
+      e.error = error.message === "rate_limited" ? "יותר מדי עריכות, נסו שוב בעוד כמה דקות"
+        : error.message === "posting_restricted" ? "החשבון שלכם מוגבל כרגע מעריכת תגובות"
+        : "לא ניתן היה לשמור את העריכה";
+      rerender();
+      return;
+    }
+    state.commentEdit = null;
+    await loadCommentsFor(e.postId);
+  }
+  async function reportComment(commentId) {
+    if (!state.user) return;
+    const { error } = await client.rpc("submit_report", { p_comment_id: commentId });
+    if (error && (error.message || "") === "rate_limited") return setMessage("יותר מדי דיווחים, נסו שוב בעוד כמה דקות");
+    setMessage("הדיווח נשלח לבדיקה");
+  }
+
+  // ---- Mention picker (COMM-123) ---------------------------------------
+
+  function onCommentInput(input) {
+    const key = input.dataset.commentKey;
+    state.commentDrafts[key] = input.value;
+    const caret = input.selectionStart == null ? input.value.length : input.selectionStart;
+    const m = /(?:^|\s)@([^\s@]{0,30})$/.exec(input.value.slice(0, caret));
+    if (m) {
+      const q = m[1];
+      const active = state.mentionPicker && state.mentionPicker.key === key;
+      if (active && state.mentionPicker.query === q) return;
+      state.mentionPicker = { key: key, query: q, results: active ? state.mentionPicker.results : [], loading: true, index: 0 };
+      searchMentionPeople(key, q);
+      rerender();
+      restoreCommentFocus(key, caret);
+    } else if (state.mentionPicker && state.mentionPicker.key === key) {
+      state.mentionPicker = null;
+      rerender();
+      restoreCommentFocus(key, caret);
+    }
+  }
+  async function searchMentionPeople(key, query) {
+    const q = String(query || "").trim().replace(/[%_,()]/g, "");
+    let results = [];
+    if (q.length >= 1 && state.user) {
+      const { data } = await client.from("profiles")
+        .select("id,handle,display_name,avatar_url,allow_mentions")
+        .or("handle.ilike.%" + q + "%,display_name.ilike.%" + q + "%")
+        .neq("id", state.user.id).limit(6);
+      results = (data || []).filter((p) => !isBlockedUser(p.id));
+    }
+    if (state.mentionPicker && state.mentionPicker.key === key) {
+      state.mentionPicker.results = results;
+      state.mentionPicker.loading = false;
+      rerender();
+      restoreCommentFocus(key, null);
+    }
+  }
+  function mentionPick(key, id, name) {
+    const cur = state.commentDrafts[key] || "";
+    const replaced = cur.replace(/(^|\s)@([^\s@]*)$/, function (full, pre) { return pre + "@[" + name + "](" + id + ") "; });
+    state.commentDrafts[key] = replaced === cur ? cur + "@[" + name + "](" + id + ") " : replaced;
+    state.mentionPicker = null;
+    rerender();
+    restoreCommentFocus(key, state.commentDrafts[key].length);
+  }
+  function restoreCommentFocus(key, caret) {
+    setTimeout(function () {
+      const el = document.querySelector('[data-comment-input][data-comment-key="' + key + '"]');
+      if (!el) return;
+      el.focus();
+      if (caret != null) { try { el.setSelectionRange(caret, caret); } catch (e) {} }
+    }, 0);
   }
   // No real email is ever collected or sent - a synthetic, RFC 2606
   // "invalid" address is built locally from a username purely so
@@ -707,16 +1011,6 @@
     if (newest && typeof window.dbSetSetting === "function") await window.dbSetSetting(cursorKey, newest);
     if (typeof window.reloadFromDb === "function") { await window.reloadFromDb(); rerender(); }
   }
-  async function react(postId) {
-    if (!state.user) return;
-    // toggle_reaction() does the insert-or-delete atomically server-side
-    // now, rate-limited - the old insert-then-delete-on-conflict here
-    // used to leave a small race between the failed insert and the
-    // follow-up delete.
-    const { error } = await client.rpc("toggle_reaction", { p_post_id: postId });
-    if (error && error.message === "rate_limited") setMessage("יותר מדי לחיצות, נסו שוב בעוד כמה דקות");
-    await loadFeed(); rerender();
-  }
   async function report(postId) {
     if (!state.user) return;
     const { error } = await client.rpc("submit_report", { p_post_id: postId });
@@ -785,9 +1079,16 @@
   }
   async function block(userId) {
     if (!state.user) return;
-    await client.from("blocks").upsert({ blocker_id: state.user.id, blocked_id: userId });
+    const { error } = await client.from("blocks").upsert({ blocker_id: state.user.id, blocked_id: userId });
+    if (error) { setMessage("לא ניתן היה לחסום. נסו שוב"); return; }
     await client.from("follows").delete().eq("follower_id", state.user.id).eq("followed_id", userId);
-    state.people = state.people.filter((person) => person.id !== userId); await loadFeed(); setMessage("המשתמש נחסם");
+    state.people = state.people.filter((person) => person.id !== userId);
+    // COMM-125. Refresh the block set so comments and reaction avatars from
+    // the newly blocked member drop out of the current view too.
+    await loadBlockedIds();
+    state.comments = {}; state.reactions = {};
+    await loadFeed();
+    setMessage("המשתמש נחסם");
   }
   async function deletePost(postId) {
     if (!state.user) return;
@@ -893,6 +1194,7 @@
     else if (c.action === "admin-grant-coach") adminGrantCoach(c.payload.userId);
     else if (c.action === "admin-remove-member") adminRemoveMember(c.payload.userId);
     else if (c.action === "post-delete-rpc") postDeleteViaMenu(c.payload.postId);
+    else if (c.action === "delete-comment") deleteComment(c.payload.commentId, c.payload.postId);
     else if (c.action === "composer-discard") closeComposer();
     else rerender();
   }
@@ -940,14 +1242,139 @@
     const rows = selfIndex >= 3 ? [...top, `<div class="empty" style="padding:4px 0;font-size:16px;">···</div>`, rowHtml(items[selfIndex], selfIndex, true)] : top;
     return `<div class="log-list">${rows.join("")}</div>`;
   }
+  // COMM-120. The reactor avatar strip and total. Rendered inside the
+  // engagement slot so the card markup itself is untouched; shown whenever a
+  // post has reactions or its thread is open.
+  function reactionStripHtml(post) {
+    const pid = post && post.id;
+    if (!pid) return "";
+    const base = reactionState(pid);
+    if (base.count > 0 || state.openComments[pid]) ensureReactionsLoaded(pid);
+    const rs = reactionState(pid);
+    const reactors = (rs.list || []).filter((r) => !isBlockedUser(r.id));
+    const total = Number(rs.count || 0);
+    if (!total && !reactors.length) return "";
+    const avatars = reactors.slice(0, REACTOR_AVATARS_SHOWN)
+      .map((r) => `<span style="display:inline-flex;margin-inline-start:-6px;">${avatarHtml(r.name || "?", 22)}</span>`).join("");
+    const label = rs.mine
+      ? (total <= 1 ? "הגבתם" : `הגבתם ועוד ${total - 1}`)
+      : `${total} הגבות`;
+    return `<div class="reaction-strip flex gap-6" style="align-items:center;margin-top:8px;">${avatars ? `<span class="flex" style="padding-inline-start:6px;">${avatars}</span>` : ""}<span style="color:var(--steel);font-size:11.5px;">${safeText(label)}</span></div>`;
+  }
+  // COMM-124. Text carries the meaning, not colour alone.
+  function coachBadgeHtml(role) {
+    const label = role === "head_coach" ? "מאמן/ת ראשי/ת" : role === "coach" ? "מאמן/ת" : "";
+    if (!label) return "";
+    return `<span class="coach-badge" style="font-size:10px;font-weight:800;color:#0c0c0c;background:var(--brass);border-radius:999px;padding:1px 7px;">${label}</span>`;
+  }
+  function commentPlaceholder(text, reply) {
+    return `<div class="comment-row" style="${reply ? "margin-inline-start:26px;" : ""}"><div style="flex:1;min-width:0;color:var(--steel);font-size:12px;font-style:italic;padding:4px 0;">${safeText(text)}</div></div>`;
+  }
+  function renderCommentBubble(post, c, opts) {
+    opts = opts || {};
+    const meId = state.user && state.user.id;
+    const removed = !!c.deleted_at || (!!c.status && c.status !== "active");
+    if (isBlockedUser(c.author_id)) return commentPlaceholder("תגובה מוסתרת", opts.reply);
+    if (removed) return commentPlaceholder("התגובה נמחקה", opts.reply);
+    const role = state.commentRoles[c.author_id] || null;
+    const isCoach = role === "coach" || role === "head_coach";
+    const name = c.profiles ? (c.profiles.display_name || "@" + c.profiles.handle) : "חבר/ה";
+    const own = c.author_id === meId;
+    const editing = state.commentEdit && state.commentEdit.commentId === c.id;
+    const wrapStyle = (opts.reply ? "margin-inline-start:26px;" : "")
+      + (isCoach ? "border-inline-start:3px solid var(--brass);padding-inline-start:8px;background:rgba(191,167,106,.06);border-radius:8px;" : "");
+    let bodyHtml;
+    if (editing) {
+      const e = state.commentEdit;
+      bodyHtml = `<div class="comment-edit" style="margin-top:4px;">
+        <textarea class="text-input" data-comment-edit-input maxlength="${COMMENT_BODY_MAX}" rows="2" aria-label="עריכת תגובה">${safeText(e.body || "")}</textarea>
+        ${e.error ? `<div class="field-error" role="alert" style="margin-top:4px;">${safeText(e.error)}</div>` : ""}
+        <div class="chip-row" style="margin-top:6px;"><button class="chip-btn" data-community-action="comment-edit-cancel">ביטול</button><button class="chip-btn primary" data-community-action="comment-edit-save"${e.saving ? " disabled" : ""}>${e.saving ? "שומר…" : "שמירה"}</button></div>
+      </div>`;
+    } else {
+      bodyHtml = `<div style="font-size:12.5px;line-height:1.55;"><b>${safeText(name)}</b> ${isCoach ? coachBadgeHtml(role) + " " : ""}${mentionMarkersToHtml(c.body)}</div>`;
+    }
+    const edited = c.edited_at ? ` <span style="color:var(--steel);font-size:10.5px;" title="${safeText(relativeTime(c.edited_at))}">(נערך)</span>` : "";
+    const actions = [];
+    if (!opts.reply) actions.push(`<button class="link-btn" data-community-action="comment-reply" data-post="${safeText(post.id)}" data-id="${safeText(c.id)}">תגובה</button>`);
+    if (own && !editing) {
+      actions.push(`<button class="link-btn" data-community-action="comment-edit" data-post="${safeText(post.id)}" data-id="${safeText(c.id)}">עריכה</button>`);
+      actions.push(`<button class="link-btn" data-community-action="delete-comment" data-id="${safeText(c.id)}" data-post="${safeText(post.id)}" aria-label="מחיקת תגובה">מחיקה</button>`);
+    }
+    if (!own) actions.push(`<button class="link-btn" data-community-action="report-comment" data-id="${safeText(c.id)}">דיווח</button>`);
+    return `<div class="comment-row${isCoach ? " comment-coach" : ""}" style="${wrapStyle}">${avatarHtml(name, 24)}<div style="flex:1;min-width:0;">
+      ${bodyHtml}
+      <div class="flex gap-10" style="margin-top:2px;align-items:center;flex-wrap:wrap;"><span style="color:var(--steel);font-size:11px;">${safeText(relativeTime(c.created_at))}</span>${edited}${actions.join("")}</div>
+    </div></div>`;
+  }
+  function mentionPickerHtml(key) {
+    const p = state.mentionPicker;
+    if (!p || p.key !== key) return "";
+    const items = p.results || [];
+    const inner = p.loading
+      ? `<div style="padding:8px 10px;color:var(--steel);font-size:12px;">מחפש חברים…</div>`
+      : (items.length
+        ? items.map((m, i) => `<button type="button" class="mention-option" role="option" data-community-action="mention-pick" data-key="${safeText(key)}" data-id="${safeText(m.id)}" data-name="${safeText(m.display_name || m.handle)}" aria-selected="${i === (p.index || 0) ? "true" : "false"}" style="display:block;width:100%;text-align:right;padding:8px 10px;background:${i === (p.index || 0) ? "rgba(255,255,255,.06)" : "none"};border:0;color:var(--chalk);font-size:12.5px;cursor:pointer;">${safeText(m.display_name || "@" + m.handle)} <span style="color:var(--steel);">@${safeText(m.handle)}</span></button>`).join("")
+        : `<div style="padding:8px 10px;color:var(--steel);font-size:12px;">אין התאמות</div>`);
+    return `<div class="mention-picker" role="listbox" style="position:absolute;z-index:40;top:100%;inset-inline-start:0;margin-top:4px;min-width:220px;background:#1f2023;border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,.4);max-height:180px;overflow-y:auto;">${inner}</div>`;
+  }
+  function commentComposerHtml(postId, parentId) {
+    const key = commentKey(postId, parentId || null);
+    const draft = state.commentDrafts[key] || "";
+    const err = state.commentErrors[key];
+    const sending = state.commentSending === key;
+    const reply = !!parentId;
+    return `${err ? `<div class="field-error" role="alert" style="margin:6px 0 4px;">${safeText(err)} <button class="link-btn" data-community-action="comment-retry" data-post="${safeText(postId)}"${reply ? ` data-parent="${safeText(parentId)}"` : ""}>ניסיון חוזר</button></div>` : ""}
+      <form data-comment-post-id="${safeText(postId)}"${reply ? ` data-comment-parent-id="${safeText(parentId)}"` : ""} class="flex gap-6" style="margin-top:8px;position:relative;flex-wrap:wrap;">
+        <input class="text-input" name="body" data-comment-input data-comment-key="${safeText(key)}" autocomplete="off" maxlength="${COMMENT_BODY_MAX}" placeholder="${reply ? "השבה לתגובה" : "הוספת תגובה"}" aria-label="${reply ? "השבה לתגובה" : "הוספת תגובה"}" value="${safeText(draft)}"/>
+        <button class="chip-btn primary" type="submit"${sending ? " disabled" : ""}>${sending ? "שולח…" : reply ? "השבה" : "שליחה"}</button>
+        ${mentionPickerHtml(key)}
+      </form>`;
+  }
   function renderComments(post) {
-    const open = !!state.openComments[post.id];
-    if (!open) return "";
-    const list = (state.comments[post.id] || []).map((c) => {
-      const name = c.profiles ? (c.profiles.display_name || "@" + c.profiles.handle) : "";
-      return `<div class="comment-row">${avatarHtml(name, 24)}<div style="flex:1;min-width:0;"><div style="font-size:12.5px;"><b>${safeText(name)}</b> ${safeText(c.body)}</div><div class="flex gap-10" style="margin-top:2px;"><span style="color:var(--steel);font-size:11px;">${relativeTime(c.created_at)}</span>${c.author_id === (state.user && state.user.id) ? `<button class="link-btn" data-community-action="delete-comment" data-id="${safeText(c.id)}" data-post="${safeText(post.id)}" aria-label="מחיקת תגובה">מחיקה</button>` : ""}</div></div></div>`;
-    }).join("") || `<div class="empty" style="padding:6px 0;">אין תגובות עדיין</div>`;
-    return `<div style="margin-top:10px;"><div class="log-list">${list}</div><form data-comment-post-id="${safeText(post.id)}" class="flex gap-6" style="margin-top:8px;"><input class="text-input" name="body" maxlength="280" placeholder="הוספת תגובה" aria-label="הוספת תגובה"/><button class="chip-btn primary" type="submit">שליחה</button></form></div>`;
+    const pid = post && post.id;
+    if (!pid) return "";
+    const strip = reactionStripHtml(post);
+    if (!state.openComments[pid]) return strip;
+
+    const all = state.comments[pid] || [];
+    const byId = {};
+    for (const c of all) byId[c.id] = c;
+    const tops = [];
+    const repliesByParent = {};
+    for (const c of all) {
+      if (!c.parent_comment_id) { tops.push(c); continue; }
+      (repliesByParent[c.parent_comment_id] = repliesByParent[c.parent_comment_id] || []).push(c);
+    }
+    const sortByTime = (a, b) => (a.created_at > b.created_at ? 1 : a.created_at < b.created_at ? -1 : 0);
+
+    const nodeFor = (c) => {
+      const kids = (repliesByParent[c.id] || []).slice().sort(sortByTime);
+      const repliesOpen = !!state.openReplies[c.id];
+      const hidden = isBlockedUser(c.author_id) || !!c.deleted_at || (!!c.status && c.status !== "active");
+      let html = renderCommentBubble(post, c, { reply: false });
+      if (kids.length) {
+        html += `<div class="flex gap-10" style="margin:2px 0 2px 26px;"><button class="link-btn" data-community-action="toggle-replies" data-id="${safeText(c.id)}">${repliesOpen ? "הסתרת תשובות" : `${kids.length} תשובות`}</button></div>`;
+        if (repliesOpen) html += kids.map((k) => renderCommentBubble(post, k, { reply: true })).join("");
+      }
+      if (!hidden && state.replyTo[pid] === c.id) {
+        html += `<div style="margin-inline-start:26px;">${commentComposerHtml(pid, c.id)}</div>`;
+      }
+      return html;
+    };
+
+    // COMM-121 / COMM-122. A reply whose parent is not in the returned set
+    // means the parent was removed (RLS hides it). The reply still carries
+    // parent_comment_id, so render a placeholder parent to hang it under.
+    const orphanHtml = Object.keys(repliesByParent).filter((k) => !byId[k]).map((k) => {
+      const kids = repliesByParent[k].slice().sort(sortByTime);
+      return commentPlaceholder("התגובה נמחקה", false) + kids.map((x) => renderCommentBubble(post, x, { reply: true })).join("");
+    }).join("");
+
+    const listHtml = (tops.slice().sort(sortByTime).map(nodeFor).join("") + orphanHtml)
+      || `<div class="empty" style="padding:6px 0;">התחילו את השיחה</div>`;
+
+    return `${strip}<div style="margin-top:10px;"><div class="log-list">${listHtml}</div>${commentComposerHtml(pid, null)}</div>`;
   }
   function reasonLabel(reason) { return { spam: "ספאם", harassment: "הטרדה", privacy: "פרטיות", inappropriate: "תוכן לא הולם", other: "אחר" }[reason] || reason; }
   function reportStatusLabel(status) { return { open: "פתוח", reviewing: "בטיפול", resolved: "טופל", dismissed: "נדחה" }[status] || status; }
@@ -2035,7 +2462,15 @@
     else if (action === "delete-account") askConfirm({ title: "מחיקת חשבון", message: "הפרופיל והשיתופים יוסרו מיד. המחיקה הסופית תתבצע לאחר 30 יום. להמשיך?", confirmLabel: "מחיקה", destructive: true, action: "delete-account" });
     else if (action === "share-achievement") publishAchievement(el.dataset.id, el.dataset.title, el.dataset.rule);
     else if (action === "toggle-comments") toggleComments(el.dataset.id);
-    else if (action === "delete-comment") deleteComment(el.dataset.id, el.dataset.post);
+    else if (action === "delete-comment") askConfirm({ title: "מחיקת תגובה", message: "למחוק את התגובה? הפעולה לא ניתנת לביטול.", confirmLabel: "מחיקה", destructive: true, action: "delete-comment", payload: { commentId: el.dataset.id, postId: el.dataset.post } });
+    else if (action === "comment-reply") { const p = el.dataset.post; state.replyTo[p] = state.replyTo[p] === el.dataset.id ? null : el.dataset.id; if (state.replyTo[p]) state.openReplies[el.dataset.id] = true; rerender(); }
+    else if (action === "toggle-replies") { const id = el.dataset.id; if (state.openReplies[id]) delete state.openReplies[id]; else state.openReplies[id] = true; rerender(); }
+    else if (action === "comment-edit") startCommentEdit(el.dataset.id, el.dataset.post);
+    else if (action === "comment-edit-save") saveCommentEdit();
+    else if (action === "comment-edit-cancel") cancelCommentEdit();
+    else if (action === "comment-retry") retryComment(el.dataset.post, el.dataset.parent || null);
+    else if (action === "report-comment") reportComment(el.dataset.id);
+    else if (action === "mention-pick") mentionPick(el.dataset.key, el.dataset.id, el.dataset.name);
     else if (action === "set-tab") setCommunityTab(el.dataset.tab);
     else if (action === "verify-recovery") verifyRecovery({ force: true });
     else if (action === "hide-my-leaderboard-result") savePrivacyField("in_leaderboards", false);
@@ -2093,8 +2528,9 @@
       event.preventDefault();
       // COMM-114. The comment interaction is recorded here rather than
       // inside addComment(), which belongs to the engagement cluster.
+      // COMM-121. A reply form carries data-comment-parent-id.
       trackFeedInteraction(event.target.dataset.commentPostId, "comment");
-      addComment(event.target.dataset.commentPostId, event.target);
+      addComment(event.target.dataset.commentPostId, event.target, event.target.dataset.commentParentId || null);
     }
   });
   // COMM-114. "flushed once per feed session, or on view change, whichever
@@ -2110,7 +2546,7 @@
       state.user = session ? session.user : null;
       if (state.user) {
         loadRedemption()
-          .then(() => Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), flushOutbox()]))
+          .then(() => Promise.all([loadProfile(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), flushOutbox()]))
           .then(() => (isStaff() ? Promise.all([loadInactiveMembers(), loadNewMembers()]) : null))
           .then(() => (isAdmin() ? loadReports() : null))
           .then(pullPrivateRecords)
@@ -2123,7 +2559,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null;
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.commentRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null;
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();
@@ -2140,6 +2576,8 @@
     const t = e.target;
     if (!t || !t.dataset) return;
     if ("composerBody" in t.dataset) composerSetBody(t.value);
+    else if ("commentInput" in t.dataset) onCommentInput(t);
+    else if ("commentEditInput" in t.dataset && state.commentEdit) state.commentEdit.body = t.value;
     else if ("composerAlt" in t.dataset) composerSetAlt(t.dataset.composerAlt, t.value);
     else if ("captionEdit" in t.dataset && state.captionEdit) state.captionEdit.body = t.value;
     else if ("prNote" in t.dataset && state.prPrompt) state.prPrompt.note = t.value;
@@ -2154,6 +2592,18 @@
     else if ("prFile" in t.dataset) { const f = t.files && t.files[0]; if (f) prPromptAddPhoto(f); }
   });
   document.addEventListener("keydown", (e) => {
+    // COMM-123. Mention picker keyboard navigation while a comment input has
+    // focus and its picker is open.
+    if (state.mentionPicker) {
+      const t = e.target;
+      if (t && t.dataset && "commentInput" in t.dataset && t.dataset.commentKey === state.mentionPicker.key) {
+        const items = state.mentionPicker.results || [];
+        if (e.key === "ArrowDown") { e.preventDefault(); state.mentionPicker.index = Math.min(Math.max(items.length - 1, 0), (state.mentionPicker.index || 0) + 1); rerender(); restoreCommentFocus(state.mentionPicker.key, t.selectionStart); return; }
+        if (e.key === "ArrowUp") { e.preventDefault(); state.mentionPicker.index = Math.max(0, (state.mentionPicker.index || 0) - 1); rerender(); restoreCommentFocus(state.mentionPicker.key, t.selectionStart); return; }
+        if (e.key === "Enter" && items.length) { e.preventDefault(); const m = items[state.mentionPicker.index || 0]; mentionPick(state.mentionPicker.key, m.id, m.display_name || m.handle); return; }
+        if (e.key === "Escape") { e.preventDefault(); const k = state.mentionPicker.key; state.mentionPicker = null; rerender(); restoreCommentFocus(k, t.selectionStart); return; }
+      }
+    }
     if (e.key !== "Escape") return;
     if (state.prPrompt) { e.preventDefault(); dismissPrPrompt(); return; }
     if (state.composer) { e.preventDefault(); tryCloseComposer(); return; }

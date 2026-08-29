@@ -364,6 +364,52 @@ Markup feed and engagement can rely on:
   `status = 'removed'` plus `deleted_at`, is COMM-122 client work and needs
   no further migration.
 
+### Engagement client contract (renderComments and react), COMM-120 to 125
+
+Finalised by engagement. Owned here, consumed by the posts card shell, which
+appends `renderComments(post)` inside the article and exposes
+`data-community-action="cheer"` and `"toggle-comments"` on `.post-actions`.
+
+- `react(postId)` toggles the single `SUPPORT` reaction. The database keeps
+  `reactions.kind = 'cheer'` and `toggle_reaction(p_post_id)` unchanged. The
+  UI is optimistic: the reactor avatar strip and the count move before the
+  server answers and roll back with a message on failure. On a successful
+  add it emits `REACTION_CREATED` with `{ post_id }`. A removal emits
+  nothing. The `react` feed interaction is still recorded by the card click,
+  not by this function.
+- `renderComments(post)` returns the reactor strip plus, when the thread is
+  open, the comment list and composer. The strip is
+  `<div class="reaction-strip">` with up to 5 `.avatar-badge` nodes and the
+  total. It renders whenever `reaction_count > 0` or the thread is open, so
+  the card markup itself is never touched. A closed thread returns the strip
+  alone, or an empty string when there is nothing to show.
+- A coach or head_coach comment carries `<span class="coach-badge">` with
+  the role label, the wrapper class `comment-coach`, and a tinted
+  inline-start border. The role is read from `invite_redemptions.role` for
+  each author, never guessed.
+- Replies render one indent level under a `data-community-action=
+  "toggle-replies"` control. A reply carries no reply affordance. A reply
+  whose `parent_comment_id` is absent from the returned page renders a
+  "comment removed" placeholder parent. A blocked author's comment renders a
+  neutral "comment hidden" placeholder, and a blocked reactor is dropped
+  from the strip. Block state is `state.blockedIds`, loaded on session start
+  from `blocks` in both directions.
+- Comment drafts live in `state.commentDrafts` keyed by
+  `postId` or `postId:parentCommentId` and are cleared only after the server
+  confirms the write. A failed create or edit keeps the draft and shows a
+  `data-community-action="comment-retry"` control.
+- Mentions: an `@` in the composer opens a member picker. A pick inserts the
+  marker `@[Display Name](uuid)` into the draft. On send, each mention is
+  checked with `can_view_profile_field(target, 'allow_mentions')`, which is
+  also false across a block edge. A mention that fails the check is rewritten
+  to plain `@Name` text before the write. The surviving mentions ride
+  `COMMENT_CREATED` as `mentions: [{ user_id, name }]` (max 10), alongside
+  `{ post_id, comment_id, parent_comment_id, author_id }`. There is no
+  `comment_mentions` table in V1 and no client-reachable notification
+  enqueue, so this event is the whole mention signal. notifications consumes
+  `COMMENT_CREATED` and routes the immediate mention notification per
+  COMM-142.
+
 ## Notifications
 
 ### notif_list(p_cursor timestamptz, p_limit integer) returns setof notifications
