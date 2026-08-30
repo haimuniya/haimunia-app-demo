@@ -56,6 +56,32 @@ test("who's-new and who's-inactive are both staff-only (admin or coach) and call
 test("an admin can pin an announcement as today's note, and it's excluded from the regular list once pinned", () => {
   assert.match(src, /name="pinToday"/);
   assert.match(src, /payload\.pinned_date = todayIso\(\)/);
-  assert.match(src, /const pinnedToday = state\.announcements\.find\(\(a\) => a\.pinned_date === todayIso\(\)\)/);
-  assert.match(src, /otherAnnouncements = state\.announcements\.filter\(\(a\) => a !== pinnedToday\)/);
+  // COMM-218: pinnedToday/otherAnnouncements are derived off liveAnnouncements,
+  // the defensive client-side expiry mirror, rather than state.announcements
+  // directly, but they still key off pinned_date the same way.
+  assert.match(src, /const liveAnnouncements = state\.announcements\.filter\(\(a\) => !isAnnouncementExpired\(a\)\)/);
+  assert.match(src, /const pinnedToday = liveAnnouncements\.find\(\(a\) => a\.pinned_date === todayIso\(\)\)/);
+  assert.match(src, /otherAnnouncements = liveAnnouncements\.filter\(\(a\) => a !== pinnedToday\)/);
+});
+
+// ===== COMM-218 announcement priority levels and expiry =================
+
+test("the composer replaces nothing about the important boolean (never built client-side) and adds a 3-way priority select plus an optional expiry field", () => {
+  assert.match(src, /const ANNOUNCEMENT_PRIORITY_OPTIONS = \[\s*\n\s*\{ value: "normal", label: "רגילה" \},\s*\n\s*\{ value: "important", label: "חשובה" \},\s*\n\s*\{ value: "urgent", label: "דחופה" \},\s*\n\s*\];/);
+  assert.match(src, /<select class="text-input" name="priority">/);
+  assert.match(src, /name="expiresAt" type="datetime-local"/);
+});
+
+test("expires_at must be after the moment of submission, client-side only, with the ticket's exact save-failure copy", () => {
+  assert.match(src, /errors\.expiresAt = "תאריך התפוגה חייב להיות אחרי מועד הפרסום"/);
+  assert.match(src, /setMessage\("לא ניתן היה לשמור את ההודעה\. נסו שוב\."\)/);
+  assert.match(src, /state\.announcementSaving = true; rerender\(\);/);
+  assert.match(src, /state\.announcementSaving \? "מפרסם…" : "פרסום הודעה"/);
+});
+
+test("urgent is visually distinct from important with an icon and a label, never colour alone, and normal gets no badge", () => {
+  assert.match(src, /function announcementPriorityBadge\(a\)/);
+  assert.match(src, /🚨 דחוף/);
+  assert.match(src, /❗ חשוב/);
+  assert.match(src, /function announcementAccentStyle\(a\)/);
 });

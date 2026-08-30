@@ -327,7 +327,7 @@ exported on `window` for that reason, same pattern as
 
 | ID | Title | Agent | Status |
 |---|---|---|---|
-| COMM-218 | Announcement priority levels and expiry | admin-moderation | todo |
+| COMM-218 | Announcement priority levels and expiry | admin-moderation | review |
 | COMM-219 | Announcement notification toggle and urgent path | notifications | todo |
 | COMM-220 | Weekly member recap Edge Function | recaps | todo |
 | COMM-221 | Weekly recap surface and share | recaps | todo |

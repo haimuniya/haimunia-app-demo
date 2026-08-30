@@ -6,7 +6,7 @@
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
   }) : null;
   const state = { configured, client, user: null, profile: null, feed: [], people: [], comparison: [], comparisonForPostId: null, loading: false, message: "", syncEnabled: localStorage.getItem("haimunia-demo:cloudSyncEnabled") === "1",
-    streaks: [], announcements: [], weeklyChallenge: null, weeklyLeaderboard: [], inactiveMembers: [], newMembers: [], redemption: null,
+    streaks: [], announcements: [], announcementSaving: false, weeklyChallenge: null, weeklyLeaderboard: [], inactiveMembers: [], newMembers: [], redemption: null,
     communityTab: "feed", comments: {}, openComments: {}, fieldErrors: {}, reports: [], confirmDialog: null, signupStarted: false, memberSearch: "", memberResults: [], openShare: {},
     // COMM-120..125 engagement cluster.
     commentDrafts: {}, commentErrors: {}, commentSending: null, commentEdit: null, openReplies: {}, replyTo: {},
@@ -289,24 +289,77 @@
     const { data, error } = await client.from("community_streaks").select("user_id,handle,display_name,current_streak,last_activity_on").order("current_streak", { ascending: false }).limit(50);
     state.streaks = error ? [] : (data || []).filter((r) => r.current_streak > 0);
   }
+  // COMM-218. The three-tier client-facing control that replaces the plain
+  // `important` boolean; `announcements.important` still exists server-side
+  // as a trigger-maintained mirror (202608290010) but is never written or
+  // read directly from here. Order matters: it drives the <select> option
+  // order in the composer.
+  const ANNOUNCEMENT_PRIORITY_OPTIONS = [
+    { value: "normal", label: "רגילה" },
+    { value: "important", label: "חשובה" },
+    { value: "urgent", label: "דחופה" },
+  ];
+  // COMM-218. Icon + Hebrew label, never colour alone: `urgent` reads as a
+  // stronger, more alarming badge than `important`; `normal` gets no badge
+  // at all. Shared by the feed top area and the "today's note" card.
+  function announcementPriorityBadge(a) {
+    const priority = (a && a.priority) || "normal";
+    if (priority === "urgent") return `<span class="admin-tag" role="status" style="color:var(--red);background:rgba(194,57,44,.16);border-color:var(--red);">🚨 דחוף</span>`;
+    if (priority === "important") return `<span class="admin-tag" role="status" style="color:var(--brass);background:rgba(166,112,46,.14);border-color:var(--brass);">❗ חשוב</span>`;
+    return "";
+  }
+  // The accent that goes with the badge above, applied to the wrapping
+  // card/row rather than the badge itself: `urgent` gets a full tinted
+  // border + background (a banner, not just a chip), `important` gets only
+  // the border, so the two tiers stay visually distinct beyond the badge.
+  function announcementAccentStyle(a) {
+    const priority = (a && a.priority) || "normal";
+    if (priority === "urgent") return "border:1px solid var(--red);background:rgba(194,57,44,.07);";
+    if (priority === "important") return "border:1px solid var(--brass);";
+    return "";
+  }
+  // COMM-218. `announcements_read` RLS already drops an expired row for a
+  // non-staff member at query time - this is a defensive mirror only, for a
+  // session that has had the feed open across the expiry moment without a
+  // refetch. Never the boundary itself.
+  function isAnnouncementExpired(a) { return !!(a && a.expires_at && new Date(a.expires_at).getTime() <= Date.now()); }
   async function loadAnnouncements() {
     if (!state.user) return;
-    const { data, error } = await client.from("announcements").select("id,title,body,created_at,pinned_date,profiles(handle,display_name)").order("created_at", { ascending: false }).limit(20);
+    const { data, error } = await client.from("announcements").select("id,title,body,created_at,pinned_date,priority,expires_at,profiles(handle,display_name)").order("created_at", { ascending: false }).limit(20);
     state.announcements = error ? [] : (data || []);
   }
   async function postAnnouncement(form) {
     if (!state.user || !isStaff()) return;
     const title = String(form.elements.title.value || "").trim().slice(0, 120);
     const body = String(form.elements.body.value || "").trim().slice(0, 2000);
+    const priorityRaw = String((form.elements.priority && form.elements.priority.value) || "normal");
+    const priority = ANNOUNCEMENT_PRIORITY_OPTIONS.some((o) => o.value === priorityRaw) ? priorityRaw : "normal";
+    const expiresAtRaw = String((form.elements.expiresAt && form.elements.expiresAt.value) || "").trim();
     const errors = {};
     if (!title) errors.title = "יש למלא כותרת";
     if (!body) errors.body = "יש למלא תוכן להודעה";
+    // Client-side only, no server CHECK: a staff member correcting an
+    // already-posted announcement's expiry is legitimate (COMM-218). For a
+    // brand-new announcement created_at is "now", so "after created_at"
+    // means after the moment of submission.
+    let expiresAtIso = null;
+    if (expiresAtRaw) {
+      const expiresAtDate = new Date(expiresAtRaw);
+      if (Number.isNaN(expiresAtDate.getTime()) || expiresAtDate.getTime() <= Date.now()) {
+        errors.expiresAt = "תאריך התפוגה חייב להיות אחרי מועד הפרסום";
+      } else {
+        expiresAtIso = expiresAtDate.toISOString();
+      }
+    }
     if (Object.keys(errors).length) return setFieldErrors("communityAnnouncement", errors);
     setFieldErrors("communityAnnouncement", {});
-    const payload = { author_id: state.user.id, title, body };
+    const payload = { author_id: state.user.id, title, body, priority };
+    if (expiresAtIso) payload.expires_at = expiresAtIso;
     if (form.elements.pinToday && form.elements.pinToday.checked) payload.pinned_date = todayIso();
+    state.announcementSaving = true; rerender();
     const { error } = await client.from("announcements").insert(payload);
-    if (error) return setMessage("פרסום ההודעה נכשל");
+    state.announcementSaving = false;
+    if (error) return setMessage("לא ניתן היה לשמור את ההודעה. נסו שוב.");
     form.reset(); await loadAnnouncements(); setMessage("ההודעה פורסמה"); rerender();
   }
   async function loadWeeklyChallenge() {
@@ -5026,17 +5079,22 @@
 
     // ---- Feed tab: announcements (+ today's pinned note), the social
     // feed with comments, sharing, comparisons ----
-    const pinnedToday = state.announcements.find((a) => a.pinned_date === todayIso());
-    const pinnedHtml = pinnedToday ? `<div class="chart-card admin-card" style="margin-bottom:12px;"><div style="font-weight:800;margin-bottom:6px;">📌 הערת האימון להיום</div><div style="font-weight:700;">${safeText(pinnedToday.title)}</div><div style="color:var(--steel);font-size:13px;margin-top:4px;">${safeText(pinnedToday.body)}</div></div>` : "";
-    const announceComposer = staff ? `<form id="communityAnnouncement" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">הודעה חדשה למועדון<span class="admin-tag">ניהול</span></div>${field("communityAnnouncement", "title", "כותרת", `<input class="text-input" name="title" placeholder="כותרת" required/>`)}${field("communityAnnouncement", "body", "תוכן", `<textarea class="text-input" name="body" maxlength="2000" placeholder="תוכן ההודעה" required></textarea>`)}<label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="pinToday"/><span style="font-size:12.5px;color:var(--steel);">סמן כהערת האימון להיום</span></label><button class="chip-btn primary" type="submit" style="margin-top:10px;">פרסום הודעה</button></form>` : "";
-    const otherAnnouncements = state.announcements.filter((a) => a !== pinnedToday);
+    // COMM-218. Defensive mirror of announcements_read's expiry predicate -
+    // see isAnnouncementExpired(). RLS is the real boundary; this only
+    // keeps a long-open session from showing a since-expired row without a
+    // refetch.
+    const liveAnnouncements = state.announcements.filter((a) => !isAnnouncementExpired(a));
+    const pinnedToday = liveAnnouncements.find((a) => a.pinned_date === todayIso());
+    const pinnedHtml = pinnedToday ? `<div class="chart-card admin-card" style="margin-bottom:12px;${announcementAccentStyle(pinnedToday)}"><div style="font-weight:800;margin-bottom:6px;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">📌 הערת האימון להיום${announcementPriorityBadge(pinnedToday)}</div><div style="font-weight:700;">${safeText(pinnedToday.title)}</div><div style="color:var(--steel);font-size:13px;margin-top:4px;">${safeText(pinnedToday.body)}</div></div>` : "";
+    const announceComposer = staff ? `<form id="communityAnnouncement" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">הודעה חדשה למועדון<span class="admin-tag">ניהול</span></div>${field("communityAnnouncement", "title", "כותרת", `<input class="text-input" name="title" placeholder="כותרת" required/>`)}${field("communityAnnouncement", "body", "תוכן", `<textarea class="text-input" name="body" maxlength="2000" placeholder="תוכן ההודעה" required></textarea>`)}<label class="field"><span class="field-label">רמת חשיבות</span><select class="text-input" name="priority">${ANNOUNCEMENT_PRIORITY_OPTIONS.map((o) => `<option value="${o.value}"${o.value === "normal" ? " selected" : ""}>${o.label}</option>`).join("")}</select></label>${field("communityAnnouncement", "expiresAt", "תפוגה (אופציונלי)", `<input class="text-input" name="expiresAt" type="datetime-local" placeholder="ללא תפוגה"/>`)}<label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="pinToday"/><span style="font-size:12.5px;color:var(--steel);">סמן כהערת האימון להיום</span></label><button class="chip-btn primary" type="submit"${state.announcementSaving ? " disabled" : ""} style="margin-top:10px;">${state.announcementSaving ? "מפרסם…" : "פרסום הודעה"}</button></form>` : "";
+    const otherAnnouncements = liveAnnouncements.filter((a) => a !== pinnedToday);
     // COMM-155. A staff holder of community.content.pin gets a pin toggle on
     // each announcement. Post, challenge and event pin affordances live on
     // their own surfaces (posts and Phase 2 clusters); the strip and unpin
     // control render for every one of the four target types.
     const canPinContent = hasPerm(PERM.CONTENT_PIN);
     const isPinned = (type, id) => state.pins.some((p) => p.target_type === type && p.target_id === id);
-    const announcementsList = otherAnnouncements.length ? `<div class="log-list">${otherAnnouncements.map((a) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:4px;"><div style="font-weight:700;">${safeText(a.title)}</div><div style="color:var(--steel);font-size:13px;">${safeText(a.body)}</div><div style="color:var(--steel);font-size:11px;">${safeText(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div>${canPinContent ? `<button class="link-btn" data-community-action="${isPinned("announcement", a.id) ? "unpin" : "pin"}" data-type="announcement" data-id="${safeText(a.id)}" data-note="${safeText(a.title)}" style="margin:2px 0 0;">${isPinned("announcement", a.id) ? "ביטול הצמדה" : "הצמדה למעלה"}</button>` : ""}</div>`).join("")}</div>` : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
+    const announcementsList = otherAnnouncements.length ? `<div class="log-list">${otherAnnouncements.map((a) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:4px;${announcementAccentStyle(a)}"><div style="font-weight:700;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">${safeText(a.title)}${announcementPriorityBadge(a)}</div><div style="color:var(--steel);font-size:13px;">${safeText(a.body)}</div><div style="color:var(--steel);font-size:11px;">${safeText(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div>${canPinContent ? `<button class="link-btn" data-community-action="${isPinned("announcement", a.id) ? "unpin" : "pin"}" data-type="announcement" data-id="${safeText(a.id)}" data-note="${safeText(a.title)}" style="margin:2px 0 0;">${isPinned("announcement", a.id) ? "ביטול הצמדה" : "הצמדה למעלה"}</button>` : ""}</div>`).join("")}</div>` : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
     const announcementsHtml = `<div class="ach-section">${sectionHead("var(--brass)", "הודעות מהמועדון")}${pinnedHtml}${announcementsList}${announceComposer}</div>`;
 
     // Sharing itself no longer lives here - it was a standing list of the
@@ -5604,7 +5662,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null;
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null;
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();
