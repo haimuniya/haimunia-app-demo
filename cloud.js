@@ -2378,7 +2378,7 @@
           <input type="checkbox" data-composer-decorative="${safeText(p.id)}"${p.decorative ? " checked" : ""}/> התמונה דקורטיבית, אין צורך בתיאור
         </label>
       </div>`).join("");
-    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="postComposerTitle" data-composer-overlay style="align-items:center;padding:0 16px;">
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="postComposerTitle" data-composer-overlay data-cloud-dialog="composer" style="align-items:center;padding:0 16px;">
       <div class="modal-sheet" id="postComposer" style="border-radius:22px;max-height:90vh;overflow:auto;">
         <div style="padding:22px 20px calc(env(safe-area-inset-bottom,0px) + 18px);">
           <div id="postComposerTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:12px;">פוסט חדש</div>
@@ -2560,7 +2560,7 @@
     if (!p) return "";
     const r = p.record;
     const line = (label, val) => (val != null && val !== "") ? `<div style="font-size:12.5px;color:var(--steel);">${safeText(label)}: <span class="mono" style="color:var(--brass);">${safeText(val)}</span></div>` : "";
-    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="prPromptTitle" style="align-items:center;padding:0 16px;">
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="prPromptTitle" data-cloud-dialog="prPrompt" style="align-items:center;padding:0 16px;">
       <div class="modal-sheet" id="prPrompt" style="border-radius:22px;max-height:90vh;overflow:auto;">
         <div style="padding:22px 20px calc(env(safe-area-inset-bottom,0px) + 18px);">
           <div id="prPromptTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:6px;">שיא חדש זוהה. לשתף עם המועדון?</div>
@@ -2718,7 +2718,7 @@
     const a = state.achUnlock;
     if (!a) return "";
     const canShare = !!a.memberAchievementId && a.visibility !== "only_me";
-    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="achUnlockTitle" style="align-items:center;padding:0 16px;">
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="achUnlockTitle" data-cloud-dialog="achUnlock" style="align-items:center;padding:0 16px;">
       <div class="modal-sheet" id="achUnlock" style="border-radius:22px;max-height:90vh;overflow:auto;">
         <div style="padding:22px 20px calc(env(safe-area-inset-bottom,0px) + 18px);text-align:center;">
           <div style="font-size:44px;line-height:1;margin-bottom:8px;" aria-hidden="true">${safeText(a.icon)}</div>
@@ -2823,7 +2823,7 @@
     const followBtn = d.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${safeText(pv.userId)}">מעקב</button>`;
     const counts = (d.follower_count != null || d.following_count != null)
       ? `<span style="font-size:11px;color:var(--steel);align-self:center;">${Number(d.follower_count || 0)} עוקבים · ${Number(d.following_count || 0)} עוקב/ת</span>` : "";
-    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="profileViewTitle" style="align-items:flex-start;padding:20px 12px;">
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="profileViewTitle" data-cloud-dialog="profileView" style="align-items:flex-start;padding:20px 12px;">
       <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:520px;">
         <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
           <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:12px;">
@@ -3237,7 +3237,7 @@
       ? `<div class="chip-row" style="justify-content:center;margin-top:6px;"><button class="link-btn" data-community-action="notif-show-older">הצגת התראות ישנות יותר</button></div>`
       : "";
     const canMarkAll = c.rows.some((r) => !r.read_at);
-    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="notifCenterTitle" data-notif-center style="align-items:flex-start;padding:20px 12px;">
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="notifCenterTitle" data-notif-center data-cloud-dialog="notifCenter" style="align-items:flex-start;padding:20px 12px;">
       <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:520px;">
         <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
           <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:6px;">
@@ -3297,7 +3297,7 @@
     const s = state.reportSheet;
     if (!s) return "";
     if (s.done) {
-      return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="reportSheetTitle" style="align-items:center;padding:0 20px;">
+      return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="reportSheetTitle" data-cloud-dialog="reportSheet" style="align-items:center;padding:0 20px;">
         <div class="modal-sheet" style="border-radius:22px;max-height:none;">
           <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
             <div id="reportSheetTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">הדיווח התקבל.</div>
@@ -3310,7 +3310,7 @@
       <span style="font-size:13px;">${r.label}</span>
       <input type="radio" name="reportReason" data-report-reason="${r.id}"${s.reason === r.id ? " checked" : ""} aria-label="${safeText(r.label)}"/>
     </label>`).join("");
-    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="reportSheetTitle" style="align-items:center;padding:0 20px;">
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="reportSheetTitle" data-cloud-dialog="reportSheet" style="align-items:center;padding:0 20px;">
       <div class="modal-sheet" style="border-radius:22px;max-height:none;">
         <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
           <div id="reportSheetTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:12px;">דיווח על ${s.targetType === "comment" ? "תגובה" : "פוסט"}</div>
@@ -3335,7 +3335,7 @@
     const def = MOD_DECISIONS.find((d) => d.id === a.decision) || { label: a.decision };
     const days = a.decision === "restrict_temp" ? `<label class="field" style="margin-top:10px;"><span class="field-label">משך ההגבלה</span>
       <div class="chip-row" style="margin:0;">${RESTRICT_TEMP_DAYS.map((d) => `<button class="chip-btn${a.days === d ? " primary" : ""}" data-community-action="mod-action-days" data-days="${d}">${d} ימים</button>`).join("")}</div></label>` : "";
-    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="modActionTitle" style="align-items:center;padding:0 20px;">
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="modActionTitle" data-cloud-dialog="modAction" style="align-items:center;padding:0 20px;">
       <div class="modal-sheet" style="border-radius:22px;max-height:none;">
         <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
           <div id="modActionTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">${safeText(def.label)}</div>
@@ -3357,7 +3357,7 @@
   function renderModContextOverlay() {
     const c = state.modContext;
     if (!c) return "";
-    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="modContextTitle" style="align-items:center;padding:0 20px;">
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="modContextTitle" data-cloud-dialog="modContext" style="align-items:center;padding:0 20px;">
       <div class="modal-sheet" style="border-radius:22px;max-height:none;">
         <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
           <div id="modContextTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">הקשר הדיווח</div>
@@ -3584,6 +3584,143 @@
     if (!state.user) return "נשמר במכשיר; התחברו כדי לסנכרן באופן פרטי";
     return state.syncEnabled ? "נשמר במכשיר ומסונכרן באופן פרטי לחשבון" : "נשמר במכשיר; סנכרון ענן ממתין לאישורכם";
   };
+  // ---- Shared Phase 1 dialog focus + keyboard management (COMM-190) -----
+  // Every Phase 1 overlay dialog behaves the same way: focus moves in on
+  // open, Tab / Shift+Tab cycle within it, Escape and a backdrop click both
+  // close it, and focus returns to whatever opened it. Per-dialog Escape
+  // wiring lives in the document keydown handler; this block owns focus-in,
+  // the Tab trap, the backdrop, and focus restoration. Registry order is the
+  // stacking order used when more than one state flag is set at once. It
+  // matches the Escape handler's precedence: a sheet stacked over another
+  // dialog is the one that closes and the one that traps Tab.
+  const CLOUD_DIALOGS = [
+    { key: "reportSheet", close: function () { closeReportSheet(); } },
+    { key: "modAction", close: function () { closeModAction(); } },
+    { key: "modContext", close: function () { closeModContext(); } },
+    { key: "notifCenter", close: function () { closeNotifCenter(); } },
+    { key: "achUnlock", close: function () { dismissAchievementUnlock(); } },
+    { key: "prPrompt", close: function () { dismissPrPrompt(); } },
+    { key: "composer", close: function () { tryCloseComposer(); } },
+    { key: "profileView", close: function () { closeCommunityProfile(); } },
+  ];
+  const cloudDialogOpeners = {};
+  let cloudOpenDialogKey = null;
+  // The control a click is currently on, captured in the capture phase -
+  // i.e. before the bubble-phase handler that opens a dialog runs and
+  // re-renders #content, which would otherwise destroy that exact button
+  // (every dialog opener lives inside #content and gets replaced by the
+  // very render its own click triggers). One-shot: cleared at the end of
+  // every syncCloudDialogFocus() call so a stale earlier click is never
+  // mistaken for the one that just opened a dialog.
+  let cloudDialogClickCandidate = null;
+  document.addEventListener("click", function (e) {
+    const t = e.target;
+    cloudDialogClickCandidate = (t && t.closest) ? t.closest("[data-community-action]") : null;
+  }, true);
+  // Real openers live inside #content and do not survive the render their
+  // own click triggers, so what is remembered is a CSS selector built from
+  // data-community-action plus every other data-* attribute the element
+  // carries (id, decision, tab, status...) - specific enough in practice to
+  // match exactly the one control that opened this dialog - re-resolved
+  // against the live DOM when it is time to restore focus, rather than a
+  // direct element reference that would already be detached by then.
+  function cloudOpenerSelector(el) {
+    if (!el || !el.getAttribute) return null;
+    const action = el.getAttribute("data-community-action");
+    if (!action) return null;
+    let sel = '[data-community-action="' + action.replace(/"/g, '\\"') + '"]';
+    Array.prototype.forEach.call(el.attributes, function (attr) {
+      if (attr.name.indexOf("data-") === 0 && attr.name !== "data-community-action") {
+        sel += "[" + attr.name + '="' + String(attr.value).replace(/"/g, '\\"') + '"]';
+      }
+    });
+    return sel;
+  }
+  function cloudResolveOpener(info) {
+    if (!info) return null;
+    if (info.selector) {
+      const bySel = document.querySelector(info.selector);
+      if (bySel) return bySel;
+    }
+    return (info.el && document.contains(info.el)) ? info.el : null;
+  }
+  function cloudDialogEl(key) { return document.querySelector('[data-cloud-dialog="' + key + '"]'); }
+  function cloudDialogFocusables(el) {
+    if (!el) return [];
+    return Array.prototype.slice.call(el.querySelectorAll(
+      'button, [href], input:not([type="hidden"]), select, textarea, [tabindex]:not([tabindex="-1"])'
+    )).filter(function (n) {
+      return !n.disabled
+        && n.getAttribute("aria-hidden") !== "true"
+        && !/display:\s*none/.test(n.getAttribute("style") || "");
+    });
+  }
+  function currentCloudDialog() {
+    for (let i = 0; i < CLOUD_DIALOGS.length; i++) {
+      const k = CLOUD_DIALOGS[i].key;
+      if (state[k] && cloudDialogEl(k)) return k;
+    }
+    return null;
+  }
+  // Run after every community render. Moves focus into a dialog the first
+  // time it appears and hands focus back to the opener once the last dialog
+  // is gone. While the same dialog stays open across a re-render, focus is
+  // left exactly where it is - so typing in a field that patches the DOM
+  // directly instead of re-rendering is never disturbed - unless the
+  // control that held it was itself removed by that re-render (e.g. an
+  // "add a note" button swapped for a textarea), which would otherwise
+  // silently drop focus to <body> and defeat the trap; that case falls
+  // back to the dialog's first control rather than leaving the user
+  // outside it.
+  function syncCloudDialogFocus() {
+    const openKey = currentCloudDialog();
+    // One-shot: whatever was just clicked only ever explains *this* render
+    // cycle's dialog transition, never a later one.
+    const clickCandidate = cloudDialogClickCandidate;
+    cloudDialogClickCandidate = null;
+    if (openKey === cloudOpenDialogKey) {
+      if (openKey) {
+        const el = cloudDialogEl(openKey);
+        const active = document.activeElement;
+        if (el && !(active && el.contains(active))) {
+          const f = cloudDialogFocusables(el);
+          if (f.length) { try { f[0].focus(); } catch (e) {} }
+        }
+      }
+      return;
+    }
+    if (!openKey) {
+      const prev = cloudOpenDialogKey;
+      cloudOpenDialogKey = null;
+      const opener = cloudResolveOpener(cloudDialogOpeners[prev]);
+      delete cloudDialogOpeners[prev];
+      if (opener && typeof opener.focus === "function") {
+        try { opener.focus(); } catch (e) {}
+      }
+      return;
+    }
+    const active = document.activeElement;
+    if (!(openKey in cloudDialogOpeners)) {
+      // Prefer the control that was just clicked (re-resolved by selector,
+      // since the render this same click triggered may already have
+      // destroyed it) over document.activeElement, which for a click-driven
+      // open has usually already reverted to <body> by the time this runs.
+      // An event-bus-triggered dialog (a PR or achievement celebration) has
+      // no click to go on, so activeElement - whatever the member had
+      // focused when the celebration appeared - is the right fallback.
+      const activeCandidate = (active && active !== document.body && document.contains(active)) ? active : null;
+      const primary = clickCandidate || activeCandidate;
+      cloudDialogOpeners[openKey] = { el: primary, selector: cloudOpenerSelector(primary) };
+    }
+    cloudOpenDialogKey = openKey;
+    const el = cloudDialogEl(openKey);
+    if (!(el && active && el.contains(active))) {
+      const f = cloudDialogFocusables(el);
+      if (f.length) { try { f[0].focus(); } catch (e) {} }
+    }
+  }
+  window.syncCloudDialogFocus = syncCloudDialogFocus;
+
   window.afterRenderCommunity = function () {
     const input = document.getElementById("communityPeopleSearch");
     if (input) input.addEventListener("input", () => searchPeople(input.value));
@@ -3611,12 +3748,10 @@
     // tears every channel down, so this self-heals the same way the feed
     // observers above do.
     ensureNotifRealtime();
-    // COMM-140. Move focus into the notification centre once, when it opens.
-    if (state.notifCenter && !state.notifCenter._focused) {
-      const dlg = document.querySelector("[data-notif-center]");
-      const first = dlg && dlg.querySelector('[data-community-action="notif-close"]');
-      if (first) { first.focus(); state.notifCenter._focused = true; }
-    }
+    // COMM-190. Shared dialog focus management for every Phase 1 overlay:
+    // focus-in on open, focus restored to the opener on close. Replaces the
+    // notification centre's one-off focus-in.
+    syncCloudDialogFocus();
   };
   window.handleCommunityClick = function (el) {
     const action = el.dataset.communityAction;
@@ -3855,16 +3990,17 @@
         if (e.key === "Escape") { e.preventDefault(); const k = state.mentionPicker.key; state.mentionPicker = null; rerender(); restoreCommentFocus(k, t.selectionStart); return; }
       }
     }
-    // COMM-140. The notification centre is a focus-trapped dialog.
-    if (state.notifCenter && e.key === "Tab") {
-      const dlg = document.querySelector("[data-notif-center]");
-      if (dlg) {
-        const nodes = Array.prototype.slice.call(dlg.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
-          .filter((n) => !n.disabled && n.getAttribute("aria-hidden") !== "true");
+    // COMM-190. Every Phase 1 overlay dialog traps Tab within itself.
+    if (e.key === "Tab") {
+      const dk = currentCloudDialog();
+      if (dk) {
+        const dlg = cloudDialogEl(dk);
+        const nodes = cloudDialogFocusables(dlg);
         if (nodes.length) {
           const first = nodes[0], last = nodes[nodes.length - 1];
-          if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-          else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+          const a = document.activeElement;
+          if (e.shiftKey && (a === first || !dlg.contains(a))) { e.preventDefault(); last.focus(); }
+          else if (!e.shiftKey && (a === last || !dlg.contains(a))) { e.preventDefault(); first.focus(); }
         }
       }
       return;
@@ -3879,6 +4015,16 @@
     if (state.composer) { e.preventDefault(); tryCloseComposer(); return; }
     if (state.profileView) { e.preventDefault(); closeCommunityProfile(); return; }
     if (state.openPostMenu) { state.openPostMenu = null; rerender(); }
+  });
+  // COMM-190. A click on the dim backdrop - the overlay element itself, not
+  // its sheet or any control inside - closes the dialog, same as Escape.
+  document.addEventListener("click", (e) => {
+    const t = e.target;
+    if (!t || typeof t.getAttribute !== "function") return;
+    const key = t.getAttribute("data-cloud-dialog");
+    if (!key) return;
+    const spec = CLOUD_DIALOGS.find((d) => d.key === key);
+    if (spec) spec.close();
   });
   // Consume PR_CREATED from the product event bus (COMM-012). Detection is the
   // achievements agent's COMM-132; this only reacts to the record it passes.

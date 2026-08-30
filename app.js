@@ -2906,6 +2906,10 @@ function render() {
     if (tab === "calendar") renderCalendarGrid();
     if (tab === "wod") renderWodContent();
     if (tab === "community" && typeof afterRenderCommunity === "function") afterRenderCommunity();
+    // COMM-190. The composer and PR/achievement prompts render in the global
+    // cloud overlay and can show on any tab, so their focus management runs
+    // after every render, not only Community's.
+    if (tab !== "community" && typeof window.syncCloudDialogFocus === "function") window.syncCloudDialogFocus();
   } catch (err) {
     console.error("post-render error:", err);
   }
