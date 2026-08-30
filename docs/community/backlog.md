@@ -497,8 +497,16 @@ One new type, one new function, no new table.
 
 | Function or data | Boundary to assert |
 |---|---|
-| ach_claim(p_codes text[]) | Writes `user_id` from `auth.uid()` only, never from the payload. A null or empty array returns nothing and raises nothing. 51 codes raises. A code whose definition is disabled, is `ATTENDANCE_RECORDED`, or lacks `config->>'client_claimable' = 'true'` is absent from the result and writes no row, and it is ignored rather than raised alongside a valid code in the same array. A second claim of a non-repeatable code returns nothing the second time. A member with a null `recovery_verified_at` raises `recovery method required`. The 31st call in 10 minutes raises `rate_limited`. |
-| achievement_definitions seed | 27 non-attendance rows are present and enabled. Every `community`, `challenge`, and `club` category row has no `client_claimable` key, so `ach_claim` refuses it: this is the assertion that keeps a gameable count off the client path. The four attendance rows are still present, still `enabled = false`, and untouched by the seed. Re-running the seed changes no row count. |
+| ach_claim(p_codes text[]) | Writes `user_id` from `auth.uid()` only, never from the payload. A null or empty array returns nothing and raises nothing. 51 codes raises. A code whose definition is disabled, is `ATTENDANCE_RECORDED`, or lacks `config->>'client_claimable' = 'true'` is absent from the result and writes no row, and it is ignored rather than raised alongside a valid code in the same array. A second claim of a non-repeatable code returns nothing the second time. A member with a null `recovery_verified_at` raises `recovery method required`. The 31st call in 10 minutes raises `rate_limited`. **202608290002:** for any accepted code whose `config->>'metric' = 'tenure_days'` (the four `anniversary_year_*` rows), the claim is additionally, independently verified against `invite_redemptions.redeemed_at` — a member short of the day threshold gets no row for that code even though the definition is `client_claimable`, a redemption exactly on the threshold already qualifies, and every non-tenure `client_claimable` metric is unaffected. |
+| achievement_definitions seed | 27 non-attendance rows are present and enabled. Every `community` and `challenge` category row, and every `club` category row except the four `anniversary_year_*` rows, has no `client_claimable` key, so `ach_claim` refuses it: this is the assertion that keeps a gameable count off the client path. The four `anniversary_year_*` rows ARE seeded `client_claimable: true`, gated instead by the independent tenure check above. The four attendance rows are still present, still `enabled = false`, and untouched by the seed. Re-running the seed changes no row count. |
+
+### ach_claim tenure verification (202608290002)
+
+No new table. `create or replace` of `ach_claim`, same signature.
+
+| Function | Boundary to assert |
+|---|---|
+| ach_claim(p_codes text[]) | Closes a gaming gap found while writing 0020's pgTAP coverage: the four club-category `anniversary_year_*` rows are `client_claimable: true` like every other client-detected milestone, but membership tenure, unlike session/PR/streak/Rx counts, is derivable from `invite_redemptions.redeemed_at`, a server-set timestamp the client cannot write. A member whose redemption is younger than the code's `threshold` days gets no row for a `tenure_days`-metered code, even though the definition is client-claimable. A redemption exactly `threshold` days old (the `<=` boundary) already qualifies. The check is keyed on `config->>'metric' = 'tenure_days'`, not on the code, so it covers any future tenure-metered definition automatically. |
 
 ### Comment mentions and self-delete (202608280021)
 

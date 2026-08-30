@@ -1,5 +1,5 @@
 -- COMM-020 run B: real enforcement for 202608280020 (achievement claim and
--- seed).
+-- seed), plus 202608290002 (tenure verification).
 -- Boundaries: ach_claim(p_codes) writes user_id from auth.uid() only, never
 -- from the payload. A null/empty array is a no-op, not an error. 51 codes
 -- raises. A code that is disabled, ATTENDANCE_RECORDED, or lacks
@@ -7,11 +7,14 @@
 -- and writes no row, even when a valid code rides along in the same call. A
 -- second claim of a non-repeatable code returns nothing the second time. A
 -- member with no recovery method raises. The 31st call in 10 minutes is
--- rate limited. The seed: 27 non-attendance rows, every community/
--- challenge/club category row has no client_claimable key so ach_claim
--- refuses it, the four attendance rows stay present and disabled, and
--- re-running the insert changes no row count (the on conflict do update
--- path).
+-- rate limited. The seed: 27 non-attendance rows, every community/challenge
+-- category row (and, distinctly, every non-club-anniversary club row) has
+-- no client_claimable key so ach_claim refuses it, the four attendance rows
+-- stay present and disabled, and re-running the insert changes no row count
+-- (the on conflict do update path). The four club-category
+-- anniversary_year_* rows ARE client_claimable, but ach_claim independently
+-- verifies their config->>'metric' = 'tenure_days' threshold against
+-- invite_redemptions.redeemed_at rather than trusting the caller.
 -- CI is the first real run of this file.
 
 \set rls_helpers_included true
@@ -51,20 +54,20 @@ select is_empty(
      where category in ('community', 'challenge')
        and config ? 'client_claimable' $$,
   'every community and challenge category row has no client_claimable key at all, so ach_claim refuses them');
--- NOTE: the migration's own doc comment says "community, challenge, or club
--- shaped is left claimable = false in the seed", and docs/community/
--- backlog.md's handoff table repeats that for all three categories. The
--- shipped data disagrees for 'club': all four anniversary_year_* rows carry
--- config->>'client_claimable' = 'true'. That is flagged in the run report
--- as a real mismatch between the migration's stated intent and what it
--- actually seeded - not fixed here. This assertion pins the ACTUAL
--- behaviour (claimable), not the documented intent, so the suite tests
--- what ach_claim really does.
+-- The four club-category anniversary_year_* rows ARE seeded
+-- client_claimable = true, unlike every other community/challenge/club row.
+-- That is deliberate, not a leftover gap: unlike session count, PR count,
+-- week streak, or Rx count, membership tenure is not something only the
+-- device can see. 202608290002 makes ach_claim independently verify any
+-- config->>'metric' = 'tenure_days' code against
+-- invite_redemptions.redeemed_at, a server-set timestamp, rather than
+-- trusting the client's say-so. See the "tenure verification" section
+-- below for that coverage.
 select results_eq(
   $$ select count(*)::int from public.achievement_definitions
      where category = 'club' and config ->> 'client_claimable' = 'true' $$,
   $$ values (4) $$,
-  'all four club-category anniversary rows are, in fact, seeded client_claimable = true, contradicting the migration''s own doc comment and the backlog handoff table');
+  'all four club-category anniversary rows are seeded client_claimable = true, independently verified server-side by ach_claim rather than left ungated');
 
 -- Re-running the seed insert changes no row count: the same on conflict do
 -- update block from the migration, executed a second time here.
@@ -174,6 +177,56 @@ select results_eq(
        and achievement_id = (select id from public.achievement_definitions where code = 'first_workout') $$,
   $$ values (1) $$,
   'the replay wrote no second row');
+
+-- =====================================================================
+-- tenure verification (202608290002): config->>'metric' = 'tenure_days'
+-- is independently checked against invite_redemptions.redeemed_at, a
+-- server-set timestamp, rather than trusted from the client the way every
+-- other client_claimable metric is. anniversary_year_1's threshold is 365
+-- days, anniversary_year_2's is 730.
+-- =====================================================================
+
+-- m2 redeemed their invite moments ago, in this same transaction, via the
+-- rls_helpers fixture, so they are nowhere near 365 days in.
+select tests.set_auth(tests.uid('m2'));
+select is_empty(
+  $$ select * from public.ach_claim(array['anniversary_year_1']) $$,
+  'm2, redeemed less than a year ago, cannot claim anniversary_year_1 even though the definition is client_claimable');
+select is_empty(
+  $$ select 1 from public.member_achievements ma
+     join public.achievement_definitions d on d.id = ma.achievement_id
+     where ma.user_id = tests.uid('m2') and d.code = 'anniversary_year_1' $$,
+  'the refused tenure claim wrote no row for m2');
+
+-- Backdate m3's redemption to exactly 365 days ago, the anniversary_year_1
+-- threshold. The check is redeemed_at <= now() - threshold days, so a
+-- redemption exactly on the boundary already qualifies.
+select tests.clear_auth();
+update public.invite_redemptions set redeemed_at = now() - interval '365 days'
+where user_id = tests.uid('m3');
+
+select tests.set_auth(tests.uid('m3'));
+select lives_ok(
+  $$ select public.ach_claim(array['anniversary_year_1']) $$,
+  'm3, redeemed exactly 365 days ago, can claim anniversary_year_1 at the >= boundary');
+select results_eq(
+  $$ select count(*)::int from public.member_achievements
+     where user_id = tests.uid('m3')
+       and achievement_id = (select id from public.achievement_definitions where code = 'anniversary_year_1') $$,
+  $$ values (1) $$,
+  'the boundary claim wrote exactly one member_achievements row for m3');
+
+-- The check is metric-keyed and re-evaluated per code, not a one-time
+-- grant: the same m3, still 365 days in, does not clear anniversary_year_2,
+-- whose threshold is 730 days.
+select is_empty(
+  $$ select * from public.ach_claim(array['anniversary_year_2']) $$,
+  'm3 at 365 days tenure cannot claim anniversary_year_2, whose threshold is 730 days');
+select is_empty(
+  $$ select 1 from public.member_achievements ma
+     join public.achievement_definitions d on d.id = ma.achievement_id
+     where ma.user_id = tests.uid('m3') and d.code = 'anniversary_year_2' $$,
+  'the refused anniversary_year_2 claim wrote no row for m3');
 
 -- =====================================================================
 -- no recovery method

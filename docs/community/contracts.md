@@ -123,7 +123,11 @@ client was already built against.
 - `ach_claim` is the only client-reachable way to write
   `member_achievements`, and what keeps it honest is the definition row, not
   the caller. Anything gameable from a browser is seeded
-  `client_claimable: false` and stays on the `ach_evaluate` path.
+  `client_claimable: false` and stays on the `ach_evaluate` path — except
+  tenure, which is seeded `client_claimable: true` but independently
+  reverified server-side (202608290002) because it is derivable from
+  `invite_redemptions.redeemed_at` rather than genuinely client-only. See
+  `ach_claim` below.
 - `comment_mentions` is a select-only table for the mentioned member and the
   comment author. A third member cannot enumerate who was tagged in a
   thread. Only the four-argument `add_post_comment` writes it.
@@ -410,9 +414,27 @@ Markup feed and engagement can rely on:
 - Accepts a code only when its definition is `enabled`, its `trigger_type` is
   not `ATTENDANCE_RECORDED`, and its `config->>'client_claimable'` is
   `'true'`. Every other code in the array is ignored, not rejected. This is
-  what keeps `community`, `challenge`, and `club` unlocks, which are gameable
-  from the client, on the `ach_evaluate` event-bus path where the server owns
-  the count.
+  what keeps `community` and `challenge` unlocks, and most `club` unlocks,
+  which are gameable from the client, on the `ach_evaluate` event-bus path
+  where the server owns the count.
+- Tenure verification (202608290002): the four club-category
+  `anniversary_year_*` rows are the one exception, seeded
+  `client_claimable: true` and `config->>'metric' = 'tenure_days'` because,
+  unlike session count, PR count, week streak, or Rx count, membership
+  tenure is not something only the device can see — it is a pure function of
+  `public.invite_redemptions.redeemed_at`, a server-set timestamp
+  (`default now()` at redemption, never client-writable). For any accepted
+  code whose `config->>'metric' = 'tenure_days'`, `ach_claim` independently
+  requires `invite_redemptions.redeemed_at <= now() - (threshold || '
+  days')::interval` for the calling user before it is accepted; a claim
+  short of the threshold is silently absent from the result, same as any
+  other refused code, never an error. The boundary is inclusive: a
+  redemption exactly `threshold` days old already qualifies. This check is
+  keyed on `config->>'metric'`, not on the code, so any future
+  `tenure_days`-metered definition is covered automatically with no further
+  migration. Every other `client_claimable` metric is unaffected — the added
+  condition is an `or` that short-circuits true when `metric` is not
+  `'tenure_days'`.
 - Side effects: inserts one `member_achievements` row per accepted, newly
   qualifying code, copying `visibility` from the definition. The partial
   unique index `member_achievements_once_idx` enforces once-per-non-repeatable
