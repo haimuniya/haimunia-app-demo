@@ -2372,6 +2372,71 @@ timestamptz`. Null means "not shown yet".
   reset onboarding for a member who has already been through it.
 - The migration also backfills a row for every pre-existing redemption.
 
+## Needs from schema, new-member post (COMM-107)
+
+### post_new_member_on_join() (202608290014)
+
+- Trigger function, `security definer`. Fires as
+  `invite_redemptions_new_member_post`, AFTER INSERT on
+  `invite_redemptions`, one row per statement row.
+- Params: none (trigger). Returns: `trigger`.
+- Purpose: the server-side producer for `POST_NEW_MEMBER`. COMM-107 shipped
+  the enum label (202608280004), the nullable `author_id` that exists for it,
+  and `renderNewMemberPostCard` in cloud.js back in Phase 1; the INSERT that
+  creates the row was never built, which is what made COMM-224's coach
+  "Welcome" button inert. This is that INSERT and nothing else.
+- Auth rule: revoked from `public`, `anon`, and `authenticated` — not callable
+  as an RPC. No `auth.uid()` check, same documented exception as
+  `seed_onboarding_progress()`: it acts on the row being inserted, not on the
+  caller, and the boundary is that no client can insert into
+  `invite_redemptions` at all (only `redeem_invite_code()` can). A member also
+  cannot hand-write an equivalent row directly — `posts_insert_self` still
+  requires `author_id = auth.uid()`, so an authorless post is unreachable from
+  any client key.
+- Side effects: exactly one `public.workout_posts` insert, with
+  `author_id = null`, `post_type = 'POST_NEW_MEMBER'`, `visibility = 'club'`,
+  `status = 'active'`, `club_id = default_club_id()`,
+  `source_type = 'member'`, `source_id = <the new member>`,
+  `published_at = redeemed_at`, `occurred_on = redeemed_at::date`, and a
+  Hebrew `body`. No notification, no profile write, no other table touched.
+- `metadata` shape, fixed by the already-shipped renderer and by the fixture
+  in `test/community-post-cards.test.mjs`:
+  `{member_id: uuid-as-string, member_name: text (optional), joined_on:
+  timestamptz-as-string}`. `member_id` is always present and is what
+  `findNewMemberPost()` in cloud.js matches on. Nothing else is written into
+  `metadata`.
+- `member_name` is **optional and usually absent in production**. A redemption
+  lands before the profile exists (`profiles_insert_self` requires the
+  redemption row), so at trigger time there is normally no `display_name` and
+  no `handle` to read. The function looks anyway — `display_name`, falling
+  back to `handle` — and omits the key entirely when neither is available,
+  rather than storing a placeholder. The client's existing fallback chain
+  (`m.member_name || postAuthorName(post) || "חבר/ה חדש/ה"`) is what covers
+  the absent case. Filling the name in later would mean a trigger on
+  `profiles`, which is identity-privacy's call, not this migration's.
+- Idempotency: a guard (`exists` on
+  `metadata ->> 'member_id'` where `post_type = 'POST_NEW_MEMBER'`, backed by
+  `workout_posts_new_member_metadata_idx`), deliberately not a unique index —
+  a unique violation would abort the enclosing redemption and block a real
+  person from joining the club over a duplicate feed post.
+- INSERT-only, so promoting an existing member (`grant_coach_role()` and
+  `grant_coach_role_by_handle()`, both UPDATEs) never re-announces them, and
+  the one-arg `redeem_invite_code()`'s `on conflict do update` does not
+  either.
+- Fires for every redemption regardless of role, including a coach-code
+  redemption. Only the promote-an-existing-member path is excluded, and it is
+  excluded by the trigger event rather than by a role test.
+- `invite_redemptions` now carries two AFTER INSERT ROW triggers, this one and
+  `invite_redemptions_seed_onboarding`. Both fire on a single insert and
+  neither depends on the other's output; `0033_new_member_post_test.sql`
+  asserts both effects from one insert.
+- **No backfill.** Unlike `onboarding_progress`, these rows are club-visible
+  feed content, so backfilling every existing member would publish one
+  arrival announcement per member at once for joins that happened months ago.
+  Members who joined before 202608290014 therefore have no welcome post and
+  cannot be welcomed through COMM-224; publishing historical welcomes is a
+  product decision with a chosen schedule, not a migration side effect.
+
 ## Edge Functions
 
 ### recap_weekly
