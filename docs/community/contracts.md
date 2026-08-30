@@ -188,41 +188,141 @@ client was already built against.
 - Side effects: feed_impressions has no UPDATE grant or policy, so this
   function is the only thing that can flip those two flags.
 
+### leaderboard_row composite type
+
+- Shipped in 202608290015. `(user_id uuid, display_name text, handle text,
+  avatar_url text, rank integer, value numeric, is_self boolean)`, exactly the
+  shape this file promised the feed cluster.
+- A composite type rather than jsonb because a leaderboard is a table: every
+  row has every column. `community_profile` is jsonb for the opposite reason,
+  an absent key there means hidden.
+- `chal_progress`'s `leaderboard` key still builds its own simpler
+  `{user_id, name, handle, avatar_url, value}` objects (202608290003) and is
+  deliberately untouched. Widening it to this type is an additive follow-up,
+  not a break.
+
+### feed_leaderboard(p_mode text, p_challenge_id uuid, p_scope text, p_limit int) returns setof leaderboard_row
+
+- Shipped in 202608290015. COMM-210, COMM-211, COMM-212. Defaults are
+  `p_challenge_id null`, `p_scope 'club'`, `p_limit 50`; `p_mode` has no
+  default, so a typo cannot silently become the consistency board.
+- Purpose: one ranked board for both modes and both scopes, with the caller's
+  own standing always included.
+- Params. `p_mode` is `consistency` or `progress`, `p_scope` is `club` or
+  `friends`, both matched case-insensitively after trimming; anything else
+  raises `unknown leaderboard mode %` or `unknown leaderboard scope %` naming
+  the value. `p_limit` clamps to 1..100 (null means 50).
+- `consistency` ranks club members by consecutive ISO weeks with a logged
+  session, the same number `community_profile` returns as `current_streak`.
+  `p_challenge_id` is ignored. The computation now lives in
+  `public.consistency_week_streaks()` (internal, no grants) so it exists once
+  set-wide; `community_profile` keeps its own inline copy because merged
+  migrations are not edited, and `0034_feed_leaderboard_and_suggestions_test`
+  asserts the two agree on the same member. COMM-306 swaps the body of that
+  helper onto verified attendance without changing this signature.
+- `progress` ranks `challenge_participants.progress_value` for one challenge,
+  participants with status `withdrawn` excluded. `p_challenge_id` is required:
+  null raises `challenge required`, an unknown id raises `challenge not
+  found`, and a draft challenge raises `challenge not found` for anyone but
+  its creator or a `community.challenge.create` holder, so the board is not an
+  existence oracle. In this mode the caller gets a row only if they are a
+  participant; there is no standing in a challenge you did not enter, and that
+  is the one case where the always-return-self rule cannot apply.
+- `friends` restricts the ranked set to `are_friends()` (mutual follow) edges,
+  always still including the caller.
+- Every ranked member passes `can_view_profile_field(member,
+  'in_leaderboards')` and `can_view_profile_field(member, 'visible_to_club')`.
+  Blocks are not re-implemented: that helper settles a block edge in either
+  direction before it looks at any toggle. Its is_admin() short-circuit
+  applies here too, so a real admin's board includes members who opted out;
+  that is the module-wide behaviour of the resolution point, not a leaderboard
+  rule.
+- `rank` is a position, never shared and never gapped. Ties break by longer
+  club tenure (`invite_redemptions.redeemed_at`, falling back to
+  `profiles.created_at`), then alphabetically by display name (falling back to
+  handle), then by id.
+- Every eligible member is ranked, including a 0-week streak or 0 progress,
+  because a rank is only real if the caller is inside the ranked set.
+  COMM-210's "not enough data yet" empty state is therefore "no rows returned,
+  or every returned `value` is 0", not "no rows returned".
+- The caller's own row is always returned, appended last (after the top
+  `p_limit` rows, in rank order) with its real rank when it falls outside the
+  limit, so "where do I stand" is never a second round trip. COMM-212's "hide
+  my result" is a client-only render choice on top of that row, not a
+  parameter. The real, server-enforced opt-out is `in_leaderboards`, and it
+  never hides the caller from themselves.
+- Returns rows in board order, self last when appended. Club scope has no
+  `club_id` filter, matching every other Phase 2 read function; the module is
+  single-club today.
+- Auth: security definer. Raises `not authorized` for a null `auth.uid()` and
+  for a caller with no `my_role_code()`. Definer buys two things and no more:
+  the caller's own row when their `visible_to_club` is off, and a streak count
+  over posts the viewer cannot read one at a time (the same trade
+  `community_streaks` already makes).
+- Side effects: none.
+
+### people_suggestions(p_limit int default 10) returns setof jsonb
+
+- Shipped in 202608290015. COMM-232, the non-attendance fallback.
+- Purpose: "אנשים שאולי תכירו" for the directory strip.
+- Ranks candidates by, in priority order and lexicographically (one shared
+  challenge outranks any number of shared reactions): shared participation in
+  a live challenge (`challenges.status = 'active'` and `end_at >= now()`),
+  then `feed_interactions` of kind `react` or `comment` on the same post by
+  both members, then `event_attendees` with response `going` on the same
+  event by both. Ties break by display name (falling back to handle), then id.
+- The trailing 60-day window applies to the two time-stamped signals
+  (`feed_interactions.created_at`, `event_attendees.registered_at`), on both
+  sides of the pair. The challenge signal is bounded by the challenge being
+  live instead, since an active challenge that started 90 days ago is current
+  by definition.
+- Excludes the caller, any follow edge in either direction, and anything
+  `can_view_profile_field(candidate, 'visible_to_club')` or
+  `can_view_profile_field(candidate, 'allow_follows')` rejects, which also
+  settles block edges in both directions and deleted profiles. A candidate
+  with no qualifying signal is not returned at all, so a brand new member gets
+  a genuinely empty strip rather than a padded list.
+- Returns `setof jsonb`, one object per candidate:
+  `{user_id, display_name, handle, avatar_url, reason, signals}` where
+  `reason` is the advisory label of the strongest signal (`challenge`,
+  `interaction`, `event`) and `signals` is
+  `{shared_challenges, shared_interactions, shared_events}` integer counts.
+  The ranking score itself is internal and not returned.
+- `p_limit` clamps to 1..20 (null means 10).
+- Auth: security definer, raises `not authorized` for a null `auth.uid()` or a
+  caller with no `my_role_code()`. Definer crosses exactly one boundary on
+  purpose: `feed_interactions` is self-select only, so no member could compute
+  overlap otherwise. Only a count of shared posts leaves the function, never a
+  post id or a timestamp.
+- Side effects: none.
+- COMM-302 and COMM-307 (Phase 3) add a verified-attendance
+  recurring-classmate signal to the same function name and the same returned
+  shape: one more branch in the internal signals union, one more counter, one
+  more `signals` key, one more position in the ordering. No client change.
+
+### consistency_week_streaks() returns table(user_id uuid, streak integer)
+
+- Shipped in 202608290015. Internal, security invoker, **no grants at all** —
+  not to `anon`, not to `authenticated`. `feed_leaderboard` is its only
+  caller and it inherits that definer's rights.
+- Purpose: the set-based form of `community_profile`'s `current_streak`, so
+  the streak is computed once for every member instead of per member in a
+  loop. Same arithmetic: distinct ISO weeks carrying a POST_WORKOUT or
+  POST_PR, anchored on the member's latest such week, counted back while each
+  week is exactly 7 days before the previous, and only when the anchor is the
+  current week or the previous one.
+- Not a second definition of "streak": a pgTAP assertion pins it to
+  `community_profile`'s number so the two cannot drift.
+- This is the single place COMM-306 (Phase 3) changes to move consistency onto
+  verified attendance.
+
 ## Needs from schema, feed (Phase 2)
 
-Functions the Phase 2 feed cluster (COMM-210 to COMM-212, COMM-232) needs and
-that schema still owns.
-
-- `feed_leaderboard(p_mode text, p_challenge_id uuid, p_scope text, p_limit
-  int) returns setof leaderboard_row` where `leaderboard_row` is `(user_id
-  uuid, display_name text, handle text, avatar_url text, rank integer, value
-  numeric, is_self boolean)`. `p_mode` is `consistency` or `progress`.
-  `consistency` ranks club members by the same current-streak computation
-  `community_profile` already exposes (consecutive ISO weeks with a logged
-  session), club-wide, `p_challenge_id` ignored. `progress` ranks
-  `challenge_participants.progress_value` for one `p_challenge_id`, which is
-  required for that mode and raises when missing. `p_scope` is `club` or
-  `friends`; `friends` restricts the ranked set to `are_friends()` edges with
-  the caller, always including the caller's own row. Every ranked member must
-  pass `can_view_profile_field(member, 'in_leaderboards')` and
-  `can_view_profile_field(member, 'visible_to_club')`; a block edge in either
-  direction excludes the row. The caller's own row is always returned even
-  when it falls outside `p_limit` (capped at 100), appended last with its
-  real `rank`, so "where do I stand" never needs a second call. "Hide my
-  result" (COMM-212) is a client-only render choice, not a query parameter:
-  the function always returns the caller's row, the client chooses not to
-  draw it.
-- `people_suggestions(p_limit int default 10) returns setof jsonb` (COMM-232).
-  Ranks candidate members by, in order: shared active challenge
-  participation, `feed_interactions` on the same posts (comment or react),
-  shared `event_attendees` with response `going` on the same event, over a
-  trailing 60-day window. Excludes existing follow edges (either direction),
-  block edges (either direction), and the caller. Each candidate must pass
-  `can_view_profile_field(candidate, 'visible_to_club')` and
-  `can_view_profile_field(candidate, 'allow_follows')`. This is the
-  non-attendance fallback: COMM-302 and COMM-307 (Phase 3) add a
-  recurring-classmate score from verified attendance to the same ranking,
-  behind the same function name, so the client slot does not change.
+Nothing outstanding. `leaderboard_row`, `feed_leaderboard`,
+`people_suggestions` and `consistency_week_streaks` all shipped in
+202608290015; their contracts are the four entries directly above, under
+"## Feed". COMM-210, COMM-211, COMM-212 and COMM-232 point at this heading and
+should read those entries instead.
 
 ## Posts
 
