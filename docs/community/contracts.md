@@ -1060,9 +1060,12 @@ appends `renderComments(post)` inside the article and exposes
 - `notif_blocked_between(p_a uuid, p_b uuid) returns boolean` - a block
   edge in either direction; a null on either side is "no edge".
 - `notif_is_operational(p_type text, p_source_id uuid) returns boolean` -
-  true only for `announcement` when `announcements.important` is set. This
-  is how an operational row overrides an `off` preference without adding a
-  ninth parameter to `notif_create`.
+  true only for `announcement`, and, since 202608290010 (COMM-218/219), only
+  when `announcements.priority in ('important', 'urgent')`. It read
+  `announcements.important` up to that migration; because `important` is now
+  kept as an exact mirror of `priority <> 'normal'`, the swap changed no
+  existing row's answer. This is how an operational row overrides an `off`
+  preference without adding a ninth parameter to `notif_create`.
 
 ### AFTER INSERT on public.post_comments - notif_on_comment()
 
@@ -1103,25 +1106,74 @@ appends `renderComments(post)` inside the article and exposes
   `notif_queue_batched(author, 'community', 'reaction', NEW.post_id)`.
   Never immediate.
 
-### AFTER INSERT / AFTER UPDATE OF important on public.announcements - notif_on_announcement()
+### AFTER INSERT / AFTER UPDATE OF priority, important on public.announcements - notif_on_announcement()
 
-- Shipped in 202608280027, with the new column
-  `public.announcements.important boolean not null default false` (the
-  Phase 1 single operational flag; the full priority enum is COMM-218).
+- Shipped in 202608280027 (`AFTER UPDATE OF important`), widened in
+  202608290010 to `AFTER UPDATE OF priority, important` (COMM-218/219). Both
+  columns are named, not just `priority`: `UPDATE OF <col>` matches the
+  columns in the statement's SET clause, not the values a BEFORE trigger
+  writes, so a legacy `update announcements set important = true` would
+  never fire an `of priority` trigger even though
+  `announcements_priority_sync` has just moved the row up a tier. The
+  trigger body decides on `priority` either way.
 - INSERT: `notif_announcement_fanout(NEW.id, false)` - loops every club
   member (a profile with an `invite_redemptions` row, not deleted, not the
   author) and calls `notif_create` with type `announcement`, category
-  `club`, deep link `/community/feed?announcement=<id>`. A normal
+  `club`, deep link `/community/feed?announcement=<id>`. A `normal`
   announcement reaches members whose `announcements` preference is not
-  `off`; an `important` one is operational and reaches everyone because
-  `notif_is_operational` returns true.
-- UPDATE, `important` false -> true: `notif_announcement_fanout(NEW.id,
-  true)` targets ONLY members with an explicit `announcements = off` row -
-  the members the INSERT pass deliberately skipped - so nobody is notified
-  twice regardless of timing.
+  `off`; an `important` or `urgent` one is operational and reaches everyone
+  because `notif_is_operational` returns true.
+- UPDATE: fans out when `announcement_priority_rank(NEW.priority) >
+  announcement_priority_rank(OLD.priority)`, i.e. on any upward move on
+  `normal < important < urgent`, via `notif_announcement_fanout(NEW.id,
+  true)`. A downgrade fans out to nobody. `normal -> important` and `normal
+  -> urgent` (skipping the middle tier) both reach the members the INSERT
+  pass deliberately skipped; `important -> urgent` reaches nobody, because
+  at `important` the row was already operational and every member holds a
+  row. Up to 202608290010 this branch was the single boolean flip `important
+  false -> true`.
 - `notif_announcement_fanout(p_id uuid, p_off_only boolean) returns void`
-  is an internal definer helper, no grant. The whole-club loop is the
-  fan-out cost the routing table flags; Phase 1 is one small club.
+  is an internal definer helper, no grant; the signature is unchanged since
+  202608280027. `p_off_only` targets ONLY members with an explicit
+  `announcements = off` row. Since 202608290010 the loop also skips any
+  member who already holds a `notification` row for this announcement
+  (`type = 'announcement'`, matching `source_id`), whatever their
+  preference, so "one row per member per announcement, however many times
+  priority moves" (COMM-219) holds structurally rather than depending on
+  `notif_dedupe_window()`; and it returns without notifying anyone when the
+  announcement is already past its `expires_at`, since the deep link would
+  open onto a row the read policy hides. On the INSERT pass the
+  already-notified filter matches nothing, so first fan-out behaviour is
+  unchanged. The whole-club loop is the fan-out cost the routing table
+  flags; Phase 1 is one small club.
+
+### BEFORE INSERT OR UPDATE on public.announcements - announcements_priority_sync()
+
+- Shipped in 202608290010 (COMM-218). Internal trigger function, no grant to
+  any client role, not security definer (it touches no table).
+- Keeps `announcements.important` an exact mirror of `priority <> 'normal'`,
+  in both directions, so the Phase 1 boolean stays readable AND writable and
+  no other Phase 1 trigger, policy, or client build needs an edit. The
+  contract allowed a generated column; a trigger mirror was chosen instead
+  because `GENERATED ALWAYS` would turn every existing `insert into
+  announcements (..., important)` and `update ... set important = true` into
+  a hard error, and both spellings are live in the shipped pgTAP suite.
+- Resolution, stated once: on INSERT a non-`normal` `priority` wins, else a
+  true `important` is read as the `important` tier, else normal/false. On
+  UPDATE, if `priority` changed it wins and `important` is recomputed from
+  it; else if `important` changed, `priority` follows it (true ->
+  `important`, false -> `normal`); else the pair is re-normalised, a no-op
+  on a consistent row. `important = (priority <> 'normal')` is therefore an
+  invariant of the table.
+
+### announcement_priority_rank(p_priority text) returns integer
+
+- Shipped in 202608290010. Purpose: the one definition of "upward" on the
+  three tiers - `urgent` 2, `important` 1, anything else (including null) 0.
+- Auth: pure, immutable, reads nothing. `revoke` from `public` and `anon`,
+  `grant execute to authenticated`, so a client can order a badge list by
+  the same rule the escalation trigger uses.
+- Side effects: none.
 
 ### AFTER INSERT on public.member_achievements - notif_on_achievement()
 
@@ -1226,7 +1278,9 @@ server side (COMM-140 to 144) is now fully backed: `notif_create`, the
 `notif_blocked_between` / `notif_is_operational` helpers, the AFTER INSERT
 trigger set (`notif_on_comment`, `notif_on_mention`, `notif_on_reaction`,
 `notif_on_announcement` + `notif_announcement_fanout`,
-`notif_on_achievement`), the `announcements.important` column, and the
+`notif_on_achievement`), the `announcements.important` column (joined in
+202608290010 by `announcements.priority`, which is now the source of truth
+behind it), and the
 batch flusher (`notif_batch_flush_due` + `notif_category_surface`) are all
 documented under "## Notifications" above. `notif_list`, `notif_mark_read`,
 `notif_unread_count`, `notif_queue_batched`, `notif_batch_flushed` and
@@ -1303,14 +1357,26 @@ documented under "## Challenges" above, not here.
 - `notif_on_event_cancelled`: immediate `event_cancelled`. Shipped in
   202608290009 along with the `event_cancelled` -> `events` arm of
   `notif_pref_key`; documented under "## Events" above, not here.
-- `notif_is_operational` widens from `announcements.important` to
-  `announcements.priority in ('important', 'urgent')` (COMM-218, COMM-219).
-  The AFTER UPDATE trigger on `announcements` widens from `OF important` to
-  `OF priority`, and the off-only-row re-fan-out logic generalizes from one
-  boolean flip to any upward transition on the three-tier order `normal <
-  important < urgent`, so a member already reached at `important` is never
-  re-notified when the same announcement later becomes `urgent`. See "Needs
-  from schema, admin-moderation (Phase 2)" for the column migration.
+- `notif_is_operational` widening to `announcements.priority in
+  ('important', 'urgent')`, the widened AFTER UPDATE trigger, and the
+  three-tier re-fan-out logic (COMM-218, COMM-219) all shipped in
+  202608290010 and are documented under "## Notifications" above, not here:
+  see `notif_pref_key / notif_pref_allows / notif_blocked_between /
+  notif_is_operational`, `AFTER INSERT / AFTER UPDATE OF priority, important
+  on public.announcements`, `BEFORE INSERT OR UPDATE on
+  public.announcements`, and `announcement_priority_rank`. One deviation
+  from the wording of this list, deliberate and covered there: the trigger's
+  column list is `OF priority, important`, both columns rather than
+  `priority` alone, because `UPDATE OF` matches the statement's SET clause
+  and a legacy `set important = true` would otherwise stop firing. See
+  "Needs from schema, admin-moderation (Phase 2)" for the column migration.
+- COMM-219 needed no `notification_preferences` change and none was made:
+  the ticket is explicit that the coarse `announcements` key from COMM-144
+  is the only preference row involved, that the urgent path routes through
+  the same `notif_create` immediate path rather than a second mechanism, and
+  that the preferences panel gains no new row. The urgent "bypass" of a
+  member's `off` row is `notif_is_operational` answering true, which is the
+  Phase 1 mechanism unchanged.
 - `notif_push_send`: NOT built here. The actual Web Push send (calling the
   Web Push protocol with VAPID keys against every unrevoked
   `push_subscriptions` row for a notification's recipient) is a service-role
@@ -1699,26 +1765,48 @@ this section records the table and enum changes and the two remaining notes.
 
 ## Needs from schema, admin-moderation (Phase 2)
 
-Schema the Phase 2 admin-moderation ticket (COMM-218) needs.
+Schema the Phase 2 admin-moderation ticket (COMM-218) needs. Shipped by
+schema in 202608290010, together with the COMM-219 half under "Needs from
+schema, notifications (Phase 2)".
+
+### announcements priority and expiry (202608290010)
 
 - `announcements.priority text not null default 'normal' check (priority in
-  ('normal', 'important', 'urgent'))`, replacing the boolean `important`
-  added in 202608280026. `important` stays as a generated column
-  (`important boolean generated always as (priority <> 'normal') stored`,
-  or an equivalent trigger-maintained mirror) rather than being dropped, so
-  every Phase 1 trigger and policy that already reads `important` keeps
-  working with zero further edit; only `notif_is_operational` and the AFTER
-  UPDATE trigger column list change, both under "Needs from schema,
-  notifications (Phase 2)".
-- `announcements.expires_at timestamptz`, nullable. An expired announcement
-  is excluded from `feed_page`'s top-area read and from the pinned-strip
-  read at query time (same "no cron, no backfill" pattern
-  `is_posting_restricted` already uses for a lifted or timed-out
-  restriction), and stays visible in `admin_actions_page` and any admin
-  audit read, since expiry hides it from members, not from the record. Only
-  `is_staff()` may set either column, matching the existing
-  `announcements_insert_admin` / `announcements_update_admin` policies with
-  no widening.
+  ('normal', 'important', 'urgent'))`, the client-facing replacement for the
+  boolean `important` added in 202608280026. Existing rows with `important`
+  set were backfilled to `important` tier in the same migration.
+- `announcements.important` was NOT dropped. It stays a real, writable
+  boolean kept as an exact mirror of `priority <> 'normal'` by the
+  `announcements_priority_sync` BEFORE trigger (documented under "##
+  Notifications"), which is the "equivalent trigger-maintained mirror" this
+  list allowed. A generated column was rejected: it would make `insert into
+  announcements (..., important)` and `update ... set important = true` hard
+  errors, and both are live in the shipped pgTAP suite and in any client
+  build predating the priority field. Every Phase 1 trigger and policy that
+  reads `important` is unchanged.
+- `announcements.expires_at timestamptz`, nullable, plus a partial index on
+  the rows that carry one. `now()` is not immutable, so "not yet expired"
+  cannot be a partial index predicate and is not one.
+- Expiry is enforced at read time in RLS, not in a page function: members
+  read `announcements` directly, so `announcements_read` became `deleted_at
+  is null and (expires_at is null or expires_at > now() or
+  public.is_staff())`. That is what drops an expired announcement out of the
+  feed top area and the pinned strip with no cron and no backfill, the same
+  shape `is_posting_restricted` uses for a timed-out restriction. Staff keep
+  reading expired rows, so an admin audit read still shows the record;
+  expiry hides an announcement from members, not from the record. This is
+  the only policy change in the migration and it is strictly narrower - no
+  policy was widened.
+- The write gate is untouched. `announcements_insert_admin` /
+  `announcements_update_admin` are whole-row `public.is_staff()` policies,
+  so both new columns are staff-only to write from the moment they exist.
+- Pins are untouched (COMM-155). `pins_unpin_dead_announcement` still fires
+  only on `deleted_at`, so an expired-but-pinned announcement stays pinned
+  until a staff member explicitly unpins it; it simply stops being readable
+  by members, which is what empties it out of the strip.
+- Also in this migration, for the fan-out's already-notified test and
+  `notif_create`'s own de-dupe probe: `notifications_source_idx` on
+  `notifications(source_id, user_id) where source_id is not null`.
 
 ## Needs from schema, coach-tools
 
