@@ -334,9 +334,9 @@ empty, unchanged from Phase 1, until COMM-304.
 
 | ID | Title | Agent | Status |
 |---|---|---|---|
-| COMM-209 | Challenge realtime progress | platform | todo |
-| COMM-227 | Realtime for comments and reaction counts | platform | todo |
-| COMM-228 | Member, event, and challenge search | platform | todo |
+| COMM-209 | Challenge realtime progress | platform | review |
+| COMM-227 | Realtime for comments and reaction counts | platform | review |
+| COMM-228 | Member, event, and challenge search | platform | review |
 | COMM-210 | Consistency leaderboard mode, non-attendance | feed | todo |
 | COMM-211 | Progress leaderboard mode | feed | todo |
 | COMM-212 | Friends leaderboard mode and hide-my-result | feed | todo |
@@ -344,17 +344,26 @@ empty, unchanged from Phase 1, until COMM-304.
 | COMM-231 | Members directory screen | engagement | todo |
 | COMM-232 | People you train with suggestions, non-attendance fallback | feed | todo |
 
-Schema for COMM-209, COMM-227, and COMM-228 shipped in 202608290007 and
-202608290008: `challenge_progress`, `challenge_participants`,
-`post_comments`, `reactions`, and `notifications` are now in the
-`supabase_realtime` publication, and `community_search(p_query, p_limit)`
-exists. See "## Realtime and search" in `docs/community/contracts.md` (moved
-there from "Needs from schema, platform (Phase 2)", now closed) and the
-"Phase 2 schema handoff for qa" table below. Each ticket's own status stays
-`todo` here until its non-schema half lands: COMM-209 and COMM-227 still
-need the client-side subscribe/debounce/teardown wiring `HaimuniaRealtime`
-does not yet do for these five tables, and COMM-228 still needs the search
-UI's grouped-sections rendering on top of the function. COMM-210 to COMM-212
+COMM-209, COMM-227 and COMM-228 are complete, both halves. Schema shipped in
+202608290007 and 202608290008: `challenge_progress`,
+`challenge_participants`, `post_comments`, `reactions`, and `notifications`
+are in the `supabase_realtime` publication, and
+`community_search(p_query, p_limit)` exists. The client half then landed in
+`cloud.js`: five channels through `HaimuniaRealtime` (`chal-progress-<id>`,
+`chal-participants-<id>`, `feed-comments`, `feed-reactions`, `notif-<uid>`),
+each handler re-fetching through the surface's existing load path on a
+400 ms debounce, torn down by `setCommunityTab`, `closeChallengeView` and
+sign-out; plus the grouped members/events/challenges search UI on the
+Account tab. The own-row notification subscription COMM-140 shipped as a
+documented no-op is live, closing that gap. See "## Realtime and search" in
+`docs/community/contracts.md` (moved there from "Needs from schema,
+platform (Phase 2)", now closed) for both the schema and the client channel
+inventory, the "Phase 2 schema handoff for qa" table below for boundaries,
+and `test/community-realtime-and-search.test.mjs` for the executing
+coverage. One gap this cluster deliberately left, for a follow-up ticket:
+an event search result has nowhere to navigate until COMM-213 builds the
+event detail surface, so it records `EVENT_VIEWED` and renders title, start
+and status only. COMM-210 to COMM-212
 share one new `feed_leaderboard` function; COMM-232 needs a new
 `people_suggestions` function. See "Needs from schema, feed (Phase 2)".
 COMM-230 and COMM-231 need no new contract, both direct RLS reads on

@@ -1886,6 +1886,49 @@ never calls `client.channel()` directly.
   pg_publication_tables where pubname = 'supabase_realtime'` returning all
   five rows afterward.
 
+### Client channel inventory (COMM-209, COMM-227)
+
+- The client half, in `cloud.js`, on top of 202608290007. Correcting one
+  line above: only the own-row `notifications` channel existed before this
+  cluster (COMM-140 wired it early); the other four channels are new here.
+  Every one of them is opened through `HaimuniaRealtime.subscribe()` and
+  never by reaching past the harness to the client, so one `teardownAll()`
+  closes all of them.
+- Channels, all `postgres_changes`:
+  - `chal-progress-<id>`: `challenge_progress` INSERT,
+    `challenge_id=eq.<id>`. Open only while a challenge detail is open.
+  - `chal-participants-<id>`: `challenge_participants` UPDATE, same filter.
+  - `feed-comments`: `post_comments` INSERT, unfiltered.
+  - `feed-reactions`: `reactions` `*`, unfiltered.
+  - `notif-<uid>`: `notifications` `*`, `user_id=eq.<uid>`.
+- The two feed channels are shared per feed session rather than one per
+  card: `postgres_changes` filters are `eq`-only, a feed page is twenty
+  posts, and `MAX_SUBSCRIPTIONS` is 10. Incoming rows are filtered client
+  side against the currently rendered post ids (`findFeedPost`), so an
+  event for a post that is not on screen costs nothing.
+- Every handler re-fetches through the surface's existing load path
+  (`chal_progress`, `loadCommentsFor`, `loadReactionsFor`) instead of
+  applying the payload row. A `postgres_changes` payload is one raw table
+  row: no profile join, no block filtering, no server-side aggregation.
+  Applying it directly would render something a manual refresh of the same
+  screen would not.
+- Every re-fetch is debounced (400 ms, keyed per challenge or per post), so
+  a burst of rows costs one query rather than one per row. Pending timers
+  are cancelled by the same teardown that closes the channels, so a timer
+  cannot fire into a view that is gone.
+- Teardown points: `setCommunityTab` (which also closes an open challenge
+  detail, since the detail belongs to the view that opened it),
+  `closeChallengeView`, and sign-out. Arming is idempotent and happens in
+  `afterRenderCommunity`, which checks the registry rather than a local
+  flag, so a channel closed by a teardown re-opens on the next render of a
+  view that still wants it.
+- With no configured client, or with the channel unreachable, `subscribe()`
+  returns a working no-op and every surface stays on its existing
+  poll-on-open behavior. No surface shows an error for a missing channel.
+- Not realtime in V1, deliberately: new feed cards (the feed refreshes on
+  open, pull and paginate), and urgent announcements, whose broadcast path
+  is still COMM-219.
+
 ### community_search(p_query text, p_limit int default 10) returns jsonb
 
 - Shipped in 202608290008.
@@ -1937,6 +1980,31 @@ never calls `client.channel()` directly.
   handoff for qa" in `docs/community/backlog.md` for the full boundary
   table, and `test/community-realtime-search-rls.test.mjs` for the static
   assertions.
+
+### Search UI (COMM-228)
+
+- One box (`#communityPeopleSearch`, Account tab), one call per keystroke,
+  three labeled groups rendered in a fixed order - members, events,
+  challenges - never interleaved: a member row and an event row are not
+  comparable, and mixing them would need a cross-type relevance order the
+  function deliberately does not compute. Each group carries
+  `data-search-group="<members|events|challenges>"`.
+- `searchPeople(query)` is kept as the input handler's name and now
+  delegates to `communitySearch(query)`. `state.people` still holds the
+  members group with the same row shape and the same follow/block/profile
+  controls, so the existing caller is unchanged.
+- The client strips `%_,()` and trims before checking the 2-character
+  threshold, so a query of only those characters is empty results with no
+  request. The RPC re-applies both, since it receives the raw string.
+- States: under 2 characters is a hint and no request; in flight is
+  "מחפש..."; a failed call clears the three groups rather than showing an
+  error, matching the members-only search's previous failure behavior. A
+  response is dropped if a later keystroke already fired.
+- A challenge result opens the real challenge detail
+  (`CHALLENGE_VIEWED` with `source: "search"`). An event result records
+  `EVENT_VIEWED` with the same source and shows title, start and status
+  only - there is no event detail surface until COMM-213, and the row does
+  not pretend to navigate to one.
 
 ## Needs from schema, platform (Phase 2)
 

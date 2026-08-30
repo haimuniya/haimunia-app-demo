@@ -49,6 +49,17 @@
     challenges: [], challengesLoaded: false, challengesLoading: false, challengesError: false,
     challengeParticipation: {}, challengeAggregates: {},
     challengeView: null, challengeForm: null,
+    // COMM-209. The challenge id whose realtime channels are currently open,
+    // so re-arming after a teardown is idempotent and switching challenges
+    // closes the previous pair rather than stacking a second one.
+    _chalRtId: null,
+    // COMM-228 search cluster. One community_search() call fills all three
+    // groups. state.people keeps its name and its exact row shape - it is
+    // still the members group and still what the follow/block/profile
+    // controls read - so widening the search did not change the existing
+    // caller. searchQuery is what the member typed, kept verbatim so a
+    // re-render can put it back in the box; only the request is sanitized.
+    searchEvents: [], searchChallenges: [], searchQuery: "", searchLoading: false,
     // In-memory only (COMM-205): which ISO week a consistency challenge has
     // already logged a "week hit" delta for on this device this session, so
     // a repeated WORKOUT_COMPLETED burst within the same week cannot log
@@ -58,9 +69,10 @@
   const photoUrlCache = {};
 
   // COMM-141. The notification badge refreshes on a realtime own-row
-  // event. Realtime replication for public.notifications is a Phase 2
-  // schema change (COMM-227); until then subscribe() is a working no-op,
-  // wired now so the badge goes live the moment replication lands.
+  // event. That subscription was written before public.notifications was
+  // in the supabase_realtime publication, so it was a working no-op until
+  // 202608290007 landed; COMM-227 is the ticket that made it live, with no
+  // change to the subscription itself.
   if (client && window.HaimuniaRealtime && typeof window.HaimuniaRealtime.configure === "function") {
     window.HaimuniaRealtime.configure({ client });
   }
@@ -1356,21 +1368,54 @@
   // COMM-151. Opens the reason sheet for a post. The acknowledgement after
   // submit is plain ("הדיווח התקבל.") and says nothing about what follows.
   function report(postId) { openReportSheet("post", postId); }
-  async function searchPeople(query) {
+  // COMM-228. Members, events and challenges in one round trip. The RPC is
+  // security definer and unions three rules that already exist as RLS
+  // policies (profiles_read_authenticated, events_read, challenges_read),
+  // so it never returns a row the caller could not already have read one at
+  // a time - see "## Realtime and search" in docs/community/contracts.md.
+  const SEARCH_MIN_CHARS = 2;
+  const SEARCH_GROUP_LIMIT = 10;
+  let searchToken = 0;
+  // The exact characters the RPC strips server-side. Sanitizing here too is
+  // not redundant: it is what makes the under-2-chars check agree with the
+  // server's, so a query of only "%_,()" never costs a round trip.
+  function sanitizeSearchQuery(query) { return String(query || "").trim().replace(/[%_,()]/g, ""); }
+  function clearSearchResults() { state.people = []; state.searchEvents = []; state.searchChallenges = []; }
+  async function communitySearch(query) {
     if (!state.user) return;
-    const q = String(query || "").trim().replace(/[%_,()]/g, "");
-    if (q.length < 2) { state.people = []; return rerender(); }
-    // allow_follows comes back so the follow button can be hidden for a
-    // member who turned follows off. The server still rejects the insert
-    // (follows_insert_self checks the same column plus block edges), this
-    // is only so the button does not lie.
-    const { data, error } = await client.from("profiles").select("id,handle,display_name,bio,avatar_url,allow_follows").or(`handle.ilike.%${q}%,display_name.ilike.%${q}%`).neq("id", state.user.id).limit(20);
-    state.people = error ? [] : (data || []);
+    // state.searchQuery keeps what the member typed, so a re-render does not
+    // rewrite the box under their cursor; only the request is sanitized.
+    state.searchQuery = String(query || "");
+    const q = sanitizeSearchQuery(query);
+    const token = ++searchToken;
+    // Under two characters is empty results, no request and no error -
+    // the same threshold the RPC re-applies for a caller that skips it.
+    if (q.length < SEARCH_MIN_CHARS) { clearSearchResults(); state.searchLoading = false; return rerender(); }
+    state.searchLoading = true;
+    rerender();
+    const { data, error } = await client.rpc("community_search", { p_query: q, p_limit: SEARCH_GROUP_LIMIT });
+    // A slower earlier keystroke must not overwrite a later one's results.
+    if (token !== searchToken) return;
+    state.searchLoading = false;
+    // Failure clears rather than showing a broken state, matching what the
+    // members-only search did before this ticket widened it.
+    const groups = (!error && data && typeof data === "object") ? data : {};
+    // allow_follows comes back in the members group so the follow button can
+    // be hidden for a member who turned follows off. The server still
+    // rejects the insert (follows_insert_self checks the same column plus
+    // block edges), this is only so the button does not lie.
+    state.people = Array.isArray(groups.members) ? groups.members : [];
+    state.searchEvents = Array.isArray(groups.events) ? groups.events : [];
+    state.searchChallenges = Array.isArray(groups.challenges) ? groups.challenges : [];
     rerender();
     // COMM-160. Resolve the coach badge for the result set from the shared
     // server role cache, then re-render.
     loadMemberRoles(state.people.map((p) => p.id)).then(() => rerender());
   }
+  // The search box's input handler keeps its original name: it is still the
+  // members-first entry point every existing caller wired, COMM-228 only
+  // widened what one keystroke fetches.
+  function searchPeople(query) { return communitySearch(query); }
   // COMM-018. The single client entry point to the server's per-field
   // privacy resolver. Feed, profile, leaderboard and search all resolve a
   // hidden field through this RPC (or the equivalent RLS policy) so one
@@ -1512,11 +1557,26 @@
   }
   // COMM-014. Every realtime channel is scoped to the sub-tab that
   // opened it, so leaving that sub-tab closes all of them here rather
-  // than in each feature. Phase 0 has no open subscriptions, so this is
-  // a no-op today - it is in place first so a Phase 2 feature cannot
-  // ship a leak by forgetting its own teardown.
+  // than in each feature. COMM-209 and COMM-227 are the first tickets
+  // with live channels behind this call: the challenge detail's two
+  // filtered channels, the feed's two shared ones, and the own-row
+  // notification channel all close here and re-arm from
+  // afterRenderCommunity() if the new tab still wants them.
   function setCommunityTab(tab) {
-    if (window.HaimuniaRealtime && state.communityTab !== tab) window.HaimuniaRealtime.teardownAll();
+    if (state.communityTab !== tab) {
+      // COMM-209. The challenge detail belongs to the view that opened it.
+      // Leaving that view closes it, so its two channels stay closed after
+      // the teardown below instead of being re-armed by the next render
+      // for a dialog nobody can see behind the new tab.
+      state.challengeView = null;
+      if (window.HaimuniaRealtime) window.HaimuniaRealtime.teardownAll();
+      // Both flags describe channels that no longer exist. Clearing them
+      // is what lets the arm points above open a fresh channel instead of
+      // trusting a stale "already subscribed" memory.
+      state._chalRtId = null;
+      state._notifRtUid = null;
+      clearRealtimeDebounces();
+    }
     // COMM-114: "flushed once per feed session, or on view change, whichever
     // comes first". Leaving the Feed sub-tab is a view change.
     if (state.communityTab !== tab) flushFeedImpressions();
@@ -1624,6 +1684,51 @@
     const selfIndex = items.findIndex((it) => selfKeyOf(it) === selfId);
     const rows = selfIndex >= 3 ? [...top, `<div class="empty" style="padding:4px 0;font-size:16px;">···</div>`, rowHtml(items[selfIndex], selfIndex, true)] : top;
     return `<div class="log-list">${rows.join("")}</div>`;
+  }
+
+  // ---- COMM-228 grouped search -------------------------------------------
+  // One box, three labeled groups, never interleaved: a member row is not
+  // comparable to an event row, and mixing them would force an ordering
+  // (relevance across types) the RPC deliberately does not compute.
+  function searchGroupHtml(label, rowsHtml) {
+    return `<div class="search-group" data-search-group="${label}" style="margin-top:10px;">
+      <div class="field-label" style="margin-bottom:6px;">${searchGroupTitle(label)}</div>
+      ${rowsHtml ? `<div class="log-list">${rowsHtml}</div>` : `<div class="empty" style="padding:6px 0;">אין תוצאות</div>`}
+    </div>`;
+  }
+  function searchGroupTitle(key) {
+    return { members: "מתאמנים", events: "אירועים", challenges: "אתגרים" }[key] || key;
+  }
+  function searchMemberRowHtml(person) {
+    return `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32)}<div><div style="font-weight:700;">${safeText(person.display_name || "@" + person.handle)}${isCoachRole(memberRole(person.id)) ? " " + coachBadgeHtml(memberRole(person.id)) : ""}</div><div style="color:var(--steel);font-size:12px;">@${safeText(person.handle)} ${safeText(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="view-profile" data-id="${safeText(person.id)}">פרופיל</button>${person.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${safeText(person.id)}">מעקב</button>`}<button class="chip-btn" data-community-action="block" data-id="${safeText(person.id)}">חסימה</button></div></div>`;
+  }
+  function searchEventRowHtml(ev) {
+    // No event detail surface exists yet (COMM-213 builds it), so the row
+    // records the view and says what it knows. It does not pretend to
+    // navigate somewhere that is not built.
+    const when = ev.start_at ? String(ev.start_at).slice(0, 16).replace("T", " ") : "";
+    const meta = [when, ev.status === "draft" ? "טיוטה" : ev.status === "cancelled" ? "בוטל" : ""].filter(Boolean);
+    return `<div class="log-row" data-search-event-id="${safeText(ev.id)}"><div><div style="font-weight:700;">📅 ${safeText(ev.title || "אירוע")}</div>${meta.length ? `<div style="color:var(--steel);font-size:12px;">${meta.map(safeText).join(" · ")}</div>` : ""}</div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="open-event" data-id="${safeText(ev.id)}" data-source="search">פרטים</button></div></div>`;
+  }
+  function searchChallengeRowHtml(c) {
+    const meta = [challengeTypeDef(c.challenge_type).label, challengeStatusLabel(c), c.end_at ? `עד ${formatChallengeDate(c.end_at)}` : ""].filter(Boolean);
+    return `<div class="log-row" data-search-challenge-id="${safeText(c.id)}"><div><div style="font-weight:700;">${safeText(challengeTypeDef(c.challenge_type).icon)} ${safeText(c.title || "אתגר")}</div><div style="color:var(--steel);font-size:12px;">${meta.map(safeText).join(" · ")}</div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="open-challenge" data-id="${safeText(c.id)}" data-source="search">פרטים</button></div></div>`;
+  }
+  function renderCommunitySearch() {
+    const box = `<div class="search-box"><input id="communityPeopleSearch" placeholder="חיפוש מתאמנים, אירועים ואתגרים" aria-label="חיפוש בקהילה" value="${safeText(state.searchQuery || "")}"/></div>`;
+    let body;
+    if (sanitizeSearchQuery(state.searchQuery).length < SEARCH_MIN_CHARS) {
+      // Under the threshold there is nothing to show and nothing was asked
+      // of the server - not an error, and not an empty-results claim.
+      body = `<div class="footer-note" style="margin:6px 0 0;">הקלידו לפחות ${SEARCH_MIN_CHARS} תווים</div>`;
+    } else if (state.searchLoading) {
+      body = `<div class="empty" role="status" style="padding:8px 0;">מחפש...</div>`;
+    } else {
+      body = searchGroupHtml("members", state.people.map(searchMemberRowHtml).join(""))
+        + searchGroupHtml("events", state.searchEvents.map(searchEventRowHtml).join(""))
+        + searchGroupHtml("challenges", state.searchChallenges.map(searchChallengeRowHtml).join(""));
+    }
+    return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--steel)", "חיפוש בקהילה")}${box}${body}</div>`;
   }
   // COMM-120. The reactor avatar strip and total. Rendered inside the
   // engagement slot so the card markup itself is untouched; shown whenever a
@@ -2289,7 +2394,10 @@
     rerender();
     await refreshChallengeView(id);
   }
-  function closeChallengeView() { state.challengeView = null; rerender(); }
+  // COMM-209. Leaving the detail closes its two channels immediately rather
+  // than waiting for the next render to notice, so a member who opens and
+  // closes several challenges never holds more than one pair open.
+  function closeChallengeView() { state.challengeView = null; ensureChallengeRealtime(); rerender(); }
   async function refreshChallengeView(id) {
     const v = state.challengeView;
     if (!v || v.id !== id) return;
@@ -3915,6 +4023,123 @@
     }
   }
 
+  // --- COMM-209 / COMM-227 realtime wiring ---------------------------
+  // Every channel below is opened through HaimuniaRealtime (COMM-014), never
+  // by reaching past it to the raw client, so setCommunityTab's single
+  // teardownAll() closes all of them on a view change. Each handler
+  // re-fetches through the surface's existing load path instead of applying
+  // the payload row: the payload is one raw table row with no profile join,
+  // no block filtering and no server-side aggregation, so applying it
+  // directly would render a different (and sometimes wrong) view than a
+  // manual refresh of the same screen. Re-fetching keeps exactly one
+  // rendering path per surface.
+  //
+  // Every re-fetch is debounced, so a burst of rows (a coach entering ten
+  // members' progress, a post getting twenty reactions) costs one query,
+  // not one per row.
+  const REALTIME_DEBOUNCE_MS = 400;
+  const realtimeTimers = {};
+  function realtimeDebounce(key, fn, wait) {
+    if (realtimeTimers[key]) clearTimeout(realtimeTimers[key]);
+    realtimeTimers[key] = setTimeout(function () {
+      delete realtimeTimers[key];
+      try { fn(); } catch (err) { console.error("[realtime] refresh failed for " + key, err); }
+    }, wait == null ? REALTIME_DEBOUNCE_MS : wait);
+  }
+  // Teardown has to cancel pending refreshes too. A timer that survives a
+  // view change would fire a query against a screen nobody is looking at,
+  // which is the same leak the channel registry exists to prevent.
+  function clearRealtimeDebounces() {
+    for (const key of Object.keys(realtimeTimers)) { clearTimeout(realtimeTimers[key]); delete realtimeTimers[key]; }
+  }
+  function realtimeChannelOpen(name) {
+    if (!window.HaimuniaRealtime || typeof window.HaimuniaRealtime.list !== "function") return false;
+    return window.HaimuniaRealtime.list().some((ch) => ch.name === name);
+  }
+
+  // COMM-209. Two channels per open challenge detail, both filtered to that
+  // challenge id (postgres_changes supports eq filters, and a detail screen
+  // is one id), well under MAX_SUBSCRIPTIONS = 10. Closing the detail or
+  // opening a different one closes the previous pair.
+  function challengeRealtimeNames(id) { return ["chal-progress-" + id, "chal-participants-" + id]; }
+  function ensureChallengeRealtime() {
+    if (!state.user || !client || !window.HaimuniaRealtime) return;
+    const openId = state.challengeView && state.challengeView.id;
+    if (state._chalRtId && state._chalRtId !== openId) {
+      for (const name of challengeRealtimeNames(state._chalRtId)) window.HaimuniaRealtime.unsubscribe(name);
+      state._chalRtId = null;
+    }
+    if (!openId) return;
+    const [progressName, participantsName] = challengeRealtimeNames(openId);
+    // Re-arm after teardownAll() the same way the notification channel
+    // does: the registry, not a local flag, is the source of truth for
+    // whether a channel is actually open.
+    if (state._chalRtId === openId && realtimeChannelOpen(progressName) && realtimeChannelOpen(participantsName)) return;
+    window.HaimuniaRealtime.subscribe(progressName,
+      { table: "challenge_progress", event: "INSERT", filter: "challenge_id=eq." + openId },
+      function () { onChallengeRealtime(openId); });
+    window.HaimuniaRealtime.subscribe(participantsName,
+      { table: "challenge_participants", event: "UPDATE", filter: "challenge_id=eq." + openId },
+      function () { onChallengeRealtime(openId); });
+    state._chalRtId = openId;
+  }
+  function onChallengeRealtime(id) {
+    realtimeDebounce("chal-" + id, function () {
+      // The detail may have closed between the event and this timer.
+      if (!state.challengeView || state.challengeView.id !== id) return;
+      // chal_progress() is the server's aggregation; re-reading it is what
+      // keeps the bar and the leaderboard equal to what a refresh shows,
+      // rather than a client-side sum of deltas that drifts.
+      refreshChallengeView(id);
+    });
+  }
+
+  // COMM-227. Two shared channels per feed session, not one per card:
+  // postgres_changes filters only support eq, and a feed page is twenty
+  // posts, so twenty filtered channels would blow the ten-channel cap.
+  // Incoming rows are filtered here against what is actually rendered.
+  function ensureFeedRealtime() {
+    if (!state.user || !client || !window.HaimuniaRealtime) return;
+    if (state.communityTab !== "feed") return;
+    if (!realtimeChannelOpen("feed-comments")) {
+      window.HaimuniaRealtime.subscribe("feed-comments", { table: "post_comments", event: "INSERT" }, onFeedCommentRealtime);
+    }
+    if (!realtimeChannelOpen("feed-reactions")) {
+      window.HaimuniaRealtime.subscribe("feed-reactions", { table: "reactions", event: "*" }, onFeedReactionRealtime);
+    }
+  }
+  // A postgres_changes payload carries `new` on INSERT/UPDATE and `old` on
+  // DELETE; a reaction removal is a DELETE, so both are read here.
+  function realtimePostId(payload) {
+    const rec = payload && (payload.new || payload.record || payload.old || payload.old_record);
+    const postId = rec && rec.post_id;
+    return postId && findFeedPost(postId) ? postId : null;
+  }
+  function onFeedCommentRealtime(payload) {
+    const postId = realtimePostId(payload);
+    // Only a thread the member has open. A closed thread has nothing to
+    // append to and re-fetching it would be a query nobody asked for.
+    if (!postId || !state.openComments[postId]) return;
+    realtimeDebounce("comments-" + postId, function () {
+      if (!state.openComments[postId] || !findFeedPost(postId)) return;
+      // loadCommentsFor() is the initial load path, so the new rows get the
+      // same block-edge and moderation-status handling (and the same author
+      // profile join and coach-role lookup) the first render applied.
+      loadCommentsFor(postId);
+    });
+  }
+  function onFeedReactionRealtime(payload) {
+    const postId = realtimePostId(payload);
+    if (!postId) return;
+    realtimeDebounce("reactions-" + postId, function () {
+      if (!findFeedPost(postId)) return;
+      // A card whose strip was never loaded (no reactions yet) needs the
+      // first load; one already loaded needs a re-read of the same query.
+      if (state.reactions[postId]) loadReactionsFor(postId);
+      else ensureReactionsLoaded(postId);
+    });
+  }
+
   // --- COMM-141 realtime own-row refresh ----------------------------
   function ensureNotifRealtime() {
     if (!state.user || !client || !window.HaimuniaRealtime) return;
@@ -4328,7 +4553,8 @@
       <div class="log-list">${privacyRows}</div>
     </div>`;
 
-    const people = `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--steel)", "מציאת מתאמנים")}<div class="search-box"><input id="communityPeopleSearch" placeholder="חיפוש לפי שם או @handle" aria-label="חיפוש מתאמנים" /></div>${state.people.length ? `<div class="log-list">${state.people.map((person) => `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32)}<div><div style="font-weight:700;">${safeText(person.display_name || "@" + person.handle)}${isCoachRole(memberRole(person.id)) ? " " + coachBadgeHtml(memberRole(person.id)) : ""}</div><div style="color:var(--steel);font-size:12px;">@${safeText(person.handle)} ${safeText(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="view-profile" data-id="${safeText(person.id)}">פרופיל</button>${person.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${safeText(person.id)}">מעקב</button>`}<button class="chip-btn" data-community-action="block" data-id="${safeText(person.id)}">חסימה</button></div></div>`).join("")}</div>` : ""}</div>`;
+    // COMM-228. One box, three labeled groups (members, events, challenges).
+    const people = renderCommunitySearch();
 
     const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מתאמנים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין מתאמנים חדשים לאחרונה</div>`}</div>` : "";
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
@@ -4506,6 +4732,14 @@
   window.afterRenderCommunity = function () {
     const input = document.getElementById("communityPeopleSearch");
     if (input) input.addEventListener("input", () => searchPeople(input.value));
+    // COMM-228. A render replaces the box the member is typing into, which
+    // drops focus and the caret. Restoring is safe only when nothing else
+    // holds focus (a render triggered by the search itself leaves
+    // activeElement on <body>), so this can never steal focus from another
+    // control on the same tab.
+    if (input && input.value && (!document.activeElement || document.activeElement === document.body)) {
+      try { input.focus(); input.setSelectionRange(input.value.length, input.value.length); } catch (e) { /* not a text input in this browser */ }
+    }
     const adminInput = document.getElementById("adminMemberSearch");
     if (adminInput) adminInput.addEventListener("input", () => searchMembers(adminInput.value));
     // COMM-154. The audit view is lazy: fetched the first time an analytics
@@ -4530,6 +4764,12 @@
     // tears every channel down, so this self-heals the same way the feed
     // observers above do.
     ensureNotifRealtime();
+    // COMM-209 / COMM-227. Same self-healing arm point for the challenge
+    // detail's two filtered channels and the feed's two shared ones. Both
+    // are idempotent: they check the registry before subscribing, so
+    // running on every render costs nothing.
+    ensureChallengeRealtime();
+    ensureFeedRealtime();
     // COMM-190. Shared dialog focus management for every Phase 1 overlay:
     // focus-in on open, focus restored to the opener on close. Replaces the
     // notification centre's one-off focus-in.
@@ -4653,7 +4893,10 @@
     // COMM-201/207. openChallenge() itself records CHALLENGE_VIEWED (source
     // defaults to "boards"), so the POST_CHALLENGE link card's own tap
     // passes "post_card" through.
-    else if (action === "open-challenge") { if (el.dataset.id) openChallenge(el.dataset.id, "post_card"); }
+    // COMM-228. A search result carries data-source="search" so the same
+    // action records where the member came from; anything without one is
+    // the POST_CHALLENGE link card it was written for.
+    else if (action === "open-challenge") { if (el.dataset.id) openChallenge(el.dataset.id, el.dataset.source || "post_card"); }
     else if (action === "close-challenge-view") closeChallengeView();
     else if (action === "join-challenge") joinChallenge(el.dataset.id, "boards");
     else if (action === "leave-challenge") confirmLeaveChallenge(el.dataset.id);
@@ -4670,7 +4913,7 @@
     else if (action === "challenge-publish") publishChallengeDraft(el.dataset.id);
     else if (action === "challenge-archive") archiveChallenge(el.dataset.id);
     else if (action === "challenge-delete") askConfirm({ title: "מחיקת טיוטה", message: "למחוק את הטיוטה? הפעולה אינה ניתנת לביטול.", confirmLabel: "מחיקה", destructive: true, action: "challenge-delete-draft", payload: { challengeId: el.dataset.id } });
-    else if (action === "open-event") track(A.EVENT_VIEWED, { event_id: el.dataset.id || null, source: "post_card" });
+    else if (action === "open-event") track(A.EVENT_VIEWED, { event_id: el.dataset.id || null, source: el.dataset.source || "post_card" });
   };
   window.isCommunitySignedIn = function () { return !!(state.user && state.profile); };
   window.shareAchievementToCommunity = function (achievementId, title, rule) { publishAchievement(achievementId, title, rule); };
@@ -4733,10 +4976,17 @@
         flushFeedImpressions();
         // COMM-170. The next session starts its own club_tab_viewed.
         resetClubTabView();
+        // COMM-209 / COMM-227. Sign-out closes every open channel, the
+        // other half of the teardown contract src/realtime.js documents.
+        // Until this cluster there was nothing live to close; now the
+        // own-row notification channel and the feed's shared channels
+        // would otherwise outlive the session that opened them.
+        if (window.HaimuniaRealtime) window.HaimuniaRealtime.teardownAll();
+        clearRealtimeDebounces();
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {};
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {};
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();

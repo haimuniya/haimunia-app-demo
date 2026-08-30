@@ -12,10 +12,15 @@
 // alternative is trusting every future feature ticket to clean up after
 // itself.
 //
-// Phase 0 ships zero active subscriptions. Comments and reaction counts
-// are COMM-227, challenge progress is COMM-209, both Phase 2. Realtime
-// replication has to be enabled per table by a schema migration before
-// any of those work, which is deliberately not a Phase 0 change.
+// Phase 0 shipped zero active subscriptions. Phase 2 is where the first
+// live ones land, all of them in cloud.js and all of them through
+// subscribe() below: the challenge detail's challenge_progress and
+// challenge_participants channels (COMM-209), the feed session's shared
+// post_comments and reactions channels (COMM-227), and the own-row
+// notifications channel COMM-140 wired ahead of time. Each of those five
+// tables had to be added to the supabase_realtime publication first
+// (migration 202608290007) - before that, subscribe() was a working
+// no-op because Postgres replicated nothing for them.
 (function () {
   "use strict";
 

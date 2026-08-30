@@ -745,6 +745,45 @@ export function createMockSupabase(seedTables = {}) {
           applyChallengeProgressInserts([row]);
           return Promise.resolve({ data: id, error: null });
         }
+        // COMM-228. community_search(p_query, p_limit) - the grouped search
+        // the UI calls once per keystroke (202608290008). Mirrors the real
+        // function's sanitization (%_,() stripped), its under-2-characters
+        // short circuit, its per-group cap, and each group's visibility
+        // rule. The one deliberate difference: a fixture profile that never
+        // set visible_to_club is treated as visible, the same leniency
+        // can_view_profile_field above already applies, so a test does not
+        // have to spell out every privacy column to search for a member.
+        if (name === "community_search") {
+          const uid = currentUser && currentUser.id;
+          if (!uid) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          const q = String((args && args.p_query) || "").replace(/[%_,()]/g, "").trim();
+          const limit = Math.max(1, Math.min(Number((args && args.p_limit) != null ? args.p_limit : 10), 50));
+          const empty = { members: [], events: [], challenges: [] };
+          if (q.length < 2) return Promise.resolve({ data: empty, error: null });
+          const needle = q.toLowerCase();
+          const like = (v) => String(v || "").toLowerCase().includes(needle);
+          const isAdminCaller = !!(rows("profiles").find((p) => p.id === uid) || {}).is_admin;
+          const members = rows("profiles").filter((p) => {
+            if (p.deleted_at || p.id === uid) return false;
+            if (!like(p.handle) && !like(p.display_name)) return false;
+            const blocked = rows("blocks").some((b) => (b.blocker_id === uid && b.blocked_id === p.id) || (b.blocker_id === p.id && b.blocked_id === uid));
+            if (blocked) return false;
+            return p.visible_to_club !== false || isAdminCaller;
+          }).slice(0, limit).map((p) => ({
+            id: p.id, handle: p.handle, display_name: p.display_name,
+            bio: p.bio || null, avatar_url: p.avatar_url || null,
+            allow_follows: p.allow_follows !== undefined ? p.allow_follows : null,
+          }));
+          const events = rows("events").filter((e) => like(e.title)
+            && (e.status !== "draft" || e.created_by === uid || permHas(uid, "community.event.manage")))
+            .slice(0, limit)
+            .map((e) => ({ id: e.id, title: e.title, event_type: e.event_type || null, status: e.status || null, start_at: e.start_at || null }));
+          const challenges = rows("challenges").filter((c) => like(c.title)
+            && (c.status !== "draft" || c.created_by === uid || permHas(uid, "community.challenge.create")))
+            .slice(0, limit)
+            .map((c) => ({ id: c.id, title: c.title, challenge_type: c.challenge_type || null, status: c.status || null, start_at: c.start_at || null, end_at: c.end_at || null }));
+          return Promise.resolve({ data: { members, events, challenges }, error: null });
+        }
         if (name === "mark_recovery_verified") {
           const prof = rows("profiles").find((r) => currentUser && r.id === currentUser.id);
           const hasCreds = currentUser && (currentUser.email || rows("__credentials").some((c) => c.userId === currentUser.id));
