@@ -731,6 +731,34 @@ Closed. See "## Challenges" above.
   function, so a direct RLS upsert hits the same checks. It raises
   `event_full` or `registration_closed`.
 
+### AFTER UPDATE OF status on public.events - notif_on_event_cancelled()
+
+- Shipped in 202608290009 (COMM-214). Definer, no grant to any client role.
+  Trigger name `events_notify_cancelled`.
+- Purpose: an event that gets cancelled tells the members who were going.
+- Fires on the transition into `cancelled` only. As with
+  `notif_on_challenge_complete`, `AFTER UPDATE OF status` fires on any
+  UPDATE whose SET list mentions `status`, including one that writes the
+  same value back, so the function re-checks `new.status = 'cancelled' and
+  old.status <> 'cancelled'` itself and returns early otherwise.
+- Recipients: every `event_attendees` row on the event with `response` in
+  `going` or `interested`. A `not_going` RSVP is an opt-out and is never
+  notified. A draft event needs no special case - it can have no attendees,
+  so the loop is empty.
+- `notif_create(<attendee>, 'event_cancelled', 'events', 'Event cancelled',
+  <events.title>, 'event', <events.id>, '/community/feed?event=<id>')` per
+  recipient. Immediate per the routing table, never batched.
+- Because delivery goes through `notif_create`, the block edge, the `off`
+  preference, the never-notify-the-actor rule, and the dedupe window are
+  applied there and are not duplicated in the trigger: the staff member who
+  cancelled is the actor and so never notifies themselves even when they
+  hold a `going` RSVP; an attendee on either side of a block edge with the
+  canceller is skipped; and the dedupe key (recipient, `event_cancelled`,
+  event id) makes a cancel -> republish -> cancel inside
+  `notif_dedupe_window()` one cancellation rather than two.
+- Also in 202608290009: `notif_pref_key` gains one arm, `event_cancelled`
+  -> `events`. See its entry below.
+
 ## Needs from schema, events
 
 Functions and columns the Phase 2 events cluster (COMM-213 to COMM-217)
@@ -739,12 +767,10 @@ needs and that schema still owns. `events` and `event_attendees` themselves,
 (COMM-007). Creating, editing, and cancelling an event are direct RLS writes
 under the existing `community.event.manage`-gated policies, no new function.
 
-- AFTER UPDATE OF status on `events` trigger (`notif_on_event_cancelled`):
-  on a transition to `cancelled`, `notif_create('event_cancelled', ...)`
-  (immediate, per the routing table) for every `event_attendees` row on that
-  event with `response` in `going` or `interested`, subject to the same
-  block-edge and dedupe rules every other trigger uses. See "Needs from
-  schema, notifications (Phase 2)".
+- Closed. `notif_on_event_cancelled` shipped in 202608290009 and is
+  documented under "## Events" above, with the `notif_pref_key` arm it
+  needed. It was the only schema change this cluster asked for; the two
+  items below were already "no schema change" and stay that way.
 - Event comments (COMM-216) need no new table: publishing an event creates
   one companion `POST_EVENT` `workout_posts` row via `post_create` with
   `links.event_id`, and the event detail's comment thread is that post's
@@ -1008,8 +1034,25 @@ appends `renderComments(post)` inside the article and exposes
   `comment_on_post`; `mention` and `coach_mention` -> `mentions`;
   `reaction` -> `reactions`; `announcement` -> `announcements`;
   `friend_achievement` -> `friend_achievements`; `achievement_unlocked` ->
-  `achievement_unlocked`; anything else maps to itself. The client writes
-  preference rows keyed by these values.
+  `achievement_unlocked`; and, added in 202608290009, `event_cancelled` ->
+  `events`. Anything else maps to itself.
+- KNOWN DRIFT, do not treat this map as agreeing with the client yet. The
+  client's preferences panel (`NOTIF_PREF_TYPES` in cloud.js) writes the
+  coarse keys `comments`, `replies`, `mentions`, `reactions`,
+  `achievements`, `friend_achievements`, `challenges`, `events`,
+  `announcements`, `weekly_recap`. Only `mentions`, `reactions`,
+  `friend_achievements`, `announcements`, and (since 202608290009) `events`
+  line up. `comment_reply` maps to `comment_reply` where the client writes
+  `replies`; `comment_on_post` / `comment_also` map to `comment_on_post`
+  where the client writes `comments`; `achievement_unlocked` maps to itself
+  where the client writes `achievements`; `challenge_ending_soon` and
+  `challenge_update` fall through to themselves where the client writes
+  `challenges`. For those five types an `off` toggle in the panel does not
+  actually suppress delivery. 202608290009 fixed only `event_cancelled`,
+  because that type had never been emitted before, so adding its arm could
+  not change any shipped behaviour; re-keying the others changes live
+  delivery for members who already set those toggles and belongs to the
+  notifications cluster (COMM-218/219), with the matching client change.
 - `notif_pref_allows(p_user uuid, p_type text) returns boolean` - false
   only when the user has an explicit `off` row on the mapped key. A missing
   row is `in_app`, i.e. allowed. The batched path checks this before
@@ -1233,7 +1276,9 @@ The single split, so the trigger set and the client `notifRoute()` agree.
 
 - `challenge_ending_soon` (immediate, joined participants only) and
   `challenge_update` (batched): COMM-208, Phase 2.
-- `event_cancelled` (immediate): COMM-214 and COMM-215, Phase 2.
+- `event_cancelled` (immediate): COMM-214, shipped in 202608290009. The
+  only type whose `notif_pref_key` arm matches the client's panel key
+  (`events`) on the server side today.
 - `weekly_recap` (batched): the `recap_weekly` Edge Function (COMM-220)
   calls `notif_create(U, 'weekly_recap', 'club', ...)` once per user per
   week, deep link to the recap surface.
@@ -1255,8 +1300,9 @@ The challenges-specific part of this list (COMM-208) shipped in 202608290006:
 `chal_notify_ending_soon()` plus `challenges.ending_soon_notified_at` are
 documented under "## Challenges" above, not here.
 
-- `notif_on_event_cancelled`: immediate `event_cancelled`. See "Needs from
-  schema, events".
+- `notif_on_event_cancelled`: immediate `event_cancelled`. Shipped in
+  202608290009 along with the `event_cancelled` -> `events` arm of
+  `notif_pref_key`; documented under "## Events" above, not here.
 - `notif_is_operational` widens from `announcements.important` to
   `announcements.priority in ('important', 'urgent')` (COMM-218, COMM-219).
   The AFTER UPDATE trigger on `announcements` widens from `OF important` to

@@ -291,9 +291,10 @@ schema for this cluster.
 trigger already shipped in 202608280010 (COMM-007). COMM-216 is a design
 decision, not a schema change: event comments ride a companion `POST_EVENT`
 post created at publish time, reusing `post_comments` end to end rather than
-adding a polymorphic comment target. COMM-214 needs a new
-`notif_on_event_cancelled` trigger, see "Needs from schema, events" and
-"Needs from schema, notifications (Phase 2)" in `docs/community/contracts.md`.
+adding a polymorphic comment target. COMM-214's `notif_on_event_cancelled`
+trigger shipped in 202608290009 with `supabase/tests/0029_event_cancelled_notification_test.sql`,
+so no events ticket is schema-blocked; see "## Events" in
+`docs/community/contracts.md`.
 
 ### announcements and recaps
 
