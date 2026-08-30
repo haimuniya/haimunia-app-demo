@@ -629,9 +629,26 @@ Resolved 2026-08-28:
 - Item 8 birthday: approved. No birth date field. Celebrate keeps anniversary
   only.
 
-Still open, not blocking Phase 0: items 1 (attendance source), 4 (reaction
-label), 7 (direct messaging stays deferred), 9 (recap scheduling note), 10
-(web push VAPID provisioning, Phase 2).
+Resolved 2026-08-30:
+- Item 1 attendance source: self-reported. Attendance is a member logging
+  "I trained today" (a session/workout log entry standing in for a class
+  check-in), not an Arbox integration and not a dedicated in-app class
+  check-in flow. This unblocks the parked bucket and the seven Phase 3
+  tickets gated on it; the actual attendance-log mechanism and the
+  `ATTENDANCE_RECORDED` trigger_type's real source still need building
+  when Phase 3 gets there, but the *source* question is settled.
+- Item 4 reaction label: keep the current generic wording. No club-specific
+  Hebrew term. The database value already stays generic either way.
+- Item 7 direct messaging: not deferred, removed from scope entirely. No
+  "Message" button exists anywhere in the shipped client today (checked —
+  it was only ever a spec reference, never built), and none should be
+  added. WhatsApp covers private contact between members.
+- Item 10 web push: confirmed. VAPID keys will be provisioned when Phase 2
+  reaches web push; the iOS installed-PWA-only limitation (Safari 16.4+)
+  is accepted.
+
+Still open: item 9 (recap scheduling note — awareness only, not a decision
+that blocks anything).
 
 1. Attendance data source. Still unpicked. It gates the whole parked bucket
    and seven Phase 3 tickets. Options: pull from Arbox, an in-app class
