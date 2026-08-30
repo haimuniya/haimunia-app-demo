@@ -34,7 +34,27 @@
     modQueue: [], modQueueStatus: "open", modQueueLoading: false, modQueueError: false, modQueueLoaded: false,
     modAction: null, modContext: null, reportSheet: null,
     pins: [], pinsLoaded: false, pinError: "",
-    auditLog: [], auditCursor: null, auditLoading: false, auditError: false, auditLoaded: false, auditEnd: false, auditFilters: {} };
+    auditLog: [], auditCursor: null, auditLoading: false, auditError: false, auditLoaded: false, auditEnd: false, auditFilters: {},
+    // COMM-201..207 challenges cluster. state.challenges holds every
+    // `challenges` row the caller may see (challenges_read already scopes
+    // out a draft that is not theirs), sorted soonest end_at first.
+    // challengeParticipation is the caller's own challenge_participants row
+    // per challenge_id, loaded alongside the list so a card can show
+    // Join/Joined without a per-card round trip. challengeAggregates is
+    // chal_progress() output cached per challenge_id, fetched only for the
+    // types whose card needs an aggregate figure (cooperative, team) - every
+    // other type's card reads straight off challengeParticipation. challengeView
+    // is the open detail dialog (COMM-207); challengeForm is the staff
+    // create/edit dialog (COMM-201).
+    challenges: [], challengesLoaded: false, challengesLoading: false, challengesError: false,
+    challengeParticipation: {}, challengeAggregates: {},
+    challengeView: null, challengeForm: null,
+    // In-memory only (COMM-205): which ISO week a consistency challenge has
+    // already logged a "week hit" delta for on this device this session, so
+    // a repeated WORKOUT_COMPLETED burst within the same week cannot log
+    // twice. Never persisted - a real attendance source replaces this
+    // client-side tally entirely (COMM-306, Phase 3).
+    _consistencyWeekLogged: {}, _consistencySessionCounts: {} };
   const photoUrlCache = {};
 
   // COMM-141. The notification badge refreshes on a realtime own-row
@@ -155,7 +175,7 @@
       // below it writes instead of dropping.
       ensureAnalyticsConfigured();
       await loadRedemption();
-      await Promise.all([loadProfile(), loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins()]);
+      await Promise.all([loadProfile(), loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadChallenges()]);
       if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers()]);
       if (hasPerm(PERM.COMMENT_MODERATE) || isAdmin()) await loadModQueue();
       // Push pending local edits before pulling the remote copy - without
@@ -1557,6 +1577,8 @@
     else if (c.action === "post-delete-rpc") postDeleteViaMenu(c.payload.postId);
     else if (c.action === "delete-comment") deleteComment(c.payload.commentId, c.payload.postId);
     else if (c.action === "composer-discard") closeComposer();
+    else if (c.action === "leave-challenge") leaveChallenge(c.payload.challengeId);
+    else if (c.action === "challenge-delete-draft") deleteChallengeDraft(c.payload.challengeId);
     else rerender();
   }
 
@@ -2088,11 +2110,26 @@
     return postCardShell(post, inner);
   }
 
-  // COMM-101: POST_CHALLENGE and POST_EVENT are a compact link card until
-  // Phase 2 wires the challenge and event modules.
+  // COMM-201/203/207: a real challenge card, not the COMM-101 fallback link
+  // card. `renderPostCard` never has to know whether a POST_CHALLENGE row is
+  // the authorless cooperative-milestone post `challenge_progress_apply`
+  // writes (metadata carries milestone/club_total/target_value, no author)
+  // or a member's own Share Progress post (metadata carries the type-shaped
+  // snapshot buildChallengeShareMetadata() took at share time) - both read
+  // through the same fields, each rendered only when present.
   function renderChallengeLinkCard(post) {
     const m = post.metadata || {};
+    const rows = [];
+    if (m.milestone != null) {
+      rows.push(`<div class="mono post-result" style="color:var(--brass);">${safeText(m.milestone)}% מהיעד הושלמו</div>`);
+      if (m.club_total != null && m.target_value != null) rows.push(`<div style="color:var(--steel);font-size:12px;">${safeText(m.club_total)} מתוך ${safeText(m.target_value)}</div>`);
+    } else if (m.my_progress != null) {
+      const pct = m.target_value ? Math.min(100, Math.round((Number(m.my_progress) / Number(m.target_value)) * 100)) : null;
+      rows.push(`<div class="mono post-result" style="color:var(--brass);">${safeText(m.my_progress)}${m.target_value != null ? ` / ${safeText(m.target_value)}` : ""}</div>`);
+      if (pct != null) rows.push(`<div class="progress-track" style="background:var(--border);border-radius:999px;height:6px;overflow:hidden;margin-top:4px;"><div style="width:${pct}%;height:100%;background:var(--brass);"></div></div>`);
+    }
     const inner = `<div class="post-title">🏆 ${safeText(m.challenge_title || post.title || "אתגר")}</div>
+      ${rows.join("")}
       ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:4px;">${safeText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
       <div class="chip-row"><button class="chip-btn" data-community-action="open-challenge" data-id="${safeText(m.challenge_id || post.source_id || "")}">פתיחת האתגר</button></div>`;
     return postCardShell(post, inner, { authorless: !postAuthorName(post) });
@@ -2186,6 +2223,750 @@
   }
   window.renderPostCard = renderPostCard;
   window.renderPostCardSkeleton = renderPostCardSkeleton;
+
+  // ---- Challenges (COMM-201..207) -----------------------------------------
+  // Generalizes the old single hardcoded weekly challenge (loadWeeklyChallenge
+  // / setWeeklyChallenge / weeklyLeaderboard, still above, still serving the
+  // legacy weekly_challenges table read-only) into the six challenge_type
+  // model. Nothing here reads or writes weekly_challenges; the two systems
+  // sit side by side, which is what COMM-201 asks for ("stop being the write
+  // and read path for new challenges", not "delete the historical board").
+  const CHALLENGE_TYPES = [
+    { id: "individual_target", label: "יעד אישי", icon: "🎯" },
+    { id: "individual_performance", label: "ביצוע אישי", icon: "📈" },
+    { id: "cooperative", label: "שיתופי", icon: "🤝" },
+    { id: "team", label: "קבוצתי", icon: "🏳️" },
+    { id: "consistency", label: "עקביות", icon: "📅" },
+    { id: "coach", label: "מותאם אישית", icon: "🏋️" },
+  ];
+  function challengeTypeDef(id) { return CHALLENGE_TYPES.find((t) => t.id === id) || { id, label: id || "", icon: "🏆" }; }
+  function challengeStatusLabel(c) { return { draft: "טיוטה", active: "פעיל", completed: "הושלם", archived: "בארכיון" }[c && c.status] || (c && c.status) || ""; }
+  function formatChallengeDate(iso) { return iso ? String(iso).slice(0, 10) : ""; }
+  function daysRemaining(endAt) {
+    if (!endAt) return null;
+    return Math.max(0, Math.ceil((new Date(endAt).getTime() - Date.now()) / 86400000));
+  }
+  function challengeProgressBarHtml(pct) {
+    const clamped = Math.max(0, Math.min(100, Number(pct) || 0));
+    return `<div class="progress-track" style="background:var(--border);border-radius:999px;height:6px;overflow:hidden;margin-top:4px;"><div style="width:${clamped}%;height:100%;background:var(--brass);"></div></div>`;
+  }
+
+  async function loadChallenges() {
+    if (!state.user) { state.challenges = []; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengesLoaded = false; return; }
+    state.challengesLoading = true;
+    rerender();
+    const { data, error } = await client.from("challenges").select("*").order("end_at", { ascending: true });
+    if (error) { state.challengesLoading = false; state.challengesError = true; return rerender(); }
+    state.challenges = data || [];
+    state.challengesError = false;
+    const { data: myRows, error: myErr } = await client.from("challenge_participants").select("*").eq("user_id", state.user.id);
+    state.challengeParticipation = {};
+    if (!myErr) for (const row of (myRows || [])) state.challengeParticipation[row.challenge_id] = row;
+    // chal_progress() is fetched for every active challenge, not lazily per
+    // card: this is a single small club, active challenges are few, and the
+    // list card needs a real participant_count and (for cooperative/team) a
+    // real aggregate rather than a stale one, per COMM-207's card contract.
+    const active = state.challenges.filter((c) => c.status === "active");
+    await Promise.all(active.map(async (c) => {
+      const { data: p, error: pErr } = await client.rpc("chal_progress", { challenge_id: c.id });
+      if (!pErr && p) state.challengeAggregates[c.id] = p;
+    }));
+    state.challengesLoading = false;
+    state.challengesLoaded = true;
+    rerender();
+  }
+
+  // ---- Detail (COMM-207) --------------------------------------------------
+  async function openChallenge(id, source) {
+    if (!id) return;
+    track(A.CHALLENGE_VIEWED, { challenge_id: id, challenge_key: null, source: source || "boards" });
+    state.challengeView = {
+      id, loading: true, error: false, challenge: null, progress: null, teams: [], participants: [], contributors: [], myParticipant: null,
+      joining: false, leaving: false, teamJoining: null, sharing: false,
+      logForm: { delta: "", note: "", busy: false, error: "" },
+      coachEntry: { drafts: {}, busy: {}, error: "" },
+    };
+    rerender();
+    await refreshChallengeView(id);
+  }
+  function closeChallengeView() { state.challengeView = null; rerender(); }
+  async function refreshChallengeView(id) {
+    const v = state.challengeView;
+    if (!v || v.id !== id) return;
+    const [{ data: challenge, error: cErr }, { data: progress, error: pErr }] = await Promise.all([
+      client.from("challenges").select("*").eq("id", id).maybeSingle(),
+      client.rpc("chal_progress", { challenge_id: id }),
+    ]);
+    if (!state.challengeView || state.challengeView.id !== id) return;
+    if (cErr || !challenge) { state.challengeView.loading = false; state.challengeView.error = true; return rerender(); }
+    state.challengeView.challenge = challenge;
+    state.challengeView.progress = pErr ? null : progress;
+    if (challenge.status === "active" && !pErr && progress) state.challengeAggregates[id] = progress;
+    const { data: participants } = await client.from("challenge_participants")
+      .select("*, profiles(display_name,handle,avatar_url,visible_to_club)")
+      .eq("challenge_id", id).order("joined_at", { ascending: true });
+    state.challengeView.participants = participants || [];
+    const mine = (participants || []).find((p) => p.user_id === (state.user && state.user.id)) || null;
+    state.challengeView.myParticipant = mine;
+    if (state.user) { if (mine) state.challengeParticipation[id] = mine; else delete state.challengeParticipation[id]; }
+    if (challenge.challenge_type === "team") {
+      const { data: teams } = await client.from("challenge_teams").select("*").eq("challenge_id", id).order("name", { ascending: true });
+      state.challengeView.teams = teams || [];
+    }
+    if (challenge.challenge_type === "cooperative") {
+      const { data: contrib } = await client.from("challenge_progress")
+        .select("user_id,delta,created_at,profiles(display_name,handle,avatar_url,visible_to_club)")
+        .eq("challenge_id", id).gt("delta", 0).order("created_at", { ascending: false }).limit(30);
+      const seen = new Set();
+      const list = [];
+      for (const row of (contrib || [])) {
+        if (seen.has(row.user_id)) continue;
+        seen.add(row.user_id);
+        // COMM-203. A contributor who turned visible_to_club off still
+        // counts toward club_total (that sum is chal_progress's, computed
+        // server-side over every row) but is omitted from this named list.
+        if (row.profiles && row.profiles.visible_to_club === false) continue;
+        list.push(row);
+        if (list.length >= 10) break;
+      }
+      state.challengeView.contributors = list;
+    }
+    state.challengeView.loading = false;
+    rerender();
+  }
+
+  // ---- Join / leave / team pick (COMM-204, COMM-207) -----------------------
+  async function joinChallenge(id, source) {
+    if (!state.user) return;
+    const v = state.challengeView;
+    const c = (v && v.challenge) || state.challenges.find((x) => x.id === id);
+    if (v && v.id === id) { v.joining = true; rerender(); }
+    const { error } = await client.from("challenge_participants").insert({ challenge_id: id, user_id: state.user.id });
+    if (v && v.id === id) v.joining = false;
+    if (error) { setMessage("לא ניתן היה להצטרף לאתגר. נסו שוב."); return rerender(); }
+    if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.CHALLENGE_JOINED) {
+      try { window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.CHALLENGE_JOINED, { challenge_id: id, challenge_type: c && c.challenge_type }); } catch (e) {}
+    }
+    setMessage("הצטרפת לאתגר");
+    if (c && c.challenge_type === "team" && c.join_mode === "auto") await autoAssignChallengeTeam(id);
+    await loadChallenges();
+    if (state.challengeView && state.challengeView.id === id) await refreshChallengeView(id);
+    rerender();
+  }
+  async function autoAssignChallengeTeam(id) {
+    if (!state.user) return;
+    const { data: teams } = await client.from("challenge_teams").select("*").eq("challenge_id", id);
+    const { data: parts } = await client.from("challenge_participants").select("team_id,status").eq("challenge_id", id);
+    if (!teams || !teams.length) return;
+    const counts = {};
+    for (const t of teams) counts[t.id] = 0;
+    for (const p of (parts || [])) if (p.status !== "withdrawn" && p.team_id) counts[p.team_id] = (counts[p.team_id] || 0) + 1;
+    const chosen = teams.slice().sort((a, b) => (counts[a.id] || 0) - (counts[b.id] || 0))[0];
+    if (!chosen) return;
+    await client.from("challenge_participants").update({ team_id: chosen.id }).eq("challenge_id", id).eq("user_id", state.user.id);
+  }
+  async function pickChallengeTeam(challengeId, teamId) {
+    if (!state.user) return;
+    const v = state.challengeView;
+    if (v) { v.teamJoining = teamId; rerender(); }
+    const { error } = await client.from("challenge_participants").update({ team_id: teamId }).eq("challenge_id", challengeId).eq("user_id", state.user.id);
+    if (v) v.teamJoining = null;
+    if (error) { setMessage("לא ניתן היה להצטרף לקבוצה. נסו שוב."); return rerender(); }
+    if (state.challengeView && state.challengeView.id === challengeId) await refreshChallengeView(challengeId);
+    rerender();
+  }
+  function confirmLeaveChallenge(id) {
+    askConfirm({ title: "עזיבת אתגר", message: "לעזוב את האתגר? ההתקדמות שכבר נרשמה תישאר בסטטיסטיקות המועדון.", confirmLabel: "עזיבה", destructive: true, action: "leave-challenge", payload: { challengeId: id } });
+  }
+  async function leaveChallenge(id) {
+    if (!state.user) return;
+    const v = state.challengeView;
+    if (v && v.id === id) { v.leaving = true; rerender(); }
+    const { error } = await client.from("challenge_participants").delete().eq("challenge_id", id).eq("user_id", state.user.id);
+    if (v && v.id === id) v.leaving = false;
+    if (error) { setMessage("לא ניתן היה לעזוב את האתגר. נסו שוב."); return rerender(); }
+    delete state.challengeParticipation[id];
+    setMessage("עזבת את האתגר");
+    await loadChallenges();
+    if (state.challengeView && state.challengeView.id === id) await refreshChallengeView(id);
+    rerender();
+  }
+
+  // ---- Self-logged progress (COMM-202, COMM-203, COMM-204, COMM-205) ------
+  function maybeCelebrateChallengeCompletion(challengeType, challengeId, wasStatus, isStatus) {
+    if (wasStatus === "completed" || isStatus !== "completed") return;
+    setMessage("כל הכבוד! השלמת את האתגר");
+    if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.CHALLENGE_COMPLETED) {
+      try { window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.CHALLENGE_COMPLETED, { challenge_id: challengeId, challenge_type: challengeType }); } catch (e) {}
+    }
+  }
+  async function submitChallengeLog() {
+    const v = state.challengeView;
+    if (!v || !v.challenge || v.logForm.busy) return;
+    const raw = String(v.logForm.delta || "").trim();
+    const delta = Number(raw);
+    if (!raw || !Number.isFinite(delta) || delta === 0) { v.logForm.error = "יש להזין ערך מספרי"; return rerender(); }
+    v.logForm.busy = true; v.logForm.error = ""; rerender();
+    const wasStatus = v.myParticipant && v.myParticipant.status;
+    const note = String(v.logForm.note || "").trim().slice(0, 500) || null;
+    const { error } = await client.from("challenge_progress").insert({ challenge_id: v.id, user_id: state.user.id, delta, source_type: "manual", note });
+    v.logForm.busy = false;
+    if (error) { v.logForm.error = "לא ניתן היה לעדכן את ההתקדמות."; return rerender(); }
+    v.logForm.delta = ""; v.logForm.note = "";
+    await refreshChallengeView(v.id);
+    await loadChallenges();
+    const after = state.challengeView && state.challengeView.myParticipant;
+    if (after) maybeCelebrateChallengeCompletion(v.challenge.challenge_type, v.id, wasStatus, after.status);
+    rerender();
+  }
+  // COMM-205. Consistency has no numeric delta from the member: one tap logs
+  // exactly one "week hit" once a week's target is reached. Detail-only, no
+  // dedicated dialog.
+  async function logConsistencyWeekHit() {
+    const v = state.challengeView;
+    if (!v) return;
+    const challengeId = v.id;
+    v.logForm.delta = "1";
+    v.logForm.note = "";
+    await submitChallengeLog();
+    // challenge_progress_apply (contracts.md, "Needs from schema,
+    // challenges") deliberately excludes consistency and team from its
+    // auto-complete list - my_status there stays whatever the participant
+    // row already carried. COMM-205 still asks for "completing all required
+    // weeks marks the participant completed", so the client does that one
+    // direct-RLS status update itself: challenge_participants_update_self
+    // already allows a self-row update with no column restriction, so this
+    // needs no new policy or function, matching COMM-201's "no new write
+    // RPC" rule.
+    const after = state.challengeView;
+    if (!after || after.id !== challengeId || !after.myParticipant || !after.challenge) return;
+    const weeks = Number((after.challenge.config && after.challenge.config.weeks) || 0);
+    if (after.myParticipant.status !== "completed" && weeks > 0 && Number(after.myParticipant.progress_value || 0) >= weeks) {
+      const { error } = await client.from("challenge_participants")
+        .update({ status: "completed", completed_at: new Date().toISOString() })
+        .eq("challenge_id", challengeId).eq("user_id", state.user.id);
+      if (!error) {
+        maybeCelebrateChallengeCompletion("consistency", challengeId, "active", "completed");
+        await refreshChallengeView(challengeId);
+        await loadChallenges();
+        rerender();
+      }
+    }
+  }
+
+  // ---- Coach manual entry (COMM-206) ---------------------------------------
+  async function submitCoachEntry(userId) {
+    const v = state.challengeView;
+    if (!v || !v.challenge || !userId) return;
+    const d = v.coachEntry.drafts[userId] || {};
+    const delta = Number(String(d.delta || "").trim());
+    if (!d.delta || !Number.isFinite(delta) || delta === 0) { v.coachEntry.error = "יש להזין ערך מספרי"; return rerender(); }
+    v.coachEntry.busy[userId] = true; v.coachEntry.error = ""; rerender();
+    const targetParticipant = v.participants.find((p) => p.user_id === userId);
+    const wasStatus = targetParticipant && targetParticipant.status;
+    const note = String(d.note || "").trim().slice(0, 500) || null;
+    const { error } = await client.rpc("chal_record_progress", { p_challenge_id: v.id, p_user_id: userId, p_delta: delta, p_note: note });
+    v.coachEntry.busy[userId] = false;
+    if (error) { v.coachEntry.error = "לא ניתן היה לשמור את העדכון."; return rerender(); }
+    v.coachEntry.drafts[userId] = { delta: "", note: "" };
+    await refreshChallengeView(v.id);
+    const after = state.challengeView && state.challengeView.participants.find((p) => p.user_id === userId);
+    if (after) maybeCelebrateChallengeCompletion(v.challenge.challenge_type, v.id, wasStatus, after.status);
+    rerender();
+  }
+
+  // ---- Share Progress (COMM-207) -------------------------------------------
+  async function shareChallengeProgress() {
+    const v = state.challengeView;
+    if (!v || !v.challenge || v.sharing) return;
+    v.sharing = true; rerender();
+    const c = v.challenge, p = v.progress || {};
+    const lines = [c.title];
+    if (c.challenge_type === "cooperative" && p.club_total != null) lines.push(`${p.club_total}${c.target_value != null ? ` / ${c.target_value}` : ""}`);
+    else if (p.my_progress != null) lines.push(`${p.my_progress}${c.target_value != null ? ` / ${c.target_value}` : ""}`);
+    const body = lines.join("\n");
+    // COMM-207 asks Share Progress to call post_create with links.challenge_id
+    // set, producing a POST_CHALLENGE post. post_create's shipped signature
+    // (202608280023) only merges workout_id/achievement_id/event_id out of
+    // `links` into metadata and only ever writes POST_TEXT or POST_PHOTO -
+    // there is no server path yet that turns a member's own share into a
+    // POST_CHALLENGE row with challenge_id/progress in its metadata. Sending
+    // challenge_id anyway costs nothing (an unknown links key is dropped, not
+    // rejected) and is exactly what a follow-up post_create migration needs
+    // to start honouring; until then this still produces a real, truthful
+    // POST_TEXT post carrying the same progress line in its body. Recorded
+    // as an open gap in the handoff notes, not silently worked around.
+    const { data, error } = await client.rpc("post_create", { body, visibility: "club", media: [], links: { challenge_id: c.id } });
+    v.sharing = false;
+    if (error || !data) { setMessage("שיתוף ההתקדמות נכשל, אפשר לנסות שוב"); return rerender(); }
+    setMessage("ההתקדמות שותפה לקהילה");
+    if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.POST_CREATED) {
+      try { window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.POST_CREATED, { post_id: data, post_type: "POST_TEXT" }); } catch (e) {}
+    }
+    rerender();
+  }
+
+  // ---- Create / edit form (COMM-201) ---------------------------------------
+  function openChallengeForm(existing) {
+    state.challengeForm = existing ? {
+      mode: "edit", id: existing.id, status: existing.status, challengeType: existing.challenge_type,
+      title: existing.title, description: existing.description || "",
+      metricType: existing.metric_type, targetValue: existing.target_value != null ? String(existing.target_value) : "",
+      startAt: formatChallengeDate(existing.start_at), endAt: formatChallengeDate(existing.end_at),
+      rulesText: (existing.config && existing.config.rules_text) || "",
+      metricLabel: (existing.config && existing.config.metric_label) || "",
+      timesPerWeek: (existing.config && existing.config.times_per_week) || "",
+      weeks: (existing.config && existing.config.weeks) || "",
+      teamNames: "", saving: false, error: "",
+    } : {
+      mode: "create", id: null, status: "draft", challengeType: "individual_target",
+      title: "", description: "", metricType: "", targetValue: "", startAt: "", endAt: "",
+      rulesText: "", metricLabel: "", timesPerWeek: "", weeks: "", teamNames: "", saving: false, error: "",
+    };
+    rerender();
+  }
+  function closeChallengeForm() { state.challengeForm = null; setFieldErrors("communityChallengeForm", {}); rerender(); }
+  function setChallengeFormType(type) { if (state.challengeForm && state.challengeForm.mode !== "edit") { state.challengeForm.challengeType = type; rerender(); } }
+  async function submitChallengeForm(form) {
+    const f = state.challengeForm;
+    if (!f || f.saving) return;
+    const fd = new FormData(form);
+    const title = String(fd.get("title") || "").trim();
+    const description = String(fd.get("description") || "").trim();
+    const metricType = String(fd.get("metricType") || "").trim();
+    const targetRaw = String(fd.get("targetValue") || "").trim();
+    const startAt = String(fd.get("startAt") || "");
+    const endAt = String(fd.get("endAt") || "");
+    const errors = {};
+    if (title.length < 1 || title.length > 120) errors.title = "כותרת נדרשת, עד 120 תווים";
+    if (description.length > 2000) errors.description = "עד 2000 תווים";
+    if (!metricType || metricType.length > 60) errors.metricType = "שדה נדרש, עד 60 תווים";
+    if (!startAt) errors.startAt = "יש לבחור תאריך התחלה";
+    if (!endAt) errors.endAt = "יש לבחור תאריך סיום";
+    if (startAt && endAt && !(new Date(endAt).getTime() > new Date(startAt).getTime())) errors.endAt = "תאריך הסיום חייב להיות אחרי ההתחלה";
+    const config = {};
+    let teamNames = [];
+    if (f.challengeType === "coach") {
+      const rulesText = String(fd.get("rulesText") || "").trim().slice(0, 1000);
+      const metricLabel = String(fd.get("metricLabel") || "").trim();
+      if (!rulesText) errors.rulesText = "יש לתאר את חוקי האתגר";
+      config.rules_text = rulesText;
+      if (metricLabel) config.metric_label = metricLabel;
+    }
+    if (f.challengeType === "consistency") {
+      const timesPerWeek = Number(fd.get("timesPerWeek"));
+      const weeks = Number(fd.get("weeks"));
+      if (!Number.isInteger(timesPerWeek) || timesPerWeek < 1) errors.timesPerWeek = "מספר שלם חיובי נדרש";
+      if (!Number.isInteger(weeks) || weeks < 1) errors.weeks = "מספר שלם חיובי נדרש";
+      config.times_per_week = timesPerWeek;
+      config.weeks = weeks;
+    }
+    if (f.challengeType === "team" && f.mode === "create") {
+      teamNames = String(fd.get("teamNames") || "").split("\n").map((s) => s.trim()).filter(Boolean).slice(0, 20);
+      if (teamNames.length < 2) errors.teamNames = "יש להזין לפחות שתי קבוצות";
+    }
+    if (Object.keys(errors).length) return setFieldErrors("communityChallengeForm", errors);
+    setFieldErrors("communityChallengeForm", {});
+    f.saving = true; f.error = ""; rerender();
+    const payload = {
+      title, description, metric_type: metricType,
+      target_value: targetRaw ? Number(targetRaw) : null,
+      start_at: new Date(startAt).toISOString(), end_at: new Date(endAt).toISOString(),
+      visibility: "club", config,
+    };
+    let error;
+    if (f.mode === "create") {
+      payload.id = newFeedId();
+      payload.challenge_type = f.challengeType;
+      payload.created_by = state.user.id;
+      payload.status = fd.get("publishNow") ? "active" : "draft";
+      payload.join_mode = f.challengeType === "team" ? (fd.get("teamAuto") ? "auto" : "open") : "open";
+      ({ error } = await client.from("challenges").insert(payload));
+      if (!error && f.challengeType === "team" && teamNames.length) {
+        await client.from("challenge_teams").insert(teamNames.map((name) => ({ id: newFeedId(), challenge_id: payload.id, name })));
+      }
+    } else {
+      ({ error } = await client.from("challenges").update(payload).eq("id", f.id));
+    }
+    f.saving = false;
+    if (error) { f.error = "לא ניתן היה לשמור את האתגר. נסו שוב."; return rerender(); }
+    state.challengeForm = null;
+    setMessage("האתגר נשמר");
+    await loadChallenges();
+    rerender();
+  }
+  async function archiveChallenge(id) {
+    const { error } = await client.from("challenges").update({ status: "archived" }).eq("id", id);
+    if (error) return setMessage("הפעולה נכשלה");
+    state.challengeForm = null;
+    setMessage("האתגר הועבר לארכיון");
+    await loadChallenges();
+    if (state.challengeView && state.challengeView.id === id) await refreshChallengeView(id);
+    rerender();
+  }
+  async function publishChallengeDraft(id) {
+    const { error } = await client.from("challenges").update({ status: "active" }).eq("id", id);
+    if (error) return setMessage("הפעולה נכשלה");
+    state.challengeForm = null;
+    setMessage("האתגר פורסם");
+    await loadChallenges();
+    rerender();
+  }
+  async function deleteChallengeDraft(id) {
+    const { error } = await client.from("challenges").delete().eq("id", id);
+    if (error) return setMessage("הפעולה נכשלה");
+    state.challengeForm = null;
+    setMessage("הטיוטה נמחקה");
+    await loadChallenges();
+    rerender();
+  }
+
+  // ---- Automatic progress from the product event bus (COMM-202, COMM-205) -
+  // Sourced from the same non-attendance signals the achievement engine
+  // reacts to (COMM-130/132), never from attendance. WORKOUT_COMPLETED has no
+  // producer anywhere in this codebase yet - only PR_CREATED and the
+  // ach_claim path fire in production today - so this consumer is wired and
+  // ready but dormant until a workout-logging surface starts emitting it; a
+  // test exercises it by emitting the event directly on the bus.
+  function activeChallengeParticipations(types) {
+    if (!state.user) return [];
+    return state.challenges.filter((c) => c.status === "active" && types.indexOf(c.challenge_type) >= 0
+      && state.challengeParticipation[c.id] && state.challengeParticipation[c.id].status === "active");
+  }
+  async function logAutoChallengeProgress(challengeId, delta, sourceType) {
+    if (!state.user || !delta) return;
+    const { error } = await client.from("challenge_progress").insert({ challenge_id: challengeId, user_id: state.user.id, delta, source_type: sourceType || "auto" });
+    if (!error) {
+      await loadChallenges();
+      if (state.challengeView && state.challengeView.id === challengeId) await refreshChallengeView(challengeId);
+      rerender();
+    }
+  }
+  // ISO 8601 week, e.g. "2026-W35" - the same week boundary the achievement
+  // engine's week-streak metric already uses.
+  function isoWeekKey(when) {
+    const date = new Date(when || Date.now());
+    const target = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    const dayNr = (target.getUTCDay() + 6) % 7;
+    target.setUTCDate(target.getUTCDate() - dayNr + 3);
+    const firstThursday = new Date(Date.UTC(target.getUTCFullYear(), 0, 4));
+    const weekNr = 1 + Math.round(((target - firstThursday) / 86400000 - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7);
+    return `${target.getUTCFullYear()}-W${String(weekNr).padStart(2, "0")}`;
+  }
+  function onWorkoutCompletedForChallenges() {
+    if (!state.user) return;
+    // individual_target: every logged session is one unit toward a
+    // session-count target.
+    for (const c of activeChallengeParticipations(["individual_target"])) {
+      logAutoChallengeProgress(c.id, 1, "workout_completed");
+    }
+    // consistency: tally sessions per ISO week on this device and log one
+    // "week hit" delta the first time this week crosses times_per_week -
+    // never a second time for the same week on this device.
+    const week = isoWeekKey();
+    for (const c of activeChallengeParticipations(["consistency"])) {
+      const key = c.id + ":" + week;
+      state._consistencySessionCounts[key] = (state._consistencySessionCounts[key] || 0) + 1;
+      const target = Number((c.config && c.config.times_per_week) || 0);
+      if (target > 0 && state._consistencySessionCounts[key] >= target && !state._consistencyWeekLogged[key]) {
+        state._consistencyWeekLogged[key] = true;
+        logAutoChallengeProgress(c.id, 1, "workout_completed");
+      }
+    }
+  }
+  // Consumes the same PR_CREATED payload onPrCreated already reacts to. Only
+  // a genuinely numeric result (a payload shape a future producer would need
+  // to supply, e.g. `new_result_value`) drives an individual_performance
+  // challenge - a formatted display string like '140 ק"ג" is deliberately
+  // never parsed here, so a malformed or unexpected payload silently no-ops
+  // instead of writing a wrong progress delta.
+  function onPrCreatedForChallenges(payload) {
+    if (!state.user) return;
+    const record = payload && (payload.record || payload);
+    const value = record && (record.new_result_value != null ? record.new_result_value : record.new_value_numeric);
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) return;
+    for (const c of activeChallengeParticipations(["individual_performance"])) {
+      logAutoChallengeProgress(c.id, numeric, "pr_created");
+    }
+  }
+
+  // ---- Rendering: list card (COMM-207) -------------------------------------
+  function myChallengeCardProgressHtml(c) {
+    const part = state.challengeParticipation[c.id];
+    if (!part) return "";
+    if (c.challenge_type === "cooperative") {
+      const agg = state.challengeAggregates[c.id];
+      if (!agg || agg.club_total == null) return "";
+      const pct = c.target_value ? Math.round((agg.club_total / c.target_value) * 100) : null;
+      return `<div class="mono" style="color:var(--brass);font-size:12px;">${safeText(agg.club_total)}${c.target_value != null ? ` / ${safeText(c.target_value)}` : ""}</div>${pct != null ? challengeProgressBarHtml(pct) : ""}`;
+    }
+    if (c.challenge_type === "team") {
+      const agg = state.challengeAggregates[c.id];
+      const mine = agg && Array.isArray(agg.team_totals) ? agg.team_totals.find((t) => t.team_id === part.team_id) : null;
+      return mine ? `<div class="mono" style="color:var(--brass);font-size:12px;">${safeText(mine.name)}: ${safeText(mine.total)}</div>` : (part.team_id ? "" : `<div style="color:var(--steel);font-size:12px;">טרם נבחרה קבוצה</div>`);
+    }
+    if (c.challenge_type === "consistency") {
+      const weeks = Number((c.config && c.config.weeks) || 0);
+      return `<div class="mono" style="color:var(--brass);font-size:12px;">${safeText(part.progress_value)}${weeks ? ` / ${weeks} שבועות` : ""}</div>`;
+    }
+    const pct = c.target_value ? Math.round((Number(part.progress_value || 0) / c.target_value) * 100) : null;
+    return `<div class="mono" style="color:var(--brass);font-size:12px;">${safeText(part.progress_value)}${c.target_value != null ? ` / ${safeText(c.target_value)}` : ""}</div>${pct != null ? challengeProgressBarHtml(pct) : ""}`;
+  }
+  function renderChallengeCard(c) {
+    const def = challengeTypeDef(c.challenge_type);
+    const part = state.challengeParticipation[c.id];
+    const agg = state.challengeAggregates[c.id];
+    const isPast = c.status === "completed" || c.status === "archived";
+    const image = (c.config && c.config.image_url)
+      ? `<img src="${safeText(c.config.image_url)}" alt="" style="width:44px;height:44px;border-radius:12px;object-fit:cover;"/>`
+      : `<span aria-hidden="true" style="width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:20px;background:var(--border);">${def.icon}</span>`;
+    const meta = [def.label, `${formatChallengeDate(c.start_at)}–${formatChallengeDate(c.end_at)}`];
+    if (agg && agg.participant_count != null) meta.push(`${agg.participant_count} משתתפים`);
+    if (c.status === "draft") meta.push(challengeStatusLabel(c));
+    return `<article class="chart-card" data-challenge-id="${safeText(c.id)}" data-challenge-status="${safeText(c.status)}" style="margin-bottom:10px;">
+      <div class="flex gap-10" style="align-items:flex-start;">
+        ${image}
+        <div style="flex:1;min-width:0;">
+          <button class="link-btn" data-community-action="open-challenge" data-id="${safeText(c.id)}" style="padding:0;text-align:right;font-weight:800;font-size:15px;color:inherit;display:block;">${safeText(c.title)}</button>
+          <div style="color:var(--steel);font-size:11.5px;margin-top:2px;">${meta.map(safeText).join(" · ")}</div>
+          ${myChallengeCardProgressHtml(c)}
+        </div>
+      </div>
+      <div class="chip-row" style="margin-top:8px;">
+        <button class="chip-btn" data-community-action="open-challenge" data-id="${safeText(c.id)}">פרטים</button>
+        ${!isPast && c.status === "active" && !part ? `<button class="chip-btn primary" data-community-action="join-challenge" data-id="${safeText(c.id)}">הצטרפות</button>` : ""}
+        ${!isPast && part ? `<span class="admin-tag" style="background:var(--brass);">נרשמת/ה</span>` : ""}
+      </div>
+    </article>`;
+  }
+  function renderChallengesListSection() {
+    const staff = hasPerm(PERM.CHALLENGE_CREATE);
+    const active = state.challenges.filter((c) => c.status === "active" || (staff && c.status === "draft"));
+    const past = state.challenges.filter((c) => c.status === "completed" || c.status === "archived");
+    const createBtn = staff ? `<button class="chip-btn primary" data-community-action="open-challenge-form" style="margin-bottom:10px;">אתגר חדש</button>` : "";
+    const list = (state.challengesLoading && !state.challengesLoaded)
+      ? `<div aria-busy="true">${`<div class="chart-card" style="height:64px;background:var(--border);opacity:.35;margin-bottom:10px;"></div>`.repeat(2)}</div>`
+      : state.challengesError
+      ? `<div class="empty">לא ניתן היה לטעון את האתגר. נסו שוב.<div class="chip-row" style="justify-content:center;"><button class="chip-btn" data-community-action="challenges-retry">ניסיון חוזר</button></div></div>`
+      : active.length ? active.map(renderChallengeCard).join("") : `<div class="empty">אין אתגרים פעילים כרגע.</div>`;
+    const pastHtml = past.length ? `<div style="margin-top:16px;"><div class="field-label" style="margin-bottom:6px;">אתגרים שהסתיימו</div>${past.map(renderChallengeCard).join("")}</div>` : "";
+    return `<div class="ach-section">${sectionHead("var(--energy)", "אתגרי המועדון")}${createBtn}${state.challengeForm ? renderChallengeForm() : ""}${list}${pastHtml}</div>`;
+  }
+
+  // ---- Rendering: create/edit form (COMM-201) ------------------------------
+  function renderChallengeForm() {
+    const f = state.challengeForm;
+    const typePicker = `<div class="chip-row" role="group" aria-label="סוג אתגר" style="margin-bottom:10px;">${CHALLENGE_TYPES.map((t) => `<button type="button" class="chip-btn${f.challengeType === t.id ? " primary" : ""}" data-community-action="challenge-form-type" data-type="${t.id}"${f.mode === "edit" ? " disabled" : ""}>${t.icon} ${safeText(t.label)}</button>`).join("")}</div>`;
+    const typeFields = f.challengeType === "coach" ? `
+        ${field("communityChallengeForm", "rulesText", "חוקי האתגר", `<textarea class="text-input" name="rulesText" maxlength="1000" required>${safeText(f.rulesText)}</textarea>`)}
+        ${field("communityChallengeForm", "metricLabel", "יחידת מדידה (לתצוגה)", `<input class="text-input" name="metricLabel" value="${safeText(f.metricLabel)}" placeholder="למשל בורפיז"/>`)}`
+      : f.challengeType === "consistency" ? `
+        <div class="flex gap-10 field">
+          ${field("communityChallengeForm", "timesPerWeek", "אימונים בשבוע", `<input class="text-input" name="timesPerWeek" type="number" min="1" value="${safeText(f.timesPerWeek)}" required/>`)}
+          ${field("communityChallengeForm", "weeks", "מספר שבועות", `<input class="text-input" name="weeks" type="number" min="1" value="${safeText(f.weeks)}" required/>`)}
+        </div>`
+      : (f.challengeType === "team" && f.mode === "create") ? `
+        ${field("communityChallengeForm", "teamNames", "שמות הקבוצות (שורה לכל קבוצה)", `<textarea class="text-input" name="teamNames" placeholder="קבוצת בוקר&#10;קבוצת ערב">${safeText(f.teamNames)}</textarea>`)}
+        <label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="teamAuto"/><span style="font-size:12.5px;color:var(--steel);">שיבוץ אוטומטי לקבוצה עם פחות משתתפים</span></label>`
+      : "";
+    const showTarget = f.challengeType !== "coach";
+    return `<form id="communityChallengeForm" class="chart-card admin-card" style="margin-top:10px;">
+      <div style="font-weight:800;margin-bottom:10px;">${f.mode === "edit" ? "עריכת אתגר" : "אתגר חדש"}<span class="admin-tag">ניהול</span></div>
+      ${typePicker}
+      ${field("communityChallengeForm", "title", "שם האתגר", `<input class="text-input" name="title" value="${safeText(f.title)}" maxlength="120" required/>`)}
+      ${field("communityChallengeForm", "description", "תיאור", `<textarea class="text-input" name="description" maxlength="2000">${safeText(f.description)}</textarea>`)}
+      ${field("communityChallengeForm", "metricType", "מדד", `<input class="text-input" name="metricType" value="${safeText(f.metricType)}" placeholder="למשל session_count" required/>`)}
+      ${showTarget ? field("communityChallengeForm", "targetValue", "יעד", `<input class="text-input" name="targetValue" type="number" step="any" value="${safeText(f.targetValue)}"/>`) : ""}
+      <div class="flex gap-10 field">
+        ${field("communityChallengeForm", "startAt", "תאריך התחלה", `<input class="text-input" name="startAt" type="date" value="${safeText(f.startAt)}" required/>`)}
+        ${field("communityChallengeForm", "endAt", "תאריך סיום", `<input class="text-input" name="endAt" type="date" value="${safeText(f.endAt)}" required/>`)}
+      </div>
+      ${typeFields}
+      ${f.mode === "create" ? `<label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="publishNow"/><span style="font-size:12.5px;color:var(--steel);">פרסום מיידי (אחרת יישמר כטיוטה)</span></label>` : ""}
+      ${f.error ? `<div class="field-error" role="alert">${safeText(f.error)}</div>` : ""}
+      <div class="chip-row" style="margin-top:10px;">
+        <button class="chip-btn primary" type="submit"${f.saving ? " disabled" : ""}>${f.saving ? "שומר…" : "שמירה"}</button>
+        <button class="chip-btn" type="button" data-community-action="challenge-form-cancel">ביטול</button>
+        ${f.mode === "edit" && f.status === "draft" ? `<button class="chip-btn" type="button" data-community-action="challenge-publish" data-id="${safeText(f.id)}">פרסום</button>` : ""}
+        ${f.mode === "edit" && f.status === "draft" ? `<button class="chip-btn" type="button" data-community-action="challenge-delete" data-id="${safeText(f.id)}" style="color:var(--red);">מחיקת טיוטה</button>` : ""}
+        ${f.mode === "edit" && (f.status === "active" || f.status === "completed") ? `<button class="chip-btn" type="button" data-community-action="challenge-archive" data-id="${safeText(f.id)}">העברה לארכיון</button>` : ""}
+      </div>
+    </form>`;
+  }
+
+  // ---- Rendering: detail dialog (COMM-202..207) ----------------------------
+  function renderChallengeActions(v) {
+    const c = v.challenge;
+    if (c.status === "completed" || c.status === "archived") return "";
+    if (c.status === "draft") return `<div class="footer-note" style="margin-bottom:10px;">האתגר עדיין בטיוטה ואינו פתוח להצטרפות.</div>`;
+    if (v.myParticipant) {
+      return `<div class="chip-row" style="margin-bottom:10px;"><button class="chip-btn" data-community-action="leave-challenge" data-id="${safeText(c.id)}"${v.leaving ? " disabled" : ""}>${v.leaving ? "עוזב/ת…" : "עזיבת האתגר"}</button></div>`;
+    }
+    return `<div class="chip-row" style="margin-bottom:10px;"><button class="chip-btn primary" data-community-action="join-challenge" data-id="${safeText(c.id)}"${v.joining ? " disabled" : ""}>${v.joining ? "מצטרפ/ת…" : "הצטרפות לאתגר"}</button></div>`;
+  }
+  function renderChallengeLogForm(v) {
+    const lf = v.logForm;
+    return `<div class="chart-card" style="margin-bottom:10px;">
+      <div class="field-label" style="margin-bottom:6px;">עדכון התקדמות</div>
+      <div class="flex gap-10" style="align-items:flex-end;">
+        <label class="field" style="flex:1;margin-bottom:0;"><span class="field-label">כמות</span><input class="text-input" type="number" step="any" data-challenge-log-delta value="${safeText(lf.delta)}"/></label>
+        <button class="chip-btn primary" data-community-action="challenge-log-submit"${lf.busy ? " disabled" : ""}>${lf.busy ? "שומר…" : "עדכון"}</button>
+      </div>
+      ${lf.error ? `<div class="field-error" role="alert" style="margin-top:6px;">${safeText(lf.error)}</div>` : ""}
+    </div>`;
+  }
+  function renderMyChallengeProgress(v) {
+    const c = v.challenge, part = v.myParticipant;
+    if (!part || c.challenge_type === "cooperative" || c.challenge_type === "team" || c.challenge_type === "consistency") return "";
+    const completed = part.status === "completed";
+    const pct = c.target_value ? (Number(part.progress_value || 0) / c.target_value) * 100 : null;
+    return `<div class="chart-card" style="margin-bottom:10px;">
+      <div class="field-label" style="margin-bottom:4px;">ההתקדמות שלי</div>
+      ${part.progress_value ? `<div class="mono" style="color:var(--brass);font-size:16px;">${safeText(part.progress_value)}${c.target_value != null ? ` / ${safeText(c.target_value)}` : ""}</div>` : `<div class="empty">עדיין לא נרשמה התקדמות.</div>`}
+      ${pct != null ? challengeProgressBarHtml(pct) : ""}
+      ${completed ? `<div style="color:var(--brass);font-weight:800;margin-top:6px;">האתגר הושלם 🎉</div>` : ""}
+    </div>${(!completed && c.challenge_type !== "coach") ? renderChallengeLogForm(v) : ""}`;
+  }
+  function renderCooperativePanel(v) {
+    const c = v.challenge, p = v.progress || {};
+    if (p.club_total == null) return `<div class="empty">לא ניתן היה לטעון את התקדמות האתגר.</div>`;
+    const pct = c.target_value ? (p.club_total / c.target_value) * 100 : 0;
+    const days = daysRemaining(c.end_at);
+    const contributors = v.contributors || [];
+    const contributorsHtml = contributors.length
+      ? `<div class="log-list" style="margin-top:8px;">${contributors.map((row) => {
+          const prof = row.profiles || {};
+          const name = prof.display_name || (prof.handle ? "@" + prof.handle : "חבר/ה");
+          return `<div class="log-row"><span>${safeText(name)}</span><span class="mono" style="color:var(--brass);">+${safeText(row.delta)}</span></div>`;
+        }).join("")}</div>`
+      : `<div class="empty">עדיין לא נאספה התקדמות משותפת.</div>`;
+    return `<div class="chart-card" style="margin-bottom:10px;">
+      <div class="field-label" style="margin-bottom:4px;">התקדמות המועדון</div>
+      <div class="mono" style="color:var(--brass);font-size:18px;">${safeText(p.club_total)}${c.target_value != null ? ` / ${safeText(c.target_value)}` : ""}</div>
+      ${challengeProgressBarHtml(pct)}
+      <div style="color:var(--steel);font-size:12px;margin-top:4px;">${Math.round(Math.min(100, pct))}% מהיעד${days != null ? ` · ${days} ימים נותרו` : ""}</div>
+      <div class="field-label" style="margin:10px 0 4px;">תורמים אחרונים</div>
+      ${contributorsHtml}
+    </div>${v.myParticipant ? renderChallengeLogForm(v) : ""}`;
+  }
+  function renderTeamPanel(v) {
+    const c = v.challenge, p = v.progress || {};
+    const teams = Array.isArray(p.team_totals) ? p.team_totals : [];
+    if (!teams.length) return `<div class="empty">המאמנת עדיין לא הגדירה קבוצות.</div>`;
+    const myTeamId = v.myParticipant && v.myParticipant.team_id;
+    const canPick = v.myParticipant && !myTeamId;
+    const cols = teams.map((t) => `<div class="chart-card" style="flex:1;min-width:130px;${t.team_id === myTeamId ? "border-color:var(--energy);" : ""}">
+        <div style="font-weight:800;font-size:13px;">${safeText(t.name)}${t.team_id === myTeamId ? " · הקבוצה שלי" : ""}</div>
+        <div class="mono" style="color:var(--brass);font-size:16px;margin-top:4px;">${safeText(t.total)}</div>
+        ${canPick ? `<button class="chip-btn" data-community-action="challenge-pick-team" data-id="${safeText(c.id)}" data-team="${safeText(t.team_id)}"${v.teamJoining === t.team_id ? " disabled" : ""} style="margin-top:6px;">${v.teamJoining === t.team_id ? "מצטרפ/ת…" : "הצטרפות לקבוצה"}</button>` : ""}
+      </div>`).join("");
+    return `<div class="flex gap-10" style="flex-wrap:wrap;margin-bottom:10px;">${cols}</div>${(v.myParticipant && myTeamId) ? renderChallengeLogForm(v) : ""}`;
+  }
+  function renderConsistencyPanel(v) {
+    const c = v.challenge, part = v.myParticipant;
+    const weeks = Number((c.config && c.config.weeks) || 0);
+    const timesPerWeek = Number((c.config && c.config.times_per_week) || 0);
+    if (!part) return `<div style="color:var(--steel);font-size:12px;margin-bottom:10px;">${weeks} שבועות · ${timesPerWeek} אימונים בשבוע</div>`;
+    const hit = Number(part.progress_value || 0);
+    const boxes = Array.from({ length: weeks }, (_, i) => `<span aria-hidden="true" style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;margin:2px;font-size:11px;font-weight:800;${i < hit ? "background:var(--brass);color:#0c0c0c;" : "background:var(--border);color:var(--steel);"}">${i + 1}</span>`).join("");
+    const emptyMsg = hit === 0 ? `<div class="empty">השבוע הראשון בעיצומו.</div>` : "";
+    const completeMsg = part.status === "completed" ? `<div style="color:var(--brass);font-weight:800;margin-top:6px;">האתגר הושלם 🎉</div>` : "";
+    return `<div class="chart-card" style="margin-bottom:10px;">
+      <div class="field-label" style="margin-bottom:6px;">${hit} מתוך ${weeks} שבועות · ${timesPerWeek} אימונים בשבוע</div>
+      <div>${boxes}</div>
+      ${emptyMsg}${completeMsg}
+      ${part.status !== "completed" ? `<button class="chip-btn" data-community-action="challenge-log-week-hit" style="margin-top:8px;"${v.logForm.busy ? " disabled" : ""}>${v.logForm.busy ? "שומר…" : "סימון שבוע שהושלם"}</button>` : ""}
+      ${v.logForm.error ? `<div class="field-error" role="alert" style="margin-top:6px;">${safeText(v.logForm.error)}</div>` : ""}
+    </div>`;
+  }
+  function renderChallengeLeaderboardPanel(v) {
+    const p = v.progress || {};
+    const board = Array.isArray(p.leaderboard) ? p.leaderboard : [];
+    if (!board.length) return `<div class="empty">אין עדיין דירוג להצגה.</div>`;
+    const selfId = state.user && state.user.id;
+    return `<div class="log-list" style="margin-bottom:10px;">${board.map((row, i) => `<div class="log-row"${row.user_id === selfId ? ' style="border-color:var(--energy);"' : ""}><span>${i + 1}. ${safeText(row.name || (row.handle ? "@" + row.handle : "חבר/ה"))}${row.user_id === selfId ? " (את/ה)" : ""}</span><span class="mono" style="color:var(--brass);">${safeText(row.value)}</span></div>`).join("")}</div>`;
+  }
+  function renderCoachEntryPanel(v) {
+    const active = (v.participants || []).filter((p) => p.status === "active");
+    const rosterHtml = active.length ? active.map((p) => {
+      const prof = p.profiles || {};
+      const name = prof.display_name || (prof.handle ? "@" + prof.handle : "חבר/ה");
+      const d = v.coachEntry.drafts[p.user_id] || { delta: "", note: "" };
+      const busy = !!v.coachEntry.busy[p.user_id];
+      return `<div class="log-row" style="flex-direction:column;align-items:stretch;gap:6px;">
+        <div class="flex" style="justify-content:space-between;"><span>${safeText(name)}</span><span class="mono" style="color:var(--brass);">${safeText(p.progress_value)}</span></div>
+        <div class="flex gap-6">
+          <input class="text-input" type="number" step="any" data-challenge-coach-delta="${safeText(p.user_id)}" value="${safeText(d.delta)}" placeholder="כמות" style="flex:1;"/>
+          <button class="chip-btn primary" data-community-action="challenge-coach-submit" data-id="${safeText(p.user_id)}"${busy ? " disabled" : ""}>${busy ? "שומר…" : "עדכון"}</button>
+        </div>
+      </div>`;
+    }).join("") : `<div class="empty">אף אחד עדיין לא הצטרף לאתגר.</div>`;
+    return `<div class="chart-card" style="margin-bottom:10px;">
+      <div class="field-label" style="margin-bottom:6px;">עדכון התקדמות משתתפים</div>
+      <div class="log-list">${rosterHtml}</div>
+      ${v.coachEntry.error ? `<div class="field-error" role="alert" style="margin-top:6px;">${safeText(v.coachEntry.error)}</div>` : ""}
+    </div>`;
+  }
+  function renderChallengeParticipants(v) {
+    const list = (v.participants || []).filter((p) => p.status !== "withdrawn").slice(0, 30);
+    if (!list.length) return "";
+    const count = (v.progress && v.progress.participant_count != null) ? v.progress.participant_count : list.length;
+    return `<div style="margin-top:12px;">
+      <div class="field-label" style="margin-bottom:6px;">משתתפים (${safeText(count)})</div>
+      <div class="log-list">${list.map((p) => {
+        const prof = p.profiles || {};
+        const name = prof.display_name || (prof.handle ? "@" + prof.handle : "חבר/ה");
+        return `<div class="log-row"><span>${safeText(name)}</span>${p.status === "completed" ? `<span class="admin-tag" style="background:var(--brass);">הושלם</span>` : ""}</div>`;
+      }).join("")}</div>
+    </div>`;
+  }
+  function renderChallengeViewBody(v) {
+    const c = v.challenge;
+    const def = challengeTypeDef(c.challenge_type);
+    const staff = hasPerm(PERM.CHALLENGE_CREATE);
+    const meta = `<div style="color:var(--steel);font-size:12px;margin-bottom:10px;">${safeText(def.label)} · ${formatChallengeDate(c.start_at)}–${formatChallengeDate(c.end_at)} · ${safeText(challengeStatusLabel(c))}</div>`;
+    const description = c.description ? `<div style="font-size:13.5px;line-height:1.6;margin-bottom:10px;white-space:pre-wrap;">${safeText(c.description)}</div>` : "";
+    const rules = (c.config && c.config.rules_text) ? `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">חוקי האתגר</div><div style="font-size:13px;white-space:pre-wrap;">${safeText(c.config.rules_text)}</div></div>` : "";
+    const staffToolbar = staff ? `<div class="chip-row" style="margin-bottom:10px;"><button class="chip-btn" data-community-action="challenge-edit" data-id="${safeText(c.id)}">עריכה</button></div>` : "";
+    const myProgress = renderMyChallengeProgress(v);
+    const typePanel = c.challenge_type === "cooperative" ? renderCooperativePanel(v)
+      : c.challenge_type === "team" ? renderTeamPanel(v)
+      : c.challenge_type === "consistency" ? renderConsistencyPanel(v)
+      : (c.challenge_type === "individual_performance" || c.challenge_type === "coach") ? renderChallengeLeaderboardPanel(v)
+      : "";
+    const coachPanel = (c.challenge_type === "coach" && staff) ? renderCoachEntryPanel(v) : "";
+    const actions = renderChallengeActions(v);
+    const shareBtn = v.myParticipant ? `<div class="chip-row" style="margin-top:8px;"><button class="chip-btn" data-community-action="share-challenge-progress"${v.sharing ? " disabled" : ""}>${v.sharing ? "משתף…" : "שיתוף התקדמות"}</button></div>` : "";
+    const participantsHtml = renderChallengeParticipants(v);
+    // Comments (COMM-207) reuse the engagement component, which threads off
+    // a real post id - the milestone/share POST_CHALLENGE rows the trigger
+    // and shareChallengeProgress() write. There is no dedicated companion
+    // post created at challenge-creation time (unlike POST_EVENT for
+    // events), so there is no single thread to open until one of those
+    // exists; a pointer to the feed is what's shown instead. See the
+    // handoff notes for the schema follow-up this needs.
+    const commentsNote = `<div class="footer-note" style="margin-top:12px;">עדכונים ותגובות על האתגר מופיעים בפיד המועדון בכל שיתוף שקשור אליו.</div>`;
+    return `${meta}${staffToolbar}${description}${rules}${actions}${myProgress}${typePanel}${coachPanel}${shareBtn}${participantsHtml}${commentsNote}`;
+  }
+  function renderChallengeViewOverlay() {
+    const v = state.challengeView;
+    if (!v) return "";
+    const bodyHtml = v.loading ? `<div class="empty">טוען את האתגר…</div>`
+      : (v.error || !v.challenge) ? `<div class="empty">לא ניתן היה לטעון את האתגר. נסו שוב.</div>`
+      : renderChallengeViewBody(v);
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="challengeViewTitle" data-cloud-dialog="challengeView" style="align-items:flex-start;padding:20px 12px;">
+      <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:560px;">
+        <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
+          <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:12px;">
+            <div id="challengeViewTitle" style="font-weight:800;font-size:17px;">${v.challenge ? safeText(v.challenge.title) : "אתגר"}</div>
+            <button class="chip-btn" data-community-action="close-challenge-view" aria-label="סגירה">✕</button>
+          </div>
+          ${bodyHtml}
+        </div>
+      </div>
+    </div>`;
+  }
 
   // ---- Composer (COMM-102, COMM-103) --------------------------------------
   function openComposer(triggerEl) {
@@ -3288,7 +4069,7 @@
   // not tied to the Community tab being active.
   function renderConfirmDialog() {
     return renderConfirmSheet() + renderPostComposer() + renderPrSharePrompt() + renderAchievementUnlockCelebration() + renderCommunityProfileOverlay() + renderNotificationCenter()
-      + renderReportSheet() + renderModActionSheet() + renderModContextOverlay();
+      + renderReportSheet() + renderModActionSheet() + renderModContextOverlay() + renderChallengeViewOverlay();
   }
   // COMM-151. The report reason sheet. Reasons are a fixed list, an optional
   // capped free-text note, and a plain acknowledgement that discloses
@@ -3524,7 +4305,7 @@
 
     const streaksHtml = state.streaks.length ? `<div class="ach-section">${sectionHead("var(--purple)", "רצפי התמדה")}${renderRankedList(state.streaks, (it) => it.user_id, (it) => `🔥 ${Number(it.current_streak)}`)}</div>` : "";
 
-    const boardsTab = weeklyChallengeHtml + streaksHtml;
+    const boardsTab = renderChallengesListSection() + weeklyChallengeHtml + streaksHtml;
 
     // ---- Account tab: profile, member search, admin member management ----
     const account = `<form id="communityProfile" class="chart-card"><div style="font-weight:800;font-size:16px;margin-bottom:12px;">הפרופיל שלי</div>
@@ -3602,6 +4383,7 @@
     { key: "prPrompt", close: function () { dismissPrPrompt(); } },
     { key: "composer", close: function () { tryCloseComposer(); } },
     { key: "profileView", close: function () { closeCommunityProfile(); } },
+    { key: "challengeView", close: function () { closeChallengeView(); } },
   ];
   const cloudDialogOpeners = {};
   let cloudOpenDialogKey = null;
@@ -3863,15 +4645,31 @@
     else if (action === "notif-open") openNotif(el.dataset.id);
     else if (action === "notif-toggle-group") { const c = state.notifCenter; if (c) { c.expanded[el.dataset.key] = !c.expanded[el.dataset.key]; rerender(); } }
     else if (action === "notif-pref") setNotifPref(el.dataset.type, el.dataset.channel);
-    // TODO COMM-201: the challenge module is Phase 2. The shortcut lands on
-    // the Boards sub-tab, which is where the active challenge lives today.
-    else if (action === "open-active-challenge") setCommunityTab("boards");
-    // COMM-170. The challenge and event link cards (COMM-101) have no
-    // detail view to open until COMM-201 and COMM-217 land in Phase 2.
-    // The tap is still the member asking to see the item, which is what
-    // challenge_viewed and event_viewed measure, so `source` says where it
-    // came from and the Phase 2 detail surfaces will record their own.
-    else if (action === "open-challenge") track(A.CHALLENGE_VIEWED, { challenge_id: el.dataset.id || null, challenge_key: null, source: "post_card" });
+    // COMM-201/207. The club-top shortcut opens the real challenge detail
+    // when club_summary handed back an id; a missing id (an older/failed
+    // club_summary read) still lands the member on the Boards sub-tab
+    // rather than a broken dialog.
+    else if (action === "open-active-challenge") { if (el.dataset.id) openChallenge(el.dataset.id, "club_top"); else setCommunityTab("boards"); }
+    // COMM-201/207. openChallenge() itself records CHALLENGE_VIEWED (source
+    // defaults to "boards"), so the POST_CHALLENGE link card's own tap
+    // passes "post_card" through.
+    else if (action === "open-challenge") { if (el.dataset.id) openChallenge(el.dataset.id, "post_card"); }
+    else if (action === "close-challenge-view") closeChallengeView();
+    else if (action === "join-challenge") joinChallenge(el.dataset.id, "boards");
+    else if (action === "leave-challenge") confirmLeaveChallenge(el.dataset.id);
+    else if (action === "challenge-pick-team") pickChallengeTeam(el.dataset.id, el.dataset.team);
+    else if (action === "challenge-log-submit") submitChallengeLog();
+    else if (action === "challenge-log-week-hit") logConsistencyWeekHit();
+    else if (action === "challenge-coach-submit") submitCoachEntry(el.dataset.id);
+    else if (action === "share-challenge-progress") shareChallengeProgress();
+    else if (action === "challenges-retry") loadChallenges();
+    else if (action === "open-challenge-form") openChallengeForm(null);
+    else if (action === "challenge-edit") { const existing = state.challenges.find((x) => x.id === el.dataset.id) || (state.challengeView && state.challengeView.challenge); openChallengeForm(existing); }
+    else if (action === "challenge-form-cancel") closeChallengeForm();
+    else if (action === "challenge-form-type") setChallengeFormType(el.dataset.type);
+    else if (action === "challenge-publish") publishChallengeDraft(el.dataset.id);
+    else if (action === "challenge-archive") archiveChallenge(el.dataset.id);
+    else if (action === "challenge-delete") askConfirm({ title: "מחיקת טיוטה", message: "למחוק את הטיוטה? הפעולה אינה ניתנת לביטול.", confirmLabel: "מחיקה", destructive: true, action: "challenge-delete-draft", payload: { challengeId: el.dataset.id } });
     else if (action === "open-event") track(A.EVENT_VIEWED, { event_id: el.dataset.id || null, source: "post_card" });
   };
   window.isCommunitySignedIn = function () { return !!(state.user && state.profile); };
@@ -3880,6 +4678,7 @@
     if (event.target.id === "communityProfile") { event.preventDefault(); saveProfile(event.target); }
     else if (event.target.id === "communityAnnouncement") { event.preventDefault(); postAnnouncement(event.target); }
     else if (event.target.id === "communityWeeklyChallenge") { event.preventDefault(); setWeeklyChallenge(event.target); }
+    else if (event.target.id === "communityChallengeForm") { event.preventDefault(); submitChallengeForm(event.target); }
     else if (event.target.id === "communityInviteCode") { event.preventDefault(); redeemCode(event.target); }
     else if (event.target.id === "communityLogin") { event.preventDefault(); login(event.target); }
     else if (event.target.id === "communityCredentials") { event.preventDefault(); setCredentials(event.target); }
@@ -3937,7 +4736,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {};
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {};
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();
@@ -3966,6 +4765,23 @@
     // never drops what was typed.
     else if ("reportNote" in t.dataset && state.reportSheet) state.reportSheet.note = t.value;
     else if ("modNote" in t.dataset && state.modAction) state.modAction.note = t.value;
+    // COMM-202..206. The manual progress form and the coach entry roster,
+    // both inside the challenge detail dialog. Kept in state, not read off
+    // the DOM at submit, same reasoning as every other note/body field
+    // above: a rerender (a progress refresh, a sibling row's own submit)
+    // never drops what was already typed here.
+    else if ("challengeLogDelta" in t.dataset && state.challengeView) state.challengeView.logForm.delta = t.value;
+    else if ("challengeLogNote" in t.dataset && state.challengeView) state.challengeView.logForm.note = t.value;
+    else if ("challengeCoachDelta" in t.dataset && state.challengeView) {
+      const uid = t.dataset.challengeCoachDelta;
+      const d = state.challengeView.coachEntry.drafts[uid] || (state.challengeView.coachEntry.drafts[uid] = { delta: "", note: "" });
+      d.delta = t.value;
+    }
+    else if ("challengeCoachNote" in t.dataset && state.challengeView) {
+      const uid = t.dataset.challengeCoachNote;
+      const d = state.challengeView.coachEntry.drafts[uid] || (state.challengeView.coachEntry.drafts[uid] = { delta: "", note: "" });
+      d.note = t.value;
+    }
   });
   document.addEventListener("change", (e) => {
     const t = e.target;
@@ -4014,6 +4830,7 @@
     if (state.prPrompt) { e.preventDefault(); dismissPrPrompt(); return; }
     if (state.composer) { e.preventDefault(); tryCloseComposer(); return; }
     if (state.profileView) { e.preventDefault(); closeCommunityProfile(); return; }
+    if (state.challengeView) { e.preventDefault(); closeChallengeView(); return; }
     if (state.openPostMenu) { state.openPostMenu = null; rerender(); }
   });
   // COMM-190. A click on the dim backdrop - the overlay element itself, not
@@ -4030,6 +4847,18 @@
   // achievements agent's COMM-132; this only reacts to the record it passes.
   if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.PR_CREATED) {
     window.HaimuniaEvents.on(window.PRODUCT_EVENTS.PR_CREATED, onPrCreated);
+    // COMM-202. A second, independent handler on the same event: an
+    // individual_performance challenge the caller has joined logs a delta
+    // from the same PR, alongside (not instead of) the Share This PR prompt.
+    window.HaimuniaEvents.on(window.PRODUCT_EVENTS.PR_CREATED, onPrCreatedForChallenges);
+  }
+  // COMM-202/205. WORKOUT_COMPLETED has no producer anywhere in this
+  // codebase yet (see the comment on onWorkoutCompletedForChallenges) - the
+  // subscription is wired now so a future workout-logging surface needs no
+  // client change to start feeding individual_target and consistency
+  // challenges the moment it starts emitting this event.
+  if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.WORKOUT_COMPLETED) {
+    window.HaimuniaEvents.on(window.PRODUCT_EVENTS.WORKOUT_COMPLETED, onWorkoutCompletedForChallenges);
   }
   // COMM-134. Consume ACHIEVEMENT_UNLOCKED from the product bus (COMM-012).
   // The producer is claimCommunityAchievements() above for client-detected

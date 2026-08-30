@@ -56,6 +56,54 @@ export function createMockSupabase(seedTables = {}) {
   const anchor = new Date().toISOString();
   function tokenAnchor() { return anchor; }
 
+  // COMM-201..207. A faithful-enough stand-in for the two challenge_progress
+  // triggers (202608290003/202608290004): challenge_progress_stamp_team
+  // (BEFORE INSERT, snapshots the contributor's current team_id) and
+  // challenge_progress_apply (AFTER INSERT, bumps
+  // challenge_participants.progress_value, flips individual_target/
+  // individual_performance to completed at target_value, and - cooperative
+  // only - posts one authorless POST_CHALLENGE milestone the first time the
+  // running club_total crosses 25/50/75/100% of target_value). Every
+  // challenge_progress write in cloud.js is a direct RLS insert (never an
+  // RPC), so this is the one place in the mock that has to run the trigger
+  // logic, the same way the real table's triggers would.
+  function applyChallengeProgressInserts(insertedRows) {
+    let seq = 0;
+    for (const row of insertedRows) {
+      if (!row || row.delta == null) continue;
+      row.id = row.id || `cp-${++uidCounter}-${++seq}`;
+      row.created_at = row.created_at || new Date().toISOString();
+      const challenge = rows("challenges").find((c) => c.id === row.challenge_id);
+      const participant = rows("challenge_participants").find((p) => p.challenge_id === row.challenge_id && p.user_id === row.user_id);
+      if (row.team_id === undefined || row.team_id === null) row.team_id = participant ? (participant.team_id || null) : null;
+      if (!challenge) continue;
+      if (participant) {
+        const newTotal = Number(participant.progress_value || 0) + Number(row.delta);
+        participant.progress_value = newTotal;
+        const canComplete = participant.status !== "completed"
+          && ["individual_target", "individual_performance"].includes(challenge.challenge_type)
+          && challenge.target_value != null && newTotal >= Number(challenge.target_value);
+        if (canComplete) { participant.status = "completed"; participant.completed_at = new Date().toISOString(); }
+      }
+      if (challenge.challenge_type === "cooperative" && challenge.target_value) {
+        const total = rows("challenge_progress").filter((p) => p.challenge_id === challenge.id).reduce((s, p) => s + Number(p.delta || 0), 0);
+        const pct = (total / Number(challenge.target_value)) * 100;
+        for (const threshold of [25, 50, 75, 100]) {
+          if (pct < threshold) continue;
+          const already = rows("workout_posts").some((p) => p.post_type === "POST_CHALLENGE" && p.metadata
+            && String(p.metadata.challenge_id) === String(challenge.id) && Number(p.metadata.milestone) === threshold);
+          if (already) continue;
+          rows("workout_posts").push({
+            id: `chpost-${++uidCounter}`, author_id: null, post_type: "POST_CHALLENGE", visibility: "club",
+            body: `${threshold}% of the way to ${challenge.title}`,
+            metadata: { challenge_id: challenge.id, challenge_title: challenge.title, milestone: threshold, club_total: total, target_value: challenge.target_value },
+            status: "active", created_at: new Date().toISOString(), published_at: new Date().toISOString(),
+          });
+        }
+      }
+    }
+  }
+
   function chain(table) {
     let filters = [];
     let mode = "select";
@@ -71,6 +119,7 @@ export function createMockSupabase(seedTables = {}) {
       limit() { return api; },
       insert(payload) { mode = "insert"; pendingPayload = payload; return api; },
       upsert(payload, opts) { mode = "upsert"; pendingPayload = payload; api._onConflict = opts && opts.onConflict; return api; },
+      update(payload) { mode = "update"; pendingPayload = payload; return api; },
       delete() { mode = "delete"; return api; },
       maybeSingle() {
         const matched = rows(table).filter((r) => filters.every((f) => f(r)));
@@ -85,7 +134,16 @@ export function createMockSupabase(seedTables = {}) {
         if (mode === "insert") {
           const list = Array.isArray(pendingPayload) ? pendingPayload : [pendingPayload];
           for (const p of list) rows(table).push(p);
+          // COMM-201..207. See applyChallengeProgressInserts() above - the
+          // one table whose direct-insert write path has a real trigger
+          // behind it in production.
+          if (table === "challenge_progress") applyChallengeProgressInserts(list);
           return { error: null, data: list };
+        }
+        if (mode === "update") {
+          const matched = rows(table).filter((r) => filters.every((f) => f(r)));
+          for (const r of matched) Object.assign(r, pendingPayload);
+          return { error: null, data: matched };
         }
         if (mode === "upsert") {
           const list = Array.isArray(pendingPayload) ? pendingPayload : [pendingPayload];
@@ -622,6 +680,70 @@ export function createMockSupabase(seedTables = {}) {
           if (red) red.role = "member";
           rows("admin_actions").push(auditRow(uid, "role_change", "member", target, before, { role: "member" }));
           return Promise.resolve({ data: null, error: null });
+        }
+        // COMM-201..207. chal_progress(challenge_id) - the one read shape
+        // every challenge_type shares (202608290003). Mirrors the real
+        // function's null-vs-zero rule: a field that does not apply to this
+        // challenge_type is left null/undefined, never zeroed.
+        if (name === "chal_progress") {
+          const uid = currentUser && currentUser.id;
+          if (!uid) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          const cid = args && args.challenge_id;
+          const challenge = rows("challenges").find((c) => c.id === cid);
+          if (!challenge) return Promise.resolve({ data: null, error: { message: "challenge not found" } });
+          if (challenge.status === "draft" && challenge.created_by !== uid && !permHas(uid, "community.challenge.create")) {
+            return Promise.resolve({ data: null, error: { message: "challenge not found" } });
+          }
+          const result = {
+            challenge_id: challenge.id, challenge_type: challenge.challenge_type, title: challenge.title,
+            ends_at: challenge.end_at, target_value: challenge.target_value != null ? challenge.target_value : null,
+            my_progress: null, my_status: null, participant_count: 0,
+            club_total: null, team_totals: null, leaderboard: null,
+          };
+          const myP = rows("challenge_participants").find((p) => p.challenge_id === cid && p.user_id === uid);
+          if (myP) { result.my_progress = myP.progress_value; result.my_status = myP.status; }
+          result.participant_count = rows("challenge_participants").filter((p) => p.challenge_id === cid && p.status !== "withdrawn").length;
+          if (challenge.challenge_type === "cooperative") {
+            result.club_total = rows("challenge_progress").filter((p) => p.challenge_id === cid).reduce((s, p) => s + Number(p.delta || 0), 0);
+          }
+          if (challenge.challenge_type === "team") {
+            const teams = rows("challenge_teams").filter((t) => t.challenge_id === cid);
+            result.team_totals = teams.map((t) => ({
+              team_id: t.id, name: t.name,
+              total: rows("challenge_progress").filter((p) => p.challenge_id === cid && p.team_id === t.id).reduce((s, p) => s + Number(p.delta || 0), 0),
+            })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+          }
+          if (["individual_performance", "coach"].includes(challenge.challenge_type)) {
+            const ranked = rows("challenge_participants").filter((p) => p.challenge_id === cid && p.status !== "withdrawn")
+              .slice().sort((a, b) => Number(b.progress_value || 0) - Number(a.progress_value || 0)).slice(0, 20);
+            result.leaderboard = ranked.map((p) => {
+              const prof = rows("profiles").find((pr) => pr.id === p.user_id) || {};
+              return { user_id: p.user_id, name: prof.display_name || prof.handle || null, handle: prof.handle || null, avatar_url: prof.avatar_url || null, value: p.progress_value };
+            });
+          }
+          return Promise.resolve({ data: result, error: null });
+        }
+        // COMM-206. chal_record_progress - the coach-entry write path
+        // (202608290005). Mirrors the real function's error text exactly,
+        // since the client keys its own message off a generic failure, not
+        // this string, but a test may still want to assert it.
+        if (name === "chal_record_progress") {
+          const uid = currentUser && currentUser.id;
+          if (!uid) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          if (!permHas(uid, "community.challenge.create")) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          const cid = args && args.p_challenge_id;
+          const targetUser = args && args.p_user_id;
+          const delta = args && args.p_delta;
+          if (!cid || !targetUser) return Promise.resolve({ data: null, error: { message: "challenge and target participant are required" } });
+          if (delta == null) return Promise.resolve({ data: null, error: { message: "delta is required" } });
+          const participant = rows("challenge_participants").find((p) => p.challenge_id === cid && p.user_id === targetUser && p.status === "active");
+          if (!participant) return Promise.resolve({ data: null, error: { message: "not an active participant" } });
+          const note = String((args && args.p_note) || "").trim().slice(0, 500) || null;
+          const id = `cp-${++uidCounter}`;
+          const row = { id, challenge_id: cid, user_id: targetUser, delta: Number(delta), source_type: "coach_entry", note, entered_by: uid, created_at: new Date().toISOString() };
+          rows("challenge_progress").push(row);
+          applyChallengeProgressInserts([row]);
+          return Promise.resolve({ data: id, error: null });
         }
         if (name === "mark_recovery_verified") {
           const prof = rows("profiles").find((r) => currentUser && r.id === currentUser.id);
