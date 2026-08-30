@@ -1810,9 +1810,11 @@ schema, notifications (Phase 2)".
 
 ## Needs from schema, coach-tools
 
-Schema the Phase 2 coach dashboard (COMM-223 to COMM-226) needs. Nothing
-here touches `coach_engagement_flags` (COMM-011): it ships empty in Phase 2
-too, per COMM-226, and is out of scope until COMM-304.
+Schema the Phase 2 coach dashboard (COMM-223 to COMM-226) needs. Shipped by
+schema in 202608290013; the three subsections below record what actually
+landed, and where it differs from the ask stated here. Nothing in that
+migration touches `coach_engagement_flags` (COMM-011): it ships empty in
+Phase 2 too, per COMM-226, and is out of scope until COMM-304.
 
 - `coach_celebrate_feed(p_days int default 7) returns setof jsonb`
   (COMM-223, COMM-225). Staff-only (`is_staff()` inline, raises otherwise).
@@ -1843,6 +1845,131 @@ too, per COMM-226, and is out of scope until COMM-304.
   flag is — but it is also not surfaced to the member in this ticket's
   scope, since coach-tools.md does not ask for that and it is simpler to add
   visibility later than to remove it.
+
+### coach_celebrate_feed(p_days int default 7) returns setof jsonb (202608290013)
+
+- Purpose: the whole COMM-223 Celebrate list in one call, and the source of
+  the items COMM-225's Congratulate action acts on.
+- Params: `p_days integer`, default 7, clamped to 1..30 rather than
+  rejected; null falls back to 7. Anything outside the range is silently
+  clamped, because a bad number here is a client bug and not something worth
+  an error toast in front of a coach.
+- Returns: `setof jsonb`, newest first, capped at 100 rows. Each row is a
+  flat, self-describing object, no joins to make on the client:
+  `{ kind, user_id, handle, display_name, avatar_url, occurred_at, post_id,
+  detail }`.
+  - `kind` is `'pr'`, `'anniversary'`, or `'challenge_completion'`.
+  - `occurred_at` is the PR's `created_at`, the anniversary crossing
+    (`redeemed_at + threshold days`), or `completed_at`.
+  - `post_id` is the source post, and is null exactly when there is none.
+    That is the flag COMM-225 branches on: non-null takes
+    `add_post_comment`, null takes `post_create`.
+  - `detail` is kind-shaped: `{movement, result}` for a PR (read from
+    `metadata->>'movement'` / `metadata->>'new_result'`, falling back to
+    `title` / `result_text`), `{code, title, years}` for an anniversary
+    (`years` is a plain integer, not the numeric threshold), and
+    `{challenge_id, title}` for a completion.
+- Auth: SECURITY DEFINER, `auth.uid()` checked first, then `is_staff()`
+  inline. Both failures raise `not authorized` (P0001), so a non-staff or
+  unauthenticated caller is refused by the database and not only by a hidden
+  nav item. Executable by `authenticated` only.
+- Privacy: every row is subject to the subject member's own toggle, resolved
+  through `can_view_profile_field()` — `show_prs` for a PR (plus
+  `post_visible_to_viewer()` for the post's own followers/friends/block
+  rules), `in_leaderboards` for a completion, `visible_to_club` for an
+  anniversary. There is no anniversary-specific toggle and none was
+  invented. A deleted profile, and a member on either side of a block edge,
+  drop out. Celebrate surfaces what a coach could already see; it never
+  bypasses a member's choice.
+- Anniversaries reuse `ach_claim`'s tenure arithmetic exactly
+  (202608290002): any enabled `achievement_definitions` row with
+  `config->>'metric' = 'tenure_days'` and `threshold >= 365`, tested against
+  `invite_redemptions.redeemed_at`, plus one window bound. A tenure
+  definition added later is picked up with no further migration, and the day
+  an anniversary appears here is the day `ach_claim` grants the badge.
+- No birthday source is queried, and none exists to query.
+- Side effects: none, the function is `stable`. No rate limit: it is a
+  dashboard read by a staff-only caller.
+
+### profiles.assigned_coach_id + coach_assign_coach (202608290013)
+
+- `profiles.assigned_coach_id uuid references public.profiles(id) on delete
+  set null`, nullable, with a partial index on the non-null rows. A coach
+  leaving the club nulls their members' assignments rather than taking the
+  rows with them.
+- Correction to the ask above: "no policy change needed beyond the update
+  grant already open to `authenticated`" was not true on this schema.
+  `profiles` has exactly one UPDATE policy, `profiles_update_self`
+  (202608270003), and it is `id = auth.uid()` on both sides — a coach's
+  direct UPDATE of another member's row does not fail, it silently matches
+  zero rows, which would have made "Assign coach" a button that appears to
+  work and does nothing.
+- Rather than widen the `profiles` UPDATE policy — which would let any coach
+  rewrite any member's handle, display name, and every privacy toggle, and
+  which is identity-privacy's call rather than a side effect of the coach
+  dashboard — the migration crosses the boundary once, on purpose, in a
+  function that can touch only this column:
+  `coach_assign_coach(p_user_id uuid, p_coach_id uuid default null) returns
+  uuid`.
+  - Purpose: COMM-224 "Assign coach (optional)". Sets
+    `profiles.assigned_coach_id` for `p_user_id`, or clears it when
+    `p_coach_id` is null (so unassign needs no second function).
+  - Returns the value written, i.e. `p_coach_id`.
+  - Auth: SECURITY DEFINER, `auth.uid()` first, then `is_staff()` inline.
+    Raises `not authorized` (P0001) otherwise. Executable by
+    `authenticated` only.
+  - Also raises: `member required` on a null `p_user_id`, `member not found`
+    when the target does not exist or is deleted, and `assigned coach must
+    be staff` when `p_coach_id` is not itself admin or rank >= 20 — the
+    field means "which coach owns this relationship", so pointing it at a
+    plain member would make every dashboard reading it lie.
+  - Side effects: one UPDATE of one column on one row. No notification, no
+    audit row, no analytics.
+- `protect_is_admin()` (the existing BEFORE UPDATE trigger on `profiles`)
+  now also pins `assigned_coach_id`, alongside `is_admin`, `club_id`, and
+  `recovery_verified_at`. Without it a member could set their own assigned
+  coach through the existing own-row update, and a field a member can set
+  about themselves is not a coach assignment. The pin is lifted for exactly
+  one statement by the transaction-local `app.allow_coach_assign` GUC, the
+  same escape hatch `mark_recovery_verified()` uses and for the same reason:
+  `auth.role()` still reads `authenticated` inside a definer function.
+- Still open, for identity-privacy: `profiles_insert_self` does not require
+  `assigned_coach_id is null`, so a member's first profile insert could
+  carry a value. Closing that is a one-clause policy change on `profiles`
+  and is left to identity-privacy rather than taken here. The narrower
+  staff UPDATE policy the ask anticipates can also still replace
+  `coach_assign_coach` later without changing the column's shape.
+
+### member_contact_log (202608290013)
+
+- Columns exactly as asked: `id uuid primary key default gen_random_uuid()`,
+  `user_id uuid not null references profiles(id) on delete cascade`,
+  `contacted_by uuid not null default auth.uid() references profiles(id) on
+  delete cascade`, `contacted_at timestamptz not null default now()`, `note
+  text not null default '' check (char_length(note) <= 500)`. Indexed on
+  `(user_id, contacted_at desc)` and `(contacted_by, contacted_at desc)`.
+  No `club_id`: the contract named five columns and this is the shape the
+  client gets from `select *`.
+- The client inserts `{user_id, note}` and never names itself —
+  `contacted_by` defaults to `auth.uid()`.
+- RLS, four policies:
+  - `member_contact_log_staff_select`: `is_staff()`. Every staff member
+    reads every row, which is what makes it coordination rather than a
+    private note.
+  - `member_contact_log_staff_insert`: `is_staff() and contacted_by =
+    auth.uid()`. The same author pin every other insert policy in this
+    schema carries; staff cannot log contact in another coach's name.
+  - `member_contact_log_author_update` / `..._author_delete`: `is_staff()
+    and contacted_by = auth.uid()`. Correcting or withdrawing an entry is
+    the author's to do.
+- No `user_id <> auth.uid()` clause anywhere, deliberately, and that is the
+  one line where this table differs from `coach_engagement_flags`: a staff
+  member may log contact with themselves here. Being welcomed is not a
+  decline flag.
+- Not member-readable in this ticket's scope: a plain member reads nothing,
+  including the row about themselves. Adding a member-facing SELECT policy
+  later is one line; removing a leak is not.
+- `anon` has no grant on the table at all.
 
 ## Analytics
 
