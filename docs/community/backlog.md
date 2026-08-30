@@ -239,44 +239,133 @@ Phase 1 release maps to spec section 94. Gate is COMM-191.
 
 ## Phase 2 tickets, Engagement (spec V1.5)
 
-Ticket files not written yet. Titles and owners only.
+ID range COMM-201 to COMM-234. Ticket files are in
+`docs/community/tickets/`. Build order per
+`2026-08-28-community-module-plan.md`: challenges, then events, then
+announcement priority/recap/onboarding, then the coach dashboard, then
+realtime, then search/following/directory, then web push, then analytics,
+then the QA sweep. Every ticket in this phase respects the three
+2026-08-30 resolutions: attendance stays out (COMM-205, COMM-210, COMM-232
+are explicitly non-attendance and stay that way until their named Phase 3
+successor), no "Message" affordance exists anywhere (COMM-224, COMM-230,
+COMM-231, COMM-229 each say so explicitly), and web push (COMM-229)
+proceeds with the iOS installed-PWA-only limitation accepted as scope, not
+logged as a blocker.
 
-| ID | Title | Agent |
-|---|---|---|
-| COMM-201 | Challenge model generalization from the weekly challenge | challenges |
-| COMM-202 | Individual target and individual performance challenges | challenges |
-| COMM-203 | Cooperative challenge with club aggregate and contributors | challenges |
-| COMM-204 | Team challenge with per-team totals | challenges |
-| COMM-205 | Consistency challenge on non-attendance metrics | challenges |
-| COMM-206 | Coach custom-rules challenge | challenges |
-| COMM-207 | Challenge list, detail, join and leave | challenges |
-| COMM-208 | Challenge notifications (ending soon, joined, completed) | notifications |
-| COMM-209 | Challenge realtime progress | platform |
-| COMM-210 | Consistency leaderboard mode, non-attendance | feed |
-| COMM-211 | Progress leaderboard mode | feed |
-| COMM-212 | Friends leaderboard mode and hide-my-result | feed |
-| COMM-213 | Events tables consumption, list and detail | events |
-| COMM-214 | Event RSVP and capacity | events |
-| COMM-215 | Event types and add to calendar | events |
-| COMM-216 | Event comments | events |
-| COMM-217 | Upcoming event card in the feed top area | events |
-| COMM-218 | Announcement priority levels and expiry | admin-moderation |
-| COMM-219 | Announcement notification toggle and urgent path | notifications |
-| COMM-220 | Weekly member recap Edge Function | recaps |
-| COMM-221 | Weekly recap surface and share | recaps |
-| COMM-222 | New member onboarding sequence, non-attendance steps | recaps |
-| COMM-223 | Coach dashboard shell with Celebrate | coach-tools |
-| COMM-224 | Coach Welcome section | coach-tools |
-| COMM-225 | One-tap congratulate action | coach-tools |
-| COMM-226 | Coach Engage section scaffold, hidden | coach-tools |
-| COMM-227 | Realtime for comments and reaction counts | platform |
-| COMM-228 | Member, event, and challenge search | platform |
-| COMM-229 | Web push subscription and service worker handler, behind a flag | notifications |
-| COMM-230 | Following system surface and states | engagement |
-| COMM-231 | Members directory screen | engagement |
-| COMM-232 | People you train with suggestions, non-attendance fallback | feed |
-| COMM-233 | Phase 2 analytics events | platform |
-| COMM-234 | Phase 2 QA sweep and browser scenarios | qa |
+### challenges
+
+| ID | Title | Agent | Status |
+|---|---|---|---|
+| COMM-201 | Challenge model generalization from the weekly challenge | challenges | todo |
+| COMM-202 | Individual target and individual performance challenges | challenges | todo |
+| COMM-203 | Cooperative challenge with club aggregate and contributors | challenges | todo |
+| COMM-204 | Team challenge with per-team totals | challenges | todo |
+| COMM-205 | Consistency challenge on non-attendance metrics | challenges | todo |
+| COMM-206 | Coach custom-rules challenge | challenges | todo |
+| COMM-207 | Challenge list, detail, join and leave | challenges | todo |
+
+COMM-201 to COMM-207 build on `challenges`, `challenge_teams`,
+`challenge_participants`, `challenge_progress` from 202608280009 (COMM-006),
+whose direct RLS grants already cover create, edit, join, and leave. What is
+missing and still schema's job: the `challenge_progress_view` composite type
+and `chal_progress` body, the `challenge_progress_apply` trigger, the
+`chal_record_progress` coach-entry RPC, the cooperative milestone-post
+trigger, and the `ending_soon_notified_at` column plus
+`chal_notify_ending_soon()`. See "Needs from schema, challenges" in
+`docs/community/contracts.md`.
+
+### events
+
+| ID | Title | Agent | Status |
+|---|---|---|---|
+| COMM-213 | Events tables consumption, list and detail | events | todo |
+| COMM-214 | Event RSVP and capacity | events | todo |
+| COMM-215 | Event types and add to calendar | events | todo |
+| COMM-216 | Event comments | events | todo |
+| COMM-217 | Upcoming event card in the feed top area | events | todo |
+
+`events` and `event_attendees`, `event_rsvp`, and the capacity/deadline
+trigger already shipped in 202608280010 (COMM-007). COMM-216 is a design
+decision, not a schema change: event comments ride a companion `POST_EVENT`
+post created at publish time, reusing `post_comments` end to end rather than
+adding a polymorphic comment target. COMM-214 needs a new
+`notif_on_event_cancelled` trigger, see "Needs from schema, events" and
+"Needs from schema, notifications (Phase 2)" in `docs/community/contracts.md`.
+
+### announcements and recaps
+
+| ID | Title | Agent | Status |
+|---|---|---|---|
+| COMM-218 | Announcement priority levels and expiry | admin-moderation | todo |
+| COMM-219 | Announcement notification toggle and urgent path | notifications | todo |
+| COMM-220 | Weekly member recap Edge Function | recaps | todo |
+| COMM-221 | Weekly recap surface and share | recaps | todo |
+| COMM-222 | New member onboarding sequence, non-attendance steps | recaps | todo |
+
+COMM-218 replaces the Phase 1 `important` boolean with a three-tier
+`priority` and an `expires_at` column; `important` stays as a generated
+mirror so no other Phase 1 trigger needs an edit beyond
+`notif_is_operational`, which COMM-219 widens. See "Needs from schema,
+admin-moderation (Phase 2)" and "Needs from schema, notifications (Phase 2)".
+COMM-220 needs a new `weekly_recaps` table, COMM-222 a new
+`onboarding_progress` table, both own-row RLS, see "Needs from schema,
+recaps". COMM-222's steps tied to first and third class attendance are not
+built, carrying a TODO to COMM-P07 and COMM-316.
+
+### coach-tools
+
+| ID | Title | Agent | Status |
+|---|---|---|---|
+| COMM-223 | Coach dashboard shell with Celebrate | coach-tools | todo |
+| COMM-224 | Coach Welcome section | coach-tools | todo |
+| COMM-225 | One-tap congratulate action | coach-tools | todo |
+| COMM-226 | Coach Engage section scaffold, hidden | coach-tools | todo |
+
+COMM-223 needs a new staff-only `coach_celebrate_feed` function. COMM-224
+needs `profiles.assigned_coach_id` and a new `member_contact_log` table.
+See "Needs from schema, coach-tools". COMM-226 ships the Engage section
+hidden behind a default-off flag; `coach_engagement_flags` (COMM-011) stays
+empty, unchanged from Phase 1, until COMM-304.
+
+### realtime and search
+
+| ID | Title | Agent | Status |
+|---|---|---|---|
+| COMM-209 | Challenge realtime progress | platform | todo |
+| COMM-227 | Realtime for comments and reaction counts | platform | todo |
+| COMM-228 | Member, event, and challenge search | platform | todo |
+| COMM-210 | Consistency leaderboard mode, non-attendance | feed | todo |
+| COMM-211 | Progress leaderboard mode | feed | todo |
+| COMM-212 | Friends leaderboard mode and hide-my-result | feed | todo |
+| COMM-230 | Following system surface and states | engagement | todo |
+| COMM-231 | Members directory screen | engagement | todo |
+| COMM-232 | People you train with suggestions, non-attendance fallback | feed | todo |
+
+COMM-209 and COMM-227 need `challenge_progress`, `challenge_participants`,
+`post_comments`, `reactions`, and `notifications` added to the
+`supabase_realtime` publication; `HaimuniaRealtime` (COMM-014) already has
+the subscription side wired with zero replication enabled. COMM-228 needs a
+new `community_search` function. COMM-210 to COMM-212 share one new
+`feed_leaderboard` function; COMM-232 needs a new `people_suggestions`
+function. See "Needs from schema, platform (Phase 2)" and "Needs from
+schema, feed (Phase 2)". COMM-230 and COMM-231 need no new contract, both
+direct RLS reads on `follows` and `profiles`.
+
+### web push, analytics, qa
+
+| ID | Title | Agent | Status |
+|---|---|---|---|
+| COMM-229 | Web push subscription and service worker handler, behind a flag | notifications | todo |
+| COMM-233 | Phase 2 analytics events | platform | todo |
+| COMM-234 | Phase 2 QA sweep and browser scenarios | qa | todo |
+
+COMM-229 wires subscription storage (the `push_subscriptions` table already
+shipped in 202608280008, no schema change) and the `sw.js` client handler.
+Actually sending a push needs a `notif_push_send` service-role Edge Function
+or scheduled job, not built by this ticket, the same "storage exists,
+delivery scheduler does not" gap already logged for the Phase 1 batch
+flusher. COMM-233 lands last, once every surface it tracks exists. COMM-234
+is the phase's merge gate, dependent on every other Phase 2 ticket.
 
 ## Phase 3 tickets, Intelligence (spec V2)
 

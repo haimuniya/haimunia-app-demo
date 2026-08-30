@@ -188,6 +188,42 @@ client was already built against.
 - Side effects: feed_impressions has no UPDATE grant or policy, so this
   function is the only thing that can flip those two flags.
 
+## Needs from schema, feed (Phase 2)
+
+Functions the Phase 2 feed cluster (COMM-210 to COMM-212, COMM-232) needs and
+that schema still owns.
+
+- `feed_leaderboard(p_mode text, p_challenge_id uuid, p_scope text, p_limit
+  int) returns setof leaderboard_row` where `leaderboard_row` is `(user_id
+  uuid, display_name text, handle text, avatar_url text, rank integer, value
+  numeric, is_self boolean)`. `p_mode` is `consistency` or `progress`.
+  `consistency` ranks club members by the same current-streak computation
+  `community_profile` already exposes (consecutive ISO weeks with a logged
+  session), club-wide, `p_challenge_id` ignored. `progress` ranks
+  `challenge_participants.progress_value` for one `p_challenge_id`, which is
+  required for that mode and raises when missing. `p_scope` is `club` or
+  `friends`; `friends` restricts the ranked set to `are_friends()` edges with
+  the caller, always including the caller's own row. Every ranked member must
+  pass `can_view_profile_field(member, 'in_leaderboards')` and
+  `can_view_profile_field(member, 'visible_to_club')`; a block edge in either
+  direction excludes the row. The caller's own row is always returned even
+  when it falls outside `p_limit` (capped at 100), appended last with its
+  real `rank`, so "where do I stand" never needs a second call. "Hide my
+  result" (COMM-212) is a client-only render choice, not a query parameter:
+  the function always returns the caller's row, the client chooses not to
+  draw it.
+- `people_suggestions(p_limit int default 10) returns setof jsonb` (COMM-232).
+  Ranks candidate members by, in order: shared active challenge
+  participation, `feed_interactions` on the same posts (comment or react),
+  shared `event_attendees` with response `going` on the same event, over a
+  trailing 60-day window. Excludes existing follow edges (either direction),
+  block edges (either direction), and the caller. Each candidate must pass
+  `can_view_profile_field(candidate, 'visible_to_club')` and
+  `can_view_profile_field(candidate, 'allow_follows')`. This is the
+  non-attendance fallback: COMM-302 and COMM-307 (Phase 3) add a
+  recurring-classmate score from verified attendance to the same ranking,
+  behind the same function name, so the client slot does not change.
+
 ## Posts
 
 ### post_create(body text, visibility post_visibility, media jsonb, links jsonb) returns uuid
@@ -472,8 +508,71 @@ schema still owns. No migration is written here.
 
 ### chal_progress(challenge_id uuid) returns challenge_progress_view
 
-- Purpose: personal, team, and club progress for one challenge.
+- Purpose: personal, team, and club progress for one challenge, one shape for
+  every `challenge_type` so COMM-207's detail view calls one function
+  regardless of type.
 - Auth: caller must be a club member. Team split visible to participants.
+- Not shipped. See "Needs from schema, challenges" below for the composite
+  type and every Phase 2 write path COMM-201 to COMM-208 need.
+
+## Needs from schema, challenges
+
+Functions and columns the Phase 2 challenges cluster (COMM-201 to COMM-208)
+needs and that schema still owns. `challenges`, `challenge_teams`,
+`challenge_participants`, and `challenge_progress` themselves shipped in
+202608280009 (COMM-006) with direct RLS grants already open to
+`authenticated`; creating, editing, joining, and leaving a challenge are
+direct RLS writes under the existing policies, no new function. What is
+missing is the read shape and the write paths RLS cannot express as a plain
+own-row policy.
+
+- `challenge_progress_view` composite type:
+  `(challenge_id uuid, challenge_type text, title text, ends_at timestamptz,
+  my_progress numeric, my_status text, target_value numeric, participant_count
+  integer, club_total numeric, team_totals jsonb, leaderboard jsonb)`.
+  `club_total` is populated for `cooperative`, `team_totals` for `team`
+  (`[{team_id, name, total}]`), `leaderboard` for `individual_performance` and
+  `coach` (top 20 by `progress_value`, same shape as `feed_leaderboard`'s
+  row). Fields that do not apply to the challenge's type are null, not
+  zeroed, so the client can tell "not applicable" from "genuinely zero".
+- `challenge_progress` trigger (`challenge_progress_apply`, AFTER INSERT):
+  the client's insert grant on `challenge_progress` (COMM-006) is append-only
+  and does not touch `challenge_participants.progress_value`, on purpose —
+  the running total has to be server-derived, not client-summed. This
+  trigger adds `NEW.delta` to the matching `challenge_participants` row's
+  `progress_value`, and for `individual_target` and `individual_performance`
+  challenges, flips `status` to `completed` and stamps `completed_at` the
+  first time `progress_value >= target_value`. It never lowers a completed
+  status back to active on a later negative correction, matching the
+  append-only "correct with a compensating delta" model already documented
+  for the table.
+- `chal_record_progress(p_challenge_id uuid, p_user_id uuid, p_delta numeric,
+  p_note text) returns uuid` (COMM-206). The coach-entry path for a `coach`
+  challenge type: the existing `challenge_progress_insert_self` policy only
+  allows `user_id = auth.uid()`, so a coach logging progress on behalf of a
+  participant needs a security definer function. Requires
+  `community.challenge.create`. Refuses a target who is not an active
+  participant. Writes one `challenge_progress` row with `source_type =
+  'coach_entry'`.
+- Cooperative milestone post: an AFTER INSERT trigger on `challenge_progress`
+  (or a check inside `challenge_progress_apply`) that, for a `cooperative`
+  challenge whose `club_total` newly crosses 25/50/75/100% of `target_value`,
+  calls `post_create`-equivalent logic to post one milestone update. This
+  needs a design decision from schema on the authorless-post path;
+  `workout_posts.author_id` is nullable (COMM-107 already ships POST_SYSTEM
+  and POST_NEW_MEMBER with no author), so the milestone post is `author_id =
+  null`, `post_type = 'POST_CHALLENGE'`.
+- `challenges.ending_soon_notified_at timestamptz` column plus
+  `chal_notify_ending_soon() returns integer`, service-role only, the same
+  shape as `notif_batch_flush_due`: selects active challenges ending within
+  48 hours with `ending_soon_notified_at` still null, calls `notif_create`
+  for every active participant, stamps `ending_soon_notified_at`. SCHEDULER
+  is not built here, same open item as the notification batch flusher —
+  needs a `pg_cron` entry or a scheduled Edge Function once one exists for
+  either. See "Needs from schema, notifications (Phase 2)" for the trigger
+  set around `challenge_update`.
+
+## Events
 
 ### event_rsvp(p_event_id uuid, p_response text) returns void
 
@@ -486,6 +585,32 @@ schema still owns. No migration is written here.
   enforced by the `event_attendees_capacity` trigger rather than by this
   function, so a direct RLS upsert hits the same checks. It raises
   `event_full` or `registration_closed`.
+
+## Needs from schema, events
+
+Functions and columns the Phase 2 events cluster (COMM-213 to COMM-217)
+needs and that schema still owns. `events` and `event_attendees` themselves,
+`event_rsvp`, and the capacity/deadline trigger all shipped in 202608280010
+(COMM-007). Creating, editing, and cancelling an event are direct RLS writes
+under the existing `community.event.manage`-gated policies, no new function.
+
+- AFTER UPDATE OF status on `events` trigger (`notif_on_event_cancelled`):
+  on a transition to `cancelled`, `notif_create('event_cancelled', ...)`
+  (immediate, per the routing table) for every `event_attendees` row on that
+  event with `response` in `going` or `interested`, subject to the same
+  block-edge and dedupe rules every other trigger uses. See "Needs from
+  schema, notifications (Phase 2)".
+- Event comments (COMM-216) need no new table: publishing an event creates
+  one companion `POST_EVENT` `workout_posts` row via `post_create` with
+  `links.event_id`, and the event detail's comment thread is that post's
+  `post_comments`, reusing `add_post_comment` and every engagement rule
+  (COMM-121 to COMM-125) unchanged. This is a client-side design decision by
+  the events agent, not a schema change, recorded here so it does not drift:
+  `events` gets no `post_id` column, the link travels through
+  `workout_posts.metadata->>'event_id'` the same way `post_create`'s `links`
+  parameter already stores `event_id` today.
+- Add to Calendar (COMM-215) is a client-only `.ics` file built from fields
+  already on the `events` row. No schema change.
 
 ## Engagement
 
@@ -970,6 +1095,48 @@ The single split, so the trigger set and the client `notifRoute()` agree.
 - `feed_activity` (batched): a catch-all, only ever enqueued, never
   immediate, never per-post.
 
+## Needs from schema, notifications (Phase 2)
+
+Trigger set and columns the Phase 2 notifications cluster (COMM-208,
+COMM-214/215, COMM-218/219, COMM-229) needs and that schema still owns. The
+Phase 1 trigger set (`notif_on_comment`, `notif_on_mention`,
+`notif_on_reaction`, `notif_on_announcement`, `notif_on_achievement`) and
+`notif_create` itself need no signature change; every item below is either a
+new trigger of the same shape or a small predicate change inside an existing
+one.
+
+- `notif_on_challenge_join` (AFTER INSERT on `challenge_participants`):
+  `notif_queue_batched(p, 'challenges', 'challenge_update', challenge_id)`
+  for every other active participant, guarded by the existing block-edge and
+  preference checks. Never immediate.
+- `notif_on_challenge_complete` (AFTER UPDATE OF status on
+  `challenge_participants`, `new.status = 'completed'`): same
+  `challenge_update` batched fan-out to the other active participants. The
+  completer gets no notification about their own completion; the client
+  celebrates locally the same way COMM-134 does for achievements.
+  Attendance-blocked: no.
+- `chal_notify_ending_soon()`: immediate `challenge_ending_soon` per joined
+  active participant. See "Needs from schema, challenges" for the column and
+  scheduler note.
+- `notif_on_event_cancelled`: immediate `event_cancelled`. See "Needs from
+  schema, events".
+- `notif_is_operational` widens from `announcements.important` to
+  `announcements.priority in ('important', 'urgent')` (COMM-218, COMM-219).
+  The AFTER UPDATE trigger on `announcements` widens from `OF important` to
+  `OF priority`, and the off-only-row re-fan-out logic generalizes from one
+  boolean flip to any upward transition on the three-tier order `normal <
+  important < urgent`, so a member already reached at `important` is never
+  re-notified when the same announcement later becomes `urgent`. See "Needs
+  from schema, admin-moderation (Phase 2)" for the column migration.
+- `notif_push_send`: NOT built here. The actual Web Push send (calling the
+  Web Push protocol with VAPID keys against every unrevoked
+  `push_subscriptions` row for a notification's recipient) is a service-role
+  Edge Function or scheduled job, the same "storage exists, delivery
+  scheduler does not" gap already logged for `notif_batch_flush_due`.
+  COMM-229 wires subscription storage (existing table, no change) and the
+  `sw.js` client handler only; sending a real push waits on VAPID key
+  provisioning, confirmed but not yet available at authoring time.
+
 ## Identity and privacy
 
 ### redeem_invite_code(p_code text, p_actor_key text) returns text
@@ -1347,6 +1514,65 @@ this section records the table and enum changes and the two remaining notes.
   drops it on sign-out. It is reloaded on the auth-state-change path so a
   role change takes effect without a reload.
 
+## Needs from schema, admin-moderation (Phase 2)
+
+Schema the Phase 2 admin-moderation ticket (COMM-218) needs.
+
+- `announcements.priority text not null default 'normal' check (priority in
+  ('normal', 'important', 'urgent'))`, replacing the boolean `important`
+  added in 202608280026. `important` stays as a generated column
+  (`important boolean generated always as (priority <> 'normal') stored`,
+  or an equivalent trigger-maintained mirror) rather than being dropped, so
+  every Phase 1 trigger and policy that already reads `important` keeps
+  working with zero further edit; only `notif_is_operational` and the AFTER
+  UPDATE trigger column list change, both under "Needs from schema,
+  notifications (Phase 2)".
+- `announcements.expires_at timestamptz`, nullable. An expired announcement
+  is excluded from `feed_page`'s top-area read and from the pinned-strip
+  read at query time (same "no cron, no backfill" pattern
+  `is_posting_restricted` already uses for a lifted or timed-out
+  restriction), and stays visible in `admin_actions_page` and any admin
+  audit read, since expiry hides it from members, not from the record. Only
+  `is_staff()` may set either column, matching the existing
+  `announcements_insert_admin` / `announcements_update_admin` policies with
+  no widening.
+
+## Needs from schema, coach-tools
+
+Schema the Phase 2 coach dashboard (COMM-223 to COMM-226) needs. Nothing
+here touches `coach_engagement_flags` (COMM-011): it ships empty in Phase 2
+too, per COMM-226, and is out of scope until COMM-304.
+
+- `coach_celebrate_feed(p_days int default 7) returns setof jsonb`
+  (COMM-223, COMM-225). Staff-only (`is_staff()` inline, raises otherwise).
+  One call for the whole Celebrate list: recent PRs (from `workout_posts`
+  where `post_type = 'POST_PR'` and `created_at` within `p_days`),
+  anniversaries (a member whose `invite_redemptions.redeemed_at` hits a
+  year multiple within `p_days`, reusing the same tenure arithmetic
+  `ach_claim`'s `anniversary_year_*` check already established), and
+  challenge completions (`challenge_participants.completed_at` within
+  `p_days`). Each row is included only when it would already be visible to
+  the calling coach under the normal per-field privacy toggle for its kind
+  (`show_prs` for a PR) — Celebrate does not bypass a member's own privacy
+  choice, it surfaces what a coach could already see. No birthday source: no
+  birth date column exists, per the 2026-08-28 decision, so Celebrate never
+  queries for one.
+- `profiles.assigned_coach_id uuid references profiles(id) on delete set
+  null`, nullable, staff-writable only (COMM-224 "Assign coach optional").
+  No policy change needed beyond an update grant already open to
+  `authenticated`; the write is gated the same way every other
+  member-affecting toggle is, by checking `is_staff()` in the client path,
+  and a narrower update policy can be added later without changing this
+  column's shape.
+- `member_contact_log` table (COMM-224 "Mark contacted"): `id uuid, user_id
+  uuid, contacted_by uuid, contacted_at timestamptz default now(), note text
+  default ''`. Staff read and write about any member. Unlike
+  `coach_engagement_flags` this carries no `user_id <> auth.uid()`
+  requirement — being welcomed is not a sensitive signal the way a decline
+  flag is — but it is also not surfaced to the member in this ticket's
+  scope, since coach-tools.md does not ask for that and it is simpler to add
+  visibility later than to remove it.
+
 ## Analytics
 
 ### analytics_track(event_name, props)
@@ -1501,12 +1727,64 @@ never calls `client.channel()` directly.
   into a worker without rewriting `prepareImage`.
 - Nothing is wired to it in Phase 0. posts consumes it in COMM-103.
 
+## Needs from schema, platform (Phase 2)
+
+Schema the Phase 2 platform cluster (COMM-209, COMM-227, COMM-228) needs.
+
+- Realtime publication membership for `challenge_progress` and
+  `challenge_participants` (COMM-209), and for `post_comments`, `reactions`,
+  and `notifications` (COMM-227): `alter publication supabase_realtime add
+  table public.<name>;` per table. `HaimuniaRealtime` (COMM-014) already
+  handles the subscription side with zero replication enabled; this is the
+  one-line-per-table migration that turns each existing no-op subscription
+  live. `notifications` closes the specific gap COMM-140 already logged
+  ("no-op until COMM-227").
+- `community_search(p_query text, p_limit int default 10) returns jsonb`
+  (COMM-228). One round trip returning `{members: [...], events: [...],
+  challenges: [...]}`, each capped at `p_limit`. `members` is the same shape
+  `searchPeople` already selects (`id, handle, display_name, bio,
+  avatar_url, allow_follows`) matched by `ilike` on `handle` or
+  `display_name`. `events` matches `title` `ilike`, `published` status only
+  unless the caller is the creator or holds `community.event.manage`, same
+  visibility `events_read` already enforces — the function does not widen
+  it, it just unions three existing readable sets server-side instead of
+  three round trips. `challenges` matches `title` `ilike` under the same
+  rule as `challenges_read`. A query under 2 characters returns all three
+  arrays empty rather than raising. No full-text and no post search, per
+  platform.md's explicit V1 exclusion.
+
+## Needs from schema, recaps
+
+Schema the Phase 2 recaps cluster (COMM-220 to COMM-222) needs.
+
+- `weekly_recaps` table: `id uuid, user_id uuid, club_id uuid default
+  default_club_id(), week_start date, sessions_completed integer, streak
+  integer, prs jsonb, achievements jsonb, challenge_progress jsonb,
+  club_challenge_progress jsonb, upcoming_event jsonb, generated_at
+  timestamptz default now()`. Unique `(user_id, week_start)`, which is what
+  makes `recap_weekly` idempotent per user per week — a rerun for a week
+  already generated hits the conflict and updates in place rather than
+  duplicating. Own-row select, no client insert or update grant: only the
+  `recap_weekly` Edge Function, running as service role, writes it.
+- `onboarding_progress` table (COMM-222): `user_id uuid primary key,
+  welcomed_at timestamptz, first_week_shown_at timestamptz,
+  first_month_shown_at timestamptz`. Own-row select and update (the update
+  is the client marking a step seen), no insert grant beyond a row seeded at
+  `MEMBER_JOINED` time by a trigger on `invite_redemptions` or `profiles`,
+  so a member cannot invent a fresh row to re-see a step. The two steps tied
+  to first and third class attendance are not columns here yet; they land
+  with COMM-316.
+
 ## Edge Functions
 
 ### recap_weekly
 
-- Schedule: weekly. Idempotent per user per week. Phase 2, COMM-220.
-- Output: one weekly recap row per active user. No classmates line yet.
+- Schedule: weekly. Idempotent per user per week via the unique `(user_id,
+  week_start)` key on `weekly_recaps` (see "Needs from schema, recaps").
+  Phase 2, COMM-220.
+- Output: one `weekly_recaps` row per active user, plus one `notif_create(U,
+  'weekly_recap', 'club', ...)` call per user with a deep link to the recap
+  surface (COMM-221), matching the routing table entry above.
 - Records success and failure counts with no personal content.
 
 ### recap_monthly_club
