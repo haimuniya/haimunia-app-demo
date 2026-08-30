@@ -266,13 +266,16 @@ logged as a blocker.
 
 COMM-201 to COMM-207 build on `challenges`, `challenge_teams`,
 `challenge_participants`, `challenge_progress` from 202608280009 (COMM-006),
-whose direct RLS grants already cover create, edit, join, and leave. What is
-missing and still schema's job: the `challenge_progress_view` composite type
-and `chal_progress` body, the `challenge_progress_apply` trigger, the
-`chal_record_progress` coach-entry RPC, the cooperative milestone-post
-trigger, and the `ending_soon_notified_at` column plus
-`chal_notify_ending_soon()`. See "Needs from schema, challenges" in
-`docs/community/contracts.md`.
+whose direct RLS grants already cover create, edit, join, and leave.
+Everything schema owed this cluster shipped in 202608290003 through
+202608290006: the `challenge_progress_view` composite type and `chal_progress`
+body, the `challenge_progress_apply` trigger (running-total sync plus the
+cooperative milestone post), the `chal_record_progress` coach-entry RPC, and
+the `ending_soon_notified_at` column plus `chal_notify_ending_soon()` and its
+two join/complete notification triggers (COMM-208). See "## Challenges" in
+`docs/community/contracts.md` for every signature, and "Phase 2 schema
+handoff for qa" below for the boundary table. No feature agent is blocked on
+schema for this cluster.
 
 ### events
 
@@ -701,6 +704,35 @@ No new table. `notif_batch_flush_due` and `notif_category_surface`.
 | Function | Boundary to assert |
 |---|---|
 | notif_batch_flush_due(p_limit) | Granted to `service_role` only: no client can call it. Processes only `notification_batches` rows with `next_flush_at <= now()` and `pending_count > 0`. Writes one `notifications` row per key in `pending`, using the batched type key as `notifications.type`, then calls `notif_batch_flushed` so the row's `pending_count` returns to 0. Deep link is `/community/feed?post=<last_source_id>` only when that type is the whole batch and is `reaction` or `comment_also`, otherwise the category surface. Returns the count of rows written. A second call with nothing due returns 0 and writes nothing. NOTE: nothing schedules this yet - a pg_cron entry or scheduled Edge Function is still needed for batched notifications to be delivered. |
+
+## Phase 2 schema handoff for qa
+
+Same rule as every prior handoff: one line per table/function/trigger saying
+the boundary a test has to assert.
+
+### Challenges (202608290003 through 202608290006)
+
+No new table - four columns added to `challenge_progress` and `challenges`,
+one composite type, one read function, two triggers on `challenge_progress`,
+one write RPC, one service-role RPC, two triggers on `challenge_participants`.
+Verified locally this run via `supabase db reset` plus manual psql smoke
+tests impersonating fixture members through `tests.set_auth()`
+(`supabase/tests/rls_helpers.sql`'s shim - each impersonate-then-act pair has
+to run inside one explicit `begin; ... commit;`, since `set_auth`'s
+`set_config(..., true)` is transaction-local and evaporates between
+autocommitted statements otherwise).
+
+| Function / trigger / column | Boundary to assert |
+|---|---|
+| chal_progress(challenge_id) | Raises `not authorized` for a null caller and for a caller with no live role. Raises `challenge not found` for a `draft` challenge read by anyone but its creator or a `community.challenge.create` holder (verified: the creating coach CAN read their own draft). Returns the right non-null fields per `challenge_type` and leaves every non-applicable field null (verified all five types: individual_target, cooperative, team, coach, individual_performance). A non-participant reading a challenge they never joined gets `my_progress`/`my_status` null, not zero/'active', with every other field intact. |
+| challenge_progress_apply (AFTER INSERT on challenge_progress) | Sums `delta` into the matching `challenge_participants.progress_value` (verified: 60 then +50 on a target of 100 reaches 110). Flips `individual_target`/`individual_performance` to `completed` with `completed_at` set exactly the first time the total reaches `target_value`, and a later negative correction (verified: -80 after completion) leaves `status = 'completed'` and only lowers `progress_value`. |
+| challenge_progress_apply, cooperative milestone | For a `cooperative` challenge, posts one authorless (`author_id is null`) `POST_CHALLENGE` `workout_posts` row the first time `club_total` reaches each of 25/50/75/100 percent of `target_value`, never a repeat post for a threshold already crossed (verified: a later contribution that keeps the total above 50% does not produce a second 50% post), and a single contribution that crosses two thresholds at once (verified: 65% -> 105%) posts both 75% and 100% in the same transaction. |
+| challenge_progress.team_id, challenge_progress_stamp_team (BEFORE INSERT) | Snapshots the contributor's current `challenge_participants.team_id` onto the progress row at insert time; `chal_progress`'s `team_totals` sums from this column, not from the live participant row, so a departed member's earlier contributions keep counting for their old team (not independently re-verified this run past the trigger firing correctly - the "still counts after leaving" case needs a participant delete plus a re-read, flagged for qa to cover explicitly). |
+| challenge_progress.entered_by / note, challenge_progress_insert_self (re-created) | A self-insert with `entered_by` set to any uuid is rejected by RLS (verified: `entered_by = <coach>` on an m1 self-insert raises "new row violates row-level security policy"). A plain self-insert with no `entered_by` still succeeds. |
+| chal_record_progress(p_challenge_id, p_user_id, p_delta, p_note) | Raises `not authorized` for a caller without `community.challenge.create` (verified: m1 targeting m2). Raises `not an active participant` for a target with no active `challenge_participants` row on that challenge (verified: coach targeting m3, who never joined). A holder targeting an active participant writes one `challenge_progress` row with `source_type = 'coach_entry'` and `entered_by` the caller (verified, then confirmed `challenge_progress_apply` applies it exactly like a self-insert). |
+| challenges.ending_soon_notified_at, chal_notify_ending_soon() | Granted to `service_role` only (verified: `authenticated` gets "permission denied for function"). Selects only `active` challenges ending within 48 hours with the column still null, `notif_create`s every active participant, stamps the column. A second call after stamping is a no-op (verified: returns 0, writes nothing). |
+| notif_on_challenge_join (AFTER INSERT on challenge_participants) | Enqueues batched `challenge_update` for every other active participant on the same challenge, never the joiner, never immediate (verified across 10 joins spanning 5 challenges: exact per-recipient counts matched hand-tallied expectations). |
+| notif_on_challenge_complete (AFTER UPDATE OF status on challenge_participants) | Enqueues the same batched fan-out only on a genuine transition into `completed` (guards against the trigger firing on every `challenge_progress_apply` UPDATE, which always touches the `status` column even when unchanged), never to the completer (verified: m1 completing did not add to m1's own batch, only to m2's). |
 
 ## Open questions for the user
 

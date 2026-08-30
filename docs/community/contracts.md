@@ -506,71 +506,216 @@ schema still owns. No migration is written here.
 
 ## Challenges
 
+Landed by schema in 202608290003 through 202608290006, closing "Needs from
+schema, challenges" below for COMM-201 to COMM-208. `challenges`,
+`challenge_teams`, `challenge_participants`, and `challenge_progress`
+themselves, and their direct-RLS create/edit/join/leave paths, still date to
+202608280009 (COMM-006) - nothing here changes that grant shape. What
+follows is the read shape and the write paths RLS could not express as a
+plain own-row policy.
+
+### challenge_progress_view composite type
+
+Shipped in 202608290003. `(challenge_id uuid, challenge_type text, title
+text, ends_at timestamptz, my_progress numeric, my_status text, target_value
+numeric, participant_count integer, club_total numeric, team_totals jsonb,
+leaderboard jsonb)`. A field that does not apply to the challenge's type is
+null, never zeroed, so the client can tell "not applicable" from "genuinely
+zero" (an empty cooperative pool is `club_total = 0`; a non-cooperative
+challenge is `club_total = null`).
+
+- `club_total` populated only for `cooperative`: the sum of every
+  `challenge_progress.delta` row on the challenge, not `challenge_participants
+  .progress_value`, so a departed member's earlier contributions stay in the
+  aggregate (COMM-203).
+- `team_totals` populated only for `team`: `[{team_id, name, total}]`, one
+  entry per `challenge_teams` row, `total` summed from
+  `challenge_progress.delta` grouped by `challenge_progress.team_id` - see
+  the new column below, not from the live `challenge_participants.team_id`,
+  for the same "a departed member's history should not vanish" reason
+  COMM-204 states explicitly for team totals. Sorted by team name.
+- `leaderboard` populated only for `individual_performance` and `coach`: top
+  20 `challenge_participants` by `progress_value` descending, each entry
+  filtered by `can_view_profile_field(member, 'in_leaderboards')` and a block
+  edge in either direction with the caller, same privacy predicate the
+  Phase 2 feed leaderboard is specified to use. Shape assumption, flagged
+  because `feed_leaderboard` (COMM-210/211/212) is not built yet at the time
+  this landed, still listed under "Needs from schema, feed (Phase 2)": each
+  element is `{user_id, name, handle, avatar_url, value}` rather than
+  `feed_leaderboard`'s richer `leaderboard_row` (which also carries `rank`
+  and `is_self`). `name` falls back display_name -> handle, same as the feed
+  card contract. If/when `feed_leaderboard` lands this can widen to match it
+  without breaking a client reading the fields already here.
+- `my_progress` / `my_status` are null, not zero/`'active'`, when the caller
+  has no `challenge_participants` row for this challenge - a non-participant
+  can still read every other field.
+- `participant_count` counts `challenge_participants` rows with
+  `status <> 'withdrawn'`.
+
 ### chal_progress(challenge_id uuid) returns challenge_progress_view
 
-- Purpose: personal, team, and club progress for one challenge, one shape for
-  every `challenge_type` so COMM-207's detail view calls one function
+- Shipped in 202608290003. The documented-but-never-built Phase 1 stub, now
+  real.
+- Purpose: personal, team, and club progress for one challenge, one shape
+  for every `challenge_type`, so COMM-207's detail view calls one function
   regardless of type.
-- Auth: caller must be a club member. Team split visible to participants.
-- Not shipped. See "Needs from schema, challenges" below for the composite
-  type and every Phase 2 write path COMM-201 to COMM-208 need.
+- Auth: security definer, raises `not authorized` for a null caller and for
+  a caller with no live role (`my_role_code() is null`) - this is the
+  "club member" gate, deliberately looser than `is_community_member()`
+  because this is a read and read paths are not gated behind the recovery
+  write requirement. A `draft` challenge raises `challenge not found` for
+  anyone but its creator or a `community.challenge.create` holder, matching
+  `challenges_read`.
+- Side effects: none.
+
+### challenge_progress new columns (202608290003, 202608290005)
+
+- `team_id uuid references challenge_teams(id) on delete set null`: snapshot
+  of the contributor's `challenge_participants.team_id` at insert time,
+  written by a BEFORE INSERT trigger (`challenge_progress_stamp_team`), not
+  by the client. `challenge_progress` had no team_id of its own and
+  `challenge_participants` rows are deleted on leave (COMM-006's existing
+  leave policy), so without a snapshot a departed member's historical
+  contributions would have no team to be attributed to once their
+  participant row was gone. Once stamped it never changes, even if the
+  member later switches teams while still active - append-only, same as
+  every other column on this table.
+- `note text`, capped at 500 chars, and `entered_by uuid references
+  profiles(id) on delete set null`: COMM-206's coach entry form attaches a
+  short note to a logged delta, and needs to say who logged it (the coach)
+  separately from who it is for (`user_id`, the participant). A self-insert
+  under `challenge_progress_insert_self` must leave `entered_by` null - that
+  policy (drop-and-recreate of the 202608280009 one) now checks
+  `entered_by is null` in addition to its original three predicates, so only
+  `chal_record_progress` (below), which runs past this policy entirely, can
+  ever set it. Without that check a self-insert could otherwise forge
+  `entered_by` to any uuid and the column would stop reliably meaning
+  "a coach logged this on my behalf."
+
+### challenge_progress_apply trigger (AFTER INSERT on challenge_progress)
+
+- Shipped in 202608290004.
+- Purpose: the client's insert grant on `challenge_progress` (COMM-006) is
+  append-only and never touches `challenge_participants.progress_value` -
+  the running total is server-derived, not client-summed. This trigger adds
+  `NEW.delta` to the matching participant row's `progress_value` and, for
+  `individual_target` and `individual_performance` challenges only, flips
+  `status` to `completed` and stamps `completed_at` the first time the new
+  total reaches `target_value`. It never lowers a completed status back to
+  active on a later negative correction: the flip only ever fires from a
+  not-yet-completed row, so once set, status is left exactly as it was on
+  every later insert, matching the append-only "correct with a compensating
+  delta" model 202608280009 already documents for the table. `consistency`
+  and `team` are not in the auto-complete list - COMM-205's week-tracking
+  and COMM-204's per-team totals do not ask for it, and my_status there stays
+  whatever the participant row already carries.
+- Auth: security definer (bypasses `challenge_participants_update_self` and
+  `posts_insert_self`, both on purpose - see the milestone post below).
+- Side effects, cooperative only: recomputes `club_total`
+  (`sum(challenge_progress.delta)` for the challenge) and, for each of
+  25/50/75/100 whose percentage of `target_value` the new total newly
+  reaches, posts one authorless milestone update the first time - see next.
+  A single contribution that jumps past more than one threshold at once
+  (for example 20% -> 80%) posts once for every newly-crossed threshold in
+  that same transaction, not just the highest. A `select ... for update` on
+  the `challenges` row at the top of the trigger serializes concurrent
+  progress inserts on the same challenge, so two contributions landing at
+  the same instant cannot both decide "not posted yet" and double-post.
+- Cooperative milestone post, authorless-post pattern: no dedicated insert
+  site for `POST_SYSTEM` or `POST_NEW_MEMBER` exists anywhere in the
+  migration history to copy - grepping for both turns up only the enum
+  labels and the 202608280004 comment saying `workout_posts.author_id` is
+  nullable "for the authorless POST_SYSTEM and POST_NEW_MEMBER rows
+  COMM-107 renders." COMM-107 was never built as a server insert. The
+  nearest real precedent is `post_create` (202608280023): SECURITY DEFINER,
+  inserting into `workout_posts` directly past `posts_insert_self` because
+  that policy requires `author_id = auth.uid()` and a server-authored row
+  has none. This trigger follows the same shape - SECURITY DEFINER, direct
+  insert, `author_id = null`, `post_type = 'POST_CHALLENGE'` (already in the
+  enum since 202608280004, no add-value-then-use split needed). "Already
+  posted this threshold" is answered by querying `workout_posts` itself (a
+  `POST_CHALLENGE` row already carrying that `challenge_id` and that
+  `milestone` in its `metadata`) rather than a second piece of state that
+  could drift from what was actually posted. `metadata` carries
+  `challenge_id` and `challenge_title` (the two keys the POST_CHALLENGE
+  client card contract already names) plus `milestone`, `club_total`, and
+  `target_value`.
+
+### chal_record_progress(p_challenge_id uuid, p_user_id uuid, p_delta numeric, p_note text) returns uuid
+
+- Shipped in 202608290005.
+- Purpose: the coach-entry path for a `coach` challenge type (COMM-206) -
+  the only write path for progress a member did not log on their own.
+  `challenge_progress_insert_self` only ever allows `user_id = auth.uid()`,
+  so this is a security definer function, the same reasoning
+  `add_post_comment` uses over a plain own-row policy.
+- Auth: security definer. Raises `not authorized` for a null caller or one
+  without `community.challenge.create`, `challenge and target participant
+  are required` for a null id, `delta is required` for a null delta,
+  `not an active participant` when `p_user_id` has no `challenge_participants`
+  row on `p_challenge_id` with `status = 'active'`. No `check_rate_limit`
+  call - matches the other permission-gated staff functions in this history
+  (`pin_set`, `mod_restrict_member`, `mod_review`), none of which rate-limit
+  on top of their permission check, and `challenge_progress_insert_self`
+  itself has never been rate limited either.
+- Side effects: one `challenge_progress` row, `source_type = 'coach_entry'`,
+  `note` trimmed and capped at 500 chars (empty string stored as null),
+  `entered_by` the calling coach. `challenge_progress_apply` and
+  `challenge_progress_stamp_team` both still fire on this insert exactly as
+  they do on a self-insert.
+
+### challenges.ending_soon_notified_at timestamptz + chal_notify_ending_soon() returns integer
+
+- Shipped in 202608290006.
+- Purpose: `challenge_ending_soon`, sent once per challenge (not once per
+  participant) to every joined active participant.
+- Auth: security definer, same shape as `notif_batch_flush_due`: **grant
+  execute to `service_role` only**, revoked from public, anon, and
+  authenticated.
+- Selects `challenges` where `status = 'active'`, `ending_soon_notified_at`
+  is null, and `end_at` is between now and 48 hours from now. For each,
+  calls `notif_create(participant, 'challenge_ending_soon', 'challenges',
+  ..., 'challenge', challenge_id, '/community/boards?challenge=<id>')` for
+  every `challenge_participants` row with `status = 'active'`, then stamps
+  `ending_soon_notified_at`. Returns the count of `notifications` rows
+  actually written (some may be suppressed by `notif_create`'s own filters).
+  A second call after the column is stamped selects nothing for that
+  challenge and writes nothing - this is what keeps the send to "at most
+  once per `(challenge_id, user_id)` pair" without a per-user flag, per
+  COMM-208's validation rule.
+- SCHEDULER is not built here, same open item as the notification batch
+  flusher: needs a `pg_cron` entry or a scheduled Edge Function once one
+  exists for either. Until then `chal_notify_ending_soon()` has to be called
+  by hand or from a one-off script.
+
+### notif_on_challenge_join (AFTER INSERT on challenge_participants)
+
+- Shipped in 202608290006.
+- `notif_queue_batched(other, 'challenges', 'challenge_update',
+  challenge_id)` for every other `challenge_participants` row on the same
+  challenge with `status = 'active'`, guarded by `notif_blocked_between` and
+  `notif_pref_allows(..., 'challenge_update')` - the same two checks
+  `notif_on_reaction` uses before it enqueues. Never immediate. The joiner
+  never receives a row about their own join, because the fan-out query
+  excludes `cp.user_id = new.user_id`.
+
+### notif_on_challenge_complete (AFTER UPDATE OF status on challenge_participants)
+
+- Shipped in 202608290006. Same batched `challenge_update` fan-out to every
+  other active participant, fired on the transition into `completed`.
+- The trigger declaration fires on any UPDATE that includes `status` in its
+  SET list, which `challenge_progress_apply`'s UPDATE always does even when
+  the value does not actually change - so the function itself re-checks
+  `new.status = 'completed' and old.status <> 'completed'` before doing
+  anything, rather than relying on the trigger firing only on a real
+  transition. The completer is excluded from the fan-out the same way the
+  join trigger excludes the joiner (`cp.user_id <> new.user_id`) - they get
+  a client-side celebration, never a notification about their own
+  completion.
 
 ## Needs from schema, challenges
 
-Functions and columns the Phase 2 challenges cluster (COMM-201 to COMM-208)
-needs and that schema still owns. `challenges`, `challenge_teams`,
-`challenge_participants`, and `challenge_progress` themselves shipped in
-202608280009 (COMM-006) with direct RLS grants already open to
-`authenticated`; creating, editing, joining, and leaving a challenge are
-direct RLS writes under the existing policies, no new function. What is
-missing is the read shape and the write paths RLS cannot express as a plain
-own-row policy.
-
-- `challenge_progress_view` composite type:
-  `(challenge_id uuid, challenge_type text, title text, ends_at timestamptz,
-  my_progress numeric, my_status text, target_value numeric, participant_count
-  integer, club_total numeric, team_totals jsonb, leaderboard jsonb)`.
-  `club_total` is populated for `cooperative`, `team_totals` for `team`
-  (`[{team_id, name, total}]`), `leaderboard` for `individual_performance` and
-  `coach` (top 20 by `progress_value`, same shape as `feed_leaderboard`'s
-  row). Fields that do not apply to the challenge's type are null, not
-  zeroed, so the client can tell "not applicable" from "genuinely zero".
-- `challenge_progress` trigger (`challenge_progress_apply`, AFTER INSERT):
-  the client's insert grant on `challenge_progress` (COMM-006) is append-only
-  and does not touch `challenge_participants.progress_value`, on purpose —
-  the running total has to be server-derived, not client-summed. This
-  trigger adds `NEW.delta` to the matching `challenge_participants` row's
-  `progress_value`, and for `individual_target` and `individual_performance`
-  challenges, flips `status` to `completed` and stamps `completed_at` the
-  first time `progress_value >= target_value`. It never lowers a completed
-  status back to active on a later negative correction, matching the
-  append-only "correct with a compensating delta" model already documented
-  for the table.
-- `chal_record_progress(p_challenge_id uuid, p_user_id uuid, p_delta numeric,
-  p_note text) returns uuid` (COMM-206). The coach-entry path for a `coach`
-  challenge type: the existing `challenge_progress_insert_self` policy only
-  allows `user_id = auth.uid()`, so a coach logging progress on behalf of a
-  participant needs a security definer function. Requires
-  `community.challenge.create`. Refuses a target who is not an active
-  participant. Writes one `challenge_progress` row with `source_type =
-  'coach_entry'`.
-- Cooperative milestone post: an AFTER INSERT trigger on `challenge_progress`
-  (or a check inside `challenge_progress_apply`) that, for a `cooperative`
-  challenge whose `club_total` newly crosses 25/50/75/100% of `target_value`,
-  calls `post_create`-equivalent logic to post one milestone update. This
-  needs a design decision from schema on the authorless-post path;
-  `workout_posts.author_id` is nullable (COMM-107 already ships POST_SYSTEM
-  and POST_NEW_MEMBER with no author), so the milestone post is `author_id =
-  null`, `post_type = 'POST_CHALLENGE'`.
-- `challenges.ending_soon_notified_at timestamptz` column plus
-  `chal_notify_ending_soon() returns integer`, service-role only, the same
-  shape as `notif_batch_flush_due`: selects active challenges ending within
-  48 hours with `ending_soon_notified_at` still null, calls `notif_create`
-  for every active participant, stamps `ending_soon_notified_at`. SCHEDULER
-  is not built here, same open item as the notification batch flusher —
-  needs a `pg_cron` entry or a scheduled Edge Function once one exists for
-  either. See "Needs from schema, notifications (Phase 2)" for the trigger
-  set around `challenge_update`.
+Closed. See "## Challenges" above.
 
 ## Events
 
@@ -1105,19 +1250,11 @@ Phase 1 trigger set (`notif_on_comment`, `notif_on_mention`,
 new trigger of the same shape or a small predicate change inside an existing
 one.
 
-- `notif_on_challenge_join` (AFTER INSERT on `challenge_participants`):
-  `notif_queue_batched(p, 'challenges', 'challenge_update', challenge_id)`
-  for every other active participant, guarded by the existing block-edge and
-  preference checks. Never immediate.
-- `notif_on_challenge_complete` (AFTER UPDATE OF status on
-  `challenge_participants`, `new.status = 'completed'`): same
-  `challenge_update` batched fan-out to the other active participants. The
-  completer gets no notification about their own completion; the client
-  celebrates locally the same way COMM-134 does for achievements.
-  Attendance-blocked: no.
-- `chal_notify_ending_soon()`: immediate `challenge_ending_soon` per joined
-  active participant. See "Needs from schema, challenges" for the column and
-  scheduler note.
+The challenges-specific part of this list (COMM-208) shipped in 202608290006:
+`notif_on_challenge_join`, `notif_on_challenge_complete`, and
+`chal_notify_ending_soon()` plus `challenges.ending_soon_notified_at` are
+documented under "## Challenges" above, not here.
+
 - `notif_on_event_cancelled`: immediate `event_cancelled`. See "Needs from
   schema, events".
 - `notif_is_operational` widens from `announcements.important` to
