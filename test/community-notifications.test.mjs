@@ -431,6 +431,19 @@ test("the panel notes that operational announcements always show in-app", async 
   assert.match(panel.textContent, /הודעות תפעוליות מהמועדון תמיד יופיעו/);
 });
 
+// ===== COMM-219 announcements row states the important/urgent bypass ==
+
+test("the announcements row states plainly that important/urgent still reach a member who turned it off", async () => {
+  const mock = seeded([]);
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openAccount(window);
+  const toggle = window.document.querySelector('[data-community-action="notif-pref"][data-type="announcements"]');
+  const row = toggle.closest(".log-row");
+  assert.match(row.textContent, /חשוב/, "mentions the important tier");
+  assert.match(row.textContent, /דחוף/, "mentions the urgent tier");
+  assert.match(row.textContent, /כבוי/, "makes clear this applies even when the toggle is off");
+});
+
 // ===== push path is feature-flagged off ==============================
 
 test("no push subscription is created and push stays disabled in V1", async () => {

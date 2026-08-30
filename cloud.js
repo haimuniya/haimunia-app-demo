@@ -4429,6 +4429,10 @@
 
   // The Preferences panel in Account lists exactly these, in this order
   // (COMM-144). Defaults: everything in_app (a missing row means in_app).
+  // `note`, when present, is a short caveat rendered under the row's label -
+  // used by COMM-219 so "כבוי" on `announcements` does not read as "silences
+  // everything": important/urgent announcements are operational
+  // (`notif_is_operational`) and always land in-app regardless of this row.
   const NOTIF_PREF_TYPES = [
     { key: "comments",            label: "תגובות על הפוסטים שלי" },
     { key: "replies",             label: "תגובות לתגובות שלי" },
@@ -4438,7 +4442,7 @@
     { key: "friend_achievements", label: "הישגים של חברים" },
     { key: "challenges",          label: "אתגרים" },
     { key: "events",              label: "אירועים" },
-    { key: "announcements",       label: "הודעות מהמועדון" },
+    { key: "announcements",       label: "הודעות מהמועדון", note: "הודעות ברמת ❗ חשוב ו-🚨 דחוף יגיעו אליכם גם כשזה כבוי." },
     { key: "weekly_recap",        label: "סיכום שבועי" },
   ];
   const NOTIF_PREF_KEYS = new Set(NOTIF_PREF_TYPES.map((t) => t.key));
@@ -4921,8 +4925,10 @@
       const saving = !!state.notifPrefSaving[t.key];
       const btn = (ch, label, disabled) =>
         `<button type="button" class="chip-btn${eff === ch ? " primary" : ""}" data-community-action="notif-pref" data-type="${t.key}" data-channel="${ch}"${(disabled || saving) ? " disabled" : ""}${disabled ? ' aria-disabled="true" title="בקרוב"' : ""}>${label}</button>`;
+      const noteHtml = t.note ? `<span style="color:var(--steel);font-size:11px;">${safeText(t.note)}</span>` : "";
       return `<div class="log-row" style="flex-direction:column;align-items:stretch;gap:6px;">
         <span style="font-size:13px;">${safeText(t.label)}</span>
+        ${noteHtml}
         <div class="chip-row" role="group" aria-label="${safeText(t.label)}" style="margin-top:0;">
           ${btn("push", "התראת דחיפה · בקרוב", true)}
           ${btn("in_app", "באפליקציה", false)}
