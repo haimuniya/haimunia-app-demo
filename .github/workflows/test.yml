@@ -45,11 +45,6 @@ jobs:
         # on the first migration that doesn't apply cleanly, so a broken
         # migration is caught here instead of against the real project.
       - run: supabase test db
-        continue-on-error: true
-        # Advisory until the pgTAP suite is green. It cannot run locally on
-        # a machine without Docker, so CI is its first execution and it is
-        # still being debugged. Flip continue-on-error off once it passes.
-        #
         # Runs the pgTAP suite in supabase/tests/ against that same stack.
         # Each NNNN_slug_test.sql impersonates two auth users in one
         # transaction and asserts RLS allow or deny for real, per the

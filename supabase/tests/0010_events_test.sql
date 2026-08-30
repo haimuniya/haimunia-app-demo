@@ -26,6 +26,12 @@ select lives_ok(
 insert into public.events (id, title, event_type, start_at, status, created_by)
   values ('e0100000-0000-4000-8000-000000000002', 'Draft', 'workshop',
           now() + interval '2 days', 'draft', tests.uid('coach'));
+-- Published and uncapped, so the "no recovery method" RSVP assertion
+-- below can hit an RLS rejection without also colliding with the
+-- capacity-1 event's own trigger test further down this file.
+insert into public.events (id, title, event_type, start_at, status, created_by)
+  values ('e0100000-0000-4000-8000-000000000006', 'Published, open capacity', 'workshop',
+          now() + interval '2 days', 'published', tests.uid('coach'));
 
 -- --- draft visibility --------------------------------------
 select tests.set_auth(tests.uid('m1'));
@@ -57,7 +63,7 @@ select lives_ok(
 select tests.set_auth(tests.uid('norec'));
 select throws_ok(
   $$ insert into public.event_attendees (event_id, user_id, response)
-     values ('e0100000-0000-4000-8000-000000000001', tests.uid('norec'), 'going') $$,
+     values ('e0100000-0000-4000-8000-000000000006', tests.uid('norec'), 'going') $$,
   '42501',
   null,
   'a member with no recovery method cannot RSVP');
