@@ -402,6 +402,41 @@ export function createMockSupabase(seedTables = {}) {
           c.edited_at = new Date().toISOString();
           return Promise.resolve({ data: null, error: null });
         }
+        // COMM-213..217. A faithful stand-in for public.event_rsvp()
+        // (202608280010): capacity and deadline are enforced here exactly
+        // as the real enforce_event_capacity() trigger enforces them - the
+        // going count excludes the row being written (so a going->going
+        // update on a full event stays idempotent, per COMM-214), and
+        // deadline/capacity are both real-time checks against the mock's
+        // clock, not a precomputed flag. This is a built-in (not a
+        // per-test onRpc(), unlike post_create) because the capacity race
+        // and deadline enforcement tests need the real branching logic,
+        // not a canned response.
+        if (name === "event_rsvp") {
+          if (!currentUser) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          const eventId = args && args.p_event_id;
+          const response = args && args.p_response;
+          if (!["going", "interested", "not_going"].includes(response)) {
+            return Promise.resolve({ data: null, error: { message: `unknown rsvp response ${response}` } });
+          }
+          const event = rows("events").find((e) => e.id === eventId);
+          if (!event || event.status !== "published") {
+            return Promise.resolve({ data: null, error: { message: "event not open for rsvp" } });
+          }
+          if (response === "going") {
+            if (event.registration_deadline && new Date() > new Date(event.registration_deadline)) {
+              return Promise.resolve({ data: null, error: { message: "registration_closed" } });
+            }
+            if (event.capacity != null) {
+              const going = rows("event_attendees").filter((a) => a.event_id === eventId && a.response === "going" && a.user_id !== currentUser.id).length;
+              if (going >= event.capacity) return Promise.resolve({ data: null, error: { message: "event_full" } });
+            }
+          }
+          const existing = rows("event_attendees").find((a) => a.event_id === eventId && a.user_id === currentUser.id);
+          if (existing) { existing.response = response; existing.registered_at = new Date().toISOString(); }
+          else rows("event_attendees").push({ event_id: eventId, user_id: currentUser.id, response, registered_at: new Date().toISOString() });
+          return Promise.resolve({ data: null, error: null });
+        }
         if (name === "can_view_profile_field") {
           const target = args && args.p_target;
           const field = args && args.p_field;

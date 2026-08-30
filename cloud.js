@@ -65,7 +65,18 @@
     // a repeated WORKOUT_COMPLETED burst within the same week cannot log
     // twice. Never persisted - a real attendance source replaces this
     // client-side tally entirely (COMM-306, Phase 3).
-    _consistencyWeekLogged: {}, _consistencySessionCounts: {} };
+    _consistencyWeekLogged: {}, _consistencySessionCounts: {},
+    // COMM-213..217 events cluster. state.events holds every `events` row
+    // the caller may see (events_read already scopes out a draft that is
+    // not theirs), sorted soonest start_at first. eventsById is the same
+    // rows keyed by id, read both by the POST_EVENT card upgrade and by the
+    // feed top-area card. eventAttendees is every event_attendees row the
+    // caller may see (event_attendees_read's own show_in_attendee_lists
+    // filter already applies), keyed by event_id, which is what both the
+    // going count and the attendee list read. eventView is the open detail
+    // dialog; eventForm is the staff create/edit dialog.
+    events: [], eventsById: {}, eventsLoaded: false, eventsLoading: false, eventsError: false,
+    eventAttendees: {}, eventView: null, eventForm: null };
   const photoUrlCache = {};
 
   // COMM-141. The notification badge refreshes on a realtime own-row
@@ -187,7 +198,7 @@
       // below it writes instead of dropping.
       ensureAnalyticsConfigured();
       await loadRedemption();
-      await Promise.all([loadProfile(), loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadChallenges()]);
+      await Promise.all([loadProfile(), loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadChallenges(), loadEvents()]);
       if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers()]);
       if (hasPerm(PERM.COMMENT_MODERATE) || isAdmin()) await loadModQueue();
       // Push pending local edits before pulling the remote copy - without
@@ -1639,6 +1650,7 @@
     else if (c.action === "composer-discard") closeComposer();
     else if (c.action === "leave-challenge") leaveChallenge(c.payload.challengeId);
     else if (c.action === "challenge-delete-draft") deleteChallengeDraft(c.payload.challengeId);
+    else if (c.action === "event-cancel") cancelEvent(c.payload.eventId);
     else rerender();
   }
 
@@ -2239,8 +2251,29 @@
       <div class="chip-row"><button class="chip-btn" data-community-action="open-challenge" data-id="${safeText(m.challenge_id || post.source_id || "")}">פתיחת האתגר</button></div>`;
     return postCardShell(post, inner, { authorless: !postAuthorName(post) });
   }
+  // COMM-213: upgraded from the COMM-101 fallback link card to a real event
+  // card, once the events cluster's own state.eventsById has the live row
+  // (it is loaded in the same Promise.all as the feed, so this is the
+  // common case). Falls back to the original metadata-only link card when
+  // the event is not in cache yet (a cold feed load racing loadEvents()) or
+  // no longer exists - a truthful degrade, never a broken render.
   function renderEventLinkCard(post) {
     const m = post.metadata || {};
+    const ev = m.event_id ? state.eventsById[m.event_id] : null;
+    if (ev) {
+      const going = eventGoingCount(ev.id);
+      const meta = [eventTypeBadge(ev.event_type), formatEventDate(ev.start_at), formatEventTime(ev.start_at)];
+      if (ev.location) meta.push(ev.location);
+      meta.push(`${going} משתתפים`);
+      if (ev.status === "cancelled") meta.push("בוטל");
+      const image = ev.image_url ? `<img src="${safeText(ev.image_url)}" alt="" style="width:100%;max-height:160px;object-fit:cover;border-radius:10px;margin-top:6px;"/>` : "";
+      const inner = `<div class="post-title">📅 ${safeText(ev.title)}</div>
+        <div style="color:var(--steel);font-size:12px;">${meta.map(safeText).join(" · ")}</div>
+        ${image}
+        ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${safeText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
+        <div class="chip-row"><button class="chip-btn" data-community-action="open-event" data-id="${safeText(ev.id)}">פתיחת האירוע</button></div>`;
+      return postCardShell(post, inner, { authorless: !postAuthorName(post) });
+    }
     const when = m.starts_at ? String(m.starts_at).slice(0, 16).replace("T", " ") : "";
     const inner = `<div class="post-title">📅 ${safeText(m.event_title || post.title || "אירוע")}</div>
       ${when ? `<div style="color:var(--steel);font-size:12px;">${safeText(when)}</div>` : ""}
@@ -3072,6 +3105,564 @@
           </div>
           ${bodyHtml}
         </div>
+      </div>
+    </div>`;
+  }
+
+  // ---- Events (COMM-213..217) ----------------------------------------------
+  // Generalizes the COMM-101 fallback (a plain link card pointing nowhere
+  // real) into the full events module: Upcoming/Past list, a create/edit
+  // form gated on community.event.manage, a detail dialog with
+  // server-enforced RSVP (event_rsvp, 202608280010), type badges, a
+  // client-built .ics download, and a comment thread that reuses the whole
+  // engagement stack through a companion POST_EVENT post - see
+  // ensureEventCompanionPost() below and "Needs from schema, events" in
+  // docs/community/contracts.md for the design decision.
+  const EVENT_TYPES = [
+    { id: "workshop", label: "סדנה", icon: "🛠️" },
+    { id: "competition", label: "תחרות", icon: "🏆" },
+    { id: "social_night", label: "ערב חברתי", icon: "🎉" },
+    { id: "outdoor_workout", label: "אימון בחוץ", icon: "🌳" },
+    { id: "running_meetup", label: "מפגש ריצה", icon: "🏃" },
+    { id: "holiday_event", label: "אירוע חג", icon: "🎊" },
+    { id: "seminar", label: "הרצאה", icon: "🎓" },
+    { id: "community_event", label: "אירוע קהילתי", icon: "🤝" },
+    { id: "other", label: "אחר", icon: "📌" },
+  ];
+  function eventTypeDef(id) { return EVENT_TYPES.find((t) => t.id === id) || { id, label: id || "", icon: "📅" }; }
+  function eventTypeBadge(id) { const d = eventTypeDef(id); return `${d.icon} ${d.label}`; }
+  // Deliberately a bare string slice, not a Date().toLocaleString() call:
+  // the value already carries no timezone ambiguity worth resolving here
+  // (matches formatChallengeDate's same choice) and stays deterministic
+  // under test.
+  function formatEventDate(iso) { return iso ? String(iso).slice(0, 10) : ""; }
+  function formatEventTime(iso) { return iso ? String(iso).slice(11, 16) : ""; }
+  function eventStatusLabel(e) { return { draft: "טיוטה", published: "פורסם", cancelled: "בוטל", past: "הסתיים" }[e && e.status] || ""; }
+  // Upcoming/Past split (COMM-213): "split on status and start_at" means
+  // both together, not either alone - a published event whose start_at has
+  // passed reads as Past even though nothing ever flips its status, and a
+  // cancelled event always reads as Past regardless of when it was to
+  // start, per the ticket's "moves out of Upcoming, stays visible in Past
+  // marked cancelled".
+  function isUpcomingEvent(e) { return !!e && e.status === "published" && !!e.start_at && new Date(e.start_at).getTime() > Date.now(); }
+  function isPastEvent(e) { return !!e && (e.status === "past" || e.status === "cancelled" || (e.status === "published" && !isUpcomingEvent(e))); }
+  function eventAttendeeRows(id) { return state.eventAttendees[id] || []; }
+  // COMM-213/214. Read straight off the event_attendees rows RLS actually
+  // handed back for the caller - event_attendees_read (202608280010)
+  // already excludes another member's row when they opted out of
+  // show_in_attendee_lists, so a going count computed here can undercount
+  // relative to the server's own capacity trigger for a plain member. That
+  // is an accepted, schema-owned trade-off (informational count vs. the
+  // trigger's own authoritative, unfiltered count), not something this
+  // cluster papers over.
+  function eventGoingCount(id) { return eventAttendeeRows(id).filter((r) => r.response === "going").length; }
+  function myEventResponse(id) {
+    const row = eventAttendeeRows(id).find((r) => r.user_id === (state.user && state.user.id));
+    return row ? row.response : null;
+  }
+  function eventRegistrationClosed(e) { return !!(e && e.registration_deadline && new Date(e.registration_deadline).getTime() < Date.now()); }
+  // A going->going update on a full event stays enabled (COMM-214's
+  // idempotence rule): only disable Going for someone who is not already
+  // going.
+  function eventIsFull(e) { return !!(e && e.capacity != null && eventGoingCount(e.id) >= e.capacity && myEventResponse(e.id) !== "going"); }
+
+  async function loadEvents() {
+    if (!state.user) { state.events = []; state.eventsById = {}; state.eventAttendees = {}; state.eventsLoaded = false; return; }
+    state.eventsLoading = true;
+    rerender();
+    const { data, error } = await client.from("events").select("*").order("start_at", { ascending: true });
+    if (error) { state.eventsLoading = false; state.eventsError = true; return rerender(); }
+    state.events = data || [];
+    state.eventsById = {};
+    for (const e of state.events) state.eventsById[e.id] = e;
+    state.eventsError = false;
+    const ids = state.events.map((e) => e.id);
+    state.eventAttendees = {};
+    if (ids.length) {
+      const { data: rows, error: aErr } = await client.from("event_attendees")
+        .select("event_id,user_id,response,registered_at,profiles(display_name,handle,avatar_url)")
+        .in("event_id", ids);
+      if (!aErr) for (const row of (rows || [])) (state.eventAttendees[row.event_id] = state.eventAttendees[row.event_id] || []).push(row);
+    }
+    state.eventsLoading = false;
+    state.eventsLoaded = true;
+    rerender();
+  }
+
+  // ---- List (COMM-213) ------------------------------------------------------
+  function eventCardImageHtml(e) {
+    return e.image_url
+      ? `<img src="${safeText(e.image_url)}" alt="" style="width:56px;height:56px;border-radius:12px;object-fit:cover;"/>`
+      : `<span aria-hidden="true" style="width:56px;height:56px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:24px;background:var(--border);">${eventTypeDef(e.event_type).icon}</span>`;
+  }
+  function renderEventCard(e) {
+    const going = eventGoingCount(e.id);
+    const mine = myEventResponse(e.id);
+    const cancelled = e.status === "cancelled";
+    const meta = [eventTypeBadge(e.event_type), formatEventDate(e.start_at), formatEventTime(e.start_at)];
+    if (e.location) meta.push(e.location);
+    meta.push(`${going} משתתפים`);
+    if (e.status === "draft") meta.push(eventStatusLabel(e));
+    if (cancelled) meta.push("בוטל");
+    const mineLabel = mine === "going" ? "הולכ/ת" : mine === "interested" ? "מעוניינ/ת" : mine === "not_going" ? "לא הולכ/ת" : "";
+    return `<article class="chart-card" data-event-id="${safeText(e.id)}" data-event-status="${safeText(e.status)}" style="margin-bottom:10px;${cancelled ? "opacity:.7;" : ""}">
+      <div class="flex gap-10" style="align-items:flex-start;">
+        ${eventCardImageHtml(e)}
+        <div style="flex:1;min-width:0;">
+          <button class="link-btn" data-community-action="open-event" data-id="${safeText(e.id)}" style="padding:0;text-align:right;font-weight:800;font-size:15px;color:inherit;display:block;">${safeText(e.title)}</button>
+          <div style="color:var(--steel);font-size:11.5px;margin-top:2px;">${meta.map(safeText).join(" · ")}</div>
+        </div>
+      </div>
+      <div class="chip-row" style="margin-top:8px;">
+        <button class="chip-btn" data-community-action="open-event" data-id="${safeText(e.id)}">פרטים</button>
+        ${mineLabel ? `<span class="admin-tag" style="background:var(--brass);">${mineLabel}</span>` : ""}
+      </div>
+    </article>`;
+  }
+  function renderEventsListSection() {
+    const staff = hasPerm(PERM.EVENT_MANAGE);
+    const upcoming = state.events.filter((e) => isUpcomingEvent(e) || (staff && e.status === "draft"));
+    const past = state.events.filter(isPastEvent).slice().sort((a, b) => (a.start_at < b.start_at ? 1 : -1));
+    const createBtn = staff ? `<button class="chip-btn primary" data-community-action="open-event-form" style="margin-bottom:10px;">אירוע חדש</button>` : "";
+    const list = (state.eventsLoading && !state.eventsLoaded)
+      ? `<div aria-busy="true">${`<div class="chart-card" style="height:64px;background:var(--border);opacity:.35;margin-bottom:10px;"></div>`.repeat(2)}</div>`
+      : state.eventsError
+      ? `<div class="empty">לא ניתן היה לטעון את האירוע. נסו שוב.<div class="chip-row" style="justify-content:center;"><button class="chip-btn" data-community-action="events-retry">ניסיון חוזר</button></div></div>`
+      : upcoming.length ? upcoming.map(renderEventCard).join("") : `<div class="empty">אין אירועים קרובים כרגע.</div>`;
+    const pastHtml = past.length ? `<div style="margin-top:16px;"><div class="field-label" style="margin-bottom:6px;">אירועים שהסתיימו</div>${past.map(renderEventCard).join("")}</div>` : "";
+    return `<div class="ach-section">${sectionHead("var(--blue)", "אירועי המועדון")}${createBtn}${state.eventForm ? renderEventForm() : ""}${list}${pastHtml}</div>`;
+  }
+
+  // ---- Create/edit form (COMM-213) ------------------------------------------
+  function openEventForm(existing) {
+    state.eventForm = existing ? {
+      mode: "edit", id: existing.id, status: existing.status, eventType: existing.event_type,
+      title: existing.title, description: existing.description || "",
+      imageUrl: existing.image_url || "", location: existing.location || "", mapLink: existing.map_link || "",
+      startAt: existing.start_at ? String(existing.start_at).slice(0, 16) : "",
+      endAt: existing.end_at ? String(existing.end_at).slice(0, 16) : "",
+      capacity: existing.capacity != null ? String(existing.capacity) : "",
+      registrationDeadline: existing.registration_deadline ? String(existing.registration_deadline).slice(0, 16) : "",
+      saving: false, error: "",
+    } : {
+      mode: "create", id: null, status: "draft", eventType: "workshop",
+      title: "", description: "", imageUrl: "", location: "", mapLink: "",
+      startAt: "", endAt: "", capacity: "", registrationDeadline: "",
+      saving: false, error: "",
+    };
+    rerender();
+  }
+  function closeEventForm() { state.eventForm = null; setFieldErrors("communityEventForm", {}); rerender(); }
+  function setEventFormType(type) { if (state.eventForm && EVENT_TYPES.some((t) => t.id === type)) { state.eventForm.eventType = type; rerender(); } }
+  async function submitEventForm(form) {
+    const f = state.eventForm;
+    if (!f || f.saving) return;
+    const fd = new FormData(form);
+    const title = String(fd.get("title") || "").trim();
+    const description = String(fd.get("description") || "").trim();
+    const imageUrl = String(fd.get("imageUrl") || "").trim();
+    const location = String(fd.get("location") || "").trim();
+    const mapLink = String(fd.get("mapLink") || "").trim();
+    const startAt = String(fd.get("startAt") || "");
+    const endAt = String(fd.get("endAt") || "");
+    const capacityRaw = String(fd.get("capacity") || "").trim();
+    const deadlineRaw = String(fd.get("registrationDeadline") || "");
+    const errors = {};
+    if (title.length < 1 || title.length > 120) errors.title = "כותרת נדרשת, עד 120 תווים";
+    if (description.length > 4000) errors.description = "עד 4000 תווים";
+    if (location.length > 240) errors.location = "עד 240 תווים";
+    if (!startAt) errors.startAt = "יש לבחור תאריך ושעת התחלה";
+    if (endAt && startAt && new Date(endAt).getTime() < new Date(startAt).getTime()) errors.endAt = "תאריך הסיום חייב להיות אחרי ההתחלה";
+    if (capacityRaw && (!Number.isInteger(Number(capacityRaw)) || Number(capacityRaw) <= 0)) errors.capacity = "מספר שלם חיובי נדרש";
+    if (Object.keys(errors).length) return setFieldErrors("communityEventForm", errors);
+    setFieldErrors("communityEventForm", {});
+    f.saving = true; f.error = ""; rerender();
+    const payload = {
+      title, description, event_type: f.eventType,
+      image_url: imageUrl || null, location: location || null, map_link: mapLink || null,
+      start_at: new Date(startAt).toISOString(), end_at: endAt ? new Date(endAt).toISOString() : null,
+      capacity: capacityRaw ? Number(capacityRaw) : null,
+      registration_deadline: deadlineRaw ? new Date(deadlineRaw).toISOString() : null,
+    };
+    let error;
+    let publishNow = false;
+    if (f.mode === "create") {
+      payload.id = newFeedId();
+      payload.created_by = state.user.id;
+      publishNow = !!fd.get("publishNow");
+      payload.status = publishNow ? "published" : "draft";
+      ({ error } = await client.from("events").insert(payload));
+    } else {
+      ({ error } = await client.from("events").update(payload).eq("id", f.id));
+    }
+    f.saving = false;
+    if (error) { f.error = "לא ניתן היה לשמור את האירוע. נסו שוב."; return rerender(); }
+    // COMM-216. The companion post is created at the moment an event first
+    // becomes published, whether that is "publish now" on create or a later
+    // draft-to-published toggle (publishEventDraft, below) - never at draft
+    // save, since a draft has no attendees to discuss it with yet.
+    if (publishNow) await ensureEventCompanionPost(Object.assign({}, payload));
+    state.eventForm = null;
+    setMessage("האירוע נשמר");
+    await loadEvents();
+    rerender();
+  }
+  async function publishEventDraft(id) {
+    const { error } = await client.from("events").update({ status: "published" }).eq("id", id);
+    if (error) return setMessage("הפעולה נכשלה");
+    const event = state.eventsById[id];
+    if (event) await ensureEventCompanionPost(Object.assign({}, event, { status: "published" }));
+    state.eventForm = null;
+    setMessage("האירוע פורסם");
+    await loadEvents();
+    if (state.eventView && state.eventView.id === id) await refreshEventView(id);
+    rerender();
+  }
+  function confirmCancelEvent(id) {
+    askConfirm({ title: "ביטול אירוע", message: "כל מי שנרשם לאירוע (הולכים ומעוניינים) יקבל התראה על הביטול. הפעולה אינה ניתנת לביטול.", confirmLabel: "ביטול האירוע", destructive: true, action: "event-cancel", payload: { eventId: id } });
+  }
+  // The event_cancelled notification fan-out (notif_on_event_cancelled,
+  // 202608290009) is a server trigger on this exact UPDATE - nothing further
+  // to call from here.
+  async function cancelEvent(id) {
+    const { error } = await client.from("events").update({ status: "cancelled" }).eq("id", id);
+    if (error) return setMessage("הפעולה נכשלה");
+    setMessage("האירוע בוטל");
+    await loadEvents();
+    if (state.eventView && state.eventView.id === id) await refreshEventView(id);
+    rerender();
+  }
+
+  // ---- Companion post for comments (COMM-216) --------------------------------
+  // post_create's shipped signature (202608280023) already merges
+  // links.event_id into the new post's metadata, but it always writes
+  // POST_TEXT or POST_PHOTO - it has no "make this a POST_EVENT" switch
+  // (the same class of gap the challenges cluster found and documented for
+  // links.challenge_id, which post_create does not even carry a key for).
+  // event_id is different: the key genuinely IS merged into metadata
+  // today, so closing this gap does not need a schema change. The row
+  // post_create just inserted is authored by the caller
+  // (posts_insert_self requires author_id = auth.uid()), and
+  // posts_update_self (202608260001) already lets that same author update
+  // ANY column of their own row with no restriction - so the follow-up
+  // own-row RLS update below, from the post_create defaults straight to
+  // the POST_EVENT shape, is a legitimate use of an existing policy, not a
+  // bypass of one. contracts.md commits this cluster to zero schema
+  // change for events; this is how that commitment is kept while still
+  // giving the event a real POST_EVENT card instead of a plain POST_TEXT
+  // one.
+  //
+  // Guards against a duplicate post on a cancel -> republish -> cancel
+  // round trip or a double click on Publish: looks for an existing
+  // POST_EVENT row carrying this event_id before creating a second one.
+  // `events` itself carries no post_id column by design (see
+  // "Needs from schema, events" in contracts.md), so this lookup - not a
+  // stored pointer - is the source of truth for "does one already exist".
+  async function findEventCompanionPost(eventId) {
+    const { data, error } = await client.from("workout_posts").select("id,post_type,metadata").eq("post_type", "POST_EVENT");
+    if (error) return null;
+    return (data || []).find((r) => r.metadata && r.metadata.event_id === eventId) || null;
+  }
+  async function ensureEventCompanionPost(event) {
+    if (!event || !event.id) return null;
+    const existing = await findEventCompanionPost(event.id);
+    if (existing) return existing.id;
+    const body = (event.description ? String(event.description) : String(event.title || "")).slice(0, 1000);
+    const { data: postId, error } = await client.rpc("post_create", {
+      body, visibility: "club", media: [], links: { event_id: event.id },
+    });
+    if (error || !postId) return null;
+    await client.from("workout_posts").update({
+      post_type: "POST_EVENT",
+      metadata: { event_id: event.id, event_title: event.title, starts_at: event.start_at },
+    }).eq("id", postId);
+    return postId;
+  }
+
+  // ---- Detail (COMM-213/214/215/216) -----------------------------------------
+  async function openEvent(id, source) {
+    if (!id) return;
+    track(A.EVENT_VIEWED, { event_id: id, source: source || "events" });
+    state.eventView = { id, loading: true, error: false, event: null, attendees: [], organizer: null, companionPostId: null, rsvpBusy: null, rsvpError: "", icsBusy: false, icsError: "" };
+    rerender();
+    await refreshEventView(id);
+  }
+  function closeEventView() { state.eventView = null; rerender(); }
+  async function refreshEventView(id) {
+    const v = state.eventView;
+    if (!v || v.id !== id) return;
+    const { data: event, error } = await client.from("events").select("*").eq("id", id).maybeSingle();
+    if (!state.eventView || state.eventView.id !== id) return;
+    if (error || !event) { state.eventView.loading = false; state.eventView.error = true; return rerender(); }
+    state.eventView.event = event;
+    state.eventsById[id] = event;
+    const { data: attendees } = await client.from("event_attendees")
+      .select("user_id,response,registered_at,profiles(display_name,handle,avatar_url)")
+      .eq("event_id", id).order("registered_at", { ascending: true });
+    state.eventView.attendees = attendees || [];
+    state.eventView.organizer = null;
+    if (event.created_by) {
+      const { data: organizer } = await client.from("profiles").select("id,display_name,handle").eq("id", event.created_by).maybeSingle();
+      state.eventView.organizer = organizer || null;
+    }
+    // COMM-216. Opens the companion post's thread by default - there is no
+    // separate "toggle comments" affordance on an event, the thread IS the
+    // event's discussion.
+    const companion = await findEventCompanionPost(id);
+    state.eventView.companionPostId = companion ? companion.id : null;
+    if (state.eventView.companionPostId) {
+      state.openComments[state.eventView.companionPostId] = true;
+      await loadCommentsFor(state.eventView.companionPostId);
+    }
+    state.eventView.loading = false;
+    rerender();
+  }
+  function eventRsvpErrorMessage(msg) {
+    if (msg === "event_full") return "האירוע מלא";
+    if (msg === "registration_closed") return "ההרשמה נסגרה";
+    return "לא ניתן היה לעדכן את ההרשמה. נסו שוב.";
+  }
+  // COMM-214. Called both from the detail dialog's three buttons and from
+  // the feed top-area quick actions (COMM-217) - event_rsvp() and the
+  // server-side capacity/deadline trigger are the same for both, so this is
+  // the one client path for either. A rejection (event_full,
+  // registration_closed, or anything else) surfaces on the open detail
+  // dialog when there is one, else as a toast, so a quick action from the
+  // feed still tells the member why it failed.
+  async function rsvpEvent(eventId, response) {
+    if (!state.user || !eventId || !response) return;
+    const v = state.eventView && state.eventView.id === eventId ? state.eventView : null;
+    if (v) { v.rsvpBusy = response; v.rsvpError = ""; }
+    rerender();
+    const { error } = await client.rpc("event_rsvp", { p_event_id: eventId, p_response: response });
+    if (v) v.rsvpBusy = null;
+    if (error) {
+      const msg = eventRsvpErrorMessage(error.message);
+      if (v) v.rsvpError = msg; else setMessage(msg);
+      rerender();
+      return;
+    }
+    if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.EVENT_REGISTERED) {
+      try { window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.EVENT_REGISTERED, { event_id: eventId, rsvp_status: response }); } catch (e) {}
+    }
+    setMessage(response === "going" ? "נרשמת/ה לאירוע" : response === "interested" ? "סומנת/ה כמעוניינ/ת" : "עודכן כלא משתתפ/ת");
+    await loadEvents();
+    if (state.eventView && state.eventView.id === eventId) await refreshEventView(eventId);
+    rerender();
+  }
+  function renderEventActions(v) {
+    const e = v.event;
+    if (e.status !== "published") return "";
+    const closed = eventRegistrationClosed(e);
+    const full = eventIsFull(e);
+    const mine = myEventResponse(e.id);
+    const btn = (response, label) => {
+      const disabled = closed || !!v.rsvpBusy || (response === "going" && full);
+      const active = mine === response;
+      return `<button class="chip-btn${active ? " primary" : ""}" data-community-action="event-rsvp" data-id="${safeText(e.id)}" data-response="${response}"${disabled ? " disabled" : ""}>${v.rsvpBusy === response ? "מעדכנ/ת…" : label}</button>`;
+    };
+    const notes = [];
+    // COMM-214: "past its registration deadline disables any RSVP change".
+    // Full only disables Going (Interested and Not Going stay open), and a
+    // going->going update stays enabled on a full event (eventIsFull()
+    // already excludes that case).
+    if (closed) notes.push("ההרשמה נסגרה");
+    else if (full) notes.push("האירוע מלא");
+    return `<div class="chip-row" style="margin-bottom:6px;">${btn("going", "משתתפ/ת")}${btn("interested", "מעוניינ/ת")}${btn("not_going", "לא משתתפ/ת")}</div>
+      ${notes.length ? `<div class="footer-note" style="margin-bottom:8px;">${notes.map(safeText).join(" · ")}</div>` : ""}
+      ${v.rsvpError ? `<div class="field-error" role="alert" style="margin-bottom:8px;">${safeText(v.rsvpError)}</div>` : ""}`;
+  }
+  function renderEventAttendees(v) {
+    const rows = v.attendees || [];
+    if (!rows.length) return `<div class="empty">אין עדיין נרשמים.</div>`;
+    const going = rows.filter((r) => r.response === "going").length;
+    const rowHtml = (r) => {
+      const prof = r.profiles || {};
+      const name = prof.display_name || (prof.handle ? "@" + prof.handle : "חבר/ה");
+      const label = r.response === "going" ? "הולכ/ת" : r.response === "interested" ? "מעוניינ/ת" : "לא הולכ/ת";
+      return `<div class="log-row"><span>${safeText(name)}</span><span style="color:var(--steel);font-size:12px;">${safeText(label)}</span></div>`;
+    };
+    // Already scoped by event_attendees_read (202608280010) to rows the
+    // caller may see: their own, every row if they hold
+    // community.event.manage, and everyone else's only when
+    // show_in_attendee_lists (and its club-wide override) allows it - no
+    // extra client-side filtering needed to honour that rule.
+    return `<div class="field-label" style="margin:10px 0 4px;">משתתפים (${going})</div><div class="log-list">${rows.map(rowHtml).join("")}</div>`;
+  }
+
+  // ---- Add to calendar (COMM-215) --------------------------------------------
+  function icsEscape(text) {
+    return String(text == null ? "" : text)
+      .replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+  }
+  function icsDateStamp(iso) {
+    const d = new Date(iso);
+    return d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  }
+  // Pure and exported on window (below) so a test can check the exact
+  // iCalendar content without depending on jsdom's Blob/URL support, which
+  // it does not have (the same gap composerAddPhoto already works around
+  // with a try/catch around URL.createObjectURL).
+  function buildEventIcs(event, appUrl) {
+    const start = event.start_at;
+    // COMM-215: end_at null defaults to start_at plus one hour.
+    const end = event.end_at || new Date(new Date(event.start_at).getTime() + 3600000).toISOString();
+    const lines = [
+      "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Haimunia//Events//HE", "CALSCALE:GREGORIAN", "BEGIN:VEVENT",
+      "UID:" + event.id + "@haimunia-events",
+      "DTSTAMP:" + icsDateStamp(new Date().toISOString()),
+      "DTSTART:" + icsDateStamp(start),
+      "DTEND:" + icsDateStamp(end),
+      "SUMMARY:" + icsEscape(event.title),
+    ];
+    if (event.location) lines.push("LOCATION:" + icsEscape(event.location));
+    const descParts = [];
+    if (event.description) descParts.push(event.description);
+    if (appUrl) descParts.push(appUrl);
+    if (descParts.length) lines.push("DESCRIPTION:" + icsEscape(descParts.join("\n\n")));
+    lines.push("END:VEVENT", "END:VCALENDAR");
+    return lines.join("\r\n");
+  }
+  function eventAppLink(eventId) {
+    return String((window.location && window.location.origin) || "") + "/community/feed?event=" + eventId;
+  }
+  // COMM-215: no external service call, no server round trip - built
+  // entirely from the event row already on state, and works offline once
+  // the detail has loaded, per the ticket.
+  function downloadEventIcs(eventId) {
+    const v = state.eventView && state.eventView.id === eventId ? state.eventView : null;
+    const event = (v && v.event) || state.eventsById[eventId];
+    if (!event) return;
+    if (v) { v.icsBusy = true; v.icsError = ""; }
+    rerender();
+    try {
+      const ics = buildEventIcs(event, eventAppLink(eventId));
+      const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = String(event.title || "event").replace(/[^\w\-א-ת ]+/g, "_").slice(0, 60) + ".ics";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 1000);
+    } catch (err) {
+      // Defensive only, per the ticket - a malformed date should not occur
+      // given the table CHECKs. Also the path jsdom's missing
+      // Blob/URL.createObjectURL takes under test.
+      if (v) v.icsError = "לא ניתן היה ליצור קובץ יומן.";
+    }
+    if (v) v.icsBusy = false;
+    rerender();
+  }
+  window.buildEventIcs = buildEventIcs;
+
+  function renderEventViewBody(v) {
+    const e = v.event;
+    const staff = hasPerm(PERM.EVENT_MANAGE);
+    const meta = [eventTypeBadge(e.event_type), formatEventDate(e.start_at), formatEventTime(e.start_at)];
+    if (e.end_at) meta.push("עד " + formatEventTime(e.end_at));
+    const statusLabel = eventStatusLabel(e);
+    if (statusLabel) meta.push(statusLabel);
+    const metaHtml = `<div style="color:var(--steel);font-size:12px;margin-bottom:10px;">${meta.map(safeText).join(" · ")}</div>`;
+    const image = e.image_url ? `<img src="${safeText(e.image_url)}" alt="" style="width:100%;max-height:200px;object-fit:cover;border-radius:12px;margin-bottom:10px;"/>` : "";
+    const description = e.description ? `<div style="font-size:13.5px;line-height:1.6;margin-bottom:10px;white-space:pre-wrap;">${safeText(e.description)}</div>` : "";
+    const locationHtml = e.location ? `<div style="font-size:13px;color:var(--steel);margin-bottom:4px;">📍 ${safeText(e.location)}${e.map_link ? ` · <a class="link-btn" href="${safeText(e.map_link)}" target="_blank" rel="noopener noreferrer">מפה</a>` : ""}</div>` : "";
+    const going = eventGoingCount(e.id);
+    const capacityHtml = `<div style="font-size:13px;color:var(--steel);margin-bottom:4px;">${e.capacity != null ? `${going} / ${e.capacity} משתתפים` : `${going} משתתפים`}</div>`;
+    const deadlineHtml = e.registration_deadline ? `<div style="font-size:12px;color:var(--steel);margin-bottom:4px;">מועד אחרון להרשמה: ${safeText(formatEventDate(e.registration_deadline))} ${safeText(formatEventTime(e.registration_deadline))}</div>` : "";
+    const organizerName = v.organizer ? (v.organizer.display_name || (v.organizer.handle ? "@" + v.organizer.handle : "")) : "";
+    const organizerHtml = organizerName ? `<div style="font-size:12px;color:var(--steel);margin-bottom:10px;">מארגנ/ת: ${safeText(organizerName)}</div>` : "";
+    const staffToolbar = staff ? `<div class="chip-row" style="margin-bottom:10px;">
+        <button class="chip-btn" data-community-action="event-edit" data-id="${safeText(e.id)}">עריכה</button>
+        ${e.status === "draft" ? `<button class="chip-btn" data-community-action="event-publish" data-id="${safeText(e.id)}">פרסום</button>` : ""}
+        ${e.status === "published" ? `<button class="chip-btn" data-community-action="event-cancel-confirm" data-id="${safeText(e.id)}" style="color:var(--red);">ביטול האירוע</button>` : ""}
+      </div>` : "";
+    const actions = renderEventActions(v);
+    const icsBtn = `<div class="chip-row" style="margin:8px 0;"><button class="chip-btn" data-community-action="event-ics" data-id="${safeText(e.id)}"${v.icsBusy ? " disabled" : ""}>${v.icsBusy ? "יוצר…" : "הוספה ליומן"}</button></div>${v.icsError ? `<div class="field-error" role="alert">${safeText(v.icsError)}</div>` : ""}`;
+    const attendeesHtml = renderEventAttendees(v);
+    // COMM-216: the companion post's own thread, reusing renderComments()
+    // untouched - same empty state, same loading skeleton, same retry
+    // affordance every other comment thread already has. A post object
+    // this thin is enough: renderComments()/reactionStripHtml() only ever
+    // read post.id.
+    const commentsHtml = v.companionPostId ? renderComments({ id: v.companionPostId }) : "";
+    return `${metaHtml}${staffToolbar}${image}${description}${locationHtml}${capacityHtml}${deadlineHtml}${organizerHtml}${actions}${icsBtn}${attendeesHtml}<div style="margin-top:14px;">${commentsHtml}</div>`;
+  }
+  function renderEventViewOverlay() {
+    const v = state.eventView;
+    if (!v) return "";
+    const bodyHtml = v.loading ? `<div class="empty">טוען את האירוע…</div>`
+      : (v.error || !v.event) ? `<div class="empty">לא ניתן היה לטעון את האירוע. נסו שוב.</div>`
+      : renderEventViewBody(v);
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="eventViewTitle" data-cloud-dialog="eventView" style="align-items:flex-start;padding:20px 12px;">
+      <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:560px;">
+        <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
+          <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:12px;">
+            <div id="eventViewTitle" style="font-weight:800;font-size:17px;">${v.event ? safeText(v.event.title) : "אירוע"}</div>
+            <button class="chip-btn" data-community-action="close-event-view" aria-label="סגירה">✕</button>
+          </div>
+          ${bodyHtml}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // ---- Create/edit form markup (COMM-213) ------------------------------------
+  function renderEventForm() {
+    const f = state.eventForm;
+    const typePicker = `<div class="chip-row" role="group" aria-label="סוג אירוע" style="margin-bottom:10px;flex-wrap:wrap;">${EVENT_TYPES.map((t) => `<button type="button" class="chip-btn${f.eventType === t.id ? " primary" : ""}" data-community-action="event-form-type" data-type="${t.id}">${t.icon} ${safeText(t.label)}</button>`).join("")}</div>`;
+    return `<form id="communityEventForm" class="chart-card admin-card" style="margin-top:10px;">
+      <div style="font-weight:800;margin-bottom:10px;">${f.mode === "edit" ? "עריכת אירוע" : "אירוע חדש"}<span class="admin-tag">ניהול</span></div>
+      ${typePicker}
+      ${field("communityEventForm", "title", "שם האירוע", `<input class="text-input" name="title" value="${safeText(f.title)}" maxlength="120" required/>`)}
+      ${field("communityEventForm", "description", "תיאור", `<textarea class="text-input" name="description" maxlength="4000">${safeText(f.description)}</textarea>`)}
+      ${field("communityEventForm", "imageUrl", "קישור לתמונה", `<input class="text-input" name="imageUrl" value="${safeText(f.imageUrl)}" maxlength="500" placeholder="https://..."/>`)}
+      ${field("communityEventForm", "location", "מיקום", `<input class="text-input" name="location" value="${safeText(f.location)}" maxlength="240"/>`)}
+      ${field("communityEventForm", "mapLink", "קישור למפה", `<input class="text-input" name="mapLink" value="${safeText(f.mapLink)}" maxlength="500" placeholder="https://..."/>`)}
+      <div class="flex gap-10 field">
+        ${field("communityEventForm", "startAt", "התחלה", `<input class="text-input" name="startAt" type="datetime-local" value="${safeText(f.startAt)}" required/>`)}
+        ${field("communityEventForm", "endAt", "סיום", `<input class="text-input" name="endAt" type="datetime-local" value="${safeText(f.endAt)}"/>`)}
+      </div>
+      <div class="flex gap-10 field">
+        ${field("communityEventForm", "capacity", "מקומות (ריק = ללא הגבלה)", `<input class="text-input" name="capacity" type="number" min="1" value="${safeText(f.capacity)}"/>`)}
+        ${field("communityEventForm", "registrationDeadline", "מועד אחרון להרשמה", `<input class="text-input" name="registrationDeadline" type="datetime-local" value="${safeText(f.registrationDeadline)}"/>`)}
+      </div>
+      ${f.mode === "create" ? `<label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="publishNow"/><span style="font-size:12.5px;color:var(--steel);">פרסום מיידי (אחרת יישמר כטיוטה)</span></label>` : ""}
+      ${f.error ? `<div class="field-error" role="alert">${safeText(f.error)}</div>` : ""}
+      <div class="chip-row" style="margin-top:10px;">
+        <button class="chip-btn primary" type="submit"${f.saving ? " disabled" : ""}>${f.saving ? "שומר…" : "שמירה"}</button>
+        <button class="chip-btn" type="button" data-community-action="event-form-cancel">ביטול</button>
+      </div>
+    </form>`;
+  }
+
+  // ---- Upcoming-event card in the feed top area (COMM-217) -------------------
+  // The soonest published, non-cancelled event with start_at > now(), or
+  // nothing at all - never an empty placeholder. state.events is loaded
+  // alongside the feed (loadEvents() sits in the same Promise.all as
+  // loadFeed()), so this needs no realtime subscription of its own: it
+  // refreshes exactly when the rest of the feed top area does.
+  function upcomingFeedEvent() {
+    // state.events is sorted start_at ascending by the query itself
+    // (loadEvents()'s order()), so the first match is the soonest one.
+    return state.events.find(isUpcomingEvent) || null;
+  }
+  function renderUpcomingEventCard() {
+    const e = upcomingFeedEvent();
+    if (!e) return "";
+    const going = eventGoingCount(e.id);
+    const mine = myEventResponse(e.id);
+    const closed = eventRegistrationClosed(e);
+    const full = eventIsFull(e);
+    return `<div class="chart-card" style="margin-top:10px;" data-event-id="${safeText(e.id)}">
+      <button class="link-btn" data-community-action="open-event" data-id="${safeText(e.id)}" data-source="club_top" style="padding:0;text-align:right;display:block;width:100%;">
+        <div style="font-weight:800;font-size:14px;">📅 ${safeText(e.title)}</div>
+        <div style="color:var(--steel);font-size:12px;margin-top:2px;">${safeText(formatEventDate(e.start_at))} ${safeText(formatEventTime(e.start_at))} · ${going} משתתפים</div>
+      </button>
+      <div class="chip-row" style="margin-top:8px;">
+        <button class="chip-btn${mine === "going" ? " primary" : ""}" data-community-action="event-rsvp" data-id="${safeText(e.id)}" data-response="going"${closed || full ? " disabled" : ""}>משתתפ/ת</button>
+        <button class="chip-btn${mine === "interested" ? " primary" : ""}" data-community-action="event-rsvp" data-id="${safeText(e.id)}" data-response="interested"${closed ? " disabled" : ""}>מעוניינ/ת</button>
       </div>
     </div>`;
   }
@@ -3983,7 +4574,15 @@
     }
     const st = row && row.source_type;
     const sid = row && row.source_id;
-    if (q.post || st === "post" || st === "comment" || /\/feed(\/|$)/.test(path) && !q.announcement) {
+    // COMM-214/COMM-140. q.event has to be checked before the generic
+    // /feed path fallback, the same way q.announcement already is one line
+    // below: an event_cancelled notification's deep link is
+    // /community/feed?event=<id>, which matches /\/feed(\/|$)/ just as
+    // much as a plain feed link does. Without this guard it always fell
+    // into the first branch and opened plain feed instead of the event -
+    // found by the schema agent while building the cancellation trigger
+    // (202608290009).
+    if (q.post || st === "post" || st === "comment" || /\/feed(\/|$)/.test(path) && !q.announcement && !q.event) {
       return { tab: "feed", post: q.post || (st === "post" ? sid : null), comment: q.comment || (st === "comment" ? sid : null) };
     }
     if (q.user || st === "profile") return { tab: "account", profile: q.user || sid };
@@ -4016,6 +4615,8 @@
         const node = document.querySelector(sel);
         if (node && node.scrollIntoView) node.scrollIntoView({ block: "center" });
       }, 60);
+    } else if (target.event) {
+      openEvent(target.event, "notification");
     } else if (target.profile) {
       viewCommunityProfile(target.profile);
     } else {
@@ -4294,7 +4895,7 @@
   // not tied to the Community tab being active.
   function renderConfirmDialog() {
     return renderConfirmSheet() + renderPostComposer() + renderPrSharePrompt() + renderAchievementUnlockCelebration() + renderCommunityProfileOverlay() + renderNotificationCenter()
-      + renderReportSheet() + renderModActionSheet() + renderModContextOverlay() + renderChallengeViewOverlay();
+      + renderReportSheet() + renderModActionSheet() + renderModContextOverlay() + renderChallengeViewOverlay() + renderEventViewOverlay();
   }
   // COMM-151. The report reason sheet. Reasons are a fixed list, an optional
   // capped free-text note, and a plain acknowledgement that discloses
@@ -4474,9 +5075,9 @@
       </div>
       ${activeChallenge ? `<div class="chip-row" style="margin-top:10px;"><button class="chip-btn primary" data-community-action="open-active-challenge" data-id="${safeText(activeChallenge.id || "")}">🏆 ${safeText(activeChallenge.title || "אתגר פעיל")}</button></div>` : ""}
     </div>` : "";
-    // COMM-115: the upcoming event slot is coded and dormant until events
-    // land in Phase 2 (COMM-217). state.club never carries one today.
-    const upcomingEventHtml = "";
+    // COMM-217: the soonest published, non-cancelled upcoming event, or
+    // nothing at all - never an empty placeholder.
+    const upcomingEventHtml = renderUpcomingEventCard();
 
     // COMM-111 filter chips. My Classes is rendered disabled, tied to
     // COMM-P01, and setFeedScope refuses it on the way in as well.
@@ -4530,7 +5131,7 @@
 
     const streaksHtml = state.streaks.length ? `<div class="ach-section">${sectionHead("var(--purple)", "רצפי התמדה")}${renderRankedList(state.streaks, (it) => it.user_id, (it) => `🔥 ${Number(it.current_streak)}`)}</div>` : "";
 
-    const boardsTab = renderChallengesListSection() + weeklyChallengeHtml + streaksHtml;
+    const boardsTab = renderChallengesListSection() + renderEventsListSection() + weeklyChallengeHtml + streaksHtml;
 
     // ---- Account tab: profile, member search, admin member management ----
     const account = `<form id="communityProfile" class="chart-card"><div style="font-weight:800;font-size:16px;margin-bottom:12px;">הפרופיל שלי</div>
@@ -4610,6 +5211,7 @@
     { key: "composer", close: function () { tryCloseComposer(); } },
     { key: "profileView", close: function () { closeCommunityProfile(); } },
     { key: "challengeView", close: function () { closeChallengeView(); } },
+    { key: "eventView", close: function () { closeEventView(); } },
   ];
   const cloudDialogOpeners = {};
   let cloudOpenDialogKey = null;
@@ -4913,7 +5515,22 @@
     else if (action === "challenge-publish") publishChallengeDraft(el.dataset.id);
     else if (action === "challenge-archive") archiveChallenge(el.dataset.id);
     else if (action === "challenge-delete") askConfirm({ title: "מחיקת טיוטה", message: "למחוק את הטיוטה? הפעולה אינה ניתנת לביטול.", confirmLabel: "מחיקה", destructive: true, action: "challenge-delete-draft", payload: { challengeId: el.dataset.id } });
-    else if (action === "open-event") track(A.EVENT_VIEWED, { event_id: el.dataset.id || null, source: el.dataset.source || "post_card" });
+    // COMM-213/217/228. openEvent() itself records EVENT_VIEWED (source
+    // defaults to "post_card"), the same pattern openChallenge() uses -
+    // this used to only track and never actually open anything (the gap
+    // the realtime+search cluster's handoff notes flagged for COMM-228's
+    // search result), now closed by COMM-213's detail dialog existing.
+    else if (action === "open-event") { if (el.dataset.id) openEvent(el.dataset.id, el.dataset.source || "post_card"); }
+    else if (action === "close-event-view") closeEventView();
+    else if (action === "event-rsvp") rsvpEvent(el.dataset.id, el.dataset.response);
+    else if (action === "events-retry") loadEvents();
+    else if (action === "open-event-form") openEventForm(null);
+    else if (action === "event-edit") { const existing = state.eventsById[el.dataset.id] || (state.eventView && state.eventView.event); openEventForm(existing); }
+    else if (action === "event-form-cancel") closeEventForm();
+    else if (action === "event-form-type") setEventFormType(el.dataset.type);
+    else if (action === "event-publish") publishEventDraft(el.dataset.id);
+    else if (action === "event-cancel-confirm") confirmCancelEvent(el.dataset.id);
+    else if (action === "event-ics") downloadEventIcs(el.dataset.id);
   };
   window.isCommunitySignedIn = function () { return !!(state.user && state.profile); };
   window.shareAchievementToCommunity = function (achievementId, title, rule) { publishAchievement(achievementId, title, rule); };
@@ -4922,6 +5539,7 @@
     else if (event.target.id === "communityAnnouncement") { event.preventDefault(); postAnnouncement(event.target); }
     else if (event.target.id === "communityWeeklyChallenge") { event.preventDefault(); setWeeklyChallenge(event.target); }
     else if (event.target.id === "communityChallengeForm") { event.preventDefault(); submitChallengeForm(event.target); }
+    else if (event.target.id === "communityEventForm") { event.preventDefault(); submitEventForm(event.target); }
     else if (event.target.id === "communityInviteCode") { event.preventDefault(); redeemCode(event.target); }
     else if (event.target.id === "communityLogin") { event.preventDefault(); login(event.target); }
     else if (event.target.id === "communityCredentials") { event.preventDefault(); setCredentials(event.target); }
@@ -4962,7 +5580,7 @@
         // first track(). Idempotent, so whichever path arrives first wins.
         ensureAnalyticsConfigured();
         loadRedemption()
-          .then(() => Promise.all([loadProfile(), loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), flushOutbox()]))
+          .then(() => Promise.all([loadProfile(), loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadEvents(), flushOutbox()]))
           .then(() => (isStaff() ? Promise.all([loadInactiveMembers(), loadNewMembers()]) : null))
           .then(() => (isAdmin() || hasPerm(PERM.COMMENT_MODERATE) ? loadModQueue() : null))
           .then(pullPrivateRecords)
@@ -4986,7 +5604,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {};
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null;
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();
@@ -5081,6 +5699,7 @@
     if (state.composer) { e.preventDefault(); tryCloseComposer(); return; }
     if (state.profileView) { e.preventDefault(); closeCommunityProfile(); return; }
     if (state.challengeView) { e.preventDefault(); closeChallengeView(); return; }
+    if (state.eventView) { e.preventDefault(); closeEventView(); return; }
     if (state.openPostMenu) { state.openPostMenu = null; rerender(); }
   });
   // COMM-190. A click on the dim backdrop - the overlay element itself, not

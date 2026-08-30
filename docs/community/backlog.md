@@ -281,11 +281,11 @@ schema for this cluster.
 
 | ID | Title | Agent | Status |
 |---|---|---|---|
-| COMM-213 | Events tables consumption, list and detail | events | todo |
-| COMM-214 | Event RSVP and capacity | events | todo |
-| COMM-215 | Event types and add to calendar | events | todo |
-| COMM-216 | Event comments | events | todo |
-| COMM-217 | Upcoming event card in the feed top area | events | todo |
+| COMM-213 | Events tables consumption, list and detail | events | review |
+| COMM-214 | Event RSVP and capacity | events | review |
+| COMM-215 | Event types and add to calendar | events | review |
+| COMM-216 | Event comments | events | review |
+| COMM-217 | Upcoming event card in the feed top area | events | review |
 
 `events` and `event_attendees`, `event_rsvp`, and the capacity/deadline
 trigger already shipped in 202608280010 (COMM-007). COMM-216 is a design
@@ -295,6 +295,33 @@ adding a polymorphic comment target. COMM-214's `notif_on_event_cancelled`
 trigger shipped in 202608290009 with `supabase/tests/0029_event_cancelled_notification_test.sql`,
 so no events ticket is schema-blocked; see "## Events" in
 `docs/community/contracts.md`.
+
+All five landed client-side in `cloud.js` against that shipped schema, no
+migration: Upcoming/Past list and a create/edit form gated on
+`community.event.manage` (COMM-213), RSVP through `event_rsvp()` with the
+capacity/deadline errors surfaced on the detail dialog and the feed
+top-area quick actions (COMM-214), nine typed badges plus a client-built
+`.ics` download (COMM-215), the companion `POST_EVENT` post created at
+first-publish via `post_create` and then promoted from its default
+POST_TEXT shape by one own-row `posts_update_self` update - not a schema
+change, see `ensureEventCompanionPost()`'s comment in `cloud.js` - with its
+`post_comments` thread reusing `renderComments()`/`add_post_comment`
+untouched (COMM-216), and the feed top-area card reading the same
+`state.events` the Boards list loads (COMM-217). Also fixed as part of this
+cluster: `resolveNotifTarget`'s `/feed` branch was shadowing `q.event`
+before it could ever be checked, so an `event_cancelled` notification's
+`/community/feed?event=<id>` link opened plain feed instead of the event -
+the precedence now matches the existing `q.announcement` guard. The
+COMM-228 search result's `open-event` action, previously a tracking-only
+stub, now opens the real event detail. `test/community-events.test.mjs`
+(20 tests) and one added assertion in `test/helpers/mockSupabase.mjs`'s
+`event_rsvp` mock RPC (a faithful stand-in for the real function plus the
+`enforce_event_capacity` trigger, needed for the capacity-race and
+deadline tests) are the executing coverage; a real Add to Calendar click
+degrades to the documented error message under jsdom's missing
+Blob/URL.createObjectURL, so `buildEventIcs()` is tested directly and is
+exported on `window` for that reason, same pattern as
+`window.renderPostCard`.
 
 ### announcements and recaps
 
@@ -362,9 +389,11 @@ platform (Phase 2)", now closed) for both the schema and the client channel
 inventory, the "Phase 2 schema handoff for qa" table below for boundaries,
 and `test/community-realtime-and-search.test.mjs` for the executing
 coverage. One gap this cluster deliberately left, for a follow-up ticket:
-an event search result has nowhere to navigate until COMM-213 builds the
-event detail surface, so it records `EVENT_VIEWED` and renders title, start
-and status only. COMM-210 to COMM-212
+an event search result had nowhere to navigate until COMM-213 built the
+event detail surface, so it recorded `EVENT_VIEWED` and rendered title,
+start and status only - closed by the events cluster, whose `open-event`
+action now opens the real detail dialog from that same search row.
+COMM-210 to COMM-212
 share one new `feed_leaderboard` function; COMM-232 needs a new
 `people_suggestions` function. See "Needs from schema, feed (Phase 2)".
 COMM-230 and COMM-231 need no new contract, both direct RLS reads on
