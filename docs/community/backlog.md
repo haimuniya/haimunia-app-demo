@@ -344,15 +344,21 @@ empty, unchanged from Phase 1, until COMM-304.
 | COMM-231 | Members directory screen | engagement | todo |
 | COMM-232 | People you train with suggestions, non-attendance fallback | feed | todo |
 
-COMM-209 and COMM-227 need `challenge_progress`, `challenge_participants`,
-`post_comments`, `reactions`, and `notifications` added to the
-`supabase_realtime` publication; `HaimuniaRealtime` (COMM-014) already has
-the subscription side wired with zero replication enabled. COMM-228 needs a
-new `community_search` function. COMM-210 to COMM-212 share one new
-`feed_leaderboard` function; COMM-232 needs a new `people_suggestions`
-function. See "Needs from schema, platform (Phase 2)" and "Needs from
-schema, feed (Phase 2)". COMM-230 and COMM-231 need no new contract, both
-direct RLS reads on `follows` and `profiles`.
+Schema for COMM-209, COMM-227, and COMM-228 shipped in 202608290007 and
+202608290008: `challenge_progress`, `challenge_participants`,
+`post_comments`, `reactions`, and `notifications` are now in the
+`supabase_realtime` publication, and `community_search(p_query, p_limit)`
+exists. See "## Realtime and search" in `docs/community/contracts.md` (moved
+there from "Needs from schema, platform (Phase 2)", now closed) and the
+"Phase 2 schema handoff for qa" table below. Each ticket's own status stays
+`todo` here until its non-schema half lands: COMM-209 and COMM-227 still
+need the client-side subscribe/debounce/teardown wiring `HaimuniaRealtime`
+does not yet do for these five tables, and COMM-228 still needs the search
+UI's grouped-sections rendering on top of the function. COMM-210 to COMM-212
+share one new `feed_leaderboard` function; COMM-232 needs a new
+`people_suggestions` function. See "Needs from schema, feed (Phase 2)".
+COMM-230 and COMM-231 need no new contract, both direct RLS reads on
+`follows` and `profiles`.
 
 ### web push, analytics, qa
 
@@ -733,6 +739,28 @@ autocommitted statements otherwise).
 | challenges.ending_soon_notified_at, chal_notify_ending_soon() | Granted to `service_role` only (verified: `authenticated` gets "permission denied for function"). Selects only `active` challenges ending within 48 hours with the column still null, `notif_create`s every active participant, stamps the column. A second call after stamping is a no-op (verified: returns 0, writes nothing). |
 | notif_on_challenge_join (AFTER INSERT on challenge_participants) | Enqueues batched `challenge_update` for every other active participant on the same challenge, never the joiner, never immediate (verified across 10 joins spanning 5 challenges: exact per-recipient counts matched hand-tallied expectations). |
 | notif_on_challenge_complete (AFTER UPDATE OF status on challenge_participants) | Enqueues the same batched fan-out only on a genuine transition into `completed` (guards against the trigger firing on every `challenge_progress_apply` UPDATE, which always touches the `status` column even when unchanged), never to the completer (verified: m1 completing did not add to m1's own batch, only to m2's). |
+
+### Realtime publication and community_search (202608290007, 202608290008)
+
+No new table - a publication membership change plus one new read function.
+Verified locally this run via `supabase db reset` plus manual psql smoke
+tests impersonating fixture members through `tests.set_auth()`, same shim
+and same one-`begin;`-per-impersonation-switch caveat as the challenges run
+above. `test/community-realtime-search-rls.test.mjs` pins the static half
+(grant list, security definer shape, the exact predicate mirrored from each
+source policy); everything below is the runtime half that only a real
+two-role Postgres can show.
+
+| Function / migration | Boundary to assert |
+|---|---|
+| supabase_realtime publication (202608290007) | `select * from pg_publication_tables where pubname = 'supabase_realtime'` contains exactly `challenge_progress`, `challenge_participants`, `post_comments`, `reactions`, `notifications` (verified: all five present, nothing else added by this migration). |
+| community_search(p_query, p_limit) | Granted to `authenticated` only (verified: `anon` role gets "permission denied for function"). Raises `not authorized` for a null caller (verified: `authenticated` role with no `request.jwt.claim.sub` set). |
+| community_search, sub-2-char threshold | A 1-character or empty (after `%_,()` stripping) query returns `{members: [], events: [], challenges: []}` with no table read, not an error (verified: `'S'` and `'%_,()'` alone both short-circuit). |
+| community_search, sanitization | A query built only from `%`, `_`, `,`, `(`, `)` strips to empty and short-circuits rather than wildcard-matching every row (verified: `'%_,()Zzz'` correctly matches only titles containing `Zzz`, not every row). |
+| community_search, members group | Mirrors `profiles_read_authenticated` exactly: excludes the caller's own row (verified), excludes a member with `visible_to_club = false` from a non-admin caller (verified: fixture `SearchHidden Member` invisible to m1), excludes a member on either side of a `blocks` row (verified: m3 blocking m1 hides m1 from m3's search and vice versa). |
+| community_search, events group | A `draft` event is invisible to a caller who is neither its creator nor a `community.event.manage` holder (verified: m2 searching does not see m1's draft), visible to its creator (verified: m1 sees its own draft) and to a manage-permission holder who did not create it (verified: coach sees m1's draft). Non-draft statuses (`published`, `cancelled`, `past`) are visible to everyone regardless of creator, matching `events_read`'s actual `status <> 'draft'` predicate rather than a narrower "published only" reading. |
+| community_search, challenges group | Same shape as events, verified against `challenges_read`'s `community.challenge.create` permission: a `draft` challenge is invisible to a non-creator without that permission, visible to its creator, and visible to a permission holder who did not create it. |
+| community_search, p_limit | Each group is capped independently by the clamped `p_limit` (verified: `p_limit = 1` against two matching challenges returns exactly one). |
 
 ## Open questions for the user
 

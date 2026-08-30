@@ -1864,31 +1864,83 @@ never calls `client.channel()` directly.
   into a worker without rewriting `prepareImage`.
 - Nothing is wired to it in Phase 0. posts consumes it in COMM-103.
 
+## Realtime and search
+
+### Realtime publication membership (COMM-209, COMM-227)
+
+- Shipped in 202608290007.
+- `alter publication supabase_realtime add table public.<name>;`, one
+  statement per table, for `challenge_progress`, `challenge_participants`
+  (COMM-209), and `post_comments`, `reactions`, `notifications` (COMM-227).
+  `HaimuniaRealtime` (COMM-014) has subscribed to all five since Phase 1
+  with zero replication enabled; this migration is the one-line-per-table
+  flip that turns each of those existing no-op subscriptions live, with no
+  RLS or grant change of its own - `postgres_changes` payloads are still
+  filtered per-subscriber by each table's existing row level security, the
+  same as any other read. `notifications` closes the specific gap COMM-140
+  already logged ("no-op until COMM-227").
+- `ALTER PUBLICATION ... ADD TABLE` is transactional DDL (unlike `CREATE
+  INDEX CONCURRENTLY` or `ALTER TYPE ... ADD VALUE`), so it runs inside the
+  usual `begin; ... commit;` migration block with no special handling.
+  Confirmed via `supabase db reset` plus `select * from
+  pg_publication_tables where pubname = 'supabase_realtime'` returning all
+  five rows afterward.
+
+### community_search(p_query text, p_limit int default 10) returns jsonb
+
+- Shipped in 202608290008.
+- Purpose: one round trip returning `{members: [...], events: [...],
+  challenges: [...]}` for a grouped search UI (COMM-228), instead of three.
+- Auth: security definer, `set search_path = ''`, revoked from `public,
+  anon`, granted only to `authenticated`. Raises `not authorized` for a
+  null caller before any table is touched. Definer buys exactly one thing:
+  crossing the RLS boundary on purpose to union three already-existing
+  readable sets server-side (events, challenges) rather than widening what
+  any single caller could see one row at a time.
+- Sanitization: `p_query` is stripped of `%`, `_`, `,`, `(`, `)` and
+  trimmed - the exact same characters `searchPeople` (cloud.js) already
+  strips client-side - before it is ever wrapped in an `ilike` pattern.
+  Necessary here specifically because this function receives the raw
+  string over RPC, not the client's pre-sanitized copy. A stripped query
+  under 2 characters returns `{members: [], events: [], challenges: []}`
+  immediately, no table read, matching `searchPeople`'s existing
+  client-side threshold. `p_limit` is clamped to between 1 and 50
+  (`default 10`) and applied per group, not to the total.
+- `members`: the exact same shape and visibility `searchPeople` already
+  provides - `id, handle, display_name, bio, avatar_url, allow_follows`,
+  matched by `ilike` on `handle` or `display_name`, excluding the caller's
+  own row, mirroring `profiles_read_authenticated` (202608280003)
+  literally: `deleted_at is null`, no `blocks` row between caller and
+  target in either direction, and (`visible_to_club` or `is_admin()`).
+- `events`: matches `title` `ilike`, mirroring `events_read` (202608280010)
+  literally: `status <> 'draft'`, or the caller is `created_by`, or the
+  caller holds `community.event.manage`. This is the actual policy
+  predicate (any non-draft status, not literally "published only") - the
+  function does not invent a looser or stricter rule than the policy it
+  mirrors.
+- `challenges`: matches `title` `ilike`, mirroring `challenges_read`
+  (202608280009) literally: `status <> 'draft'`, or the caller is
+  `created_by`, or the caller holds `community.challenge.create`
+  (challenges has no separate `.manage` permission - `.create` is the one
+  permission that already gates every challenges write and read-widening).
+- No full-text search and no post search - members, events, and challenges
+  only, per platform.md's explicit V1 exclusion.
+- Verified locally via `supabase db reset` plus manual psql smoke tests
+  impersonating fixture members through `tests.set_auth()`: a draft
+  event/challenge is invisible to a non-creator without the manage/create
+  permission and visible to its creator and to a permission holder; a
+  club-hidden member (`visible_to_club = false`) and a blocked member are
+  both excluded from the members group; a query under 2 characters returns
+  all three groups empty with no table read; a query built entirely from
+  `%_,()` characters strips to empty rather than wildcard-matching
+  everything; `p_limit` caps each group independently. See "Phase 2 schema
+  handoff for qa" in `docs/community/backlog.md` for the full boundary
+  table, and `test/community-realtime-search-rls.test.mjs` for the static
+  assertions.
+
 ## Needs from schema, platform (Phase 2)
 
-Schema the Phase 2 platform cluster (COMM-209, COMM-227, COMM-228) needs.
-
-- Realtime publication membership for `challenge_progress` and
-  `challenge_participants` (COMM-209), and for `post_comments`, `reactions`,
-  and `notifications` (COMM-227): `alter publication supabase_realtime add
-  table public.<name>;` per table. `HaimuniaRealtime` (COMM-014) already
-  handles the subscription side with zero replication enabled; this is the
-  one-line-per-table migration that turns each existing no-op subscription
-  live. `notifications` closes the specific gap COMM-140 already logged
-  ("no-op until COMM-227").
-- `community_search(p_query text, p_limit int default 10) returns jsonb`
-  (COMM-228). One round trip returning `{members: [...], events: [...],
-  challenges: [...]}`, each capped at `p_limit`. `members` is the same shape
-  `searchPeople` already selects (`id, handle, display_name, bio,
-  avatar_url, allow_follows`) matched by `ilike` on `handle` or
-  `display_name`. `events` matches `title` `ilike`, `published` status only
-  unless the caller is the creator or holds `community.event.manage`, same
-  visibility `events_read` already enforces — the function does not widen
-  it, it just unions three existing readable sets server-side instead of
-  three round trips. `challenges` matches `title` `ilike` under the same
-  rule as `challenges_read`. A query under 2 characters returns all three
-  arrays empty rather than raising. No full-text and no post search, per
-  platform.md's explicit V1 exclusion.
+Closed. See "## Realtime and search" above.
 
 ## Needs from schema, recaps
 
