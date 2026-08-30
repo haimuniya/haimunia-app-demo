@@ -2146,25 +2146,89 @@ Closed. See "## Realtime and search" above.
 
 ## Needs from schema, recaps
 
-Schema the Phase 2 recaps cluster (COMM-220 to COMM-222) needs.
+Shipped in `202608290011_recaps_and_onboarding.sql`. Covered by
+`supabase/tests/0031_recaps_and_onboarding_test.sql`.
 
-- `weekly_recaps` table: `id uuid, user_id uuid, club_id uuid default
-  default_club_id(), week_start date, sessions_completed integer, streak
-  integer, prs jsonb, achievements jsonb, challenge_progress jsonb,
-  club_challenge_progress jsonb, upcoming_event jsonb, generated_at
-  timestamptz default now()`. Unique `(user_id, week_start)`, which is what
-  makes `recap_weekly` idempotent per user per week — a rerun for a week
-  already generated hits the conflict and updates in place rather than
-  duplicating. Own-row select, no client insert or update grant: only the
-  `recap_weekly` Edge Function, running as service role, writes it.
-- `onboarding_progress` table (COMM-222): `user_id uuid primary key,
-  welcomed_at timestamptz, first_week_shown_at timestamptz,
-  first_month_shown_at timestamptz`. Own-row select and update (the update
-  is the client marking a step seen), no insert grant beyond a row seeded at
-  `MEMBER_JOINED` time by a trigger on `invite_redemptions` or `profiles`,
-  so a member cannot invent a fresh row to re-see a step. The two steps tied
-  to first and third class attendance are not columns here yet; they land
-  with COMM-316.
+### weekly_recaps
+
+`id uuid pk`, `user_id uuid not null` → `profiles(id)` cascade, `club_id uuid
+not null default default_club_id()`, `week_start date not null`,
+`sessions_completed integer not null default 0`, `streak integer not null
+default 0`, `prs jsonb not null default '[]'`, `achievements jsonb not null
+default '[]'`, `challenge_progress jsonb not null default '[]'`,
+`club_challenge_progress jsonb not null default '{}'`, `upcoming_event jsonb`
+(nullable — null means no upcoming event), `generated_at timestamptz not null
+default now()`.
+
+- Unique `weekly_recaps_user_week_key (user_id, week_start)`. This is what
+  makes `recap_weekly` idempotent per user per week: upsert with `on conflict
+  (user_id, week_start) do update` and a rerun updates in place rather than
+  duplicating.
+- **`week_start` must be a Monday**, enforced by `check (extract(isodow from
+  week_start) = 1)`. `recap_weekly` must key on the ISO week's Monday. A
+  free-form date would make the unique key unique per date rather than per
+  week, so two runs disagreeing about where the week starts would both
+  insert. A non-Monday raises `23514`.
+- Own-row select for `authenticated`, and nothing else. There is no insert,
+  update, or delete grant or policy for any client, the owning member
+  included. Only `recap_weekly`, running as service role (which bypasses
+  RLS), writes it. `anon` cannot reach the table at all.
+- A quiet week is a real row: the defaults give zeros and empty lists rather
+  than nulls, so COMM-221 renders the quiet-week state without guessing.
+- `club_challenge_progress` is aggregate club figures only, never a
+  per-member breakdown — a recap naming who else trained would leak the
+  attendance data COMM-316 has not been cleared to expose.
+- `default_club_id()` is now also granted to `service_role`. `weekly_recaps`
+  is the first table a service-role caller writes directly rather than
+  through a security definer function, so the `club_id` default is evaluated
+  as `service_role`; without the grant every `recap_weekly` insert would fail
+  `42501`. `recap_weekly` can therefore omit `club_id` and let the default
+  fire.
+
+### onboarding_progress
+
+`user_id uuid primary key` → `auth.users(id)` cascade, `welcomed_at
+timestamptz`, `first_week_shown_at timestamptz`, `first_month_shown_at
+timestamptz`. Null means "not shown yet".
+
+- Own-row select and update for `authenticated`. The update is the client
+  marking a step seen at render time. No insert grant and no delete grant, so
+  a member cannot invent a fresh row — or delete and re-create one — to
+  re-see a step.
+- The FK is to `auth.users`, not `profiles`, because a redemption lands
+  before the profile exists (`profiles_insert_self` requires the redemption
+  to already be there).
+- **Stamps are one-way.** Trigger `onboarding_progress_pin` (BEFORE UPDATE)
+  pins `user_id` and every already-set timestamp to its previous value.
+  Clearing or moving a stamp is accepted and silently has no effect rather
+  than raising, so a benign double-write from two tabs, or a retry after a
+  failed dismiss-write, is a no-op instead of an error on a new member's
+  first day. Clients should treat mark-seen as fire-and-forget.
+- There is no `joined_at` column here. The onboarding clock runs from
+  `invite_redemptions.redeemed_at`, the module's authoritative
+  `MEMBER_JOINED` timestamp, which the member can already read on their own
+  row and which `ach_claim` already meters the anniversary achievements off.
+- The two steps tied to first and third class attendance are not columns
+  here; they land with COMM-316.
+
+### seed_onboarding_progress()
+
+- Trigger function, `security definer`. Fires as
+  `invite_redemptions_seed_onboarding`, AFTER INSERT on
+  `invite_redemptions`, one row per statement row.
+- Purpose: seed exactly one `onboarding_progress` row at `MEMBER_JOINED`.
+  `on conflict (user_id) do nothing`.
+- Params: none (trigger). Returns: `trigger`.
+- Auth rule: revoked from `public`, `anon`, and `authenticated` — not
+  callable as an RPC. It carries no `auth.uid()` check by design: it acts on
+  the row being inserted, not on the caller, and the real boundary is that no
+  client can insert into `invite_redemptions` at all (only
+  `redeem_invite_code()` can).
+- Side effects: one `onboarding_progress` insert. INSERT-only on purpose —
+  `grant_coach_role()` and `grant_coach_role_by_handle()` UPDATE
+  `invite_redemptions` and move `redeemed_at`, and firing on those would
+  reset onboarding for a member who has already been through it.
+- The migration also backfills a row for every pre-existing redemption.
 
 ## Edge Functions
 
@@ -2172,7 +2236,9 @@ Schema the Phase 2 recaps cluster (COMM-220 to COMM-222) needs.
 
 - Schedule: weekly. Idempotent per user per week via the unique `(user_id,
   week_start)` key on `weekly_recaps` (see "Needs from schema, recaps").
-  Phase 2, COMM-220.
+  Phase 2, COMM-220. `week_start` must be the ISO week's Monday; a CHECK
+  rejects anything else, so a run that computes a Sunday-start week fails
+  loudly rather than silently double-inserting.
 - Output: one `weekly_recaps` row per active user, plus one `notif_create(U,
   'weekly_recap', 'club', ...)` call per user with a deep link to the recap
   surface (COMM-221), matching the routing table entry above.
