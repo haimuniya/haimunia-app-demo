@@ -171,14 +171,20 @@ test("feed_viewed fires on the tab entry and again on a scope change, with the s
   assert.equal(events(mock, "feed_viewed").length, 2);
 });
 
+// COMM-210 added a second board to this sub-tab (the consistency
+// leaderboard), which records its own leaderboard_viewed with board:
+// "consistency". Two boards on one tab is two views, not double counting, so
+// the assertions below select by board rather than by arrival order.
+const boardViews = (mock, board) => events(mock, "leaderboard_viewed").filter((e) => e.props.board === board);
+
 test("the Boards sub-tab records a leaderboard view, and a challenge view only when there is a challenge", async () => {
   const empty = seeded([row(1)]);
   const w1 = await bootCommunity(empty, { syncEnabled: false });
   await openFeed(w1);
   clickTab(w1, "boards");
-  await waitFor(() => events(empty, "leaderboard_viewed").length === 1, 3000);
+  await waitFor(() => boardViews(empty, "weekly_challenge").length === 1, 3000);
   assert.equal(events(empty, "challenge_viewed").length, 0, "an empty board is not a challenge view");
-  assert.equal(events(empty, "leaderboard_viewed")[0].props.board, "weekly_challenge");
+  await waitFor(() => boardViews(empty, "consistency").length === 1, 3000);
 
   const live = seeded([row(1)], {
     weekly_challenge_leaderboard: [
@@ -190,7 +196,7 @@ test("the Boards sub-tab records a leaderboard view, and a challenge view only w
   clickTab(w2, "boards");
   await waitFor(() => events(live, "challenge_viewed").length === 1, 3000);
   assert.deepStrictEqual(plain(events(live, "challenge_viewed")[0].props), { challenge_id: null, challenge_key: "movement:back-squat:est1rm", source: "boards" });
-  assert.equal(events(live, "leaderboard_viewed")[0].props.rows, 1);
+  assert.equal(boardViews(live, "weekly_challenge")[0].props.rows, 1);
 });
 
 test("post_impression rides the same once-per-session guard as the ranking pipeline", async () => {

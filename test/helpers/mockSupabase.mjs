@@ -825,6 +825,147 @@ export function createMockSupabase(seedTables = {}) {
             .map((c) => ({ id: c.id, title: c.title, challenge_type: c.challenge_type || null, status: c.status || null, start_at: c.start_at || null, end_at: c.end_at || null }));
           return Promise.resolve({ data: { members, events, challenges }, error: null });
         }
+        // COMM-210/211/212. feed_leaderboard(p_mode, p_challenge_id, p_scope,
+        // p_limit) - the one ranked board both modes and both scopes share
+        // (202608290015). Mirrors the four behaviours the client actually
+        // depends on, because getting any of them wrong changes what the UI
+        // renders: (1) rank is a real, contiguous, tie-broken position, never
+        // an array index; (2) zero is a ranked value, so a club of members who
+        // have logged nothing comes back as rows-with-value-0, not as no rows;
+        // (3) the caller's own row is always present, appended AFTER the top
+        // p_limit rows with its real rank when it fell outside them; (4) the
+        // in_leaderboards / visible_to_club / block filtering happens here, so
+        // the client never re-filters. The consistency value is read off the
+        // community_streaks fixture rows - the streak arithmetic itself is
+        // Postgres (consistency_week_streaks) and is pinned there by pgTAP; a
+        // JS re-implementation would only ever assert itself.
+        if (name === "feed_leaderboard") {
+          const uid = currentUser && currentUser.id;
+          if (!uid) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          const mode = String((args && args.p_mode) || "").trim().toLowerCase();
+          const scopeRaw = String((args && args.p_scope) == null ? "club" : args.p_scope).trim().toLowerCase();
+          const scope = scopeRaw || "club";
+          if (!["consistency", "progress"].includes(mode)) {
+            return Promise.resolve({ data: null, error: { message: `unknown leaderboard mode ${args && args.p_mode}` } });
+          }
+          if (!["club", "friends"].includes(scope)) {
+            return Promise.resolve({ data: null, error: { message: `unknown leaderboard scope ${args && args.p_scope}` } });
+          }
+          const cid = (args && args.p_challenge_id) || null;
+          if (mode === "progress") {
+            if (!cid) return Promise.resolve({ data: null, error: { message: "challenge required" } });
+            const ch = rows("challenges").find((c) => c.id === cid);
+            if (!ch) return Promise.resolve({ data: null, error: { message: "challenge not found" } });
+            if (ch.status === "draft" && ch.created_by !== uid && !permHas(uid, "community.challenge.create")) {
+              return Promise.resolve({ data: null, error: { message: "challenge not found" } });
+            }
+          }
+          const limit = Math.max(1, Math.min(Number((args && args.p_limit) != null ? args.p_limit : 50), 100));
+          const isAdminCaller = !!(rows("profiles").find((p) => p.id === uid) || {}).is_admin;
+          const mutual = (other) => rows("follows").some((f) => f.follower_id === uid && f.followed_id === other)
+            && rows("follows").some((f) => f.follower_id === other && f.followed_id === uid);
+          const cand = rows("profiles").filter((p) => {
+            if (p.deleted_at) return false;
+            if (scope === "friends" && p.id !== uid && !mutual(p.id)) return false;
+            if (p.id === uid) return true;
+            // can_view_profile_field settles a block edge in either direction
+            // before it looks at any toggle; the is_admin short-circuit is the
+            // module-wide behaviour of that resolution point.
+            if (isAdminCaller) return true;
+            const blocked = rows("blocks").some((b) => (b.blocker_id === uid && b.blocked_id === p.id) || (b.blocker_id === p.id && b.blocked_id === uid));
+            if (blocked) return false;
+            return p.visible_to_club !== false && p.in_leaderboards !== false;
+          }).map((p) => {
+            const red = rows("invite_redemptions").find((r) => r.user_id === p.id);
+            return {
+              user_id: p.id, display_name: p.display_name || null, handle: p.handle || null,
+              avatar_url: p.avatar_url || null, is_self: p.id === uid,
+              joined_at: (red && red.redeemed_at) || p.created_at || "",
+            };
+          });
+          let valued;
+          if (mode === "consistency") {
+            const streaks = rows("community_streaks");
+            valued = cand.map((c) => {
+              const s = streaks.find((r) => r.user_id === c.user_id);
+              return Object.assign({}, c, { value: Number((s && s.current_streak) || 0) });
+            });
+          } else {
+            valued = cand.map((c) => {
+              const p = rows("challenge_participants").find((r) => r.challenge_id === cid && r.user_id === c.user_id && r.status !== "withdrawn");
+              return p ? Object.assign({}, c, { value: Number(p.progress_value || 0) }) : null;
+            }).filter(Boolean);
+          }
+          const nameKey = (r) => String(r.display_name || "").trim() || String(r.handle || "");
+          valued.sort((a, b) => (b.value - a.value)
+            || String(a.joined_at).localeCompare(String(b.joined_at))
+            || nameKey(a).localeCompare(nameKey(b))
+            || String(a.user_id).localeCompare(String(b.user_id)));
+          const ranked = valued.map((r, i) => ({
+            user_id: r.user_id, display_name: r.display_name, handle: r.handle,
+            avatar_url: r.avatar_url, rank: i + 1, value: r.value, is_self: r.is_self,
+          }));
+          const top = ranked.filter((r) => r.rank <= limit);
+          const self = ranked.find((r) => r.is_self && r.rank > limit);
+          return Promise.resolve({ data: self ? top.concat([self]) : top, error: null });
+        }
+        // COMM-232. people_suggestions(p_limit) - the non-attendance
+        // "people you may know" fallback (202608290015). Mirrors the real
+        // function's exclusions (self, a follow edge in either direction, a
+        // block edge in either direction, visible_to_club / allow_follows) and
+        // its lexicographic priority: one shared live challenge outranks any
+        // number of shared interactions, which outrank shared events. A
+        // candidate with no signal at all is never returned, so a brand new
+        // member gets a genuinely empty strip.
+        if (name === "people_suggestions") {
+          const uid = currentUser && currentUser.id;
+          if (!uid) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          const limit = Math.max(1, Math.min(Number((args && args.p_limit) != null ? args.p_limit : 10), 20));
+          const since = Date.now() - 60 * 86400000;
+          const fresh = (v) => !!v && new Date(v).getTime() >= since;
+          const myChallenges = rows("challenge_participants").filter((p) => p.user_id === uid && p.status !== "withdrawn");
+          const liveChallenge = (id) => {
+            const c = rows("challenges").find((x) => x.id === id);
+            return !!c && c.status === "active" && (!c.end_at || new Date(c.end_at).getTime() >= Date.now());
+          };
+          const myPosts = new Set(rows("feed_interactions")
+            .filter((i) => i.user_id === uid && ["react", "comment"].includes(i.kind) && fresh(i.created_at))
+            .map((i) => i.post_id));
+          const myEvents = new Set(rows("event_attendees")
+            .filter((a) => a.user_id === uid && a.response === "going" && fresh(a.registered_at))
+            .map((a) => a.event_id));
+          const out = [];
+          for (const p of rows("profiles")) {
+            if (p.deleted_at || p.id === uid) continue;
+            if (rows("follows").some((f) => (f.follower_id === uid && f.followed_id === p.id) || (f.follower_id === p.id && f.followed_id === uid))) continue;
+            if (rows("blocks").some((b) => (b.blocker_id === uid && b.blocked_id === p.id) || (b.blocker_id === p.id && b.blocked_id === uid))) continue;
+            if (p.visible_to_club === false || p.allow_follows === false) continue;
+            const sharedChallenges = new Set(rows("challenge_participants")
+              .filter((r) => r.user_id === p.id && r.status !== "withdrawn"
+                && myChallenges.some((m) => m.challenge_id === r.challenge_id) && liveChallenge(r.challenge_id))
+              .map((r) => r.challenge_id)).size;
+            const sharedInteractions = new Set(rows("feed_interactions")
+              .filter((i) => i.user_id === p.id && ["react", "comment"].includes(i.kind) && fresh(i.created_at) && myPosts.has(i.post_id))
+              .map((i) => i.post_id)).size;
+            const sharedEvents = new Set(rows("event_attendees")
+              .filter((a) => a.user_id === p.id && a.response === "going" && fresh(a.registered_at) && myEvents.has(a.event_id))
+              .map((a) => a.event_id)).size;
+            if (!sharedChallenges && !sharedInteractions && !sharedEvents) continue;
+            out.push({
+              user_id: p.id, display_name: p.display_name || null, handle: p.handle || null,
+              avatar_url: p.avatar_url || null,
+              reason: sharedChallenges ? "challenge" : sharedInteractions ? "interaction" : "event",
+              signals: { shared_challenges: sharedChallenges, shared_interactions: sharedInteractions, shared_events: sharedEvents },
+            });
+          }
+          const nameOf = (r) => String(r.display_name || "").trim() || String(r.handle || "");
+          out.sort((a, b) => (b.signals.shared_challenges - a.signals.shared_challenges)
+            || (b.signals.shared_interactions - a.signals.shared_interactions)
+            || (b.signals.shared_events - a.signals.shared_events)
+            || nameOf(a).localeCompare(nameOf(b))
+            || String(a.user_id).localeCompare(String(b.user_id)));
+          return Promise.resolve({ data: out.slice(0, limit), error: null });
+        }
         if (name === "mark_recovery_verified") {
           const prof = rows("profiles").find((r) => currentUser && r.id === currentUser.id);
           const hasCreds = currentUser && (currentUser.email || rows("__credentials").some((c) => c.userId === currentUser.id));

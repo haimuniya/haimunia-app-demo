@@ -316,6 +316,52 @@ client was already built against.
 - This is the single place COMM-306 (Phase 3) changes to move consistency onto
   verified attendance.
 
+### Leaderboard and suggestions client contract, COMM-210 to COMM-212, COMM-232
+
+- One fetch path and one row renderer serve every board in the client. Rows are
+  rendered in the order `feed_leaderboard` returned them and are never
+  re-sorted, re-ranked or re-filtered; the printed position is the row's `rank`
+  column, never an array index, because the caller's appended row's index is
+  not its position.
+- Three surfaces, two of them new:
+  - Boards sub-tab, "טבלת עקביות": `consistency`, `p_limit 50`. Replaces the
+    older `community_streaks` strip that used to sit there. `loadStreaks()` and
+    `state.streaks` remain for the coach Welcome surface, which reuses the same
+    per-member figure.
+  - Challenge detail panel for `individual_performance` and `coach`:
+    `progress`, `p_limit 20`, fetched inside `refreshChallengeView()` before the
+    dialog drops its loading flag so the board and the detail land in one paint.
+    This replaced the panel's earlier read of `chal_progress()`'s own
+    `leaderboard` key. That key is unchanged and still shipped, per the
+    `leaderboard_row` entry above; the client simply no longer reads it.
+  - The same panel re-asking with `p_limit 50` is COMM-211's "dedicated full
+    leaderboard screen": one code path and one set of states rather than a
+    second surface.
+- Empty states follow the contract's zero rule, not the row count: "no rows OR
+  every `value` is 0". The friends-scope empty state is narrower still - the
+  caller is always returned whatever the scope, so "no mutual follows yet" is
+  "no row that is not mine", not "no rows".
+- `p_scope` is the only thing the scope switch changes. A stale in-flight
+  answer for the previous scope is dropped rather than painted.
+- "Hide my result" is `state.hideMyLeaderboardResult`, a per-device
+  localStorage flag (`haimunia-demo:hideMyLeaderboardResult`, default off,
+  stored the same way `syncEnabled` is). It filters the caller's row out of the
+  render and does nothing else: no request, no parameter, no write. It is
+  deliberately worded in the UI so it cannot be mistaken for `in_leaderboards`,
+  which is the real, server-enforced opt-out and stays in the Privacy panel.
+- COMM-232's strip renders `people_suggestions(10)` in the order returned, with
+  an advisory Hebrew label per `reason`. Follow reuses the same `follow()`
+  insert-or-delete path the search UI's follow button uses; the card is dropped
+  locally afterwards because the server already excludes a follow edge in
+  either direction. On error the strip is omitted entirely - no heading, no
+  empty state, no retry - which is deliberately unlike every other surface in
+  this module.
+- Two forward-looking markers, both `TODO(COMM-231)` in `cloud.js`: the
+  suggestions strip is mounted on the Account sub-tab under COMM-228's search
+  UI, and COMM-212's friends empty state routes to that same search, because
+  the members directory does not exist yet. Both should point at the directory
+  once it ships.
+
 ## Needs from schema, feed (Phase 2)
 
 Nothing outstanding. `leaderboard_row`, `feed_leaderboard`,

@@ -365,12 +365,12 @@ empty, unchanged from Phase 1, until COMM-304.
 | COMM-209 | Challenge realtime progress | platform | review |
 | COMM-227 | Realtime for comments and reaction counts | platform | review |
 | COMM-228 | Member, event, and challenge search | platform | review |
-| COMM-210 | Consistency leaderboard mode, non-attendance | feed | todo |
-| COMM-211 | Progress leaderboard mode | feed | todo |
-| COMM-212 | Friends leaderboard mode and hide-my-result | feed | todo |
+| COMM-210 | Consistency leaderboard mode, non-attendance | feed | review |
+| COMM-211 | Progress leaderboard mode | feed | review |
+| COMM-212 | Friends leaderboard mode and hide-my-result | feed | review |
 | COMM-230 | Following system surface and states | engagement | todo |
 | COMM-231 | Members directory screen | engagement | todo |
-| COMM-232 | People you train with suggestions, non-attendance fallback | feed | todo |
+| COMM-232 | People you train with suggestions, non-attendance fallback | feed | review |
 
 COMM-209, COMM-227 and COMM-228 are complete, both halves. Schema shipped in
 202608290007 and 202608290008: `challenge_progress`,
@@ -393,9 +393,34 @@ an event search result had nowhere to navigate until COMM-213 built the
 event detail surface, so it recorded `EVENT_VIEWED` and rendered title,
 start and status only - closed by the events cluster, whose `open-event`
 action now opens the real detail dialog from that same search row.
-COMM-210 to COMM-212
-share one new `feed_leaderboard` function; COMM-232 needs a new
-`people_suggestions` function. See "Needs from schema, feed (Phase 2)".
+COMM-210, COMM-211, COMM-212 and COMM-232 are now complete, both halves.
+Schema shipped in 202608290015 (`leaderboard_row`, `feed_leaderboard`,
+`people_suggestions`, `consistency_week_streaks`); the client half landed in
+`cloud.js` as one fetch path and one row renderer shared by every board. See
+"### Leaderboard and suggestions client contract" in
+`docs/community/contracts.md` and
+`test/community-leaderboards-and-suggestions.test.mjs` for the executing
+coverage. Three decisions worth carrying forward:
+
+- COMM-210's board replaced the old `community_streaks` strip on the Boards
+  sub-tab rather than sitting beside it. Same figure, but ranked, tie-broken
+  and privacy-filtered server-side, with the caller's own row always present.
+  `loadStreaks()` / `state.streaks` stay, still read by the coach Welcome
+  surface.
+- COMM-211 swapped COMM-207's existing challenge-detail leaderboard panel off
+  `chal_progress()`'s own `leaderboard` key and onto
+  `feed_leaderboard(mode='progress', limit=20)`, which is what the ticket asked
+  for and also closes a real gap: the old key applies neither `in_leaderboards`
+  nor a stable tie-break. "The full board at 50" is the same panel re-asking,
+  not a second screen. `chal_progress`'s key is untouched; the client just no
+  longer reads it.
+- COMM-232's strip is temporarily mounted on the **Account** sub-tab, directly
+  under COMM-228's search UI, because the members directory it belongs on
+  (COMM-231) is not built yet. Both the strip and COMM-212's friends-scope
+  empty state carry `TODO(COMM-231)` markers; the directory cluster should pick
+  up both, the same way the events cluster picked up the realtime/search
+  cluster's event-search-result note above.
+
 COMM-230 and COMM-231 need no new contract, both direct RLS reads on
 `follows` and `profiles`.
 

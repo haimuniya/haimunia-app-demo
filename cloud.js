@@ -112,7 +112,28 @@
     // it before boot the same way it flips cloud sync). No producer writes
     // coach_engagement_flags in Phase 2 - this only ever reads.
     featureFlags: { coachEngage: localStorage.getItem("haimunia-demo:coachEngageFlag") === "1" },
-    coachEngage: { items: [], loading: false, loaded: false, error: false } };
+    coachEngage: { items: [], loading: false, loaded: false, error: false },
+    // COMM-210/211/212 leaderboard cluster. `leaderboard` is the club-wide
+    // consistency board on the Boards sub-tab: rows are feed_leaderboard()
+    // output in the exact order the function returned them and are never
+    // re-sorted here (the rank column is the server's, not an array index).
+    // scope is 'club' or 'friends' and is the only thing a scope switch
+    // changes - it re-fetches, it does not reload the tab. The challenge
+    // progress board lives on state.challengeView.board instead, because it
+    // is scoped to whichever challenge detail is open.
+    leaderboard: { scope: "club", rows: [], loading: false, loaded: false, error: false },
+    // COMM-212. Client-only, per-device, never a query parameter and never a
+    // privacy setting: the server always returns the caller's own row, and
+    // this only stops the client from drawing it. The real, server-enforced
+    // opt-out is the in_leaderboards toggle in the Privacy panel (COMM-018).
+    // Stored the same localStorage-backed way as syncEnabled/coachEngage
+    // above, read once at module init, defaulting to showing the row.
+    hideMyLeaderboardResult: localStorage.getItem("haimunia-demo:hideMyLeaderboardResult") === "1",
+    // COMM-232. people_suggestions() output, rendered in the order returned
+    // (the function already ranks by strongest signal). busy holds the ids
+    // of in-flight follows. An error leaves the strip omitted entirely, so
+    // there is deliberately no retry affordance keyed off `error` here.
+    peopleSuggestions: { items: [], loading: false, loaded: false, error: false, busy: {} } };
   const photoUrlCache = {};
 
   // COMM-141. The notification badge refreshes on a realtime own-row
@@ -2156,6 +2177,298 @@
     return `<div class="log-list">${rows.join("")}</div>`;
   }
 
+  // ==========================================================================
+  // COMM-210 / COMM-211 / COMM-212 - feed_leaderboard, both modes, both scopes
+  // ==========================================================================
+  // One server function (202608290015) backs every board here, so the client
+  // has exactly one fetch path, one row renderer and one set of states. The
+  // rows come back already ranked, already tie-broken and already filtered on
+  // in_leaderboards / visible_to_club / block edges; nothing below re-sorts,
+  // re-ranks or re-filters them. `rank` is read off the row, never derived
+  // from the array index, because the caller's own row is appended after the
+  // visible cutoff and its index is therefore not its position.
+  //
+  // Three contract details drive the code below and are easy to get wrong:
+  //
+  // 1. Zero is a real ranked value, not "no data". Every eligible member is
+  //    ranked including a 0-week streak, so "not enough data yet" is "no rows
+  //    OR every value is 0", not "no rows".
+  // 2. The caller's row is ALWAYS returned, appended last with its real rank
+  //    when it fell outside p_limit. That is what makes "where do I stand"
+  //    free; splitLeaderboardRows() below is what tells the two apart.
+  // 3. "Hide my result" is a render choice on top of that row - never a
+  //    parameter, never a privacy setting. See state.hideMyLeaderboardResult.
+  const LEADERBOARD_SCOPES = [
+    { id: "club", label: "כל המועדון" },
+    { id: "friends", label: "חברים" },
+  ];
+  // COMM-210 asks for 50, COMM-211's in-panel board for 20 with a full board
+  // at 50. The server clamps to 1..100 regardless; these are what we request.
+  const CONSISTENCY_BOARD_LIMIT = 50;
+  const CHALLENGE_BOARD_LIMIT = 20;
+  const CHALLENGE_BOARD_FULL_LIMIT = 50;
+  const HIDE_MY_RESULT_KEY = "haimunia-demo:hideMyLeaderboardResult";
+  const LEADERBOARD_ERROR_TEXT = "לא ניתן היה לטעון את הטבלה. נסו שוב.";
+
+  function leaderboardRows(board) { return Array.isArray(board && board.rows) ? board.rows : []; }
+  // Detail 1 above. A board of members who have all logged nothing yet is
+  // "not enough data", even though every one of them carries a real rank.
+  function leaderboardHasNoData(rows) {
+    return !rows.length || rows.every((r) => Number((r && r.value) || 0) === 0);
+  }
+  // COMM-212's empty friends state is "no mutual follows yet", which on the
+  // wire is "the only row is my own" - the caller is always included whatever
+  // the scope, so an empty friends board is one row, not zero.
+  function leaderboardHasNoFriends(rows) {
+    return !rows.some((r) => r && !r.is_self);
+  }
+  // Detail 2 above. Only the LAST row can be the appended self row, and only
+  // when its rank fell outside the limit we asked for. Everything before it is
+  // the contiguous top block.
+  function splitLeaderboardRows(rows, limit) {
+    const last = rows[rows.length - 1];
+    if (last && last.is_self && Number(last.rank) > Number(limit)) {
+      return { top: rows.slice(0, -1), self: last };
+    }
+    return { top: rows, self: null };
+  }
+  function setHideMyLeaderboardResult(next) {
+    state.hideMyLeaderboardResult = !!next;
+    try { localStorage.setItem(HIDE_MY_RESULT_KEY, next ? "1" : "0"); } catch (e) { /* private mode */ }
+    rerender();
+  }
+
+  // ---- Fetch: consistency board (COMM-210), club or friends (COMM-212) -----
+  async function loadConsistencyLeaderboard() {
+    if (!client || !state.user) return;
+    const b = state.leaderboard;
+    const scope = b.scope;
+    b.loading = true; b.error = false;
+    rerender();
+    const { data, error } = await client.rpc("feed_leaderboard", {
+      p_mode: "consistency", p_challenge_id: null, p_scope: scope, p_limit: CONSISTENCY_BOARD_LIMIT,
+    });
+    // A scope switch while this was in flight wins; the stale answer is
+    // dropped rather than briefly painting the previous scope's rows.
+    if (b.scope !== scope) return;
+    b.loading = false; b.loaded = true;
+    if (error) { b.error = true; b.rows = []; return rerender(); }
+    b.rows = Array.isArray(data) ? data : [];
+    track(A.LEADERBOARD_VIEWED, { board: "consistency", rows: b.rows.length, source: "boards" });
+    rerender();
+  }
+  function setLeaderboardScope(scope) {
+    if (!scope || state.leaderboard.scope === scope) return;
+    // COMM-212: a scope change is a re-fetch of the same surface, never a
+    // reload. The previous rows stay on screen under the skeleton gate below
+    // only until the new ones land.
+    state.leaderboard.scope = scope;
+    state.leaderboard.rows = [];
+    state.leaderboard.error = false;
+    loadConsistencyLeaderboard();
+  }
+
+  // ---- Fetch: challenge progress board (COMM-211) --------------------------
+  // Lives on the open challenge detail so it dies with it. Called from inside
+  // refreshChallengeView() before the dialog drops its loading flag, so the
+  // board and the rest of the detail appear together rather than the board
+  // popping in a frame later.
+  async function loadChallengeBoard(id, opts) {
+    if (!client || !state.user) return;
+    const v = state.challengeView;
+    if (!v || v.id !== id || !v.board) return;
+    const b = v.board;
+    const scope = b.scope, limit = b.limit;
+    b.loading = true; b.error = false;
+    if (opts && opts.rerender) rerender();
+    const { data, error } = await client.rpc("feed_leaderboard", {
+      p_mode: "progress", p_challenge_id: id, p_scope: scope, p_limit: limit,
+    });
+    const cur = state.challengeView;
+    if (!cur || cur.id !== id || cur.board !== b || b.scope !== scope || b.limit !== limit) return;
+    b.loading = false; b.loaded = true;
+    if (error) { b.error = true; b.rows = []; }
+    else {
+      b.rows = Array.isArray(data) ? data : [];
+      track(A.LEADERBOARD_VIEWED, { board: "challenge_progress", rows: b.rows.length, source: "challenge" });
+    }
+    if (opts && opts.rerender) rerender();
+  }
+  function setChallengeBoardScope(scope) {
+    const v = state.challengeView;
+    if (!v || !v.board || !scope || v.board.scope === scope) return;
+    v.board.scope = scope;
+    v.board.rows = [];
+    v.board.error = false;
+    loadChallengeBoard(v.id, { rerender: true });
+  }
+  // COMM-211's "50 on a dedicated full leaderboard screen if one is opened".
+  // Rather than a second screen with a second fetch path, the same panel
+  // re-asks for the full 50 in place - one code path, one set of states.
+  function expandChallengeBoard() {
+    const v = state.challengeView;
+    if (!v || !v.board || v.board.limit >= CHALLENGE_BOARD_FULL_LIMIT) return;
+    v.board.limit = CHALLENGE_BOARD_FULL_LIMIT;
+    v.board.rows = [];
+    v.board.error = false;
+    loadChallengeBoard(v.id, { rerender: true });
+  }
+
+  // ---- Render ---------------------------------------------------------------
+  function leaderboardScopeSwitchHtml(action, active) {
+    return `<div class="chip-row" role="group" aria-label="היקף הטבלה" style="margin:0 0 8px;">${LEADERBOARD_SCOPES.map((s) => `<button class="chip-btn${s.id === active ? " primary" : ""}" data-community-action="${action}" data-scope="${s.id}" aria-pressed="${s.id === active ? "true" : "false"}">${s.label}</button>`).join("")}</div>`;
+  }
+  // Deliberately worded so it cannot be mistaken for the server-enforced
+  // opt-out: this hides a row from this device's view of the table, it does
+  // not remove anyone from the table. The real opt-out is in_leaderboards,
+  // reachable from the Privacy panel and from the link on the weekly board.
+  function leaderboardHideToggleHtml() {
+    return `<label class="log-row" style="justify-content:space-between;gap:12px;cursor:pointer;margin-top:8px;"><span style="font-size:13px;">הסתרת השורה שלי בתצוגה הזו<span style="color:var(--steel);display:block;font-size:11px;">במכשיר הזה בלבד. אינה משנה את הגדרת הפרטיות.</span></span><input type="checkbox" data-leaderboard-hide-self="1"${state.hideMyLeaderboardResult ? " checked" : ""} aria-label="הסתרת השורה שלי בתצוגה הזו"/></label>`;
+  }
+  function leaderboardSkeletonHtml(n) {
+    const row = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:52%;background:var(--border);border-radius:6px;display:inline-block;"></span><span style="height:12px;width:18%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
+    return `<div class="log-list" aria-busy="true" data-leaderboard-skeleton="1">${row.repeat(n || 4)}</div>`;
+  }
+  // Same "you" marking convention the challenge board and renderRankedList
+  // already use: the energy border plus a "(את/ה)" suffix. Reused rather than
+  // reinvented so one member reads the same on every ranked surface.
+  function leaderboardRowHtml(row, formatValue) {
+    const isSelf = !!row.is_self;
+    const name = row.display_name || (row.handle ? "@" + row.handle : "חבר/ה");
+    return `<div class="log-row" data-leaderboard-user="${safeText(row.user_id)}"${isSelf ? ` data-leaderboard-self="1" style="border-color:var(--energy);"` : ""}><span>${Number(row.rank)}. ${safeText(name)}${isSelf ? " (את/ה)" : ""}</span><span class="mono" style="color:var(--brass);">${formatValue(row)}</span></div>`;
+  }
+  // COMM-212. The friends empty state points at the existing search UI on the
+  // Account tab, which is the only people-finding surface that exists today.
+  // TODO(COMM-231): once the members directory ships, this should point there
+  // as well (or instead) - the ticket names the directory first and search as
+  // the fallback, and the directory screen is the next cluster after this one.
+  function leaderboardFriendsEmptyHtml() {
+    return `<div class="empty" data-leaderboard-empty="friends">עקבו אחרי חברים כדי להשוות תוצאות.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="leaderboard-find-people">חיפוש אנשים</button></div></div>`;
+  }
+  function renderLeaderboardBody(board, opts) {
+    const rows = leaderboardRows(board);
+    if (board.loading && !rows.length) return leaderboardSkeletonHtml(4);
+    if (board.error) {
+      return `<div class="empty" role="alert" data-leaderboard-empty="error">${LEADERBOARD_ERROR_TEXT}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="${opts.retryAction}">ניסיון חוזר</button></div></div>`;
+    }
+    if (board.scope === "friends" && leaderboardHasNoFriends(rows)) return leaderboardFriendsEmptyHtml();
+    if (leaderboardHasNoData(rows)) return `<div class="empty" data-leaderboard-empty="no-data">${opts.emptyText}</div>`;
+    const { top, self } = splitLeaderboardRows(rows, opts.limit);
+    const hide = state.hideMyLeaderboardResult;
+    const topHtml = top.filter((r) => !(hide && r.is_self)).map((r) => leaderboardRowHtml(r, opts.formatValue)).join("");
+    // The divider marks the gap between the visible top and the caller's own
+    // standing below it - the same "···" renderRankedList already uses.
+    const selfHtml = (self && !hide)
+      ? `<div class="empty" style="padding:4px 0;font-size:16px;">···</div>` + leaderboardRowHtml(self, opts.formatValue)
+      : "";
+    return `<div class="log-list" style="max-height:420px;overflow:auto;">${topHtml}${selfHtml}</div>`;
+  }
+  // COMM-210. The club-wide consistency board on the Boards sub-tab. Replaces
+  // the older "רצפי התמדה" strip, which read community_streaks directly and
+  // therefore ranked without the in_leaderboards / block filtering, without a
+  // stable tie-break and without the caller's own row when they were outside
+  // the top three. Same figure, same source of truth as community_profile's
+  // current_streak - see consistency_week_streaks() in contracts.md - now
+  // resolved server-side. loadStreaks()/state.streaks stay for the coach
+  // Welcome surface, which reuses the same number per member.
+  function renderConsistencyLeaderboardSection() {
+    const b = state.leaderboard;
+    const body = renderLeaderboardBody(b, {
+      limit: CONSISTENCY_BOARD_LIMIT,
+      emptyText: "עדיין אין מספיק נתונים לטבלת עקביות.",
+      retryAction: "leaderboard-retry",
+      formatValue: (r) => `🔥 ${Number(r.value || 0)}`,
+    });
+    return `<div class="ach-section" data-leaderboard="consistency">${sectionHead("var(--purple)", "טבלת עקביות")}
+      ${leaderboardScopeSwitchHtml("leaderboard-scope", b.scope)}
+      ${body}
+      ${leaderboardHideToggleHtml()}
+      <div class="footer-note" style="margin-top:8px;">רצף שבועות רצופים עם אימון מתועד. נתוני נוכחות מאומתים יתווספו בהמשך.</div>
+    </div>`;
+  }
+
+  // ==========================================================================
+  // COMM-232 - "אנשים שאולי תכירו"
+  // ==========================================================================
+  // PLACEMENT NOTE. COMM-232 says this strip belongs on the members directory
+  // (COMM-231). That screen does not exist yet - it is the next cluster after
+  // this one - so the strip lives on the Account sub-tab, directly under the
+  // COMM-228 search UI, which is the only people-finding surface shipped
+  // today. TODO(COMM-231): move (or additionally mount) renderPeopleSuggestions()
+  // on the directory screen when it lands; nothing here is Account-specific,
+  // it is one call and one string of markup.
+  //
+  // The error state is unusual on purpose: the strip is omitted entirely
+  // rather than showing a retry, because this is a secondary surface and a
+  // broken recommendation row is worse than no recommendation row.
+  const PEOPLE_SUGGESTIONS_LIMIT = 10;
+  const SUGGESTION_REASONS = {
+    challenge: "אתגר משותף",
+    interaction: "פעילות משותפת בפיד",
+    event: "אירוע משותף",
+  };
+  async function loadPeopleSuggestions() {
+    if (!client || !state.user) return;
+    const s = state.peopleSuggestions;
+    s.loading = true; s.error = false;
+    rerender();
+    const { data, error } = await client.rpc("people_suggestions", { p_limit: PEOPLE_SUGGESTIONS_LIMIT });
+    s.loading = false; s.loaded = true;
+    if (error) { s.error = true; s.items = []; return rerender(); }
+    // Rendered in the order returned: people_suggestions() already ranks by
+    // strongest signal (a shared live challenge outranks any number of shared
+    // reactions), and re-sorting here would throw that away.
+    s.items = (Array.isArray(data) ? data : []).filter(Boolean);
+    rerender();
+  }
+  // Reuses follow() - the same insert-or-delete path the search UI's follow
+  // button uses - rather than a second write. COMM-230's following surface is
+  // not built yet; when it is, this stays pointed at the same action.
+  // The card is dropped locally afterwards because the server already excludes
+  // a follow edge in either direction, so a refetch would drop it anyway.
+  async function followSuggestion(userId) {
+    if (!userId) return;
+    const s = state.peopleSuggestions;
+    s.busy[userId] = true;
+    rerender();
+    await follow(userId);
+    delete s.busy[userId];
+    s.items = s.items.filter((it) => it && it.user_id !== userId);
+    rerender();
+  }
+  function suggestionCardHtml(item) {
+    const name = item.display_name || (item.handle ? "@" + item.handle : "חבר/ה");
+    const reason = SUGGESTION_REASONS[item.reason] || "";
+    const busy = !!state.peopleSuggestions.busy[item.user_id];
+    return `<div class="chart-card" data-suggestion-user="${safeText(item.user_id)}" style="flex:0 0 auto;min-width:148px;max-width:170px;text-align:center;margin:0;">
+      ${avatarHtml(name, 44)}
+      <div style="font-weight:700;margin-top:6px;font-size:13px;">${safeText(name)}</div>
+      ${item.handle ? `<div style="color:var(--steel);font-size:12px;">@${safeText(item.handle)}</div>` : ""}
+      ${reason ? `<div style="color:var(--steel);font-size:11px;margin-top:4px;">${safeText(reason)}</div>` : ""}
+      <div class="chip-row" style="justify-content:center;margin-top:6px;">
+        <button class="chip-btn primary" data-community-action="suggestion-follow" data-id="${safeText(item.user_id)}"${busy ? " disabled" : ""}>${busy ? "…" : "מעקב"}</button>
+        <button class="chip-btn" data-community-action="view-profile" data-id="${safeText(item.user_id)}">פרופיל</button>
+      </div>
+    </div>`;
+  }
+  function renderPeopleSuggestions() {
+    const s = state.peopleSuggestions;
+    // COMM-232: on error the strip is not rendered at all - no heading, no
+    // empty state, no retry. Nothing tells the member a thing failed.
+    if (s.error) return "";
+    const head = sectionHead("var(--teal)", "אנשים שאולי תכירו");
+    if (!s.loaded) {
+      const card = `<div class="chart-card" aria-hidden="true" style="flex:0 0 auto;min-width:148px;height:118px;margin:0;"></div>`;
+      return `<div class="ach-section" style="margin-top:18px;" data-people-suggestions="loading">${head}<div class="flex gap-10" aria-busy="true" style="overflow-x:auto;padding-bottom:4px;">${card.repeat(3)}</div></div>`;
+    }
+    if (!s.items.length) {
+      return `<div class="ach-section" style="margin-top:18px;" data-people-suggestions="empty">${head}<div class="empty">עדיין אין המלצות. התחילו לבלות בקהילה כדי לקבל הצעות.</div></div>`;
+    }
+    return `<div class="ach-section" style="margin-top:18px;" data-people-suggestions="ready">${head}
+      <div class="flex gap-10" style="overflow-x:auto;padding-bottom:4px;align-items:stretch;">${s.items.map(suggestionCardHtml).join("")}</div>
+    </div>`;
+  }
+
   // ---- COMM-228 grouped search -------------------------------------------
   // One box, three labeled groups, never interleaved: a member row is not
   // comparable to an event row, and mixing them would force an ordering
@@ -2881,6 +3194,11 @@
       joining: false, leaving: false, teamJoining: null, sharing: false,
       logForm: { delta: "", note: "", busy: false, error: "" },
       coachEntry: { drafts: {}, busy: {}, error: "" },
+      // COMM-211/212. feed_leaderboard(mode='progress') rows for this
+      // challenge, fetched only for the two types whose panel shows a board.
+      // Starts `loading` so the first paint is the skeleton, not an empty
+      // state we have not asked the server about yet.
+      board: { scope: "club", limit: CHALLENGE_BOARD_LIMIT, rows: [], loading: true, loaded: false, error: false },
     };
     rerender();
     await refreshChallengeView(id);
@@ -2929,6 +3247,16 @@
         if (list.length >= 10) break;
       }
       state.challengeView.contributors = list;
+    }
+    // COMM-211. Awaited before the dialog drops its loading flag so the board
+    // and the rest of the detail land in the same paint. Only the two types
+    // whose panel is a leaderboard ask for it; nothing else touches
+    // feed_leaderboard from the challenge detail at all.
+    if (challenge.challenge_type === "individual_performance" || challenge.challenge_type === "coach") {
+      await loadChallengeBoard(id, { rerender: false });
+      if (!state.challengeView || state.challengeView.id !== id) return;
+    } else if (state.challengeView.board) {
+      state.challengeView.board.loading = false;
     }
     state.challengeView.loading = false;
     rerender();
@@ -3579,12 +3907,33 @@
       ${v.logForm.error ? `<div class="field-error" role="alert" style="margin-top:6px;">${safeText(v.logForm.error)}</div>` : ""}
     </div>`;
   }
+  // COMM-211. This panel used to rank chal_progress()'s own simpler
+  // `leaderboard` key (202608290003), which numbers rows by array index and
+  // applies neither in_leaderboards nor a stable tie-break, and which drops
+  // the caller entirely once they are past the twentieth row. It now reads
+  // feed_leaderboard(mode='progress') instead - same panel, same slot, same
+  // 20-row cap, but the server's rank, the server's privacy filtering and the
+  // caller's own row always present. chal_progress's key is left untouched
+  // (contracts.md calls widening it an additive follow-up, not a break); this
+  // client just no longer reads it. In progress mode a caller who never
+  // joined the challenge has no row at all, which is correct: there is no
+  // standing in a challenge you did not enter.
   function renderChallengeLeaderboardPanel(v) {
-    const p = v.progress || {};
-    const board = Array.isArray(p.leaderboard) ? p.leaderboard : [];
-    if (!board.length) return `<div class="empty">אין עדיין דירוג להצגה.</div>`;
-    const selfId = state.user && state.user.id;
-    return `<div class="log-list" style="margin-bottom:10px;">${board.map((row, i) => `<div class="log-row"${row.user_id === selfId ? ' style="border-color:var(--energy);"' : ""}><span>${i + 1}. ${safeText(row.name || (row.handle ? "@" + row.handle : "חבר/ה"))}${row.user_id === selfId ? " (את/ה)" : ""}</span><span class="mono" style="color:var(--brass);">${safeText(row.value)}</span></div>`).join("")}</div>`;
+    const b = v.board || { scope: "club", limit: CHALLENGE_BOARD_LIMIT, rows: [], loading: true, error: false };
+    const body = renderLeaderboardBody(b, {
+      limit: b.limit,
+      emptyText: "עדיין אין תוצאות לדירוג.",
+      retryAction: "challenge-board-retry",
+      formatValue: (r) => safeText(r.value),
+    });
+    const canExpand = !b.loading && !b.error && leaderboardRows(b).length && b.limit < CHALLENGE_BOARD_FULL_LIMIT;
+    const expand = canExpand ? `<div class="chip-row" style="margin-top:6px;"><button class="chip-btn" data-community-action="challenge-board-full">צפייה בטבלה המלאה</button></div>` : "";
+    return `<div class="chart-card" style="margin-bottom:10px;" data-leaderboard="challenge">
+      <div class="field-label" style="margin-bottom:6px;">דירוג${b.limit >= CHALLENGE_BOARD_FULL_LIMIT ? " מלא" : ""}</div>
+      ${leaderboardScopeSwitchHtml("challenge-board-scope", b.scope)}
+      ${body}${expand}
+      ${leaderboardHideToggleHtml()}
+    </div>`;
   }
   function renderCoachEntryPanel(v) {
     const active = (v.participants || []).filter((p) => p.status === "active");
@@ -5860,7 +6209,10 @@
       : (state.profile ? `<div class="footer-note" style="margin:8px 0 0;">התוצאה שלך מוסתרת מהטבלאות. אפשר להחזיר אותה בהגדרות הפרטיות.</div>` : "");
     const weeklyChallengeHtml = `<div class="ach-section">${sectionHead("var(--teal)", state.weeklyChallenge ? `אתגר השבוע: ${safeText(state.weeklyChallenge.title)}` : "אתגר השבוע")}${weeklyLeaderboardList}${hideMyResult}${challengeSetter}</div>`;
 
-    const streaksHtml = state.streaks.length ? `<div class="ach-section">${sectionHead("var(--purple)", "רצפי התמדה")}${renderRankedList(state.streaks, (it) => it.user_id, (it) => `🔥 ${Number(it.current_streak)}`)}</div>` : "";
+    // COMM-210/212. The consistency board, server-ranked through
+    // feed_leaderboard, replaces the old community_streaks strip that used to
+    // sit here (see renderConsistencyLeaderboardSection for why).
+    const streaksHtml = renderConsistencyLeaderboardSection();
 
     const boardsTab = renderChallengesListSection() + renderEventsListSection() + weeklyChallengeHtml + streaksHtml;
 
@@ -5894,7 +6246,12 @@
     const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מתאמנים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין מתאמנים חדשים לאחרונה</div>`}</div>` : "";
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
-    const accountTab = account + recapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
+    // COMM-232. Temporary home: directly under the search UI on the Account
+    // sub-tab, because the members directory it belongs on (COMM-231) is not
+    // built yet. See the PLACEMENT NOTE above renderPeopleSuggestions().
+    const suggestions = renderPeopleSuggestions();
+
+    const accountTab = account + recapEntry + privacyPanel + people + suggestions + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
 
@@ -6091,6 +6448,18 @@
     // COMM-154. The audit view is lazy: fetched the first time an analytics
     // holder lands on the Account tab, not on every session.
     if (state.communityTab === "account" && hasPerm(PERM.ANALYTICS_VIEW) && !state.auditLoaded && !state.auditLoading) loadAuditLog(true);
+    // COMM-210. Same lazy pattern for the consistency board: one
+    // feed_leaderboard() call the first time a member lands on the Boards
+    // sub-tab, not on every session boot.
+    if (state.communityTab === "boards" && state.user && !state.leaderboard.loaded && !state.leaderboard.loading) loadConsistencyLeaderboard();
+    // COMM-232. And for the suggestions strip on the Account sub-tab.
+    if (state.communityTab === "account" && state.user && !state.peopleSuggestions.loaded && !state.peopleSuggestions.loading) loadPeopleSuggestions();
+    // COMM-212. The hide-my-result checkbox persists per device on change,
+    // the same no-save-button pattern the privacy toggles below use - except
+    // this one writes localStorage, never the server.
+    document.querySelectorAll("[data-leaderboard-hide-self]").forEach((el) => {
+      el.addEventListener("change", () => setHideMyLeaderboardResult(el.checked));
+    });
     // COMM-223..226. Same lazy pattern for the Coach Dashboard's own three
     // loads: fetched the first time a staff member actually lands on the
     // sub-tab, not on every session, and Engage only once its flag is on
@@ -6180,6 +6549,21 @@
     else if (action === "set-tab") setCommunityTab(el.dataset.tab);
     else if (action === "verify-recovery") verifyRecovery({ force: true });
     else if (action === "hide-my-leaderboard-result") savePrivacyField("in_leaderboards", false);
+    // COMM-210/211/212 leaderboards. Note the deliberate split from the line
+    // above: that one is the real, server-enforced opt-out (in_leaderboards);
+    // these only change what this device fetches and draws.
+    else if (action === "leaderboard-scope") setLeaderboardScope(el.dataset.scope);
+    else if (action === "leaderboard-retry") loadConsistencyLeaderboard();
+    else if (action === "challenge-board-scope") setChallengeBoardScope(el.dataset.scope);
+    else if (action === "challenge-board-retry") { if (state.challengeView) loadChallengeBoard(state.challengeView.id, { rerender: true }); }
+    else if (action === "challenge-board-full") expandChallengeBoard();
+    // COMM-212. The friends-scope empty state points at the only
+    // people-finding surface that exists today, COMM-228's search on the
+    // Account sub-tab. TODO(COMM-231): route to the members directory once
+    // that screen ships.
+    else if (action === "leaderboard-find-people") setCommunityTab("account");
+    // COMM-232 suggestions strip.
+    else if (action === "suggestion-follow") followSuggestion(el.dataset.id);
     else if (action === "confirm-yes") runConfirm();
     else if (action === "confirm-no") closeConfirm();
     else if (action === "start-signup") startSignup();
@@ -6393,7 +6777,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false };
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} };
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();

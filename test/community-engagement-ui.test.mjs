@@ -19,10 +19,17 @@ test("Community tab is split into feed/boards/account sub-tabs, defaulting to fe
   assert.match(src, /id: "feed".*id: "boards".*id: "account"/s);
 });
 
-test("streaks and the weekly challenge use the top-3-plus-your-rank framing, not one long ranked list", () => {
+// COMM-210 replaced the streaks half of this: the consistency board no
+// longer ranks state.streaks (a direct community_streaks read, numbered by
+// array index, with no in_leaderboards/block filtering) - it renders
+// feed_leaderboard() rows, which carry the server's own rank and always
+// include the caller. The weekly challenge board is untouched and still uses
+// the top-3-plus-your-rank framing, so that half is asserted as before.
+test("the weekly challenge board still uses the top-3-plus-your-rank framing, and the consistency board moved onto feed_leaderboard", () => {
   assert.match(src, /function renderRankedList\(items, selfKeyOf, formatValue\)/);
   assert.match(src, /renderRankedList\(state\.weeklyLeaderboard, \(it\) => it\.author_id/);
-  assert.match(src, /renderRankedList\(state\.streaks, \(it\) => it\.user_id/);
+  assert.doesNotMatch(src, /renderRankedList\(state\.streaks/, "the streaks strip is gone, superseded by the COMM-210 board");
+  assert.match(src, /const streaksHtml = renderConsistencyLeaderboardSection\(\);/);
 });
 
 test("comments expand/collapse per post and post through a per-post form, not a shared one", () => {
