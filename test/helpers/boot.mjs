@@ -106,6 +106,13 @@ export async function bootCommunity(mock, opts = {}) {
   // cloud.js reads this synchronously at module init (state.syncEnabled),
   // so it has to be set before cloud.js is eval'd below, not after.
   if (opts.syncEnabled) window.localStorage.setItem("haimunia-demo:cloudSyncEnabled", "1");
+  // COMM-226. featureFlags.coachEngage is read the same way, once, at the
+  // same module-init literal - any other localStorage-backed flag added
+  // later can go through this same generic hook instead of a new
+  // one-off opts.* special case each time.
+  if (opts.localStorage) {
+    for (const [key, value] of Object.entries(opts.localStorage)) window.localStorage.setItem(key, value);
+  }
 
   const cloudJs = readFileSync(cloudJsPath, "utf8");
   window.eval(readPlatformSrc());

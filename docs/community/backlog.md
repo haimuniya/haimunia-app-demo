@@ -347,10 +347,10 @@ built, carrying a TODO to COMM-P07 and COMM-316.
 
 | ID | Title | Agent | Status |
 |---|---|---|---|
-| COMM-223 | Coach dashboard shell with Celebrate | coach-tools | todo |
-| COMM-224 | Coach Welcome section | coach-tools | todo |
-| COMM-225 | One-tap congratulate action | coach-tools | todo |
-| COMM-226 | Coach Engage section scaffold, hidden | coach-tools | todo |
+| COMM-223 | Coach dashboard shell with Celebrate | coach-tools | review |
+| COMM-224 | Coach Welcome section | coach-tools | review |
+| COMM-225 | One-tap congratulate action | coach-tools | review |
+| COMM-226 | Coach Engage section scaffold, hidden | coach-tools | review |
 
 COMM-223 needs a new staff-only `coach_celebrate_feed` function. COMM-224
 needs `profiles.assigned_coach_id` and a new `member_contact_log` table.

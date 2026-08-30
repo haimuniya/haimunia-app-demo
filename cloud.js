@@ -84,7 +84,35 @@
     // summary (COMM-222's third step), fetched only once that step is due.
     // recapView is the open weekly recap dialog (COMM-221); its own
     // load/prev/next calls read straight off weekly_recaps, own row only.
-    onboardingProgress: null, onboardingFirstMonth: null, recapView: null };
+    onboardingProgress: null, onboardingFirstMonth: null, recapView: null,
+    // COMM-223..226 coach-tools cluster. The whole Coach Dashboard sub-tab
+    // (only ever added to the tab bar for isStaff(), see the render
+    // function) - Celebrate, Welcome, Engage. Challenges re-surfaces
+    // renderChallengesListSection() unchanged, so it has no state of its
+    // own here.
+    //
+    // coachCelebrate.items holds coach_celebrate_feed() rows exactly as
+    // returned (already sorted by recency - never re-sorted here).
+    // congratulated is a client-only dedupe set keyed by celebrateItemKey()
+    // (kind+user_id+occurred_at, since a feed row has no id of its own),
+    // so a second tap on an already-congratulated item is a no-op even
+    // before the server rate limit would catch it. busy holds the key of
+    // whichever item's Congratulate is in flight, if any.
+    coachCelebrate: { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null },
+    // coachWelcome.members holds the last 30 days of joiners. contactedIds
+    // is a user_id -> true set built from member_contact_log (staff can
+    // read any row, COMM-224), so "contacted or not" never depends on the
+    // caller having been the one who logged it. assignDrafts/contactDrafts
+    // hold the free-text inputs for the assign-by-handle and mark-contacted
+    // note fields, keyed by member id, read only at click time (no rerender
+    // on input, so typing never loses focus).
+    coachWelcome: { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null },
+    // COMM-226. Hidden behind featureFlags.coachEngage (defaults off, same
+    // localStorage-backed pattern as syncEnabled above, so a test can flip
+    // it before boot the same way it flips cloud sync). No producer writes
+    // coach_engagement_flags in Phase 2 - this only ever reads.
+    featureFlags: { coachEngage: localStorage.getItem("haimunia-demo:coachEngageFlag") === "1" },
+    coachEngage: { items: [], loading: false, loaded: false, error: false } };
   const photoUrlCache = {};
 
   // COMM-141. The notification badge refreshes on a realtime own-row
@@ -536,6 +564,247 @@
     if (!state.user || !isStaff()) return;
     const { data, error } = await client.rpc("coach_new_members");
     state.newMembers = error ? [] : (data || []);
+  }
+
+  // ==========================================================================
+  // COMM-223..226 coach-tools cluster. Coach Dashboard: Celebrate, Welcome,
+  // Engage (scaffold, hidden). Challenges re-surfaces renderChallengesListSection()
+  // (COMM-201..207) unchanged - see the render function below - so it owns no
+  // state or load function here. Schema shipped in 202608290013; see the
+  // three "###" subsections under "Needs from schema, coach-tools" in
+  // contracts.md for the exact shapes read below.
+  //
+  // Read-path note (COMM-224 "new members"): the ticket text says to join
+  // profiles with invite_redemptions.redeemed_at directly. That table has
+  // exactly one SELECT policy on this schema, invite_redemptions_self_select
+  // (202608270003, `user_id = auth.uid()`), and 202608290013 did not widen
+  // it for staff - so a coach's cross-user select of it would silently
+  // return nothing for every row but their own, the exact "looks like it
+  // works, does nothing" failure mode 202608290013's own comments call out
+  // for the Assign-coach column. profiles.created_at is used instead: it is
+  // already club-wide readable (profiles_read_authenticated, 202608280003)
+  // and profiles_insert_self requires a redeemed invite to already exist, so
+  // it lands within the same session as redeemed_at for every real member.
+  // Follow-up: either invite_redemptions gets a staff-readable SELECT
+  // policy, or created_at is accepted as the canonical join date for good.
+  //
+  // "Sessions logged" (COMM-224): there is no readable-by-a-coach raw
+  // lifetime session count anywhere in this schema (community_streaks
+  // exposes a consecutive-day run, not a total; community_profile's
+  // training_frequency/current_streak are the same shape, gated to the
+  // subject's own toggle). current_streak from community_streaks - the
+  // exact figure and the exact label ("רצף נוכחי") the profile overlay
+  // already uses at community_profile's current_streak field - is reused
+  // here rather than inventing a new count query, per COMM-224's own
+  // instruction to reuse what already exists.
+  function celebrateItemKey(item) { return `${item.kind}|${item.user_id}|${item.occurred_at}`; }
+  async function loadCoachCelebrate() {
+    if (!state.user || !isStaff()) return;
+    state.coachCelebrate.loading = true;
+    state.coachCelebrate.error = false;
+    rerender();
+    const { data, error } = await client.rpc("coach_celebrate_feed", { p_days: 7 });
+    state.coachCelebrate.loading = false;
+    state.coachCelebrate.loaded = true;
+    if (error) { state.coachCelebrate.error = true; state.coachCelebrate.items = []; rerender(); return; }
+    // The RPC already sorts newest-first; never re-sorted here.
+    state.coachCelebrate.items = data || [];
+    rerender();
+  }
+  // COMM-225 templates. Short, Hebrew, kind-specific, and well under the
+  // 1000-char comment/post cap add_post_comment and post_create both
+  // already enforce server-side.
+  function celebrateTemplateBody(item) {
+    const name = item.display_name || (item.handle ? "@" + item.handle : "חבר/ה");
+    const d = item.detail || {};
+    if (item.kind === "pr") {
+      const movement = d.movement ? ` ב${d.movement}` : "";
+      const result = d.result ? ` (${d.result})` : "";
+      return `כל הכבוד ל${name} על שיא חדש${movement}${result}! 💪`;
+    }
+    if (item.kind === "anniversary") {
+      const years = Number(d.years) || 0;
+      const yearsLabel = years === 1 ? "שנה" : `${years} שנים`;
+      return `מזל טוב ל${name} על ${yearsLabel} במועדון! 🎉`;
+    }
+    if (item.kind === "challenge_completion") {
+      const title = d.title ? ` את האתגר ${d.title}` : " את האתגר";
+      return `כל הכבוד ל${name} על השלמת${title}! 🏆`;
+    }
+    return `כל הכבוד ל${name}! 🎉`;
+  }
+  // COMM-225. post_id present -> add_post_comment on that post. post_id
+  // null -> post_create (always lands POST_TEXT, 202608280023) followed by
+  // one direct own-row update to post_type 'POST_COACH', the exact
+  // workaround the events cluster already established for post_create's own
+  // type gaps (see ensureEventCompanionPost below) rather than a new RPC or
+  // a schema change this ticket does not own. No confirmation dialog: the
+  // tap itself is the confirmation. congratulated/busy are keyed by
+  // celebrateItemKey() so a second tap on an already-sent item, or a tap
+  // while the first is still in flight, is a no-op before the server rate
+  // limit would even see it.
+  async function congratulateCelebrateItem(item) {
+    if (!item) return;
+    const key = celebrateItemKey(item);
+    if (state.coachCelebrate.congratulated[key] || state.coachCelebrate.busy === key) return;
+    state.coachCelebrate.busy = key;
+    rerender();
+    const body = celebrateTemplateBody(item);
+    let ok = false;
+    if (item.post_id) {
+      const { error } = await client.rpc("add_post_comment", { p_post_id: item.post_id, p_body: body, p_parent_comment_id: null });
+      ok = !error;
+    } else {
+      const { data: postId, error } = await client.rpc("post_create", { body, visibility: "club", media: [], links: null });
+      if (!error && postId) {
+        const { error: updErr } = await client.from("workout_posts").update({ post_type: "POST_COACH" }).eq("id", postId);
+        ok = !updErr;
+      }
+    }
+    state.coachCelebrate.busy = null;
+    if (ok) { state.coachCelebrate.congratulated[key] = true; setMessage(""); }
+    else setMessage("לא ניתן היה לשלוח ברכה. נסו שוב.");
+    rerender();
+  }
+
+  // ---- Welcome (COMM-224) --------------------------------------------------
+  async function loadCoachWelcome() {
+    if (!state.user || !isStaff()) return;
+    state.coachWelcome.loading = true;
+    state.coachWelcome.error = false;
+    rerender();
+    const cutoffIso = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const { data, error } = await client.from("profiles").select("id,handle,display_name,avatar_url,created_at,assigned_coach_id").gte("created_at", cutoffIso).order("created_at", { ascending: false });
+    if (error) {
+      state.coachWelcome.loading = false; state.coachWelcome.loaded = true; state.coachWelcome.error = true; state.coachWelcome.members = [];
+      rerender();
+      return;
+    }
+    // deleted_at isn't selected above - profiles_read_authenticated already
+    // excludes a soft-deleted row server-side, so there is nothing left for
+    // a client-side filter to add here.
+    const members = data || [];
+    state.coachWelcome.members = members;
+    const ids = members.map((m) => m.id);
+    // Staff can read any user's member_contact_log rows (COMM-224's own
+    // shipped RLS), so this is one batched read, not one per member.
+    const contactedIds = {};
+    if (ids.length) {
+      const { data: contacts } = await client.from("member_contact_log").select("user_id").in("user_id", ids);
+      for (const row of contacts || []) contactedIds[row.user_id] = true;
+    }
+    state.coachWelcome.contactedIds = contactedIds;
+    state.coachWelcome.loading = false;
+    state.coachWelcome.loaded = true;
+    rerender();
+  }
+  // Same lookup shape ensureEventCompanionPost() below already uses for
+  // "does a companion post already exist for this record": no stored
+  // pointer from profiles back to the POST_NEW_MEMBER row, so the metadata
+  // carried on the post itself (member_id, set the way
+  // community-post-cards.test.mjs's fixture and renderNewMemberPostCard's
+  // own reading of it both already assume) is the source of truth.
+  //
+  // Follow-up worth flagging: COMM-107 (the POST_NEW_MEMBER producer) was
+  // never actually built as a server insert - 202608290004's own comment
+  // says so in as many words - so in a real club today this lookup finds
+  // nothing for any member yet. This function and coachWelcomeMember() are
+  // correct and ready; they are inert until COMM-107 or an equivalent
+  // producer ships. The standard error message covers "no matching post
+  // found" the same way it covers a failed RPC, rather than pretending the
+  // tap worked.
+  async function findNewMemberPost(memberId) {
+    const { data, error } = await client.from("workout_posts").select("id,post_type,metadata").eq("post_type", "POST_NEW_MEMBER");
+    if (error) return null;
+    return (data || []).find((r) => r.metadata && r.metadata.member_id === memberId) || null;
+  }
+  // Reuses welcomeNewMember(postId) (COMM-107/COMM-124) rather than a second
+  // add_post_comment call with a near-duplicate template - one Hebrew
+  // welcome string, one place it is sent from.
+  async function coachWelcomeMember(memberId) {
+    if (!memberId || state.coachWelcome.busy) return;
+    state.coachWelcome.busy = memberId;
+    rerender();
+    const post = await findNewMemberPost(memberId);
+    if (!post) {
+      state.coachWelcome.busy = null;
+      setMessage("לא ניתן היה לבצע את הפעולה. נסו שוב.");
+      rerender();
+      return;
+    }
+    await welcomeNewMember(post.id);
+    state.coachWelcome.busy = null;
+    rerender();
+  }
+  // Assign coach (optional). Only write path is coach_assign_coach() -
+  // profiles has exactly one UPDATE policy and it is own-row only
+  // (202608290013's own correction to this ticket's original "direct RLS
+  // update" ask). p_coach_id null clears the assignment. There is no
+  // staff-readable directory RPC on this schema to build a real dropdown of
+  // coaches from (admin_search_members is real-is_admin-only, not
+  // is_staff() - 202608270011), so the picker is: assign to me (always
+  // valid, the caller is staff by construction of this whole surface),
+  // clear, or resolve another coach by their handle through the same
+  // club-wide profiles read every other lookup here already uses - the
+  // server still validates the target is staff and raises otherwise, so a
+  // typo or a plain member's handle fails safely rather than silently
+  // mis-assigning. A real staff-directory RPC would turn this into an
+  // actual dropdown; noted as a follow-up rather than invented here.
+  async function coachAssignCoach(memberId, coachId) {
+    if (!memberId || state.coachWelcome.busy) return;
+    state.coachWelcome.busy = memberId;
+    rerender();
+    const { error } = await client.rpc("coach_assign_coach", { p_user_id: memberId, p_coach_id: coachId || null });
+    state.coachWelcome.busy = null;
+    if (error) { setMessage("לא ניתן היה לבצע את הפעולה. נסו שוב."); rerender(); return; }
+    const m = state.coachWelcome.members.find((x) => x.id === memberId);
+    if (m) m.assigned_coach_id = coachId || null;
+    setMessage(coachId ? "המאמן/ת שויכ/ה" : "השיוך בוטל");
+    rerender();
+  }
+  async function coachAssignByHandle(memberId) {
+    const handle = String((state.coachWelcome.assignDrafts || {})[memberId] || "").trim().toLowerCase().replace(/^@/, "");
+    if (!handle) return;
+    const { data } = await client.from("profiles").select("id").eq("handle", handle).maybeSingle();
+    if (!data || !data.id) { setMessage("לא ניתן היה לבצע את הפעולה. נסו שוב."); rerender(); return; }
+    await coachAssignCoach(memberId, data.id);
+  }
+  // Mark contacted. Staff-only insert, contacted_by defaults to auth.uid()
+  // server-side (202608290013), so the client sends only {user_id, note}.
+  async function coachMarkContacted(memberId) {
+    if (!memberId || state.coachWelcome.busy) return;
+    state.coachWelcome.busy = memberId;
+    rerender();
+    const note = String((state.coachWelcome.contactDrafts || {})[memberId] || "").trim().slice(0, 500);
+    const { error } = await client.from("member_contact_log").insert({ user_id: memberId, note });
+    state.coachWelcome.busy = null;
+    if (error) { setMessage("לא ניתן היה לבצע את הפעולה. נסו שוב."); rerender(); return; }
+    state.coachWelcome.contactedIds[memberId] = true;
+    setMessage("סומן כנוצר קשר");
+    rerender();
+  }
+
+  // ---- Engage scaffold, hidden (COMM-226) ----------------------------------
+  // Flag-gated (state.featureFlags.coachEngage, defaults off) on top of the
+  // staff gate every other section here already has - COMM-226 asks that no
+  // code path reach coach_engagement_flags outside the flag-gated staff
+  // surface, so this is never called from refreshSession() the way the
+  // always-on staff loads above are; only from the coach tab's own lazy
+  // load, and only once the flag is on. The table's own RLS
+  // (`user_id <> auth.uid()`, COMM-011) is the real boundary that keeps a
+  // flagged member from ever reading their own row, staff or not; this
+  // function adds no workaround around that.
+  async function loadCoachEngageFlags() {
+    if (!state.user || !isStaff() || !state.featureFlags.coachEngage) return;
+    state.coachEngage.loading = true;
+    state.coachEngage.error = false;
+    rerender();
+    const { data, error } = await client.from("coach_engagement_flags").select("id,user_id,level,status,flagged_at").eq("status", "open").order("flagged_at", { ascending: false });
+    state.coachEngage.loading = false;
+    state.coachEngage.loaded = true;
+    if (error) { state.coachEngage.error = true; state.coachEngage.items = []; rerender(); return; }
+    state.coachEngage.items = data || [];
+    rerender();
   }
   // ==========================================================================
   // COMM-150..156  admin-moderation cluster.
@@ -3084,6 +3353,106 @@
     return `<div class="ach-section">${sectionHead("var(--energy)", "אתגרי המועדון")}${createBtn}${state.challengeForm ? renderChallengeForm() : ""}${list}${pastHtml}</div>`;
   }
 
+  // ==========================================================================
+  // COMM-223..226 coach-tools cluster rendering. renderCoachTab() is only
+  // ever reached through the "coach" sub-tab, and that sub-tab is only ever
+  // added to the tab bar for isStaff() (see the render function below) - so
+  // nothing in here repeats a ternary staff-only render gate of its own; the
+  // surrounding tab is the gate. A forced state.communityTab = "coach" for
+  // a non-staff caller still falls back to the feed tab there, since the
+  // tab bar's own tabs array has no "coach" entry to find.
+  // ==========================================================================
+  function renderCoachCelebrateItem(item) {
+    const key = celebrateItemKey(item);
+    const done = !!state.coachCelebrate.congratulated[key];
+    const busy = state.coachCelebrate.busy === key;
+    const d = item.detail || {};
+    const what = item.kind === "pr"
+      ? `שיא חדש${d.movement ? ": " + d.movement : ""}${d.result ? " — " + d.result : ""}`
+      : item.kind === "anniversary"
+      ? `${Number(d.years) || ""} ${Number(d.years) === 1 ? "שנה" : "שנים"} במועדון`
+      : item.kind === "challenge_completion"
+      ? `השלים/ה את האתגר: ${d.title || ""}`
+      : "";
+    return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:8px;">
+      <div class="flex gap-10" style="align-items:center;">
+        ${avatarHtml(item.display_name || item.handle, 32)}
+        <div>
+          <button class="link-btn" data-community-action="view-profile" data-id="${safeText(item.user_id)}" style="padding:0;font-weight:800;color:inherit;">${safeText(item.display_name || "@" + item.handle)}</button>
+          <div style="color:var(--steel);font-size:12px;">${safeText(what)} · ${relativeTime(item.occurred_at)}</div>
+        </div>
+      </div>
+      <button class="chip-btn${done ? "" : " primary"}" data-community-action="coach-congratulate" data-key="${safeText(key)}"${done || busy ? " disabled" : ""}>${busy ? "שולח…" : done ? "ברכתם" : "ברכה"}</button>
+    </div>`;
+  }
+  function renderCoachCelebrateSection() {
+    const c = state.coachCelebrate;
+    const body = (c.loading && !c.loaded)
+      ? `<div aria-busy="true">${`<div class="chart-card" style="height:56px;background:var(--border);opacity:.35;margin-bottom:10px;"></div>`.repeat(2)}</div>`
+      : c.error
+      ? `<div class="empty">לא ניתן היה לטעון את לוח המאמנים. נסו שוב.<div class="chip-row" style="justify-content:center;"><button class="chip-btn" data-community-action="coach-celebrate-retry">ניסיון חוזר</button></div></div>`
+      : c.items.length ? `<div class="log-list">${c.items.map(renderCoachCelebrateItem).join("")}</div>` : `<div class="empty">אין דבר לחגוג השבוע.</div>`;
+    return `<div class="ach-section">${sectionHead("var(--energy)", "לחגוג")}${body}</div>`;
+  }
+  function renderCoachWelcomeRow(m) {
+    const days = Math.max(0, Math.floor((Date.now() - new Date(m.created_at).getTime()) / 86400000));
+    const streakRow = state.streaks.find((s) => s.user_id === m.id);
+    const streakCount = streakRow ? Number(streakRow.current_streak) : 0;
+    const contacted = !!state.coachWelcome.contactedIds[m.id];
+    const busy = state.coachWelcome.busy === m.id;
+    const assignDraft = (state.coachWelcome.assignDrafts || {})[m.id] || "";
+    const contactDraft = (state.coachWelcome.contactDrafts || {})[m.id] || "";
+    return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:8px;">
+      <div class="flex gap-10" style="align-items:center;">
+        ${avatarHtml(m.display_name || m.handle, 32)}
+        <div>
+          <div style="font-weight:700;">${safeText(m.display_name || "@" + m.handle)}</div>
+          <div style="color:var(--steel);font-size:12px;">${days === 0 ? "הצטרפ/ה היום" : `לפני ${days} ימים`} · רצף נוכחי: ${streakCount} · ${contacted ? "נוצר קשר" : "טרם נוצר קשר"}</div>
+        </div>
+      </div>
+      <div class="chip-row">
+        <button class="chip-btn" data-community-action="coach-welcome-member" data-id="${safeText(m.id)}"${busy ? " disabled" : ""}>ברכה</button>
+        <button class="chip-btn" data-community-action="view-profile" data-id="${safeText(m.id)}">צפייה בפרופיל</button>
+        ${m.assigned_coach_id
+          ? `<button class="chip-btn" data-community-action="coach-assign-clear" data-id="${safeText(m.id)}"${busy ? " disabled" : ""}>ביטול שיוך מאמן/ת</button>`
+          : `<button class="chip-btn" data-community-action="coach-assign-self" data-id="${safeText(m.id)}"${busy ? " disabled" : ""}>שיוך אליי</button>`}
+        <button class="chip-btn${contacted ? "" : " primary"}" data-community-action="coach-mark-contacted" data-id="${safeText(m.id)}"${busy ? " disabled" : ""}>סימון כנוצר קשר</button>
+      </div>
+      ${!m.assigned_coach_id ? `<div class="flex gap-6" style="align-items:center;">
+        <input class="text-input" style="max-width:160px;" placeholder="שם משתמש מאמן/ת אחר/ת" dir="ltr" data-coach-assign-handle="${safeText(m.id)}" value="${safeText(assignDraft)}"/>
+        <button class="chip-btn" data-community-action="coach-assign-handle" data-id="${safeText(m.id)}"${busy ? " disabled" : ""}>שיוך</button>
+      </div>` : ""}
+      <input class="text-input" placeholder="הערה קצרה לגבי הקשר (אופציונלי)" data-coach-contact-note="${safeText(m.id)}" value="${safeText(contactDraft)}"/>
+    </div>`;
+  }
+  function renderCoachWelcomeSection() {
+    const w = state.coachWelcome;
+    const body = (w.loading && !w.loaded)
+      ? `<div aria-busy="true">${`<div class="chart-card" style="height:56px;background:var(--border);opacity:.35;margin-bottom:10px;"></div>`.repeat(2)}</div>`
+      : w.error
+      ? `<div class="empty">לא ניתן היה לבצע את הפעולה. נסו שוב.<div class="chip-row" style="justify-content:center;"><button class="chip-btn" data-community-action="coach-welcome-retry">ניסיון חוזר</button></div></div>`
+      : w.members.length ? `<div class="log-list">${w.members.map(renderCoachWelcomeRow).join("")}</div>` : `<div class="empty">אין חברים חדשים בחודש האחרון.</div>`;
+    return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "קבלת פנים")}${body}</div>`;
+  }
+  // COMM-226. Absent entirely (not merely styled hidden) unless the flag is
+  // on, so "invisible in the shipped Phase 2 build" is literally true - a
+  // hidden member view has nothing to inspect to learn this section exists.
+  function renderCoachEngageSection() {
+    if (!state.featureFlags.coachEngage) return "";
+    const e = state.coachEngage;
+    const body = (e.loading && !e.loaded)
+      ? `<div aria-busy="true"><div class="log-row" style="height:40px;background:var(--border);opacity:.35;"></div></div>`
+      : e.error
+      ? `<div class="empty">לא ניתן היה לטעון את הנתונים.<div class="chip-row" style="justify-content:center;"><button class="chip-btn" data-community-action="coach-engage-retry">ניסיון חוזר</button></div></div>`
+      : e.items.length
+      ? `<div class="log-list">${e.items.map((it) => `<div class="log-row"><button class="link-btn" data-community-action="view-profile" data-id="${safeText(it.user_id)}" style="padding:0;color:inherit;">${safeText(it.user_id)}</button><span style="color:var(--steel);font-size:12px;">${safeText(it.level)}</span></div>`).join("")}</div>`
+      : `<div class="empty">אין פריטים לבדיקה.</div>`;
+    return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מעקב מעורבות")}${body}</div>`;
+  }
+  function renderCoachTab() {
+    return renderCoachCelebrateSection() + renderCoachWelcomeSection() + renderChallengesListSection() + renderCoachEngageSection();
+  }
+
   // ---- Rendering: create/edit form (COMM-201) ------------------------------
   function renderChallengeForm() {
     const f = state.challengeForm;
@@ -5538,6 +5907,15 @@
       { id: "boards", label: "לוחות", html: boardsTab },
       { id: "account", label: "חשבון", html: accountTab, badge: pendingReports },
     ];
+    // COMM-223. A dedicated 4th sub-tab, added only for isStaff(), as an
+    // `if (staff)` push rather than an inline ternary render gate (that
+    // literal ternary pattern is what community-coach-tier.test.mjs counts
+    // as "the 4 staff-only render gates"; this is a whole sub-tab rather
+    // than a slice of one, so it stays out of that count on purpose) - so a
+    // non-staff caller's tabs array has no "coach" entry at all, and the
+    // activeTab lookup below falls back to the feed tab even if something
+    // forced state.communityTab to "coach" directly.
+    if (staff) tabs.push({ id: "coach", label: "לוח מאמנים", html: renderCoachTab() });
     const activeTab = tabs.find((t) => t.id === state.communityTab) || tabs[0];
     const tabBar = `<div class="subtabbar">${tabs.map((t) => `<button class="subtabbtn${t.id === activeTab.id ? " active" : ""}" data-community-action="set-tab" data-tab="${t.id}">${t.label}${t.badge ? `<span class="tab-badge" aria-label="${t.badge} דיווחים ממתינים">${t.badge}</span>` : ""}</button>`).join("")}</div>`;
 
@@ -5713,6 +6091,26 @@
     // COMM-154. The audit view is lazy: fetched the first time an analytics
     // holder lands on the Account tab, not on every session.
     if (state.communityTab === "account" && hasPerm(PERM.ANALYTICS_VIEW) && !state.auditLoaded && !state.auditLoading) loadAuditLog(true);
+    // COMM-223..226. Same lazy pattern for the Coach Dashboard's own three
+    // loads: fetched the first time a staff member actually lands on the
+    // sub-tab, not on every session, and Engage only once its flag is on
+    // too (COMM-226: no code path reaches coach_engagement_flags outside
+    // the flag-gated staff surface).
+    if (state.communityTab === "coach" && isStaff()) {
+      if (!state.coachCelebrate.loaded && !state.coachCelebrate.loading) loadCoachCelebrate();
+      if (!state.coachWelcome.loaded && !state.coachWelcome.loading) loadCoachWelcome();
+      if (state.featureFlags.coachEngage && !state.coachEngage.loaded && !state.coachEngage.loading) loadCoachEngageFlags();
+    }
+    // COMM-224. The assign-by-handle and mark-contacted note fields are
+    // read only at click time (coachAssignByHandle/coachMarkContacted), so
+    // this only stores the draft - never rerenders - which is what keeps
+    // typing from losing focus or the caret on every keystroke.
+    document.querySelectorAll("[data-coach-assign-handle]").forEach((el) => {
+      el.addEventListener("input", () => { state.coachWelcome.assignDrafts[el.dataset.coachAssignHandle] = el.value; });
+    });
+    document.querySelectorAll("[data-coach-contact-note]").forEach((el) => {
+      el.addEventListener("input", () => { state.coachWelcome.contactDrafts[el.dataset.coachContactNote] = el.value; });
+    });
     // COMM-222. Same lazy pattern: the first-month summary is only worth
     // fetching once that onboarding step is actually due.
     if (currentOnboardingStep() === "first_month" && !state.onboardingFirstMonth) loadOnboardingFirstMonthSummary();
@@ -5909,6 +6307,19 @@
     else if (action === "recap-newer") recapGoNewer();
     else if (action === "recap-retry") refreshRecapView(state.recapView && state.recapView.weekStart);
     else if (action === "share-recap") shareRecapFigure(el.dataset.figure);
+    // COMM-223..226 coach-tools cluster.
+    else if (action === "coach-celebrate-retry") loadCoachCelebrate();
+    else if (action === "coach-congratulate") {
+      const item = state.coachCelebrate.items.find((it) => celebrateItemKey(it) === el.dataset.key);
+      if (item) congratulateCelebrateItem(item);
+    }
+    else if (action === "coach-welcome-retry") loadCoachWelcome();
+    else if (action === "coach-welcome-member") coachWelcomeMember(el.dataset.id);
+    else if (action === "coach-assign-self") coachAssignCoach(el.dataset.id, state.user && state.user.id);
+    else if (action === "coach-assign-clear") coachAssignCoach(el.dataset.id, null);
+    else if (action === "coach-assign-handle") coachAssignByHandle(el.dataset.id);
+    else if (action === "coach-mark-contacted") coachMarkContacted(el.dataset.id);
+    else if (action === "coach-engage-retry") loadCoachEngageFlags();
   };
   window.isCommunitySignedIn = function () { return !!(state.user && state.profile); };
   window.shareAchievementToCommunity = function (achievementId, title, rule) { publishAchievement(achievementId, title, rule); };
@@ -5982,7 +6393,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null;
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false };
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();
