@@ -329,9 +329,9 @@ exported on `window` for that reason, same pattern as
 |---|---|---|---|
 | COMM-218 | Announcement priority levels and expiry | admin-moderation | review |
 | COMM-219 | Announcement notification toggle and urgent path | notifications | review |
-| COMM-220 | Weekly member recap Edge Function | recaps | todo |
-| COMM-221 | Weekly recap surface and share | recaps | todo |
-| COMM-222 | New member onboarding sequence, non-attendance steps | recaps | todo |
+| COMM-220 | Weekly member recap Edge Function | recaps | review |
+| COMM-221 | Weekly recap surface and share | recaps | review |
+| COMM-222 | New member onboarding sequence, non-attendance steps | recaps | review |
 
 COMM-218 replaces the Phase 1 `important` boolean with a three-tier
 `priority` and an `expires_at` column; `important` stays as a generated

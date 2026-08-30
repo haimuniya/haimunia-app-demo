@@ -13,10 +13,11 @@ const cloudJs = fs.readFileSync(new URL("../cloud.js", import.meta.url), "utf8")
 
 test("the standalone top-of-feed comparison section is gone", () => {
   assert.doesNotMatch(cloudJs, /const feedTab = [^;]*\bcomparison\b[^;]*;/);
-  // COMM-115 added the club strip above the announcements and COMM-155 the
-  // pinned strip above that. The assertion that matters here is unchanged:
-  // `comparison` is not one of the parts the Feed sub-tab is built from.
-  assert.match(cloudJs, /const feedTab = renderPinnedStrip\(\) \+ clubTopHtml \+ announcementsHtml \+ feedHtml;/);
+  // COMM-115 added the club strip above the announcements, COMM-155 the
+  // pinned strip above that, and COMM-222 the onboarding step card above
+  // that. The assertion that matters here is unchanged: `comparison` is
+  // not one of the parts the Feed sub-tab is built from.
+  assert.match(cloudJs, /const feedTab = renderPinnedStrip\(\) \+ renderOnboardingStep\(\) \+ clubTopHtml \+ announcementsHtml \+ feedHtml;/);
 });
 
 test("compare() tracks which post it's for, and a second tap on the same post closes it instead of re-fetching", () => {

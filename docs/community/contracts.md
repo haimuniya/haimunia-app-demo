@@ -2149,6 +2149,21 @@ Closed. See "## Realtime and search" above.
 Shipped in `202608290011_recaps_and_onboarding.sql`. Covered by
 `supabase/tests/0031_recaps_and_onboarding_test.sql`.
 
+**Follow-up from COMM-220, `202608290012_notif_create_service_role.sql`:**
+`notif_create()` (202608280026) is `revoke all ... from public, anon,
+authenticated`, same as `default_club_id()` originally was. Every caller
+until COMM-220 was a trigger owned by the migration owner, which Postgres
+checks as an effectively unrestricted role - the missing `service_role`
+grant never showed for the same reason `default_club_id()`'s didn't.
+`recap_weekly` is the first caller that reaches `notif_create` over
+PostgREST as the literal `service_role` role, which does have EXECUTE
+checked for real; without this one-line grant every `recap_weekly`
+notification call fails `42501` silently (the recap row itself still
+lands - see the function's own try/catch). Found and fixed while building
+and manually verifying COMM-220 against a fresh local stack; independently
+confirmed with `has_function_privilege('service_role', ...)` before and
+after.
+
 ### weekly_recaps
 
 `id uuid pk`, `user_id uuid not null` → `profiles(id)` cascade, `club_id uuid
@@ -2243,6 +2258,27 @@ timestamptz`. Null means "not shown yet".
   'weekly_recap', 'club', ...)` call per user with a deep link to the recap
   surface (COMM-221), matching the routing table entry above.
 - Records success and failure counts with no personal content.
+- Shipped in `supabase/functions/recap_weekly/index.ts`, the first Edge
+  Function in this repo. "Active member" for this function's purposes means
+  a non-deleted profile with an `invite_redemptions` row - deliberately not
+  WCAM (which answers "did something this week", the opposite of the
+  members a quiet-week recap exists for). Only ever notifies for a row that
+  did not already exist before that run (checked before the upsert, since
+  after the upsert a first run and a rerun are indistinguishable).
+- **Auth: explicit service-role check inside the function body, not just
+  the platform's default `verify_jwt`.** `verify_jwt` only proves the caller
+  presented some valid JWT - the public anon key already shipped in
+  `cloud-config.js` satisfies that as well as the real service role key
+  does, which is not this function's intent (it runs as service role and
+  touches every member's data). The handler compares the `Authorization`
+  header against `Bearer <service role key>` directly and returns 401
+  otherwise. Verified locally: an anon-key call and a no-header call both
+  get 401, a service-role-key call gets 200 with the expected
+  `{weekStart, weekEnd, success, failure, total}` shape. The weekly
+  cron/schedule itself (what actually calls this with the service role key,
+  and how that key reaches the caller without living in a client bundle)
+  remains the same open infra item the notification batch flusher already
+  has - not built here.
 
 ### recap_monthly_club
 

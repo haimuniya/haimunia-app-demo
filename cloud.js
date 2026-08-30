@@ -76,7 +76,15 @@
     // going count and the attendee list read. eventView is the open detail
     // dialog; eventForm is the staff create/edit dialog.
     events: [], eventsById: {}, eventsLoaded: false, eventsLoading: false, eventsError: false,
-    eventAttendees: {}, eventView: null, eventForm: null };
+    eventAttendees: {}, eventView: null, eventForm: null,
+    // COMM-220..222 recaps cluster. onboardingProgress is the caller's own
+    // onboarding_progress row (null = not loaded yet; a real row always
+    // exists once loaded, seeded server-side at MEMBER_JOINED).
+    // onboardingFirstMonth is the lazily-computed first-month personal
+    // summary (COMM-222's third step), fetched only once that step is due.
+    // recapView is the open weekly recap dialog (COMM-221); its own
+    // load/prev/next calls read straight off weekly_recaps, own row only.
+    onboardingProgress: null, onboardingFirstMonth: null, recapView: null };
   const photoUrlCache = {};
 
   // COMM-141. The notification badge refreshes on a realtime own-row
@@ -198,7 +206,7 @@
       // below it writes instead of dropping.
       ensureAnalyticsConfigured();
       await loadRedemption();
-      await Promise.all([loadProfile(), loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadChallenges(), loadEvents()]);
+      await Promise.all([loadProfile(), loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadChallenges(), loadEvents(), loadOnboardingProgress()]);
       if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers()]);
       if (hasPerm(PERM.COMMENT_MODERATE) || isAdmin()) await loadModQueue();
       // Push pending local edits before pulling the remote copy - without
@@ -237,6 +245,14 @@
     const { data } = await client.from("invite_redemptions").select("invite_id,role,redeemed_at").eq("user_id", state.user.id).maybeSingle();
     state.redemption = data || null;
   }
+  // COMM-222. Own-row select; seed_onboarding_progress (202608290011) seeds
+  // exactly one row per member at MEMBER_JOINED, so null here means "not
+  // loaded yet" or a real fetch error, never "no row for this member."
+  async function loadOnboardingProgress() {
+    if (!state.user) return;
+    const { data, error } = await client.from("onboarding_progress").select("*").eq("user_id", state.user.id).maybeSingle();
+    state.onboardingProgress = error ? null : (data || null);
+  }
   // COMM-017. A stable per-client identifier the invite throttle keys on
   // in ADDITION to the Auth uid, so discarding an anonymous session and
   // signing in again does not reset the five-attempts-per-15-minutes
@@ -274,6 +290,14 @@
     if (data !== "member") return setFieldErrors("communityInviteCode", { code: "קוד ההזמנה שגוי, פג תוקף או נוצל" });
     setFieldErrors("communityInviteCode", {});
     await loadRedemption();
+    // COMM-222. This is the module's MEMBER_JOINED moment (mirrors the
+    // server side: seed_onboarding_progress fires off the same
+    // invite_redemptions insert). Emitting it lets the onboarding sequence
+    // pick up the fresh row in this same tab instead of waiting for a
+    // reload before the welcome step can render.
+    if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.MEMBER_JOINED) {
+      try { window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.MEMBER_JOINED, { user_id: state.user.id }); } catch (e) {}
+    }
     setMessage("קוד אושר, אפשר להשלים פרופיל");
     rerender();
   }
@@ -288,6 +312,118 @@
     if (!state.user) return;
     const { data, error } = await client.from("community_streaks").select("user_id,handle,display_name,current_streak,last_activity_on").order("current_streak", { ascending: false }).limit(50);
     state.streaks = error ? [] : (data || []).filter((r) => r.current_streak > 0);
+  }
+
+  // ---- COMM-222 onboarding sequence -----------------------------------
+  // Steps tied to the first and third class attendance are explicitly
+  // deferred here, not built: they need attendance, which does not exist
+  // yet. TODO(COMM-316/COMM-P07): add those two steps once attendance
+  // lands - onboarding_progress deliberately has no columns for them yet
+  // either (see "Needs from schema, recaps" in contracts.md).
+  const ONBOARDING_STEP_COLUMNS = { welcome: "welcomed_at", first_week: "first_week_shown_at", first_month: "first_month_shown_at" };
+  // Which single step (if any) is due right now, in a fixed order: welcome,
+  // then first-week, then first-month. Only one shows at a time; a later
+  // step becoming due never hides an earlier one still undismissed, and
+  // dismissing one never blocks the next from appearing on its own
+  // schedule (each column is independent).
+  function currentOnboardingStep() {
+    const row = state.onboardingProgress;
+    const redeemedAtRaw = state.redemption && state.redemption.redeemed_at;
+    if (!row || !redeemedAtRaw) return null;
+    const redeemedAt = new Date(redeemedAtRaw).getTime();
+    if (!Number.isFinite(redeemedAt)) return null;
+    const DAY_MS = 86400000;
+    const elapsed = Date.now() - redeemedAt;
+    if (row.welcomed_at == null) return "welcome";
+    if (row.first_week_shown_at == null && elapsed >= 7 * DAY_MS) return "first_week";
+    if (row.first_month_shown_at == null && elapsed >= 30 * DAY_MS) return "first_month";
+    return null;
+  }
+  // The write only ever happens from a Dismiss click inside the card that
+  // is already on screen (COMM-222: "shown" means actually rendered, not
+  // merely scheduled) - there is no eligibility-computation path that ever
+  // calls this on its own. Fire-and-forget per contracts.md's note on this
+  // table: the BEFORE UPDATE pin trigger makes a repeat or a retried
+  // failed write harmless, so a failed write here surfaces no error - the
+  // next full load re-reads the row, finds the stamp still null, and the
+  // step simply becomes due again.
+  async function dismissOnboardingStep(step) {
+    const col = ONBOARDING_STEP_COLUMNS[step];
+    if (!col || !state.onboardingProgress || !state.user || !client) return;
+    state.onboardingProgress[col] = new Date().toISOString();
+    rerender();
+    client.from("onboarding_progress").update({ [col]: new Date().toISOString() }).eq("user_id", state.user.id).catch(() => {});
+  }
+  // Lazy, same pattern the audit log already uses (afterRenderCommunity):
+  // fetched once, only when the step it feeds is actually due, not on
+  // every session. Built from the same aggregation weekly_recaps uses
+  // (COMM-220) over the member's own first month - not the Phase 3
+  // club-wide monthly recap.
+  async function loadOnboardingFirstMonthSummary() {
+    if (!state.user || !client || !state.redemption || !state.redemption.redeemed_at) return;
+    state.onboardingFirstMonth = { loading: true, error: false, sessions: 0, prs: 0, achievements: 0 };
+    const redeemedAt = new Date(state.redemption.redeemed_at);
+    const monthEnd = new Date(redeemedAt.getTime() + 30 * 86400000);
+    const { data, error } = await client.from("weekly_recaps").select("sessions_completed,prs,achievements")
+      .eq("user_id", state.user.id)
+      .gte("week_start", redeemedAt.toISOString().slice(0, 10))
+      .lte("week_start", monthEnd.toISOString().slice(0, 10));
+    if (!state.onboardingFirstMonth) return; // dismissed/torn down mid-flight
+    if (error) { state.onboardingFirstMonth = { loading: false, error: true, sessions: 0, prs: 0, achievements: 0 }; return rerender(); }
+    const totals = (data || []).reduce((acc, r) => {
+      acc.sessions += Number(r.sessions_completed) || 0;
+      acc.prs += Array.isArray(r.prs) ? r.prs.length : 0;
+      acc.achievements += Array.isArray(r.achievements) ? r.achievements.length : 0;
+      return acc;
+    }, { sessions: 0, prs: 0, achievements: 0 });
+    state.onboardingFirstMonth = { loading: false, error: false, ...totals };
+    rerender();
+  }
+  function renderOnboardingCard(title, bodyHtml, step, extraActionHtml) {
+    return `<div class="chart-card admin-card" style="margin-bottom:12px;" data-onboarding-step="${step}">
+      <div style="font-weight:800;margin-bottom:6px;">${safeText(title)}</div>
+      <div style="font-size:13px;line-height:1.6;color:var(--steel);margin-bottom:10px;">${bodyHtml}</div>
+      <div class="chip-row">${extraActionHtml || ""}<button class="chip-btn primary" data-community-action="onboarding-dismiss" data-step="${step}">הבנתי</button></div>
+    </div>`;
+  }
+  function renderOnboardingWelcomeStep() {
+    return renderOnboardingCard(
+      "ברוכים הבאים לקהילה!",
+      `כאן רואים מה קורה במועדון, ואפשר לשתף אימונים ושיאים ולהגיב לחברים אחרים. לחיצה על "כתיבת פוסט" למעלה פותחת את השיתוף הראשון שלכם.`,
+      "welcome",
+    );
+  }
+  function renderOnboardingFirstWeekStep() {
+    // COMM-207's own list, sorted the same soonest-end-first order the
+    // Boards tab already uses - just the first entry.
+    const active = state.challenges.filter((c) => c.status === "active").slice().sort((a, b) => new Date(a.end_at) - new Date(b.end_at))[0];
+    const body = active
+      ? `יש אתגר פעיל במועדון עכשיו: <strong>${safeText(active.title)}</strong>.`
+      : `אין כרגע אתגר פעיל במועדון, אבל שווה להציץ בלוח האתגרים מדי פעם.`;
+    const openBtn = active ? `<button class="chip-btn" data-community-action="open-challenge" data-id="${safeText(active.id)}" data-source="onboarding">פתיחת האתגר</button>` : "";
+    return renderOnboardingCard("השבוע הראשון שלכם מאחוריכם", body, "first_week", openBtn);
+  }
+  function renderOnboardingFirstMonthStep() {
+    const summary = state.onboardingFirstMonth;
+    const body = (!summary || summary.loading)
+      ? `<span aria-hidden="true" style="display:inline-block;height:12px;width:70%;background:var(--border);border-radius:6px;"></span>`
+      : summary.error
+      ? `החודש הראשון שלכם הסתיים - לא הצלחנו לטעון את הסיכום כרגע.`
+      : `החודש הראשון שלכם: ${summary.sessions} אימונים, ${summary.prs} שיאים ו-${summary.achievements} הישגים חדשים. כל הכבוד!`;
+    return renderOnboardingCard("החודש הראשון שלכם במועדון", body, "first_month");
+  }
+  function renderOnboardingStep() {
+    const step = currentOnboardingStep();
+    if (!state.onboardingProgress) {
+      // A loading skeleton only while a redemption is actually known - a
+      // pre-redemption visitor never had a row seeded, so there is nothing
+      // pending to skeleton for.
+      return state.redemption ? `<div class="chart-card" aria-busy="true" style="margin-bottom:12px;height:60px;background:var(--border);opacity:.35;"></div>` : "";
+    }
+    if (!step) return "";
+    if (step === "welcome") return renderOnboardingWelcomeStep();
+    if (step === "first_week") return renderOnboardingFirstWeekStep();
+    return renderOnboardingFirstMonthStep();
   }
   // COMM-218. The three-tier client-facing control that replaces the plain
   // `important` boolean; `announcements.important` still exists server-side
@@ -3720,6 +3856,164 @@
     </div>`;
   }
 
+  // ---- COMM-221 weekly recap surface + share ---------------------------
+  // Reachable from (a) the weekly_recap notification's deep link
+  // (resolveNotifTarget below) and (b) the "View Week" entry point in the
+  // Account tab. weekStart === null means "the member's most recent
+  // available week"; the notification always supplies an explicit one.
+  // RLS is what actually enforces "only my own recaps" - weekly_recaps has
+  // an own-row select policy and nothing else, so there is nothing for a
+  // client-side check to add here beyond that enforced boundary.
+  async function openRecap(weekStart) {
+    if (!state.user || !client) return;
+    state.recapView = { weekStart: weekStart || null, loading: true, error: false, row: null, olderWeekStart: null, newerWeekStart: null, sharing: null };
+    rerender();
+    await refreshRecapView(weekStart || null);
+  }
+  function closeRecapView() { state.recapView = null; rerender(); }
+  // weekStart === null asks for the most recent row; otherwise a specific
+  // ISO week. Either way, once the row is known, the two adjacent-week
+  // existence checks (COMM-221: "past weeks are browsable") run off its
+  // real week_start, not the possibly-null argument this call started
+  // with.
+  async function refreshRecapView(weekStart) {
+    const v = state.recapView;
+    if (!v) return;
+    v.loading = true; v.error = false; rerender();
+    let row = null, err = null;
+    if (weekStart) {
+      const res = await client.from("weekly_recaps").select("*").eq("user_id", state.user.id).eq("week_start", weekStart).maybeSingle();
+      row = res.data; err = res.error;
+    } else {
+      const res = await client.from("weekly_recaps").select("*").eq("user_id", state.user.id).order("week_start", { ascending: false });
+      err = res.error;
+      row = (!err && Array.isArray(res.data) && res.data.length) ? res.data[0] : null;
+    }
+    if (!state.recapView || state.recapView !== v) return; // closed/reopened mid-flight
+    if (err) { v.loading = false; v.error = true; return rerender(); }
+    v.row = row;
+    v.weekStart = row ? row.week_start : weekStart;
+    v.olderWeekStart = null; v.newerWeekStart = null;
+    if (row) {
+      const [olderRes, newerRes] = await Promise.all([
+        client.from("weekly_recaps").select("week_start").eq("user_id", state.user.id).lt("week_start", row.week_start).order("week_start", { ascending: false }),
+        client.from("weekly_recaps").select("week_start").eq("user_id", state.user.id).gt("week_start", row.week_start).order("week_start", { ascending: true }),
+      ]);
+      if (!state.recapView || state.recapView !== v) return;
+      v.olderWeekStart = (!olderRes.error && olderRes.data && olderRes.data[0]) ? olderRes.data[0].week_start : null;
+      v.newerWeekStart = (!newerRes.error && newerRes.data && newerRes.data[0]) ? newerRes.data[0].week_start : null;
+    }
+    v.loading = false;
+    rerender();
+  }
+  function recapGoOlder() { const v = state.recapView; if (v && v.olderWeekStart) refreshRecapView(v.olderWeekStart); }
+  function recapGoNewer() { const v = state.recapView; if (v && v.newerWeekStart) refreshRecapView(v.newerWeekStart); }
+  function recapWeekRangeLabel(weekStart) {
+    if (!weekStart) return "";
+    const start = new Date(weekStart + "T00:00:00Z");
+    const end = new Date(start.getTime() + 6 * 86400000);
+    const fmt = (d) => d.toISOString().slice(0, 10);
+    return `${fmt(start)} – ${fmt(end)}`;
+  }
+  // "Pick one figure" (COMM-221) - a small, fixed set of true, already-
+  // generated figures from this exact row, never anything invented on the
+  // client. Sessions and streak are always offered; a PR or an
+  // achievement is only offered when the week actually produced one.
+  function recapShareOptions(row) {
+    const opts = [
+      { key: "sessions", label: "מספר האימונים", body: `התאמנתי ${row.sessions_completed} פעם${row.sessions_completed === 1 ? "" : "ים"} השבוע! 💪` },
+      { key: "streak", label: "רצף האימונים", body: `הרצף שלי עומד על ${row.streak} ${row.streak === 1 ? "יום" : "ימים"} ברצף! 🔥` },
+    ];
+    if (Array.isArray(row.prs) && row.prs.length) {
+      const pr = row.prs[0];
+      opts.push({ key: "pr", label: "שיא חדש", body: `שיא חדש השבוע${pr.movement ? " ב" + pr.movement : ""}${pr.result ? ": " + pr.result : ""}! 🏆` });
+    }
+    if (Array.isArray(row.achievements) && row.achievements.length) {
+      const ach = row.achievements[0];
+      opts.push({ key: "achievement", label: "הישג חדש", body: `פתחתי השבוע הישג חדש: ${ach.title || ""}${ach.badge_icon ? " " + ach.badge_icon : ""}`.trim() });
+    }
+    return opts;
+  }
+  async function shareRecapFigure(key) {
+    const v = state.recapView;
+    if (!v || !v.row || v.sharing) return;
+    const opt = recapShareOptions(v.row).find((o) => o.key === key);
+    if (!opt) return;
+    v.sharing = key; rerender();
+    // post_create itself enforces the 1000-char cap and the post rate
+    // limit (COMM-221) - every generated figure body here is a short,
+    // fixed template, well under the cap either way.
+    const { data, error } = await client.rpc("post_create", { body: opt.body, visibility: "club", media: [], links: null });
+    v.sharing = null;
+    if (error || !data) { setMessage("שיתוף הסיכום נכשל, אפשר לנסות שוב"); return rerender(); }
+    setMessage("הסיכום שותף לקהילה");
+    if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.POST_CREATED) {
+      try { window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.POST_CREATED, { post_id: data, post_type: "POST_TEXT" }); } catch (e) {}
+    }
+    rerender();
+  }
+  function renderRecapBody(v) {
+    const row = v.row;
+    const isQuiet = Number(row.sessions_completed) === 0 && Number(row.streak) === 0
+      && !(Array.isArray(row.prs) && row.prs.length) && !(Array.isArray(row.achievements) && row.achievements.length);
+    const quietNote = isQuiet ? `<div class="empty">שבוע שקט - בלי אימונים שנרשמו. השבוע הבא הוא הזדמנות חדשה.</div>` : "";
+    const prsHtml = Array.isArray(row.prs) && row.prs.length
+      ? `<div class="log-list">${row.prs.map((pr) => `<div class="log-row"><span>${safeText(pr.movement)}</span><span class="mono" style="color:var(--brass);">${safeText(pr.result)}</span></div>`).join("")}</div>`
+      : `<div class="empty">אין שיאים חדשים השבוע</div>`;
+    const achHtml = Array.isArray(row.achievements) && row.achievements.length
+      ? `<div class="log-list">${row.achievements.map((a) => `<div class="log-row"><span>${safeText(a.badge_icon || "🏅")} ${safeText(a.title)}</span></div>`).join("")}</div>`
+      : `<div class="empty">אין הישגים חדשים השבוע</div>`;
+    const challengeHtml = Array.isArray(row.challenge_progress) && row.challenge_progress.length
+      ? `<div class="log-list">${row.challenge_progress.map((c) => `<div class="log-row"><span>${safeText(c.title)}</span><span class="mono" style="color:var(--brass);">${safeText(c.progress)}${c.target != null ? ` / ${safeText(c.target)}` : ""}</span></div>`).join("")}</div>`
+      : `<div class="empty">לא נרשמה השתתפות באתגר השבוע</div>`;
+    const club = row.club_challenge_progress && row.club_challenge_progress.title
+      ? `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">${safeText(row.club_challenge_progress.title)}</div><div class="mono" style="color:var(--brass);">${safeText(row.club_challenge_progress.total)}${row.club_challenge_progress.target != null ? ` / ${safeText(row.club_challenge_progress.target)}` : ""}</div>${row.club_challenge_progress.participants != null ? `<div style="color:var(--steel);font-size:12px;">${safeText(row.club_challenge_progress.participants)} משתתפים</div>` : ""}</div>`
+      : "";
+    const event = row.upcoming_event
+      ? `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">האירוע הקרוב</div><button class="link-btn" data-community-action="open-event" data-id="${safeText(row.upcoming_event.id)}" data-source="recap" style="padding:0;text-align:right;display:block;">${safeText(row.upcoming_event.title)}</button>${row.upcoming_event.start_at ? `<div style="color:var(--steel);font-size:12px;">${safeText(formatChallengeDate(row.upcoming_event.start_at))}</div>` : ""}</div>`
+      : `<div class="empty">אין אירוע קרוב לציין</div>`;
+    const shareOptions = recapShareOptions(row);
+    const shareHtml = `<div class="field-label" style="margin:10px 0 4px;">שיתוף הסיכום</div><div class="chip-row" style="flex-wrap:wrap;">${shareOptions.map((o) => `<button class="chip-btn" data-community-action="share-recap" data-figure="${o.key}"${v.sharing === o.key ? " disabled" : ""}>${v.sharing === o.key ? "משתף…" : "שיתוף " + safeText(o.label)}</button>`).join("")}</div>`;
+    return `${quietNote}
+      <div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">אימונים השבוע</div><div class="mono" style="color:var(--brass);font-size:18px;">${safeText(row.sessions_completed)}</div></div>
+      <div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">רצף נוכחי</div><div class="mono" style="color:var(--brass);font-size:18px;">🔥 ${safeText(row.streak)}</div></div>
+      <div class="field-label" style="margin:10px 0 4px;">שיאים</div>${prsHtml}
+      <div class="field-label" style="margin:10px 0 4px;">הישגים</div>${achHtml}
+      <div class="field-label" style="margin:10px 0 4px;">ההתקדמות שלי באתגר</div>${challengeHtml}
+      ${club}
+      ${event}
+      ${shareHtml}`;
+  }
+  function renderRecapViewOverlay() {
+    const v = state.recapView;
+    if (!v) return "";
+    const weekLabel = v.weekStart ? recapWeekRangeLabel(v.weekStart) : "";
+    // COMM-221 frontend states: empty ("אין עדיין סיכום שבועי"), loading
+    // skeleton, error ("לא ניתן היה לטעון את הסיכום השבועי. נסו שוב."),
+    // populated (renderRecapBody, including the quiet-week variant it
+    // renders inline off the same row).
+    const bodyHtml = v.loading ? `<div class="log-list" aria-busy="true">${`<div class="chart-card" style="height:56px;background:var(--border);opacity:.35;margin-bottom:10px;"></div>`.repeat(2)}</div>`
+      : v.error ? `<div class="empty">לא ניתן היה לטעון את הסיכום השבועי. נסו שוב.<div class="chip-row" style="justify-content:center;"><button class="chip-btn" data-community-action="recap-retry">ניסיון חוזר</button></div></div>`
+      : !v.row ? `<div class="empty">אין עדיין סיכום שבועי.</div>`
+      : renderRecapBody(v);
+    const nav = (v.row && !v.loading && !v.error) ? `<div class="chip-row" style="margin-bottom:10px;">
+        <button class="chip-btn" data-community-action="recap-older"${v.olderWeekStart ? "" : " disabled"}>שבוע קודם</button>
+        <button class="chip-btn" data-community-action="recap-newer"${v.newerWeekStart ? "" : " disabled"}>שבוע הבא</button>
+      </div>` : "";
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="recapViewTitle" data-cloud-dialog="recapView" style="align-items:flex-start;padding:20px 12px;">
+      <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:560px;">
+        <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
+          <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:12px;">
+            <div id="recapViewTitle" style="font-weight:800;font-size:17px;">${weekLabel ? "סיכום השבוע · " + safeText(weekLabel) : "סיכום שבועי"}</div>
+            <button class="chip-btn" data-community-action="close-recap-view" aria-label="סגירה">✕</button>
+          </div>
+          ${nav}
+          ${bodyHtml}
+        </div>
+      </div>
+    </div>`;
+  }
+
   // ---- Composer (COMM-102, COMM-103) --------------------------------------
   function openComposer(triggerEl) {
     state.composerTrigger = triggerEl || null;
@@ -4647,6 +4941,8 @@
     if (q.ma || q.achievement || st === "achievement" || /\/achievements(\/|$)/.test(path)) return { tab: "account", achievement: q.ma || q.achievement || sid };
     if (q.announcement || st === "announcement" || /\/announcement/.test(path)) return { tab: "feed", announcement: q.announcement || sid };
     if (q.event || st === "event" || /\/events(\/|$)/.test(path)) return { tab: "feed", event: q.event || sid };
+    // COMM-220/221. weekly_recap's own deep link is /community/recap?week=<monday>.
+    if (q.week || st === "weekly_recap" || /\/recap(\/|$)/.test(path)) return { tab: "account", recapWeek: q.week || null };
     return { tab: "feed" };
   }
   async function openNotif(id) {
@@ -4676,6 +4972,8 @@
       openEvent(target.event, "notification");
     } else if (target.profile) {
       viewCommunityProfile(target.profile);
+    } else if (target.recapWeek !== undefined) {
+      openRecap(target.recapWeek || null);
     } else {
       rerender();
     }
@@ -4954,7 +5252,7 @@
   // not tied to the Community tab being active.
   function renderConfirmDialog() {
     return renderConfirmSheet() + renderPostComposer() + renderPrSharePrompt() + renderAchievementUnlockCelebration() + renderCommunityProfileOverlay() + renderNotificationCenter()
-      + renderReportSheet() + renderModActionSheet() + renderModContextOverlay() + renderChallengeViewOverlay() + renderEventViewOverlay();
+      + renderReportSheet() + renderModActionSheet() + renderModContextOverlay() + renderChallengeViewOverlay() + renderEventViewOverlay() + renderRecapViewOverlay();
   }
   // COMM-151. The report reason sheet. Reasons are a fixed list, an optional
   // capped free-text note, and a plain acknowledgement that discloses
@@ -5179,7 +5477,7 @@
     const feedHtml = `<div class="ach-section">${sectionHead("var(--blue)", "הפיד שלי")}${composeBtn}${filterHtml}${feed}${upcomingEventHtml}${feedMoreHtml}</div>`;
 
     // COMM-155. The pinned strip sits above everything else on the Club home.
-    const feedTab = renderPinnedStrip() + clubTopHtml + announcementsHtml + feedHtml;
+    const feedTab = renderPinnedStrip() + renderOnboardingStep() + clubTopHtml + announcementsHtml + feedHtml;
 
     // ---- Boards tab: weekly challenge + streaks, top-3-plus-your-rank ----
     const challengeSetter = staff ? `<form id="communityWeeklyChallenge" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">קביעת אתגר שבועי<span class="admin-tag">ניהול</span></div>${field("communityWeeklyChallenge", "title", "שם האתגר", `<input class="text-input" name="title" placeholder="שם האתגר" required/>`)}${field("communityWeeklyChallenge", "comparisonKey", "מפתח השוואה", `<input class="text-input" name="comparisonKey" dir="ltr" placeholder="movement:back-squat:est1rm" required/>`)}<div style="color:var(--steel);font-size:11px;margin:-6px 0 10px;">חייב להתחיל ב-movement: (תרגיל) או wod: (אימון) — בדיוק כמו שהוא נשמר בשיתופים, למשל movement:back-squat:est1rm או wod:fran:time:rx</div><div class="flex gap-10 field">${field("communityWeeklyChallenge", "startsOn", "תאריך התחלה", `<input class="text-input" name="startsOn" type="date" required/>`)}${field("communityWeeklyChallenge", "endsOn", "תאריך סיום", `<input class="text-input" name="endsOn" type="date" required/>`)}</div><button class="chip-btn primary" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
@@ -5218,13 +5516,16 @@
       <div class="log-list">${privacyRows}</div>
     </div>`;
 
+    // COMM-221. The "View Week" entry point into the recap surface.
+    const recapEntry = `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--teal)", "הסיכום השבועי שלי")}<button class="chip-btn primary" data-community-action="open-recap">צפייה בשבוע</button></div>`;
+
     // COMM-228. One box, three labeled groups (members, events, challenges).
     const people = renderCommunitySearch();
 
     const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מתאמנים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין מתאמנים חדשים לאחרונה</div>`}</div>` : "";
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
-    const accountTab = account + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
+    const accountTab = account + recapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
 
@@ -5276,6 +5577,7 @@
     { key: "profileView", close: function () { closeCommunityProfile(); } },
     { key: "challengeView", close: function () { closeChallengeView(); } },
     { key: "eventView", close: function () { closeEventView(); } },
+    { key: "recapView", close: function () { closeRecapView(); } },
   ];
   const cloudDialogOpeners = {};
   let cloudOpenDialogKey = null;
@@ -5411,6 +5713,9 @@
     // COMM-154. The audit view is lazy: fetched the first time an analytics
     // holder lands on the Account tab, not on every session.
     if (state.communityTab === "account" && hasPerm(PERM.ANALYTICS_VIEW) && !state.auditLoaded && !state.auditLoading) loadAuditLog(true);
+    // COMM-222. Same lazy pattern: the first-month summary is only worth
+    // fetching once that onboarding step is actually due.
+    if (currentOnboardingStep() === "first_month" && !state.onboardingFirstMonth) loadOnboardingFirstMonthSummary();
     // COMM-018. Each privacy toggle persists on change, no save button.
     document.querySelectorAll("[data-privacy-field]").forEach((el) => {
       el.addEventListener("change", () => savePrivacyField(el.dataset.privacyField, el.checked));
@@ -5595,6 +5900,15 @@
     else if (action === "event-publish") publishEventDraft(el.dataset.id);
     else if (action === "event-cancel-confirm") confirmCancelEvent(el.dataset.id);
     else if (action === "event-ics") downloadEventIcs(el.dataset.id);
+    // COMM-222 onboarding sequence.
+    else if (action === "onboarding-dismiss") dismissOnboardingStep(el.dataset.step);
+    // COMM-221 weekly recap surface + share.
+    else if (action === "open-recap") openRecap(el.dataset.week || null);
+    else if (action === "close-recap-view") closeRecapView();
+    else if (action === "recap-older") recapGoOlder();
+    else if (action === "recap-newer") recapGoNewer();
+    else if (action === "recap-retry") refreshRecapView(state.recapView && state.recapView.weekStart);
+    else if (action === "share-recap") shareRecapFigure(el.dataset.figure);
   };
   window.isCommunitySignedIn = function () { return !!(state.user && state.profile); };
   window.shareAchievementToCommunity = function (achievementId, title, rule) { publishAchievement(achievementId, title, rule); };
@@ -5644,7 +5958,7 @@
         // first track(). Idempotent, so whichever path arrives first wins.
         ensureAnalyticsConfigured();
         loadRedemption()
-          .then(() => Promise.all([loadProfile(), loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadEvents(), flushOutbox()]))
+          .then(() => Promise.all([loadProfile(), loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadEvents(), loadOnboardingProgress(), flushOutbox()]))
           .then(() => (isStaff() ? Promise.all([loadInactiveMembers(), loadNewMembers()]) : null))
           .then(() => (isAdmin() || hasPerm(PERM.COMMENT_MODERATE) ? loadModQueue() : null))
           .then(pullPrivateRecords)
@@ -5668,7 +5982,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null;
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null;
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();
@@ -5764,6 +6078,7 @@
     if (state.profileView) { e.preventDefault(); closeCommunityProfile(); return; }
     if (state.challengeView) { e.preventDefault(); closeChallengeView(); return; }
     if (state.eventView) { e.preventDefault(); closeEventView(); return; }
+    if (state.recapView) { e.preventDefault(); closeRecapView(); return; }
     if (state.openPostMenu) { state.openPostMenu = null; rerender(); }
   });
   // COMM-190. A click on the dim backdrop - the overlay element itself, not
@@ -5799,5 +6114,12 @@
   // unlocks once that path lands. Either way this shows one celebration.
   if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.ACHIEVEMENT_UNLOCKED) {
     window.HaimuniaEvents.on(window.PRODUCT_EVENTS.ACHIEVEMENT_UNLOCKED, onAchievementUnlocked);
+  }
+  // COMM-222. A fresh redemption in this same tab should not have to wait
+  // for a reload before its onboarding_progress row (seeded server-side by
+  // the same invite_redemptions insert) is fetched and the welcome step
+  // can render.
+  if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.MEMBER_JOINED) {
+    window.HaimuniaEvents.on(window.PRODUCT_EVENTS.MEMBER_JOINED, () => { loadOnboardingProgress().then(rerender); });
   }
 })();

@@ -113,6 +113,12 @@ export function createMockSupabase(seedTables = {}) {
       eq(col, val) { filters.push((r) => r[col] === val); return api; },
       neq(col, val) { filters.push((r) => r[col] !== val); return api; },
       gt(col, val) { filters.push((r) => r[col] > val); return api; },
+      // COMM-221. Recap week browsing needs the "strictly before/after"
+      // and "on or after/before" pairs a real Postgrest client has -
+      // added alongside gt() rather than duplicating its shape.
+      lt(col, val) { filters.push((r) => r[col] < val); return api; },
+      gte(col, val) { filters.push((r) => r[col] >= val); return api; },
+      lte(col, val) { filters.push((r) => r[col] <= val); return api; },
       in(col, vals) { const set = new Set(vals || []); filters.push((r) => set.has(r[col])); return api; },
       or() { return api; },
       order(col, opts) { api._orderCol = col; api._orderAsc = !opts || opts.ascending !== false; return api; },
