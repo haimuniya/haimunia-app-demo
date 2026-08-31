@@ -163,6 +163,55 @@ client was already built against.
 - Notes: class-connection score is 0 until attendance lands, see COMM-P01.
   Diversity rules from COMM-112 run inside this function. Block edges from
   COMM-125 are joined here. `my_classes` scope is parked.
+- Re-created in 202608310002 (COMM-301) with the same signature and the same
+  output. Its relationship component is now one call to
+  `relationship_score()` instead of an inline CTE; the four `v_rel_*`
+  constants left its weight block and the weight `v_w_relationship = 18`
+  stayed. Nothing else in the body changed, and
+  `supabase/tests/0038_relationship_score_test.sql` pins the ranked order and
+  the `feed_score` values to six decimal places against numbers captured from
+  the pre-refactor function.
+
+### relationship_score(p_viewer uuid, p_other uuid, p_as_of timestamptz default now()) returns numeric
+
+- Shipped in 202608310002. COMM-301. **Internal, not a client call.**
+- Purpose: how close `p_viewer` already is to `p_other`, as a 0..1 number.
+  The one copy of the arithmetic `feed_page` used to hold inline.
+- Params: `p_viewer` and `p_other` are member ids. `p_as_of` is the instant
+  the 30-day interaction window is measured back from.
+- Returns: `numeric` in `[0, 1]`, never null. Mutual follow 1.0, one-way
+  follow 0.55, a reaction or comment by the viewer on the other member's
+  posts inside the window adds 0.45, the sum capped at 1. A null viewer, a
+  null other, or a member scored against themselves is 0.
+- Auth: `security invoker`, **no grant to any role** — `public`, `anon` and
+  `authenticated` are all revoked, the same shape
+  `consistency_week_streaks()` has. It is called only from `security
+  definer` functions that have already resolved and checked `auth.uid()`,
+  and it borrows their rights to read `follows`, `reactions` and
+  `post_comments` across members. A client reaching it directly gets 42501.
+- Side effects: none, `stable`.
+- Two things differ from this file's own forward reference, both so the
+  extraction stays behaviour-preserving; neither changes a number:
+  - **`p_as_of` is a third parameter**, defaulted, so the promised
+    two-argument form `relationship_score(viewer, other)` still resolves
+    verbatim. The inline version measured the window from `feed_page`'s
+    frozen `v_anchor`, not from `now()`, and that is load-bearing: the
+    anchor is what makes every page of one feed session score identically.
+    A two-argument function reading `now()` internally would move the 30-day
+    boundary between page 1 and page 2. `feed_page` passes `v_anchor`.
+  - **The mutual-follow test is written out rather than delegated to
+    `are_friends()`**, which resolves its viewer from `auth.uid()` and so
+    cannot answer for an arbitrary `p_viewer`. The predicate is
+    `are_friends()`'s body with `auth.uid()` replaced by `p_viewer`,
+    self-exclusion and null guards included. `are_friends()` remains the one
+    definition of "friends" every client-facing surface uses, and 0038
+    asserts the two agree for every fixture member so the second copy cannot
+    drift.
+- Not used by `people_suggestions` (COMM-232), deliberately. That function
+  answers "who should this member start following"; this one answers "how
+  close is this pair already", which is close to its opposite. 0038 asserts
+  `people_suggestions`' body does not mention it, so folding them together
+  becomes a deliberate decision rather than a quiet one.
 
 ### feed_record_impressions(p_rows jsonb) returns void
 
@@ -2879,10 +2928,16 @@ What a dependent ticket needs to know changed between the two:
 
 ### Needs from schema, feed (Phase 3)
 
-- `relationship_score(p_viewer uuid, p_other uuid) returns numeric` —
-  `security invoker`, no grant to any client role, internal only. COMM-301.
-  Extracted from `feed_page`'s existing inline relationship CTE
-  (202608280019), same numbers.
+- ~~`relationship_score(p_viewer uuid, p_other uuid) returns numeric`~~ —
+  **SHIPPED in 202608310002, COMM-301.** No longer a forward reference: the
+  built contract is **"### relationship_score(p_viewer uuid, p_other uuid,
+  p_as_of timestamptz default now()) returns numeric"** under `## Feed`
+  above. Read that, not this. It shipped as promised — same purpose, same
+  numbers, `security invoker`, no grant to any role — with one addition: a
+  third, defaulted `p_as_of` parameter carrying the window anchor, so the
+  two-argument call form above still resolves and a caller with a frozen
+  session anchor keeps the same 30-day boundary across every page. A
+  dependent ticket that has an anchor should pass it.
 - `feed_page(cursor, limit, scope)` re-created (same signature):
   `v_class_connection` stops being hard-0'd, computed from `attendance_log`
   overlap in a trailing window, gated by `can_view_profile_field(author,

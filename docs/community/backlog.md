@@ -693,13 +693,25 @@ staff-confirmed check-in.
 
 ### feed
 
-| ID | Title | Agent | Attendance-blocked |
-|---|---|---|---|
-| COMM-301 | Relationship score from interaction history | feed | no |
-| COMM-302 | Recurring classmate score once attendance lands | feed | was — unblocked by COMM-300 |
-| COMM-303 | Personalized feed ranking and per-user weights | feed | no |
-| COMM-306 | Consistency leaderboard on verified attendance | feed | was — unblocked by COMM-300 |
-| COMM-307 | Post-class trained-with-you card | feed | was — unblocked by COMM-300 |
+| ID | Title | Agent | Attendance-blocked | Status |
+|---|---|---|---|---|
+| COMM-301 | Relationship score from interaction history | feed | no | review |
+| COMM-302 | Recurring classmate score once attendance lands | feed | was — unblocked by COMM-300 | todo |
+| COMM-303 | Personalized feed ranking and per-user weights | feed | no | todo |
+| COMM-306 | Consistency leaderboard on verified attendance | feed | was — unblocked by COMM-300 | todo |
+| COMM-307 | Post-class trained-with-you card | feed | was — unblocked by COMM-300 | todo |
+
+**COMM-301 is in review.** Shipped as `202608310002_relationship_score.sql`,
+with `supabase/tests/0038_relationship_score_test.sql` (26 assertions) and no
+client change at all — no new call, no changed signature, so no node-side
+test moved. A pure extraction: `feed_page`'s body is byte-identical to
+202608280019 apart from the two edits this ticket names, and the ranked order
+and `feed_score` values for a fixture set were captured from the pre-refactor
+function and are asserted against the post-refactor one to six decimal
+places. COMM-303 can now read `relationship_score()`'s output as a component
+it reweights without knowing its internals. `people_suggestions` (COMM-232)
+was left untouched, per COMM-301's own scope boundary, and 0038 asserts that
+too.
 
 COMM-301 extracts `feed_page`'s already-inline relationship arithmetic
 (202608280019) into a reusable `relationship_score()` helper with no ranking
@@ -1279,6 +1291,53 @@ none of them narrowing what the ticket promised:
 | attendance_log_from_record(), reachability | Revoked from `public`, `anon` and `authenticated` — reachable as a trigger and nowhere else. `prosecdef` is true. It carries no `auth.uid()` check, the same documented exception `notif_queue_batched()`, `seed_onboarding_progress()` and `post_new_member_on_join()` already record: it acts on the row being inserted, which RLS already pinned to the caller, and an `auth.uid()` gate would break the backfill and any future service-role repair. |
 | Backfill (202608310001) | A no-op on a fresh reset (0037 asserts the table starts empty, so every count in that file is about the trigger). Verified by hand against a seeded database with the trigger temporarily disabled: dedupes two records on the same day to one row keyed to the earliest `created_at`, skips soft-deleted rows, skips `bodyweight`, skips an impossible date, skips a future date. |
 | ATTENDANCE_RECORDED emit + attendance_recorded analytics | `test/community-attendance-log-rls.test.mjs`, executing in jsdom: `flushOutbox()` emits `{occurred_on}` and nothing else after a successful write; one emit per calendar day across four records spanning two days; nothing for a `bodyweight`, `measurement`, `movement` or soft-delete; nothing when the write fails; nothing for a malformed local date. The bridge writes `attendance_recorded` with `occurred_on` only, dropping a title, a result string and a record id attached by a hypothetical future producer. It counts toward WCAM, and `metrics.md`'s rollup query agrees (pinned by `test/platform-analytics.test.mjs`). **The emit is a courtesy** — the trigger writes the table independently, so a member on an older cached build produces the row with no event, and nothing downstream may depend on it firing. |
+
+### Relationship score (202608310002, COMM-301)
+
+No new table, so no new RLS policy: one new internal function and one
+existing function re-created around it.
+`supabase/tests/0038_relationship_score_test.sql` (26 assertions) runs every
+boundary below on `migration-check`. There is no client half — no new call,
+no changed signature, nothing for a `.test.mjs` file to cover, and the node
+suite is unchanged at 791/790 pass/1 skip.
+
+**The load-bearing assertion in this file is not about the new function.** It
+is the regression pin: three fixture posts, identical in every scored respect
+except who wrote them, ranked by `feed_page` with their `feed_score` asserted
+to six decimal places against literals captured by running that exact fixture
+against the *pre*-refactor function. `now()` is fixed for the transaction and
+the posts are published at `now() - 5 hours`, so the recency term is
+`40 * 0.5^(5/36)` exactly and every number is reproducible rather than
+approximate. Any arithmetic that moved anywhere in the scoring pass moves
+those three numbers.
+
+Two things differ from COMM-301's own migration outline, both so the
+extraction stays behaviour-preserving, neither of them changing a number:
+
+1. **A third, defaulted `p_as_of timestamptz` parameter.** The outline named
+   `relationship_score(p_viewer, p_other)`. The inline version measured its
+   30-day window from `feed_page`'s frozen `v_anchor`, not from `now()`, and
+   that is the mechanism that makes every page of one feed session score
+   identically. A two-argument function reading `now()` internally would put
+   the window boundary a few minutes further along on page 2 than on page 1,
+   so it would not have been a pure extraction. The default means the
+   promised two-argument call form still resolves verbatim.
+2. **The mutual-follow test is written out rather than delegated to
+   `are_friends()`**, which resolves its viewer from `auth.uid()` and cannot
+   answer for an arbitrary `p_viewer`. It is `are_friends()`'s body with
+   `auth.uid()` replaced by `p_viewer`. Covered by a drift assertion below.
+
+| Table / function / trigger | Boundary to assert |
+|---|---|
+| relationship_score(), reachability | Revoked from `public`, `anon` **and** `authenticated`, `prosecdef` false. Internal plumbing, not a second API surface — the same shape `consistency_week_streaks()` (202608290015) established. A real authenticated caller reaching for it gets 42501 from the grant, not from a check inside the body, which is deliberate: the `auth.uid()` gate belongs on the definer entry point that calls it, not on a helper with no caller of its own. The revoke of `public` is asserted separately, because a new function starts with `execute` granted to `PUBLIC` and forgetting that one line is how an internal helper quietly becomes reachable. |
+| relationship_score(), the three branches | Mutual follow 1.0, one-way follow 0.55, a reaction or comment by the viewer on the other member's posts inside 30 days adds 0.45, sum capped at 1. Each asserted on its own fixture pair. The interaction signal is deliberately sourced from a post 200 days old — outside `feed_page`'s 90-day candidate window — so the reaction cannot also raise a candidate's engagement component and break the "identical except for the author" property the regression pin rests on. |
+| relationship_score(), the cap | 0.55 + 0.45 is exactly 1.00, not 1.00-and-a-bit: a member the viewer follows *and* has reacted to reaches the same ceiling as a mutual follow, and in the feed the two rows tie to the last decimal with the tie falling to `published_at` then `id`. This is the boundary a "capped at 1 before its weight applies" rule actually means, and it is the one an inline-to-function move is most likely to lose. |
+| relationship_score() vs are_friends() | **The drift pin for the second copy of the friends rule.** For every fixture member other than the viewer, `are_friends(id)` and `relationship_score(viewer, id) >= 1.0` must agree — asserted as an `is_empty` over the disagreements, with an `isnt_empty` alongside it so a fixture with no mutual follow in it cannot pass vacuously. Includes the self case: a member scored against themselves is 0, because `p_other <> p_viewer` is `are_friends()`'s own self-exclusion, kept. |
+| relationship_score(), p_as_of | The window anchor is real, not decoration: a comment 40 days old scores 0 measured from `now()` and 0.45 measured from an anchor 15 days back. This is also the assertion that proves the comment branch is a branch — nothing else in the fixture reaches that member. Null viewer, null other: 0, never null. |
+| feed_page, ranked output (regression) | The three fixture rows come back in the same order with the same `feed_score` to six decimal places as they did before the extraction: 54.328735 (mutual), 46.228735 (follow), 44.428735 (interaction only). Captured from the pre-refactor function, asserted against the post-refactor one. For qa: the fixture block at the top of 0038 is self-contained, so the same three numbers can be reproduced against any revision by pasting it into a psql transaction and calling `feed_page` — the literals are not a snapshot only this file can check. |
+| feed_page vs relationship_score (drift) | **The "two copies cannot drift" pin**, the same pattern 0034 uses for `consistency_week_streaks()` versus `community_profile`: the gap between two feed rows that differ only in their author is asserted equal to 18 (`v_w_relationship`) times the gap between those two members' `relationship_score()`. Time-independent — the recency, engagement, personal and repetition terms are equal on both sides and cancel exactly — so it holds whenever the suite runs. `feed_page` cannot start scoring relationships differently from the function it calls without this failing. |
+| feed_page, COMM-125 block edges | Unchanged and asserted here as well as in 0019: a block in either direction removes that author from the candidate set entirely, however high the relationship score would have been. The extraction must not loosen it, and the fixture deliberately blocks the highest-scoring author to check that the score does not buy a way past the filter. |
+| people_suggestions (COMM-232), untouched | Asserted as a boundary rather than left as a comment: `people_suggestions`' body does not mention `relationship_score`, and `feed_page`'s does. Its shipped priority order — challenge, then interaction, then event — is pinned by 0034 and is a different question from "how close is this pair already". If a later ticket decides the two should share arithmetic, this fails and forces that to be a deliberate decision. |
 
 ## Open questions for the user
 
