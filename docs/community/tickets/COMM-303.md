@@ -2,7 +2,8 @@
 
 Phase: 3
 Agent: feed
-Status: todo
+Status: review — schema only (202608310006); storage + reader shipped, the
+weight-derivation algorithm deliberately not built
 Attendance-blocked: no
 
 ## User outcome
@@ -79,8 +80,40 @@ setting.
 
 - COMM-110, COMM-112, COMM-114, COMM-301, COMM-302.
 
-## Open question
+## Open question — RESOLVED
 
 The exact recomputation cadence and the per-component clamp bounds are a
 product tuning decision, not something derivable from the spec text this
 planner has access to. Flagged rather than guessed at a specific number.
+
+**Resolved by the user before the build, both as tunable numbers rather than
+scope decisions:**
+
+- **Clamp bounds: 40% to 250%** of each component's default weight — this
+  ticket's own worked example above, adopted as the real value. Stated once,
+  in `feed_weights_resolve`.
+- **Recomputation cadence: weekly**, matching the cadence already established
+  elsewhere in this schema for periodic recomputation (consistency streaks,
+  `recap_weekly`). It is a **scheduled-job parameter, not a hard
+  architectural constraint**: it is expressed in exactly one place, the
+  commented `pg_cron` line on `recompute_feed_weights()` in 202608310006, and
+  no schema depends on it. Revisable with a one-line edit.
+
+## What shipped, and what did not (202608310006)
+
+- **Shipped: the storage and the reader.** `member_feed_weights`,
+  `feed_weights_resolve(p_user, p_defaults)`, and `feed_page` re-created so
+  its eight weights resolve per caller. 61 pgTAP assertions in
+  `supabase/tests/0042_personalized_feed_weights_test.sql`.
+- **Not shipped, deliberately: the weight-derivation algorithm.** Nothing
+  writes `member_feed_weights`. `recompute_feed_weights(p_limit)` ships as a
+  granted, service-role-only, no-op stub returning 0, per this ticket's own
+  "infra not built here" rule. Every member therefore has no row and gets the
+  fixed defaults — which is also what makes the acceptance criterion above
+  ("this ticket changes no existing feed order") true by construction today.
+- One correction found while building: **the weight block's "positive weights
+  sum to 104" had been stale since COMM-302** turned `v_w_class` on. The eight
+  declared weights sum to **110**. The comment is corrected and **no weight
+  moved** — renormalising to 104 would have changed every existing feed score,
+  which is the one thing this ticket must not do. The constant-total invariant
+  is enforced against the defaults' own computed total, not a hardcoded number.

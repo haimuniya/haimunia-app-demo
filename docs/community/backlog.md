@@ -697,7 +697,7 @@ staff-confirmed check-in.
 |---|---|---|---|---|
 | COMM-301 | Relationship score from interaction history | feed | no | review |
 | COMM-302 | Recurring classmate score once attendance lands | feed | was — unblocked by COMM-300 | review |
-| COMM-303 | Personalized feed ranking and per-user weights | feed | no | todo |
+| COMM-303 | Personalized feed ranking and per-user weights | feed | no | review — **storage and reader only; the derivation is NOT built** |
 | COMM-306 | Consistency leaderboard on verified attendance | feed | was — unblocked by COMM-300 | review |
 | COMM-307 | Post-class trained-with-you card | feed | was — unblocked by COMM-300 | review — **both halves in; the client half landed too** |
 
@@ -804,15 +804,51 @@ pattern that slot actually has", which is no skeleton.** See the comment in
 `renderClassmatesTodayCard()`. Nothing else in Phase 3 is waiting on either
 half.
 
+**COMM-303 is in review, and it closes the feed cluster — but read what it
+does and does not contain before treating personalization as shipped.**
+Shipped as `202608310006_personalized_feed_weights.sql`, with
+`supabase/tests/0042_personalized_feed_weights_test.sql` (61 assertions) and
+**no client change at all** — the ticket says so itself ("No new UI —
+personalization is invisible ranking, not a setting"), `feed_page` keeps its
+exact signature and returned columns, and the node suite is unchanged at
+802/801/1/0.
+
+**WHAT IS NOT BUILT, flagged here so it is not mistaken for a completed
+feature: the weight-derivation algorithm.** Nothing in this ticket ever
+writes a `member_feed_weights` row, and nothing derives a multiplier from a
+member's `feed_interactions` history. `recompute_feed_weights(p_limit)` ships
+as a real, granted, service-role-only function whose body is empty and always
+returns 0. **So today every member has no row, and therefore every member
+gets the fixed defaults and the feed order this module has always
+produced.** That is the intended end state of COMM-303, not a gap in it — the
+ticket puts the derivation out of scope explicitly, in the same "storage
+exists, computation/delivery does not" bucket as the notification batch
+flusher (202608280028: `notification_batches` written, nothing scheduled to
+flush them) and `recap_weekly`'s own cron gap. What ships is the **storage**
+and the **reader**: the table, its boundary, the redistribution arithmetic,
+and `feed_page` falling back correctly.
+
+What did land: `member_feed_weights` (own-row select, no client write grant of
+any kind, service-role writer only, the `weekly_recaps` shape);
+`feed_weights_resolve(p_user, p_defaults)`, internal and ungranted, holding
+the clamp and the redistribution; and `feed_page` re-created a third time so
+its eight weights are resolved per caller instead of being `constant`. Two
+things a reviewer should look at rather than skim, both in the handoff section
+below: **the sum invariant is a bounded proportional rescale, not a clamp**
+(a naive clamp-and-use does not sum to anything fixed, and a naive rescale
+breaks the clamp — both are shown with a worked counterexample), and **the
+"positive weights sum to 104" comment was stale by 6 and is corrected to 110
+without moving a single weight**.
+
 COMM-301 extracts `feed_page`'s already-inline relationship arithmetic
 (202608280019) into a reusable `relationship_score()` helper with no ranking
 change — a prerequisite for COMM-303's per-user weighting, not for anything
 attendance-related. COMM-307 closes COMM-P05, a new
 feed-top-area card (`attendance_classmates_today()`) distinct from COMM-302's
 suggestions-strip signal — "who trained today", not "who to follow". COMM-303
-lands last in this cluster: it personalizes the weights COMM-301 extracted
+landed last in this cluster: it personalizes the weights COMM-301 extracted
 and reads COMM-302's class-connection component as one of the things it can
-reweight.
+reweight, with `v_w_class` deliberately not special-cased as immovable.
 
 ### achievements
 
@@ -1596,6 +1632,83 @@ both worth a reviewer's attention rather than a skim:
 | p_limit, the clamp | Asserted against a pool of **27 eligible candidates** (25 extra opted-in members inserted for this section alone), so the upper clamp is a real cut and not "all of them": default 6, `3` → 3, `null` → 6, `0` → 1, `-5` → 1, `50` → 20. Zero clamping **up** to 1 rather than returning an empty card is deliberate — an empty card would look exactly like a member who trained alone. For qa: the clamp range is fixed server-side now, so the client half can lower the default it passes but cannot widen the range. |
 | The order | Most recently recorded first (`attendance_log.recorded_at`), then display name falling back to handle, then id. Asserted across two fixture groups with different `recorded_at` values, so both the recency ordering **and** the alphabetical tie-break inside a tied group are exercised — a fixture that let `recorded_at` default would tie every row, since `now()` is frozen for the transaction, and the documented order would never run. Every member in the set trained today so there is no signal to rank by and the order is a choice: an alphabetical cut would show the same few members every single day in a club bigger than `p_limit`. `recorded_at` is when the row was written, not when the member trained — `attendance_log` records a day, not a time — which is why it is only the first key of a total order and not a claim the card makes. |
 | COMM-307's client half | Now built, in `test/community-classmates-today.test.mjs` (11 tests) rather than pgTAP. What qa should re-check by hand rather than trust the test names for: **the omission**, which has four separate paths to the same nothing (empty set, caller did not train today, caller's own `show_attendance` off, failed fetch) and no heading, empty state, retry or skeleton in any of them — a regression here shows up as a stray grey box on the Feed sub-tab for members who never opted in, since `show_attendance` defaults false and the empty card is the common case, not the edge one. **The Follow control**, which is rendered on every row and deliberately does *not* copy the `allow_follows === false ? "" : button` guard the directory and following lists use, because the RPC has no such key and copying it would compare `undefined` to `false` and read as if it were doing something; `follows_insert_self` is the real gate. **No Message affordance**, asserted on the card and on the whole surface. **`classmates_card_viewed`**, once per load and not per re-render, absent entirely when there is no card, carrying a row count and a source and no member identity, and **not** in `ACTIVE_MEMBER_EVENTS`. Also worth a look: the client passes `p_limit: 6` explicitly rather than defaulting, so the card-sized number lives at the card; and there is no client-side date arithmetic anywhere, so "today" is only ever the server's. |
+
+### Personalized feed ranking (202608310006, COMM-303)
+
+One new table, two new functions, and `feed_page` re-created a third time.
+`supabase/tests/0042_personalized_feed_weights_test.sql` (61 assertions) runs
+every boundary below on `migration-check`, taking the suite 1123 → **1184**.
+There is no client half — the ticket says so ("No new UI — personalization is
+invisible ranking, not a setting") — so no `.test.mjs` file moved and the node
+suite is unchanged at 802/801/1/0.
+
+**READ THIS FIRST: the derivation is not built, and the ticket does not ask
+for it.** Nothing writes `member_feed_weights`.
+`recompute_feed_weights(p_limit)` is a real service-role-only function with an
+empty body that always returns 0, asserted as a no-op in 0042 so it cannot
+quietly start writing. Every member therefore has no row and gets the fixed
+defaults. What shipped is the **storage** and the **reader**; the "storage
+exists, computation does not" shape 202608280028 and 202608290011 already
+carry. It is stubbed rather than omitted so `feed_page` is not left reading a
+table with no named writer, and empty rather than heuristic because a guessed
+derivation ships unreviewed ranking to every member and nobody can see that
+their own feed is subtly wrong.
+
+**The load-bearing assertion in this file is the one that proves nothing
+happened.** Section D ranks the same fixture posts 0038 used and asserts the
+same three `feed_score` literals to six decimal places — numbers captured from
+`feed_page` as it stood *before* COMM-301, so they have now survived three
+re-creations of that function unchanged. It asserts it five times over: no
+stored row, an empty object, an explicit all-1.0 object, every multiplier at
+the 2.5 ceiling, and a row of junk. A fourth fixture post scoring on recency
+alone was added beyond 0038's three, so one row in the file reads a single
+weight directly.
+
+**Three things a reviewer should look at rather than skim:**
+
+1. **The sum invariant is a bounded proportional rescale, not a clamp.** A
+   naive per-component clamp-and-use does not sum to anything fixed, which
+   would make a boost an inflation; a naive clamp-then-rescale restores the
+   sum and pushes components back out of the bounds they were just clamped
+   into (worked counterexample on this module's real numbers, in the migration
+   header and asserted in 0042: `{recency 2.5, rest 0.4}` scales the seven
+   un-boosted components to 0.344× their default, under the floor). The
+   water-filling loop pins at a bound and redistributes the remaining budget
+   over what is still free, so both invariants hold *by construction* — and
+   the result is then summed and bounds-checked anyway before it is used, with
+   any violation returning the defaults unchanged.
+2. **"The positive weights sum to 104" was stale by 6.** It was correct in
+   202608280019, when `v_w_class` was declared at 6 and multiplied by a hard 0
+   — seven live weights, 104. COMM-302 turned that component on and left the
+   comment. The eight declared weights have summed to **110** since
+   202608310003. COMM-303 corrects the comment and **moves no weight**:
+   renormalising down to 104 would change every existing feed score on deploy
+   day, which is exactly what this ticket must not do. The invariant enforced
+   is "a personalized set sums to whatever the default block sums to",
+   computed at call time and nowhere hardcoded.
+3. **The two numbers COMM-303's open question flagged are now fixed
+   server-side.** Clamp bounds 0.40..2.50 of each component's default (the
+   ticket's own worked example, adopted as the real value) and a **weekly**
+   recomputation cadence. Both are tunable rather than architectural; the
+   cadence is expressed in exactly one place, the commented cron line in the
+   migration, and nothing in the schema depends on it.
+
+| Table / function / trigger | Boundary to assert |
+|---|---|
+| member_feed_weights (table) | Three columns: `user_id uuid pk references profiles(id) on delete cascade` (asserted as `confdeltype = 'c'`, so a purged member leaves no orphan), `weights jsonb not null default '{}'`, `computed_at timestamptz not null default now()`. **No `club_id`**, unlike `weekly_recaps` — the row is a private ranking artifact about one member, nothing aggregates it per club, and so this table also needs no `default_club_id()` grant, which is the one thing 202608290011 had to add for its own service-role writer. One addition beyond the ticket's outline: a check constraint `jsonb_typeof(weights) = 'object'`, asserted against both `[1,2,3]` and a bare string. The reader defends against a non-object anyway; a column every reader treats as an object should still not be able to hold one. |
+| member_feed_weights, no client write | `authenticated` has `select` and nothing else; `anon` has nothing and gets 42501 rather than an empty result. There is **no insert, update or delete policy for any role** — counted from `pg_policies` with `cmd <> 'SELECT'`, so a later addition fails here rather than slipping in — and a plain member gets 42501 on all three against their **own** row, as does an admin. This is the boundary the whole ticket rests on: a member who could write here would be supplying their own ranking input, which is precisely what COMM-303's contract section refuses when it says the weights are "never passed as a parameter". The `select` grant is deliberate: there is nothing private in a member's own weights and a "why is my feed like this" conversation is easier when they are inspectable. |
+| member_feed_weights, the write path | Exercised as a **real `service_role`**, not the bootstrap superuser, which would sail past a missing grant: the insert succeeds and `computed_at` defaults on its own, so a writer that only knows the multipliers still produces a complete row. |
+| The stored shape | Multipliers relative to `feed_page`'s defaults, not absolute weights — 1.0 is the default, an absent key is 1.0, unknown keys are ignored by the reader rather than rejected (asserted: `"loudness"` never reaches `feed_page`). Multipliers because the default block has already been retuned twice in this module's life, and absolute weights would silently become wrong the next time a default moves. **`'{}'` is the thin-signal answer and is deliberately indistinguishable from no row at all**, so a job can record "looked on Monday, found nothing" with a fresh `computed_at` without that meaning anything different for the feed — which is COMM-303's "never produces a personalized weight set from zero data" made structural rather than conditional. |
+| **feed_page with no stored weights — THE CRITICAL ONE** | Byte-identical ranking and `feed_score` to six decimal places against literals captured from the pre-COMM-301 function, five times over (no row, `'{}'`, all-1.0, all-2.5, junk). The all-2.5 case is worth its own look: **a uniform boost is not a boost** — it cancels in the rescale — which is what "redistributes rather than inflates" means at its limit. The junk case (`"banana"`, a json `null`, an unknown key, a nested object) raises nothing: a malformed row costs a member their personalization, never their feed. |
+| feed_weights_resolve(), reachability | Revoked from `public`, `anon` **and** `authenticated`; `prosecdef` false. Internal plumbing, the shape `relationship_score()` and `classmate_day_counts()` established. A real authenticated caller gets 42501 from the grant, not from a check inside the body. The `public` revoke is asserted separately, because a new function starts with `execute` granted to `PUBLIC`. Note it **does** take a user parameter, unlike `classmate_day_counts()` — not the same trap, because it consults no privacy toggle that would silently ignore the argument. |
+| feed_weights_resolve(), the sum | Over **seven pathological stored rows**, the resolved set sums to exactly what the default block sums to, and a companion assertion pins that total at 110 today. Plus an anti-vacuity assertion that none of the seven resolved back to the defaults, so neither the sum nor the bounds check passed for the wrong reason. |
+| feed_weights_resolve(), the bounds | No component of any of the seven leaves `0.40..2.50` of its **own** default. The `{recency 2.5, rest 0.4}` case is additionally read off value by value — the seven un-boosted components sit exactly **on** the floor (`18*0.4 = 7.2`, `6*0.4 = 2.4`) and recency absorbs the whole remaining budget at 82, which is 2.05× its default and inside the ceiling. That is the case a naive rescale gets wrong, so it is asserted individually rather than only in aggregate. |
+| The defaults live in one place | `feed_weights_resolve` takes the defaults as a **parameter** rather than holding a copy, so the eight numbers stay stated once, in `feed_page`'s weight block — the function owns the algorithm, `feed_page` owns the numbers, and there is no pair to drift. 0042 holds a second copy for its own arithmetic and pins it to `feed_page`'s `prosrc` line by line, so retuning a weight fails this file rather than silently testing stale numbers. It is also component-agnostic: it never names `recency` or `class`, so a ninth weight needs no edit there. |
+| recompute_feed_weights(), reachability and no-op | `execute` granted to `service_role` only, revoked from `public`, `anon` and `authenticated`; `prosecdef` true, with **no `auth.uid()` check** — the same documented exception `notif_batch_flush_due()`, `notif_queue_batched()`, `seed_onboarding_progress()` and `post_new_member_on_join()` already carry, since `service_role` has no uid and the grant is what stands in for one. Both call forms return **0**, and the table is still empty afterwards — asserted, so a later edit that starts writing rows has to break this line deliberately. `p_limit` is accepted and unused today on purpose, so a scheduler's call site does not change when the body lands. **For qa: nothing schedules it.** The resolved cadence is weekly and lives only in a commented `pg_cron` line. |
+| A stored row really moves the score | `{"relationship": 2.5}` widens the gap between two rows differing only in their author to exactly the **resolved** weight times the `relationship_score` gap — closed-form, `18 * 2.5 * 110/137`, independent of when the suite runs, because the recency, engagement, personal and repetition terms are equal on both sides and cancel. Stated as a direction too (`> 8.1`, the default gap), so the exact-value assertion cannot pass with the sign inverted. And the row with no signal but freshness scores **lower**, at exactly its old score times the `110/137` rescale: the budget relationship gained came out of the other seven components. Note that rows which *do* carry relationship go **up** in absolute terms — "everything goes down" would have been the wrong claim. |
+| **v_w_class moves like any other weight** | COMM-303 names it explicitly, so it is asserted explicitly rather than assumed to fall out of "all eight". Two fresh members with no follow edge either way, one post each at the same instant, eight shared training days (exactly `v_class_saturation`, so the component is at its 1.0 ceiling): on the defaults the classmate author leads by exactly 6, COMM-302's number unchanged; with `{"class": 2.5}` the gap becomes the resolved `6 * 2.5 * 110/119 = 13.865546`. Alongside it, the block edge is still strictly stronger than any weight personalization can give the component — a blocked author never reaches the scoring pass, however far the member has boosted the thing that would have favoured them. |
+| COMM-112 diversity, after scoring and unchanged | Asserted **structurally** — read off `prosrc`, the weight resolution appears before the scoring query and the diversity pass still after it, and the four diversity limits are still `constant` at 2/2/3/2 — and **behaviourally**: on a feed scored with a personalized weight set at the ceiling, `v_max_same_author` still breaks a run at two and displaces the third post by that author with a lower-scoring one from someone else. Personalization changes emphasis inside the ranked set, never the diversity guarantee across it. |
+| Where the lookup sits in feed_page | After the `auth.uid()` check and after the parked `my_classes` scope has already returned, before anything is scored: **one lookup per feed request**, never one per candidate row, and fixed for the whole call the way `v_anchor` is — so page 2 of a session scores on the same weights as page 1, the same property COMM-301's `p_as_of` exists to protect. `feed_page` is definer so this reads past `member_feed_weights_self_select`, but only ever for `v_uid`, which is the one row that policy would have granted the caller anyway. |
 
 ## Open questions for the user
 
