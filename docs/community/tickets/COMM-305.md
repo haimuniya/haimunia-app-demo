@@ -2,7 +2,7 @@
 
 Phase: 3
 Agent: achievements
-Status: todo
+Status: review — shipped as 202608310007, schema only (no client change)
 Attendance-blocked: was — unblocked by COMM-300
 
 Closes the parked COMM-P03. The four `ATTENDANCE_RECORDED` achievement

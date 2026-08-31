@@ -1,6 +1,6 @@
 -- COMM-020: real two-user RLS enforcement for 202608280007 (achievements).
 -- Boundaries: any member reads achievement_definitions, only a real admin
--- writes them, the four attendance seeds ship disabled. member_achievements:
+-- writes them, the four attendance seeds are present. member_achievements:
 -- owner always reads own, another member reads a club-visible unlock only
 -- when show_achievements is on and no block edge sits between them, no
 -- client can insert or update, a second non-repeatable row hits the partial
@@ -26,11 +26,17 @@ select throws_ok(
   '42501',
   null,
   'a member cannot invent an achievement definition');
+-- Seeded disabled by 202608280007 and flipped to enabled = true by
+-- 202608310007 (COMM-305), which gave them a producer. The seeded-disabled
+-- half of the original assertion still holds and is still asserted, but
+-- against the migration text that owns it (test/community-rls-boundaries.test.mjs
+-- reads 202608280007 directly); what a live database can say now is that the
+-- four rows exist and are live. 0043 owns the crossings that earn them.
 select results_eq(
   $$ select count(*)::int from public.achievement_definitions
-     where code like 'attendance\_%' and enabled = false $$,
+     where code like 'attendance\_%' and enabled $$,
   $$ values (4) $$,
-  'the four seeded attendance definitions are present and disabled');
+  'the four seeded attendance definitions are present and, since COMM-305 gave them a producer, enabled');
 
 select tests.set_auth(tests.uid('admin'));
 select lives_ok(

@@ -10,7 +10,9 @@
 -- rate limited. The seed: 27 non-attendance rows, every community/challenge
 -- category row (and, distinctly, every non-club-anniversary club row) has
 -- no client_claimable key so ach_claim refuses it, the four attendance rows
--- stay present and disabled, and re-running the insert changes no row count
+-- stay present (enabled since COMM-305/202608310007 gave them a producer,
+-- and still refused by ach_claim on trigger_type alone), and re-running the
+-- insert changes no row count
 -- (the on conflict do update path). The four club-category
 -- anniversary_year_* rows ARE client_claimable, but ach_claim independently
 -- verifies their config->>'metric' = 'tenure_days' threshold against
@@ -44,11 +46,19 @@ select results_eq(
      where trigger_type = 'ATTENDANCE_RECORDED' $$,
   $$ values (4) $$,
   'the four attendance rows are still present');
+-- Enabled by 202608310007 (COMM-305), which gave them their first producer.
+-- This makes the ach_claim refusal below a STRONGER assertion than it was:
+-- an attendance code used to be refused twice over (disabled, and
+-- ATTENDANCE_RECORDED), and could have passed on the wrong one of the two.
+-- Now `enabled` is true and `client_claimable` is absent, so the only things
+-- left refusing it are trigger_type and the missing key - which is what
+-- COMM-305 needs proven, since these four are the one category in this
+-- schema that is purely server-derived.
 select results_eq(
   $$ select count(*)::int from public.achievement_definitions
-     where trigger_type = 'ATTENDANCE_RECORDED' and enabled = false $$,
+     where trigger_type = 'ATTENDANCE_RECORDED' and enabled $$,
   $$ values (4) $$,
-  'all four attendance rows are still disabled');
+  'all four attendance rows are enabled since COMM-305, so the refusal below is no longer resting on the disabled flag');
 select is_empty(
   $$ select 1 from public.achievement_definitions
      where category in ('community', 'challenge')

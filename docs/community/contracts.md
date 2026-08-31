@@ -1001,7 +1001,9 @@ Each `post` row the feed passes in carries:
   `challenge_title`, `challenge_id`. POST_EVENT: `event_title`, `event_id`,
   `starts_at`. POST_ANNOUNCEMENT: `title`. POST_NEW_MEMBER: `member_id`,
   `member_name`, `joined_on`. POST_ATTENDANCE_MILESTONE: `milestone_label`,
-  `count` (parked, never produced yet).
+  `count`, plus `member_id` (produced since 202608310007, COMM-305; the
+  renderer reads only the first two, `member_id` is what the producer's own
+  "already posted" guard matches on).
 
 Markup feed and engagement can rely on:
 
@@ -1102,7 +1104,11 @@ Markup feed and engagement can rely on:
   `docs/community/achievement-seed.md`, inserted as `on conflict (code) do
   update` so a re-run converges. Every client-claimable row carries `config`
   key `client_claimable: true`. The four attendance rows from 202608280007
-  are not repeated and stay `enabled = false` until COMM-P03.
+  are not repeated and stayed `enabled = false` until COMM-P03. **They are
+  `enabled = true` since 202608310007 (COMM-305), which gave them a
+  producer.** None of the four carries a `client_claimable` key and
+  `ach_claim` refuses them on `trigger_type` regardless — enabling them
+  widened nothing on the claim path.
 
 ## Needs from schema, achievements
 
@@ -1110,14 +1116,25 @@ Functions the achievements cluster (COMM-130 to COMM-134) relies on and that
 schema still owns. No migration is written here.
 
 - `ach_evaluate(user_id uuid, trigger text, payload jsonb)`, the service-role
-  event-bus path. Not built. Everything community, challenge, and club shaped
-  in the seed is `client_claimable: false` and unlocks only through it, so
-  those rows cannot be earned at all until it lands.
+  event-bus path. **Still not built**, and COMM-305 did not build it either:
+  the four `ATTENDANCE_RECORDED` codes are evaluated by a direct table
+  trigger instead (see "Needs from schema, attendance achievements" below),
+  the same precedent `challenge_progress_apply` set for cooperative
+  challenges. Everything community, challenge, and club shaped in the seed is
+  `client_claimable: false` and unlocks only through `ach_evaluate`, so those
+  rows still cannot be earned at all until it lands. Attendance is now the
+  only trigger type with a real server-side producer.
 - The `ACHIEVEMENT_UNLOCKED` consumer is an AFTER INSERT trigger on
   `public.member_achievements`, not a per-function emit. That way `ach_claim`
   and `ach_evaluate` produce one shape and neither can forget to fire. It
   needs `notif_create`, which notifications still owns, so it lands with that
-  function. See "Needs from schema, notifications".
+  function. See "Needs from schema, notifications". **Confirmed live for
+  attendance unlocks by COMM-305**: `member_achievements_notify`
+  (202608280027) is `after insert ... for each row` with no `WHEN` clause and
+  no filter on how the row got there, so an attendance-sourced unlock
+  notifies exactly like a claimed one and COMM-305 wrote no notification code
+  at all. Asserted, not assumed, in
+  `supabase/tests/0043_attendance_achievements_test.sql`.
 
 ## Challenges
 
@@ -3252,6 +3269,184 @@ staff-confirmed, and a determined member could still misdate a local entry
 before it syncs. That is the accepted shape of the 2026-08-30 resolution, not
 a gap this ticket left open.
 
+## Needs from schema, attendance achievements (COMM-305, Phase 3)
+
+Shipped in 202608310007, closing the parked COMM-P03. Two new functions, one
+trigger, one index, one `UPDATE` to four seeded rows. No new table, so no new
+RLS policy; no new client call and no changed signature anywhere, so nothing
+on the client side moved.
+
+### achievement_definitions, the four attendance rows
+
+- `update public.achievement_definitions set enabled = true where trigger_type
+  = 'ATTENDANCE_RECORDED' and not enabled`. Keyed on `trigger_type`, not on a
+  list of four codes, so a fifth attendance-triggered definition is enabled by
+  its own seed row. Idempotent.
+- The thresholds are unchanged and are now load-bearing rather than
+  decorative: `attendance_first_class` 1, `attendance_25_classes` 25,
+  `attendance_100_classes` 100 (all `repeatable = false`),
+  `attendance_weekly_streak` 4 (`repeatable = true`). The trigger below reads
+  every one of them from this table and keeps no second copy, so re-tuning a
+  milestone is an `UPDATE` to one row and adding a fifth is an `INSERT`.
+  Disabling a row stops its unlocks immediately.
+- Still never client-claimable. `ach_claim`'s `d.trigger_type <>
+  'ATTENDANCE_RECORDED'` (202608280020, re-created unchanged in 202608290002)
+  is untouched by this ticket. Before COMM-305 an attendance code was refused
+  twice over — disabled *and* attendance-triggered — so 0043 re-asserts the
+  refusal now that only one of the two reasons is left, including for a
+  caller who has genuinely reached the milestone and for the repeatable code,
+  where an accepted claim would have written a second row rather than being
+  absorbed by the once-per-code index.
+
+### attendance_week_streak(p_user uuid, p_exclude_day date default null) returns integer
+
+- New, internal, `security invoker`, `stable`. No grant to any role
+  (`revoke all` from `public`, `anon`, `authenticated`) — the same shape
+  `consistency_week_streaks()` and `classmate_day_counts()` have. Only
+  `attendance_milestones_on_log()` calls it, and it borrows that function's
+  rights to read past `attendance_log_self_select`.
+- Purpose: one member's current consecutive-ISO-week training streak over
+  `attendance_log`, computed with **the same arithmetic
+  `consistency_week_streaks()` (COMM-306) uses set-wide** — distinct ISO weeks
+  carrying at least one attendance day, anchored on the member's most recent
+  such week, counted backwards while each week is exactly 7 days before the
+  previous one, and only when the anchor is the current week or the previous
+  one. A member with no attendance days, or whose most recent trained week is
+  older than the previous week, is `0`.
+- Params: `p_user`. `p_exclude_day` optionally drops one `occurred_on` day
+  from the set, which is what lets an AFTER INSERT trigger ask what the streak
+  was *before* the row it just saw. Excluding a day does not remove its week
+  when another day carries it, which is the correct answer and falls out of
+  the arithmetic rather than being special-cased.
+- Auth rule: no privacy filter, deliberately and for a stronger reason than
+  `consistency_week_streaks()` has: the number is only ever used to decide
+  whether a member earned **their own** achievement, and `show_attendance`
+  governs what other members are told, never whether a member's own training
+  counts for them.
+- Side effects: none, it is `stable`.
+- It is a second copy of one rule, pinned rather than trusted: 0043 compares
+  it against `consistency_week_streaks()` for every member of the fixture at
+  once, the same drift-pin shape 0040 uses for `community_profile`'s inline
+  copy.
+
+### attendance_milestones_on_log()
+
+- Trigger function, `security definer`. Fires as `attendance_log_milestones`,
+  AFTER INSERT on `public.attendance_log`, one row per statement row, no
+  `WHEN` clause.
+- Params: none (trigger). Returns: `trigger`.
+- Purpose: the evaluation COMM-305 needs, done inline off the source table
+  rather than through the still-unbuilt generic `ach_evaluate` — the same
+  precedent `challenge_progress_apply` (202608290004) set. It is the only
+  producer of `POST_ATTENDANCE_MILESTONE`, a post type that had an enum label
+  and a client renderer and no producer from Phase 1 until now.
+- Auth rule: revoked from `public`, `anon`, `authenticated` — not callable as
+  an RPC. No `auth.uid()` check, the same documented exception
+  `attendance_log_from_record()`, `post_new_member_on_join()` and
+  `notif_queue_batched()` record: it acts for `new.user_id`, on a row that
+  reached `attendance_log` only through a `private_records` row already
+  pinned to its owner by RLS. `security definer` for exactly two boundaries:
+  `member_achievements` has no client insert grant or policy, and an
+  authorless `workout_posts` row is unreachable through `posts_insert_self`.
+- It takes `select ... for update` on the member's own `profiles` row before
+  evaluating — the same serialisation `challenge_progress_apply` takes on its
+  `challenges` row, so two attendance rows landing for one member in the same
+  instant cannot both decide "not posted yet". It is the row the function has
+  to read anyway for `show_attendance` and the display name.
+- **Count milestones (non-repeatable).** Fires when the member's all-time
+  distinct `occurred_on` count (`count(*)`, since the table is unique on
+  `(user_id, occurred_on)`) reaches a definition's threshold and they do not
+  already hold that code. "Do not already hold" is decided by `insert ... on
+  conflict do nothing returning id` against `member_achievements_once_idx`,
+  atomically, so a concurrent double-unlock is impossible and a lost race is
+  swallowed. **This is state, not a delta**, and deliberately so: a
+  `count = threshold` or `count - 1 < threshold` form reads like the ticket's
+  sentence and holds for the production writer (one single-row insert per
+  statement) but silently awards nothing for any multi-row insert, because
+  Postgres queues AFTER-FOR-EACH-ROW triggers to the end of the statement and
+  every row of a 30-row insert then sees a count of 30. The state form is the
+  same shape `ach_claim` already uses for the same question, and is right for
+  both paths.
+- **Weekly streak (repeatable).** Fires only on a genuine fresh crossing:
+  `attendance_week_streak(user, null) >= threshold and
+  attendance_week_streak(user, new.occurred_on) < threshold`. Silent for every
+  day of a run that already qualifies, silent for a second day inside a week
+  already counted, and firing again on the fourth week of a later rebuilt
+  streak — which is what "repeatable definitions write a fresh row each
+  qualifying event" means here. There is no index that can express this, which
+  is why the crossing has to be computed. Consequence, stated rather than
+  buried: a **multi-row** insert into `attendance_log` awards no streak badge,
+  because every row of the statement sees the whole statement and no single
+  day's exclusion changes anything. A bulk import of history is not a training
+  event; the production writer inserts one row per statement.
+- A streak must be **live** to count, because `attendance_week_streak()`
+  carries `consistency_week_streaks()`' anchor rule: back-filling four
+  consecutive weeks that ended two months ago earns nothing, and that is the
+  same number the member's profile and the consistency board show them.
+- **Side effects, per crossing:** one `member_achievements` row, copying
+  `visibility` from the definition. For a count milestone whose threshold is
+  above the first-day threshold, additionally one `workout_posts` row —
+  `author_id = null`, `post_type = 'POST_ATTENDANCE_MILESTONE'`,
+  `visibility = 'club'`, `status = 'active'`, `club_id` from the attendance
+  row, `source_type = 'member'`, `source_id = <the member>`,
+  `occurred_on = <the day of the crossing>`, `published_at = now()`, and a
+  Hebrew `body`. Nothing else is written; the `ACHIEVEMENT_UNLOCKED`
+  notification comes from `member_achievements_notify`, not from here.
+- `metadata` shape, fixed by the already-shipped renderer:
+  `{member_id: uuid-as-string, milestone_label: text, count: integer}`.
+  `renderAttendanceMilestonePostCard` in cloud.js reads `milestone_label` (its
+  title line) and `count` (its result line) and nothing else;
+  `member_id` exists for the idempotency guard, the same key name and role it
+  has in `POST_NEW_MEMBER`. `milestone_label` is the **definition's own
+  `name`**, so the feed post and the badge on the member's profile cannot
+  announce two different things, and `count` is the definition's own
+  `threshold`.
+- **A first class is an achievement and not also a post.** Expressed as
+  `threshold > 1` rather than as a code allow-list, so a future
+  `attendance_250_classes` posts automatically and a future first-anything
+  does not. This matches how every other unlock in the schema is celebrated:
+  `ach_claim` writes a `member_achievements` row for a first PR and never a
+  post, and a `POST_ACHIEVEMENT` exists only because the member deliberately
+  shared it.
+- **The privacy branch.** The post — and only the post — is gated on the
+  member's own `show_attendance`, read as a direct `profiles` column, not
+  through `can_view_profile_field()`, which is viewer-relative and answers
+  true for the subject before consulting any toggle. Same direct read
+  `attendance_classmates_today()` (202608310005) makes for the same question.
+  The achievement is never gated on it: achievements carry their own
+  `show_achievements`, applied by `member_achievements_read` and
+  `community_profile`. `show_attendance` defaults to **false**
+  (202608280003), so out of the box this trigger unlocks achievements for
+  everyone and posts for nobody.
+- **The toggle is a write-time gate and the moment is not replayed.** The post
+  branch is reachable only on the call that actually wrote the achievement
+  row, so a member who crossed 25 with attendance private and turns the toggle
+  on months later gets no belated announcement on their next session. Same
+  one-shot shape `post_new_member_on_join` has.
+- Idempotency for the post: `exists` on a `POST_ATTENDANCE_MILESTONE` row
+  already carrying that `metadata ->> 'member_id'` and that
+  `metadata ->> 'count'` — read from `workout_posts` itself, exactly as
+  `challenge_progress_apply` asks the same question, never from a second piece
+  of tracking state that could drift from what was actually posted.
+  Deliberately a guard and **not** a unique index, the reason 202608290014
+  spells out: a unique violation here would abort the enclosing transaction,
+  which is a member's training-log sync.
+- Nothing in this function raises. A missing `profiles` row returns early. The
+  standing rule from 202608310001 holds: nothing downstream of a member's
+  training-log sync may abort that sync.
+- Index: `workout_posts_attendance_milestone_metadata_idx` on
+  `(metadata ->> 'member_id') where post_type = 'POST_ATTENDANCE_MILESTONE'`,
+  mirroring the two 202608290004 and 202608290014 already added.
+- **No backfill of achievements or posts**, for the reason 202608290014 gave
+  about historical welcome posts. Migrations apply in order, so 202608310001's
+  `attendance_log` backfill is finished before this trigger exists and no
+  member is awarded anything at migration time. What does happen, and is
+  deliberate: because the count branch reads state, a member whose backfilled
+  history already stands at 60 days earns `attendance_first_class` and
+  `attendance_25_classes` on their **next** logged session — once each, spread
+  across the club as members sync, never as a burst. The feed side of that is
+  bounded by `show_attendance` defaulting to false.
+
 ## Edge Functions
 
 ### recap_weekly
@@ -3457,17 +3652,41 @@ What a dependent ticket needs to know changed between the two:
 
 ### Needs from schema, achievements (Phase 3)
 
-- `update achievement_definitions set enabled = true where trigger_type =
-  'ATTENDANCE_RECORDED'`. COMM-305, closing COMM-P03.
-- One security-definer AFTER INSERT trigger on `attendance_log`: computes
-  the member's total distinct days and current streak, inserts a
-  `member_achievements` row on a genuine crossing (1, 25, 100 days; a fresh
-  4-week streak for the repeatable code), and, for the two count
-  milestones only, an authorless `POST_ATTENDANCE_MILESTONE` post gated by
-  the member's own `show_attendance`. Same "table trigger instead of the
-  still-missing generic `ach_evaluate`" shape `challenge_progress_apply`'s
-  milestone post already established. Never client-claimable — `ach_claim`
-  already refuses `trigger_type = 'ATTENDANCE_RECORDED'`, untouched.
+- ~~`update achievement_definitions set enabled = true where trigger_type =
+  'ATTENDANCE_RECORDED'`~~ and ~~one security-definer AFTER INSERT trigger on
+  `attendance_log`: computes the member's total distinct days and current
+  streak, inserts a `member_achievements` row on a genuine crossing (1, 25,
+  100 days; a fresh 4-week streak for the repeatable code), and, for the two
+  count milestones only, an authorless `POST_ATTENDANCE_MILESTONE` post gated
+  by the member's own `show_attendance`~~ — **both SHIPPED in 202608310007,
+  COMM-305, closing COMM-P03.** No longer forward references: the built
+  contract is **"## Needs from schema, attendance achievements (COMM-305,
+  Phase 3)"** above. Read that, not this. Everything promised here shipped as
+  promised — the `UPDATE`, the trigger, the crossing rule, the two count
+  milestones posting and the first class not, the `show_attendance` gate on
+  the post and not on the achievement, the `workout_posts`-is-the-record
+  idempotency, `club` visibility, `ach_claim`'s refusal untouched, and the
+  generic `ach_evaluate` deliberately not built — with four things this
+  section did not name:
+  - **`attendance_week_streak(p_user uuid, p_exclude_day date default null)
+    returns integer`**, new, internal, `security invoker`, no grant to any
+    role. The outline named no helper; this one exists because the repeatable
+    code has to know what the streak was *before* the row that just landed,
+    which `consistency_week_streaks()` is set-wide and zero-argument and
+    cannot answer. Same arithmetic, pinned against it for every member by
+    0043 so the two cannot drift.
+  - **The count milestones test state, not a delta.** "Reaches the threshold
+    and does not already hold the code", decided by
+    `member_achievements_once_idx`. A literal just-crossed delta silently
+    awards nothing for any multi-row insert. Full reasoning in the contract
+    above; the repeatable streak still tests a genuine before/after crossing,
+    because a repeat cannot be answered from state.
+  - **`metadata` carries a third key, `member_id`**, beyond the two the Phase
+    1 client contract fixed. The renderer ignores it; the "already posted this
+    milestone" guard needs it, since the rule is "that member and that count".
+  - **The `show_attendance` gate is a write-time gate**, read once at the
+    unlock and never re-asked, so turning the toggle on later does not
+    retro-publish a milestone crossed while it was off.
 
 ### Needs from schema, coach-tools (Phase 3)
 
