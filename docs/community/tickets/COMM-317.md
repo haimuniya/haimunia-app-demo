@@ -58,13 +58,25 @@ acceptance criterion has an assertion, and all three CI jobs stay green.
   tickets' individual notes, matching how COMM-234 consolidated the
   notification-batch-flusher scheduler gap.
 - [ ] No regression in the existing suite or the browser checks.
-- [ ] Every open question this phase's tickets flagged (COMM-311, COMM-312,
-  COMM-313, COMM-315's category/threshold uncertainty; COMM-314's retention
-  window; COMM-300's "verified means self-reported, not physically
-  verified" framing) is either resolved with the user before the ticket is
-  built, or shipped exactly as scoped with the caveat still visible in the
-  merged docs — never silently narrowed or widened by whichever agent
-  happens to build it.
+- [ ] Every open question this phase's tickets flagged is either resolved
+  with the user before the ticket is built, or shipped exactly as scoped
+  with the caveat still visible in the merged docs — never silently
+  narrowed or widened by whichever agent happens to build it. Resolved
+  2026-08-31 (see backlog.md's "Resolved 2026-08-31" list, items 11-14):
+  COMM-311/312/313 build against their own proposed conservative shape as-is,
+  COMM-315 uses the proposed category rotation as-is, COMM-314's window is
+  30 days, and this ticket (not a new COMM-318) owns the Phase 3 analytics
+  review below. Still open at build time: COMM-300's "verified means
+  self-reported, not physically verified" framing — confirm it reads as
+  intended once COMM-300 actually ships, not just in the ticket text.
+- [ ] A full WCAM (Weekly Community Active Members) re-review once every
+  Phase 3 producer exists, playing the same role COMM-233 played for Phase
+  2: every new event this phase adds across every ticket
+  (`attendance_recorded` COMM-300, and whatever COMM-304/307/309/315 each
+  wire per their own acceptance criteria) gets checked against
+  `ACTIVE_MEMBER_EVENTS` explicitly, not defaulted in or out, with the
+  same reasoning discipline `docs/community/metrics.md` already holds
+  every prior name to. No new ticket number for this — it lives here.
 
 ## Frontend states
 

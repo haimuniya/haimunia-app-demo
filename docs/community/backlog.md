@@ -1252,6 +1252,17 @@ Resolved 2026-08-31 (planning pass, no code):
   Phase 3 titles. See "attendance foundation" under Phase 3 tickets above.
   Nothing here is built yet — this closes the planning gap, not the
   engineering one.
+- Item 11 (COMM-311/312/313 spec gap): proceed with each ticket's own
+  conservative, best-effort proposed shape rather than waiting for real
+  spec text. Build against it now; revisit the actual output once it
+  exists.
+- Item 12 (COMM-315 category rotation): use the proposed rotation as-is —
+  consistency, PRs, challenge completion, coach's pick.
+- Item 13 (COMM-314 retention window): 30 days, matching the existing
+  `purge_due_accounts()` window.
+- Item 14 (Phase 3 analytics review): fold into COMM-317. COMM-317's own
+  acceptance criteria gain an explicit full WCAM re-review, the same role
+  COMM-234 played for Phase 2 — no new ticket number minted.
 
 Still open: item 9 (recap scheduling note — awareness only, not a decision
 that blocks anything), and four new ones raised while writing Phase 3

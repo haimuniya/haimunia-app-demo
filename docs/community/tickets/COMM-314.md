@@ -91,9 +91,9 @@ Not applicable. Scheduled server function with no client surface.
 - COMM-016, COMM-017, the existing `purge_due_accounts()` function
   (202608260001), COMM-220 (the Edge Function auth pattern to follow).
 
-## Open question
+## Open question — resolved 2026-08-31
 
 The retention window (how long an unredeemed, unverified anonymous account
-sits before it is eligible) is not stated anywhere in this repo's docs.
-Recommend confirming a specific number of days with the user before this
-ticket is built rather than this planner picking one.
+sits before it is eligible) was not stated anywhere in this repo's docs.
+**Confirmed with the user: 30 days**, matching the existing
+`purge_due_accounts()` window. Build against this value.

@@ -9,8 +9,9 @@ No forward reference for this ticket exists anywhere in
 `docs/community/contracts.md` or `docs/community/backlog.md` today. The
 scope below is a conservative, best-effort reading of the title against
 data already available from Phase 1/2 (consistency streaks, PRs, challenge
-completions) plus COMM-306's verified-attendance streak once it lands,
-flagged as an open question rather than treated as settled.
+completions) plus COMM-306's verified-attendance streak once it lands.
+**Confirmed with the user 2026-08-31: build against the proposed rotation
+below as-is.**
 
 ## User outcome
 

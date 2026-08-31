@@ -7,8 +7,8 @@ Attendance-blocked: no
 
 Same caveat as COMM-311: no forward reference exists anywhere in this
 repo's docs for this ticket. The scope below is a conservative, best-effort
-reading of the title, flagged as an open question rather than treated as
-settled.
+reading of the title. **Confirmed with the user 2026-08-31: build against
+this shape as-is.**
 
 ## User outcome
 

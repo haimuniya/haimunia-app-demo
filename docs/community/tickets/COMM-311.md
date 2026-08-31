@@ -10,8 +10,8 @@ No forward reference for this ticket exists anywhere in
 the attendance-gated cluster. The acceptance criteria below are this
 planner's best-effort reading of the title against the metrics and RLS
 patterns already shipped, not a transcription of spec text this session had
-access to — flagged at the bottom as an open question rather than treated as
-settled.
+access to. **Confirmed with the user 2026-08-31: build against this shape
+as-is rather than waiting for real spec text.**
 
 ## User outcome
 
