@@ -699,7 +699,7 @@ staff-confirmed check-in.
 | COMM-302 | Recurring classmate score once attendance lands | feed | was — unblocked by COMM-300 | review |
 | COMM-303 | Personalized feed ranking and per-user weights | feed | no | todo |
 | COMM-306 | Consistency leaderboard on verified attendance | feed | was — unblocked by COMM-300 | review |
-| COMM-307 | Post-class trained-with-you card | feed | was — unblocked by COMM-300 | todo |
+| COMM-307 | Post-class trained-with-you card | feed | was — unblocked by COMM-300 | schema half in review — **client half still todo** |
 
 **COMM-301 is in review.** Shipped as `202608310002_relationship_score.sql`,
 with `supabase/tests/0038_relationship_score_test.sql` (26 assertions) and no
@@ -745,6 +745,30 @@ absent from the ranked set, not ranked at 0. One thing beyond the ticket's
 outline: `community_profile`'s `current_streak` key is gated on that toggle
 too, because the number is attendance-derived now — see the handoff section
 below. `training_frequency` and `recent_workouts` are untouched.
+
+**COMM-307's SCHEMA HALF is in review. Its client half is not built and
+COMM-P05 is not closed.** Shipped as
+`202608310005_attendance_classmates_today.sql`, with
+`supabase/tests/0041_attendance_classmates_today_test.sql` (35 assertions).
+One new function, `attendance_classmates_today(p_limit int default 6)`, and
+nothing else: no new table, no re-created function, no changed signature, no
+client call moved, so the node suite is unchanged at 791/790/1/0. It joins
+`attendance_log` to itself on `occurred_on = current_date` and returns
+`{user_id, display_name, handle, avatar_url}` for every other member who
+trained today, gated per candidate by
+`can_view_profile_field(candidate, 'show_attendance')` — the identical call
+`classmate_day_counts()` makes, which carries block edges in both directions,
+deleted profiles and `visible_to_club` with it. Two decisions the ticket left
+open and this half settled, both in the handoff section below: the **caller's
+own** `show_attendance` is enforced inside the function (empty set, never a
+raise) rather than left to the client, and `p_limit` clamps 1..20 defaulting
+to 6.
+
+**Still open for the feed agent**, and deliberately not started here: the
+feed-top-area card in COMM-115's slot, the follow action reusing `follow()`
+(COMM-230), and the `classmates_card_viewed` row in
+`docs/community/metrics.md`. That is the same two-phase split every other
+Phase 2/3 cluster used. Nothing else in Phase 3 is waiting on either half.
 
 COMM-301 extracts `feed_page`'s already-inline relationship arithmetic
 (202608280019) into a reusable `relationship_score()` helper with no ranking
@@ -1477,6 +1501,58 @@ One thing differs from COMM-306's own migration outline, which named the
 | community_profile, current_streak | Moved onto the same source in the same migration, which is the only reason 0034's standing "the two copies agree" assertion could be re-run rather than retired. Asserted on both fixture directions like the helper (posting member 0, training member 1) and gated on `show_attendance` — the key is **absent**, not zeroed, when the toggle is off, and back at its real value when it is flipped on with no row changed. |
 | community_profile, training_frequency and recent_workouts | **The boundary COMM-306 draws by exclusion**, asserted rather than left as a comment: both still read `workout_posts`, both are still under `show_workout_results` alone, and both are **still present on a profile whose `current_streak` the attendance toggle has just removed**. Plus the two halves shown apart: a member whose only activity is posts has `training_frequency` and a 0 streak; a member who trains and never posts has a real streak and no `training_frequency` at all. The two numbers answer different questions and did not merge. A static pin backs it — `community_profile`'s body mentions both tables. |
 | The two copies still cannot drift | 0034's original pin (the caller's own board value equals their `community_profile` `current_streak`) is re-run against the new source and kept. 0040 widens it to the whole board at once: an `is_empty` over every ranked member whose value disagrees with the streak their own profile publishes, with an `isnt_empty` beside it so an all-zero fixture cannot pass it vacuously — the shape 0038 established. Readable set-wide only because every fixture member has both profile toggles on. |
+
+### Trained-with-you today (202608310005, COMM-307 — SCHEMA HALF ONLY)
+
+No new table, so no new RLS policy: one new function and not one existing
+function re-created. `supabase/tests/0041_attendance_classmates_today_test.sql`
+(35 assertions) runs every boundary below on `migration-check`. There is no
+client half **yet** — and unlike COMM-301, COMM-302 and COMM-306, that is
+because it has not been built, not because the ticket does not need one.
+COMM-307's card, its follow action and its `classmates_card_viewed` event are
+still open for the feed agent, so **do not read this section as the ticket
+being done**. The node suite is unchanged at 791/790/1/0 because nothing on
+the client moved, which is the expected state of a schema half.
+
+**Two things the ticket left to this half to decide**, both settled here and
+both worth a reviewer's attention rather than a skim:
+
+1. **The caller's own `show_attendance` is enforced inside the function.**
+   COMM-307 states the behaviour ("off means the card never renders for them,
+   even though their own attendance is still logged and still counts
+   elsewhere") without saying where the gate lives, and the client could have
+   skipped the call instead. It does not, for three reasons: every boundary in
+   this module is enforced server-side rather than by a UI check, and the
+   vendored Supabase client makes every RPC callable from a console; it is a
+   *reciprocity* rule, and every member on the card has opted into being seen
+   training, so a member who declined that must not read the list; and
+   202608310001's standing rule already says every member-facing Phase 3
+   reader applies this toggle in its own body, which COMM-302 and COMM-306
+   both did. It is a **direct `profiles` column read**, not
+   `can_view_profile_field(auth.uid(), ...)` — that helper answers true for
+   the caller before it reads any toggle, so it could not express the
+   question at all. Off yields an **empty set, never a raise**.
+2. **`p_limit int default 6`, clamped 1..20.** The forward reference in
+   `contracts.md` named a zero-argument function; the parameter is defaulted,
+   so that call form still resolves verbatim (the same accommodation COMM-301
+   made with `p_as_of`). 6 is card-sized for COMM-115's feed-top slot where
+   `people_suggestions`' 10 is a scrolling strip. **The clamp range is the
+   server's and is now fixed; the default inside it is the client half's to
+   revisit by passing an argument.**
+
+| Table / function / trigger | Boundary to assert |
+|---|---|
+| attendance_classmates_today(), reachability | The opposite grant story from `classmate_day_counts()`: this one **is** a client entry point. `prosecdef` true, `execute` granted to `authenticated`, revoked from `anon` **and** from `public` (asserted separately, since a new function starts with `execute` granted to `PUBLIC`). Definer for exactly one boundary, the one `people_suggestions` already documents — `attendance_log` is own-row plus staff, so without elevation the function could only ever return the caller's own row, which is the one row it excludes. A null `auth.uid()` **raises** `not authorized` rather than returning empty, checked before anything is read: it is an entry point, not a helper. |
+| Today only, both sides | **The boundary that separates this ticket from COMM-302.** `occurred_on = current_date` on both sides of the self-join, no window, no lookback, no count. Asserted in three directions: a pair who both logged today appear for each other; a member who logged **yesterday** with `show_attendance` **on** is absent, so nothing but the day can be excluding them (`classmate_day_counts()` would have counted that pair); and a caller who did not log today gets nothing at all, however many members did — the anchor is the caller's own row and the join enforces that on its own rather than by a separate check. Backed by a static pin: the body reads `current_date` and mentions neither `classmate_day_counts` nor `interval`/`make_interval` anywhere, so "no window arithmetic" is mechanical rather than a comment. |
+| The returned shape | Exactly four keys — `user_id`, `display_name`, `handle`, `avatar_url` — asserted as a **whole-object `jsonb` equality**, so an added key fails here rather than slipping past a key-by-key check. No date, no time, no count, no streak, no session detail may leave this function: a caller learns that these members trained today and nothing about any other day. Those four are also exactly the header `community_profile` already returns to any member for any member, so nothing newly reachable is published. |
+| show_attendance on a candidate | The same toggle-flip proof style 0039 and 0040 use, and for the same reason: the test does not compare a member who trained against one who did not, it flips the toggle on an **unchanged** `attendance_log` row and watches the same data go from absent to listed and back. Alongside it, an assertion that the row still exists — read as the bootstrap superuser, since `attendance_log`'s select policy is own-row for a member and an authenticated count would read 0 for the wrong reason. The toggle **defaults to false**, so out of the box this card is empty for everybody. |
+| **show_attendance on the CALLER** | **The ticket's own product decision, so it is asserted explicitly rather than inferred.** A caller with it off gets an **empty set — the whole card, not a shorter one** — while two opted-in members who trained today were on it a moment before, and their own attendance row for today still exists (checked as the superuser). Empty rather than an error, asserted with a `lives_ok` beside the `is_empty`: the three ways to get no card — did not train, trained alone, opted out — are indistinguishable from outside, so nothing about the caller's setting leaks into the response shape and the client needs no new branch. Flipping their own toggle back on returns the same two members on the same unchanged rows. |
+| The admin short-circuit, on one side only | The consequence of the caller-side gate being a direct column read, asserted rather than left as a comment, and the one section in the file deliberately called **as the admin**: an admin who never opted into `show_attendance` gets an **empty card like anybody else**, because the direct read does not carry `can_view_profile_field`'s `is_admin()` short-circuit. Once opted in, that same admin sees every member who trained today **including the ones who opted out** — the short-circuit does apply to the per-candidate gate, the module-wide behaviour of the one resolution point that `feed_leaderboard`'s contract already records. Asserted both as a count and by naming the opted-out member specifically, so the count cannot pass for the wrong reason. |
+| Block edges, COMM-125 | A block in **either** direction removes the pair, with an `isnt_empty` beside each `is_empty` confirming the other candidate is still on the card, so it is the edge doing it and not a broken fixture. Not re-implemented anywhere in the function — `can_view_profile_field` settles a block before it consults any toggle, and it carries deleted profiles and `visible_to_club` in the same call, which is why there is no second predicate for either. |
+| Self exclusion | The caller never appears in their own results. A member is not their own classmate — the same self-exclusion `classmate_day_counts()` and `relationship_score()` both keep. |
+| p_limit, the clamp | Asserted against a pool of **27 eligible candidates** (25 extra opted-in members inserted for this section alone), so the upper clamp is a real cut and not "all of them": default 6, `3` → 3, `null` → 6, `0` → 1, `-5` → 1, `50` → 20. Zero clamping **up** to 1 rather than returning an empty card is deliberate — an empty card would look exactly like a member who trained alone. For qa: the clamp range is fixed server-side now, so the client half can lower the default it passes but cannot widen the range. |
+| The order | Most recently recorded first (`attendance_log.recorded_at`), then display name falling back to handle, then id. Asserted across two fixture groups with different `recorded_at` values, so both the recency ordering **and** the alphabetical tie-break inside a tied group are exercised — a fixture that let `recorded_at` default would tie every row, since `now()` is frozen for the transaction, and the documented order would never run. Every member in the set trained today so there is no signal to rank by and the order is a choice: an alphabetical cut would show the same few members every single day in a club bigger than `p_limit`. `recorded_at` is when the row was written, not when the member trained — `attendance_log` records a day, not a time — which is why it is only the first key of a total order and not a claim the card makes. |
+| **Not yet covered: COMM-307's client half** | Flagged for qa as an open gap, not an omission. The card in COMM-115's feed-top slot, its omitted/loading/error/populated states, the follow action reusing `follow()` (COMM-230), the standing no-messaging rule, and the `classmates_card_viewed` event and its `metrics.md` row are all unbuilt. There is no `test/*.test.mjs` for this ticket yet and there should not be one until that half lands. |
 
 ## Open questions for the user
 

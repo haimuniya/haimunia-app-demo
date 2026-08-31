@@ -285,6 +285,102 @@ client was already built against.
 - Backed by `attendance_log_club_day_idx` (202608310001), created for exactly
   this read.
 
+### attendance_classmates_today(p_limit int default 6) returns setof jsonb
+
+- Shipped in 202608310005. COMM-307, closing COMM-P05. **Schema half only** —
+  the feed-top card, the follow action and the `classmates_card_viewed`
+  analytics event are the client half and are still open.
+- Purpose: "who else trained today". Members other than the caller who have an
+  `attendance_log` row for `current_date`, returned only when the caller has
+  one too.
+- Params: `p_limit`, clamped 1..20, null means 6. The forward reference named a
+  zero-argument function; the parameter is defaulted, so that call form still
+  resolves verbatim — the same accommodation COMM-301 made when it gave
+  `relationship_score()` a defaulted `p_as_of`. 6 is a card-sized number for
+  COMM-115's feed-top slot, where `people_suggestions`' 10 is a horizontally
+  scrolling strip. The clamp range is the server's and is fixed; the default
+  inside it is the client half's to revisit by passing an argument.
+  **There is deliberately no viewer parameter**, the same refusal
+  `classmate_day_counts()` documents and for the same reason: this function
+  only ever answers for `auth.uid()`.
+- Returns `setof jsonb`, one object per candidate, exactly four keys:
+  `{user_id, display_name, handle, avatar_url}`. No date, no time, no count,
+  no streak, no session detail — a caller learns that these members trained
+  today and nothing about any other day. Those four keys are also exactly the
+  header `community_profile` already returns to any member for any member.
+- **"Today" means `occurred_on = current_date` on both sides of the self-join,
+  and nothing else.** No window, no lookback, no count — that is the entire
+  distinction from `classmate_day_counts()` (COMM-302), which answers "how
+  often do these two train together" over 60 days. This function is written
+  out rather than layered on that helper because reusing it would mean asking
+  for a 60-day overlap and discarding 59 days of it, and would return members
+  who trained beside the caller last week and not today. What *is* reused, to
+  the letter, is the privacy gating. `current_date` is the server's UTC day,
+  the same day `attendance_log`'s trigger compares against.
+- The caller's own `current_date` row is the anchor: no row, no rows returned,
+  which the join does on its own rather than by a separate check.
+- Ordered most recently recorded first (`attendance_log.recorded_at`), then by
+  display name falling back to handle, then by id — a total order, so the cut
+  at `p_limit` is deterministic. Every member in the set trained today, so
+  there is no signal to rank them by and the order is a choice: the card is a
+  post-class moment, so the members who logged closest to the caller's own log
+  are the likeliest to have been in the room, and in a club bigger than
+  `p_limit` an alphabetical cut would show the same few members every day.
+  `recorded_at` is when the row was written, not when the member trained —
+  `attendance_log` records a day, not a time — which is why it is only the
+  first key of a total order and not a claim the card makes.
+- Privacy, per candidate: `can_view_profile_field(candidate,
+  'show_attendance')`, the identical call `classmate_day_counts()` makes,
+  applied after the candidate set is built for the identical reason. Block
+  edges in both directions, deleted profiles and `visible_to_club` all fall
+  out through that one call and are not re-implemented. `show_attendance`
+  **defaults to false**, so out of the box this card is empty for everybody. A
+  member with it off still logs attendance and it still counts toward their
+  own achievements (COMM-305) and leaderboard rank (COMM-306). The `is_admin()`
+  short-circuit applies to this gate as it does everywhere else.
+- **Privacy, the caller's own toggle: enforced here, in the function.** A
+  caller whose own `show_attendance` is off gets an **empty set** — the whole
+  card, not a shorter one — which is COMM-307's "off means the card never
+  renders for them, even though their own attendance is still logged and still
+  counts elsewhere". It is not left to the client: every boundary in this
+  module is enforced server-side rather than by a UI check, and this one is a
+  reciprocity rule (every member on the card has opted into being seen
+  training, so a member who declined that must not read the list).
+  - It is a **direct `profiles.show_attendance` column read, not
+    `can_view_profile_field(auth.uid(), 'show_attendance')`**, and that is
+    load-bearing: the helper returns true for `p_target = auth.uid()` before
+    it consults any toggle (the property `feed_leaderboard` relies on to keep
+    a member on their own board), so asking it about the caller would always
+    answer true and the gate would silently do nothing.
+  - One consequence, stated rather than discovered: the direct read does not
+    carry the `is_admin()` short-circuit, so an admin who never opted in gets
+    an empty card like anybody else. The short-circuit exists so staff can see
+    members' data, not to opt an admin into a reciprocal surface they
+    declined. It still applies in full to the per-candidate gate.
+  - **Empty, never a raise.** The card is already specified to render nothing
+    at all when the member has not trained today or nobody else has
+    (COMM-232's "on no signal, show nothing", which COMM-307 adopts by name),
+    so the three ways to get no card — did not train, trained alone, opted
+    out — are indistinguishable from outside and no client branch or error
+    path is added.
+- Self is excluded.
+- No `allow_follows` filter and no `allow_follows` key, deliberately unlike
+  `people_suggestions`: this is not a follow strip, it is "who trained today",
+  and hiding a classmate who simply does not want followers would be wrong.
+  The card's Follow control is the client's render decision, and the
+  `follows_insert_self` policy (202608280003) enforces `allow_follows`
+  server-side regardless.
+- Auth: `security definer`, raises `not authorized` for a null `auth.uid()` or
+  a caller with no `my_role_code()`, both checked before anything is read.
+  `authenticated` may execute; `public` and `anon` are revoked. Definer crosses
+  exactly one boundary, the one `people_suggestions` already documents:
+  `attendance_log`'s policies are own-row plus staff (202608310001), so
+  without elevation this could only ever return the caller's own row, which is
+  the one row it excludes.
+- Side effects: none, `stable`.
+- Backed by `attendance_log_club_day_idx` (202608310001), which named this read
+  when it was created.
+
 ### feed_record_impressions(p_rows jsonb) returns void
 
 - Shipped in 202608280006.
@@ -457,9 +553,10 @@ client was already built against.
   overlap otherwise. Only counts leave the function — never a post id, never
   an event id, never a date somebody trained.
 - Side effects: none.
-- COMM-307 (Phase 3) adds a *different* attendance surface,
+- COMM-307 (Phase 3) added a *different* attendance surface,
   `attendance_classmates_today()`: "who trained today", not "who to follow".
-  It does not change this function.
+  **Shipped in 202608310005 and it did not change this function** — no
+  signature, no key, no ordering here moved. Its contract is above.
 
 ### consistency_week_streaks() returns table(user_id uuid, streak integer)
 
@@ -3116,11 +3213,35 @@ What a dependent ticket needs to know changed between the two:
   published on their profile in the same breath. `training_frequency` and
   `recent_workouts` are untouched and still read `workout_posts` under
   `show_workout_results` alone.
-- `attendance_classmates_today() returns setof jsonb`,
+- ~~`attendance_classmates_today() returns setof jsonb`,
   `{user_id, display_name, handle, avatar_url}` — `security definer`, same
   boundary-crossing shape as `people_suggestions`. Distinct from COMM-302's
-  signal: "today" only, no window, no historical count. COMM-307, closing
-  COMM-P05.
+  signal: "today" only, no window, no historical count.~~ — **SHIPPED in
+  202608310005, COMM-307's schema half, closing COMM-P05.** No longer a
+  forward reference: the built contract is
+  **"### attendance_classmates_today(p_limit int default 6) returns setof
+  jsonb"** under `## Feed` above. Read that, not this. It shipped as promised —
+  same returned shape, same four keys, `security definer`, today only with no
+  window and no count, `can_view_profile_field(candidate, 'show_attendance')`
+  and block edges in either direction — with two additions this section did
+  not name:
+  - **A defaulted `p_limit int default 6`, clamped 1..20.** COMM-307's own
+    "validation rules and limits" asked for it ("matching
+    `people_suggestions`'s own limit shape, clamp 1..20, default a smaller
+    number appropriate to a card"); the zero-argument call form promised here
+    still resolves verbatim, the same accommodation COMM-301's `p_as_of` made.
+  - **The caller's own `show_attendance` is enforced inside the function**, as
+    a direct `profiles` column read rather than through
+    `can_view_profile_field` (which answers true for the caller before reading
+    any toggle and so could not express the question). Off means an empty set,
+    never a raise. COMM-307's acceptance criteria stated the behaviour but not
+    where it lives; it lives server-side because every boundary in this module
+    does. Full reasoning in the contract above.
+  - **Still open: COMM-307's client half.** The feed-top card (COMM-115's
+    slot), the follow action reusing `follow()` (COMM-230) and the
+    `classmates_card_viewed` analytics event in `metrics.md` are not built.
+    Nothing in this ticket's schema half depends on them, and nothing else in
+    Phase 3 depends on them either.
 - `member_feed_weights(user_id uuid pk, weights jsonb not null default
   '{}', computed_at timestamptz not null default now())` — own-row select
   only, no client write grant. `feed_page` re-created again to read it and

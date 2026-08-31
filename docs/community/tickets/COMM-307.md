@@ -2,7 +2,7 @@
 
 Phase: 3
 Agent: feed
-Status: todo
+Status: schema half in review (202608310005) — client half still todo
 Attendance-blocked: was — unblocked by COMM-300
 
 Closes the parked COMM-P05, and is the second half of the forward reference
@@ -70,6 +70,23 @@ class roster to browse.
   `people_suggestions`'s `shared_classmate_days` job (COMM-302), this
   function answers "today" only.
 - Reuses `follow()` (existing, COMM-230).
+
+**Schema half shipped 2026-08-31 as `202608310005_attendance_classmates_today.sql`**
+(`supabase/tests/0041_attendance_classmates_today_test.sql`, 35 assertions).
+The function is `attendance_classmates_today(p_limit int default 6)` — a
+defaulted parameter, so the zero-argument form above still resolves; clamp
+1..20, and the default inside it is the client half's to revisit. The two
+decisions this ticket left open are settled and written up in
+`docs/community/contracts.md` and in `backlog.md`'s Phase 3 handoff section:
+the **caller's own** `show_attendance` is enforced inside the function (an
+empty set, never a raise, and a direct `profiles` column read because
+`can_view_profile_field` answers true for the caller before reading any
+toggle), and the row order is most-recently-logged first with a display-name
+then id tie-break.
+
+**None of the acceptance criteria above are ticked**, deliberately: every one
+of them is about the card, the follow action or the analytics event, and all
+three are still to build.
 
 ## Validation rules and limits
 
