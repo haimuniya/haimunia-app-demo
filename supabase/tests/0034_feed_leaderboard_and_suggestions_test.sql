@@ -2,6 +2,13 @@
 -- 202608290015 (leaderboard_row, consistency_week_streaks,
 -- feed_leaderboard, people_suggestions).
 --
+-- COMM-306 (202608310004) changed one thing in this file and nothing else:
+-- the consistency fixture is attendance_log days instead of POST_WORKOUT /
+-- POST_PR rows, because that is where the streak now comes from. Every
+-- assertion below is the one 202608290015 shipped with, re-run against the
+-- new source - including the "the two copies agree" pin, which was the
+-- reason the source had to move in both functions at once.
+--
 -- Real rows, real toggles, real callers. The caller for almost every
 -- assertion is tests.uid('m1'), a plain member: can_view_profile_field()
 -- short-circuits true for is_admin(), so a privacy test run as an admin
@@ -42,20 +49,38 @@ select * from no_plan();
 -- out of the way while the world is built.
 -- =====================================================================
 
--- Training weeks. current_date - 7 lands in the previous ISO week whatever
--- weekday the suite runs on, so these streaks are 3, 2, 1 and 0 every day of
--- the year: m1 three consecutive weeks, m2 two, coach one, m3 a single week
--- a month ago (anchor too old to count for anything), and admin, owner and
--- norec have never posted at all.
-insert into public.workout_posts (id, author_id, post_type, status, title, occurred_on)
+-- Training weeks. COMM-306 (202608310004) moved consistency off posted
+-- workouts and onto verified attendance, so the fixture that feeds every
+-- streak assertion below is now attendance_log rather than workout_posts.
+-- The days are written directly, because what is under test here is a reader
+-- of that table, not the trigger that fills it - 0037 owns that end. Nothing
+-- else in this file moved: the same members hold the same streaks and every
+-- ranking, tie-break, toggle and scope assertion is the one 202608290015
+-- shipped with.
+--
+-- current_date - 7 lands in the previous ISO week whatever weekday the suite
+-- runs on, so these streaks are 3, 2, 1 and 0 every day of the year: m1 three
+-- consecutive weeks, m2 two, coach one, m3 a single week a month ago (anchor
+-- too old to count for anything), and admin, owner and norec have never
+-- trained at all.
+insert into public.attendance_log (user_id, occurred_on)
 values
-  ('eeeeeeee-0000-4000-8000-000000000001', tests.uid('m1'),    'POST_WORKOUT', 'active', 'A0', current_date),
-  ('eeeeeeee-0000-4000-8000-000000000002', tests.uid('m1'),    'POST_WORKOUT', 'active', 'A1', current_date - 7),
-  ('eeeeeeee-0000-4000-8000-000000000003', tests.uid('m1'),    'POST_PR',      'active', 'A2', current_date - 14),
-  ('eeeeeeee-0000-4000-8000-000000000004', tests.uid('m2'),    'POST_WORKOUT', 'active', 'B0', current_date),
-  ('eeeeeeee-0000-4000-8000-000000000005', tests.uid('m2'),    'POST_WORKOUT', 'active', 'B1', current_date - 7),
-  ('eeeeeeee-0000-4000-8000-000000000006', tests.uid('coach'), 'POST_WORKOUT', 'active', 'C0', current_date),
-  ('eeeeeeee-0000-4000-8000-000000000007', tests.uid('m3'),    'POST_WORKOUT', 'active', 'D0', current_date - 28);
+  (tests.uid('m1'),    current_date),
+  (tests.uid('m1'),    current_date - 7),
+  (tests.uid('m1'),    current_date - 14),
+  (tests.uid('m2'),    current_date),
+  (tests.uid('m2'),    current_date - 7),
+  (tests.uid('coach'), current_date),
+  (tests.uid('m3'),    current_date - 28);
+
+-- show_attendance is attendance's own toggle (202608280003) and it defaults
+-- to FALSE, so a consistency board of members who have never opted in is a
+-- board of one: the caller. Every fixture member opts in here so the rest of
+-- this file keeps measuring what it was written to measure. The exclusion
+-- that toggle now enforces is asserted in
+-- 0040_consistency_on_attendance_test.sql, on a flip rather than on a
+-- default, which is the only form of the assertion that proves a gate.
+update public.profiles set show_attendance = true;
 
 -- =====================================================================
 -- Who may call it at all
@@ -91,7 +116,7 @@ select results_eq(
 select results_eq(
   $$ select count(*)::int from public.feed_leaderboard('consistency', null, 'club', 100) $$,
   $$ values (7) $$,
-  'every eligible member is ranked, including the four who have never posted');
+  'every eligible member is ranked, including the four who have never trained');
 
 select results_eq(
   $$ select bool_and(value = 0) from public.feed_leaderboard('consistency', null, 'club', 100)
@@ -105,8 +130,12 @@ select results_eq(
   $$ values (5) $$,
   'ranks are positions, not shared: the four zeros are 4, 5, 6, 7 by display name, m3 is 5');
 
--- The number is the number community_profile already publishes. If the new
--- set-based streak and the old inline one ever disagree, this fails.
+-- The number is the number community_profile already publishes. If the
+-- set-based streak and the inline one ever disagree, this fails. COMM-306
+-- moved BOTH onto attendance_log in one migration precisely so this assertion
+-- keeps holding, and it is re-run here against the new source rather than
+-- retired: two copies of one rule need a standing pin whatever the rule reads
+-- from. 0040 widens it to every fixture member.
 select results_eq(
   $$ select value from public.feed_leaderboard('consistency', null, 'club', 100) where is_self $$,
   $$ select ((public.community_profile(tests.uid('m1')) ->> 'current_streak'))::numeric $$,
@@ -228,8 +257,8 @@ update public.profiles set in_leaderboards = true where id = tests.uid('m1');
 -- COMM-210 tie-breaks: longer tenure first, then display name
 -- =====================================================================
 -- The coach gets a second week, tying m2 at 2.
-insert into public.workout_posts (id, author_id, post_type, status, title, occurred_on)
-values ('eeeeeeee-0000-4000-8000-000000000008', tests.uid('coach'), 'POST_WORKOUT', 'active', 'C1', current_date - 7);
+insert into public.attendance_log (user_id, occurred_on)
+values (tests.uid('coach'), current_date - 7);
 
 update public.invite_redemptions set redeemed_at = now() - interval '400 days' where user_id = tests.uid('coach');
 update public.invite_redemptions set redeemed_at = now() - interval '10 days' where user_id = tests.uid('m2');
@@ -253,7 +282,7 @@ select results_eq(
 select tests.clear_auth();
 update public.profiles set display_name = 'Coach X' where id = tests.uid('coach');
 update public.invite_redemptions set redeemed_at = now() where user_id in (tests.uid('m2'), tests.uid('coach'));
-delete from public.workout_posts where id = 'eeeeeeee-0000-4000-8000-000000000008';
+delete from public.attendance_log where user_id = tests.uid('coach') and occurred_on = current_date - 7;
 
 -- =====================================================================
 -- COMM-211 progress mode
@@ -377,6 +406,12 @@ select tests.clear_auth();
 -- Clear the follow edges the friends-scope tests needed: a follow is an
 -- exclusion here, and the exclusion gets its own assertions below.
 delete from public.follows;
+-- And clear the attendance days the consistency board above needed. Since
+-- COMM-302 a shared training day is people_suggestions' second-strongest
+-- signal, so leaving them in would rank the fixtures below by an overlap this
+-- section was never about - the classmate signal has its own file, 0039.
+-- Everything from here down rests on fixtures built for this section alone.
+delete from public.attendance_log;
 -- The progress challenge is over, so it stops being a signal. Everything
 -- below rests on fixtures built for this section alone.
 update public.challenges set status = 'completed' where id = 'cccccccc-2222-4000-8000-000000000001';

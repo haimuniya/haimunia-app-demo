@@ -2,7 +2,7 @@
 
 Phase: 3
 Agent: feed
-Status: todo
+Status: review
 Attendance-blocked: was — unblocked by COMM-300
 
 Closes the parked COMM-P02. `consistency_week_streaks()`'s own comment

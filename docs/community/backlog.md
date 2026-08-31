@@ -698,7 +698,7 @@ staff-confirmed check-in.
 | COMM-301 | Relationship score from interaction history | feed | no | review |
 | COMM-302 | Recurring classmate score once attendance lands | feed | was — unblocked by COMM-300 | review |
 | COMM-303 | Personalized feed ranking and per-user weights | feed | no | todo |
-| COMM-306 | Consistency leaderboard on verified attendance | feed | was — unblocked by COMM-300 | todo |
+| COMM-306 | Consistency leaderboard on verified attendance | feed | was — unblocked by COMM-300 | review |
 | COMM-307 | Post-class trained-with-you card | feed | was — unblocked by COMM-300 | todo |
 
 **COMM-301 is in review.** Shipped as `202608310002_relationship_score.sql`,
@@ -728,12 +728,28 @@ interaction, event. One function beyond the ticket's outline:
 count and the `show_attendance` gate exist once rather than twice — see the
 handoff section below.
 
+**COMM-306 is in review, and it closes the parked COMM-P02.** Shipped as
+`202608310004_consistency_on_attendance.sql`, with
+`supabase/tests/0040_consistency_on_attendance_test.sql` (31 assertions) and
+no client change at all — `feed_leaderboard` and `community_profile` keep
+their exact signatures and their exact shapes, so nothing on the node side
+moved (791/790/1/0, unchanged). `consistency_week_streaks()`'s body is the
+same arithmetic over `attendance_log.occurred_on` instead of
+`workout_posts`, which is precisely the one-function change its own
+202608290015 comment named; `community_profile`'s inline second copy moved
+with it in the same migration, so the standing "the two cannot drift"
+assertion in 0034 is re-run against the new source rather than retired, and
+0040 widens it from the caller to every member on the board. Consistency mode
+now also gates on `can_view_profile_field(member, 'show_attendance')` —
+absent from the ranked set, not ranked at 0. One thing beyond the ticket's
+outline: `community_profile`'s `current_streak` key is gated on that toggle
+too, because the number is attendance-derived now — see the handoff section
+below. `training_frequency` and `recent_workouts` are untouched.
+
 COMM-301 extracts `feed_page`'s already-inline relationship arithmetic
 (202608280019) into a reusable `relationship_score()` helper with no ranking
 change — a prerequisite for COMM-303's per-user weighting, not for anything
-attendance-related. COMM-306 closes COMM-P02 by swapping
-`consistency_week_streaks()`'s body onto `attendance_log`, the single place
-its own 202608290015 comment already named. COMM-307 closes COMM-P05, a new
+attendance-related. COMM-307 closes COMM-P05, a new
 feed-top-area card (`attendance_classmates_today()`) distinct from COMM-302's
 suggestions-strip signal — "who trained today", not "who to follow". COMM-303
 lands last in this cluster: it personalizes the weights COMM-301 extracted
@@ -886,6 +902,12 @@ computed from `attendance_log`, and `people_suggestions` carries the same
 signal as its second-strongest. The row stays in the table above because this
 section is a record of what was parked and why, not a live todo list; the
 other six remain open and unblocked.
+
+Updated 2026-08-31, third pass: **COMM-P02 is closed** by COMM-306
+(202608310004). The consistency board and every profile's `current_streak`
+count weeks a member actually trained, from `attendance_log`, instead of weeks
+they posted a workout or a PR. The row stays in the table above for the same
+reason; five remain open and unblocked.
 
 ## Phase 0 schema handoff for qa (COMM-019)
 
@@ -1405,6 +1427,56 @@ two `create or replace`s:
 | people_suggestions, additive shape | `signals` gains `shared_classmate_days` carrying the real day count (asserted at 4, not as a boolean); `shared_challenges`, `shared_interactions` and `shared_events` keep their names and their meanings — asserted as a whole-object `jsonb` equality, so a rename or a removal fails rather than slipping past a key-by-key check. `reason` gains `'classmate'`. This is exactly the shape 202608290015's own comment promised, and it is why no client changed. |
 | Block edges, COMM-125, in both functions | A block in **either** direction, on the pair with the highest overlap in the fixture, so nothing can pass on the strength of its signal: the candidate leaves `people_suggestions`, their post leaves `feed_page` entirely (a block is strictly stronger than the class component, not merely heavier than it), and the helper itself refuses the pair. Not re-implemented anywhere — `can_view_profile_field()` settles a block before it consults any toggle, which is what `people_suggestions` already relied on for its other three signals. |
 | The two surfaces cannot drift | The same pin 0034 uses for `consistency_week_streaks()` versus `community_profile` and 0038 uses for `feed_page` versus `relationship_score()`: both function bodies are asserted to mention `classmate_day_counts`, and the `shared_classmate_days` the strip publishes is asserted equal to the number the helper returned. One copy of the window, the overlap count and the privacy gate. |
+
+### Consistency on verified attendance (202608310004, COMM-306)
+
+No new table, so no new RLS policy: three existing functions re-created and
+not one new one. `supabase/tests/0040_consistency_on_attendance_test.sql` (31
+assertions) runs every boundary below on `migration-check`, and
+`supabase/tests/0034_feed_leaderboard_and_suggestions_test.sql` keeps all 53
+of its own, re-run against the new source. There is no client half — both
+signatures and both returned shapes are unchanged, so no `.test.mjs` file
+moved and the node suite is unchanged at 791/790/1/0.
+
+**The 0034 fixture changed and no 0034 assertion did.** That file's streaks
+are now `attendance_log` days instead of POST_WORKOUT / POST_PR rows; every
+ranking, tie-break, toggle, scope and self-row assertion in it is the one
+202608290015 shipped with. Two mechanical consequences worth knowing before
+reading the diff: its consistency fixture opts every member into
+`show_attendance` (the column defaults false, so a board of members who have
+not opted in is a board of one), and its `people_suggestions` section deletes
+the attendance rows before building its own fixtures, because since COMM-302 a
+shared training day is that function's second-strongest signal and would
+otherwise re-rank a section that is not about it.
+
+One thing differs from COMM-306's own migration outline, which named the
+`show_attendance` gate only for the leaderboard:
+
+1. **`community_profile`'s `current_streak` key is gated on
+   `show_attendance` as well as `show_workout_results`.** The number is
+   attendance-derived now, and 202608310001 wrote the rule down: the table's
+   staff policy is deliberately not gated on that toggle, and every
+   member-facing Phase 3 reader applies it in its own body. Without it the
+   function would publish an attendance-derived figure past attendance's own
+   toggle, by default, for every member — and would contradict
+   `feed_leaderboard`, which excludes that same member from the board.
+   Expressed as an absent key, which has meant "hidden" in this function since
+   COMM-180 and which the client already renders as no row. Both toggles
+   default false, so the pairing only ever narrows. Reverting it is deleting
+   one `if`.
+
+| Table / function / trigger | Boundary to assert |
+|---|---|
+| consistency_week_streaks(), the source | Distinct ISO weeks carrying an `attendance_log.occurred_on` day, anchored on the member's most recent such week, counted back while each week is exactly 7 days before the previous, anchor must be the current week or the previous one. Same arithmetic as 202608290015, one table swapped — asserted behaviourally in **both directions**, which is the assertion that actually proves the swap: a member with three weeks of posted workouts and **no** attendance reads 0, and a member with attendance and **no post of any kind** reads their real streak. Under the old body those two numbers were the other way round, so a fixture built only on attendance could not have caught a revert. Backed by a static pin as well: the body mentions `attendance_log` and no longer mentions `workout_posts` at all. |
+| consistency_week_streaks(), reachability | Unchanged and re-asserted, because a `create or replace` starts the grant story over: revoked from `public`, `anon` **and** `authenticated`, `prosecdef` still false. It reads every member's days only by borrowing `feed_leaderboard`'s definer rights past `attendance_log_self_select`. The `public` revoke is asserted separately, as in 0038 and 0039. |
+| consistency_week_streaks(), no privacy filter | **Deliberate, and the one place this ticket departs from `classmate_day_counts()`'s shape** (202608310003, which folds `show_attendance` into itself). That helper's callers both want an opted-out member to read as absent; this one's caller must *exclude* them from a ranked set, and a gate inside the helper would produce exactly the coalesced 0 the ticket rules out. So the gate lives in `feed_leaderboard`, where "excluded" can be expressed, and the helper stays pure arithmetic over a table nobody can reach. Worth a reviewer's eye rather than a test: it is a reasoned inconsistency with a sibling function, not an oversight. |
+| feed_leaderboard, show_attendance | **The boundary the privacy half of the ticket rests on.** A member with `show_attendance` off is **absent from the consistency board, not ranked at 0** — asserted as both an `is_empty` on their row and a count that goes 6 → 7, on a fixture member holding exactly the same two training weeks as an opted-in member, with the toggle flipped on rows that do not change. That flip is the whole proof: a member zeroed and a member excluded are different claims about them, and on a board where 0 is a real value, ranking an opted-out member at 0 would state something false rather than withhold something true. Alongside it, an assertion that their `attendance_log` rows still exist — read as the bootstrap superuser, since that table's select policy is own-row for a member. |
+| feed_leaderboard, self is still always included | The caller gets their own row at their real streak **with their own `show_attendance` off**, and their board is the opted-in members plus themselves. `can_view_profile_field()` answers true for `p_target = auth.uid()` before it reads any toggle, so the new predicate is self-exempt exactly as `in_leaderboards` and `visible_to_club` already are. Opting out removes you from other members' boards, never from your own — the same rule 0034 already pins for `in_leaderboards`. |
+| feed_leaderboard, progress mode untouched | The predicate sits inside the consistency branch of `valued`, not in `cand`, so a challenge ranking is not narrowed by a toggle that has no bearing on it. Asserted directly: the member excluded from the consistency board for `show_attendance` **leads** the progress board. |
+| feed_leaderboard, zero is real | A member with no `attendance_log` row at all is ranked at 0 rather than dropped — there is no real rank to report from a set the caller was filtered out of, which is why the zeros have to be in it. The same rule on the profile side: `community_profile` returns `current_streak` 0 for such a member and does not raise. This is `feed_leaderboard`'s own pre-existing rule, unchanged, and the reason the exclusion above had to be an exclusion. |
+| community_profile, current_streak | Moved onto the same source in the same migration, which is the only reason 0034's standing "the two copies agree" assertion could be re-run rather than retired. Asserted on both fixture directions like the helper (posting member 0, training member 1) and gated on `show_attendance` — the key is **absent**, not zeroed, when the toggle is off, and back at its real value when it is flipped on with no row changed. |
+| community_profile, training_frequency and recent_workouts | **The boundary COMM-306 draws by exclusion**, asserted rather than left as a comment: both still read `workout_posts`, both are still under `show_workout_results` alone, and both are **still present on a profile whose `current_streak` the attendance toggle has just removed**. Plus the two halves shown apart: a member whose only activity is posts has `training_frequency` and a 0 streak; a member who trains and never posts has a real streak and no `training_frequency` at all. The two numbers answer different questions and did not merge. A static pin backs it — `community_profile`'s body mentions both tables. |
+| The two copies still cannot drift | 0034's original pin (the caller's own board value equals their `community_profile` `current_streak`) is re-run against the new source and kept. 0040 widens it to the whole board at once: an `is_empty` over every ranked member whose value disagrees with the streak their own profile publishes, with an `isnt_empty` beside it so an all-zero fixture cannot pass it vacuously — the shape 0038 established. Readable set-wide only because every fixture member has both profile toggles on. |
 
 ## Open questions for the user
 

@@ -335,12 +335,14 @@ client was already built against.
   the value. `p_limit` clamps to 1..100 (null means 50).
 - `consistency` ranks club members by consecutive ISO weeks with a logged
   session, the same number `community_profile` returns as `current_streak`.
-  `p_challenge_id` is ignored. The computation now lives in
+  `p_challenge_id` is ignored. The computation lives in
   `public.consistency_week_streaks()` (internal, no grants) so it exists once
   set-wide; `community_profile` keeps its own inline copy because merged
   migrations are not edited, and `0034_feed_leaderboard_and_suggestions_test`
-  asserts the two agree on the same member. COMM-306 swaps the body of that
-  helper onto verified attendance without changing this signature.
+  asserts the two agree on the same member (`0040` widens that to every member
+  on the board at once). Since COMM-306 (202608310004) "a logged session" means
+  an `attendance_log` day, not a posted workout; this signature, and everything
+  else in this entry bar the privacy line below, did not move.
 - `progress` ranks `challenge_participants.progress_value` for one challenge,
   participants with status `withdrawn` excluded. `p_challenge_id` is required:
   null raises `challenge required`, an unknown id raises `challenge not
@@ -352,7 +354,16 @@ client was already built against.
 - `friends` restricts the ranked set to `are_friends()` (mutual follow) edges,
   always still including the caller.
 - Every ranked member passes `can_view_profile_field(member,
-  'in_leaderboards')` and `can_view_profile_field(member, 'visible_to_club')`.
+  'in_leaderboards')` and `can_view_profile_field(member, 'visible_to_club')`,
+  and in `consistency` mode `can_view_profile_field(member,
+  'show_attendance')` as well (COMM-306, 202608310004 — the value being ranked
+  is verified attendance, which carries its own toggle). A member who fails any
+  of the three is **absent from the ranked set, not ranked at 0**: on a board
+  where 0 is a real value, publishing a 0 for an opted-out member would state
+  something false about them rather than withhold something true. The
+  `show_attendance` gate is not applied in `progress` mode, which ranks a
+  challenge and has nothing to do with attendance. All three are self-exempt,
+  so the always-return-self rule below is unaffected by any of them.
   Blocks are not re-implemented: that helper settles a block edge in either
   direction before it looks at any toggle. Its is_admin() short-circuit
   applies here too, so a real admin's board includes members who opted out;
@@ -452,19 +463,33 @@ client was already built against.
 
 ### consistency_week_streaks() returns table(user_id uuid, streak integer)
 
-- Shipped in 202608290015. Internal, security invoker, **no grants at all** —
-  not to `anon`, not to `authenticated`. `feed_leaderboard` is its only
-  caller and it inherits that definer's rights.
+- Shipped in 202608290015, re-created in 202608310004 (COMM-306) on the same
+  signature. Internal, security invoker, **no grants at all** — not to `anon`,
+  not to `authenticated`. `feed_leaderboard` is its only caller and it inherits
+  that definer's rights, which is also how it reads every member's days past
+  `attendance_log_self_select`.
 - Purpose: the set-based form of `community_profile`'s `current_streak`, so
   the streak is computed once for every member instead of per member in a
-  loop. Same arithmetic: distinct ISO weeks carrying a POST_WORKOUT or
-  POST_PR, anchored on the member's latest such week, counted back while each
-  week is exactly 7 days before the previous, and only when the anchor is the
-  current week or the previous one.
-- Not a second definition of "streak": a pgTAP assertion pins it to
-  `community_profile`'s number so the two cannot drift.
-- This is the single place COMM-306 (Phase 3) changes to move consistency onto
-  verified attendance.
+  loop. Arithmetic: distinct ISO weeks carrying at least one
+  `attendance_log.occurred_on` day, anchored on the member's latest such week,
+  counted back while each week is exactly 7 days before the previous, and only
+  when the anchor is the current week or the previous one. A week not trained
+  does not break the streak while the anchor still qualifies.
+- COMM-306 changed the source and nothing else: it read distinct ISO weeks
+  carrying a POST_WORKOUT or POST_PR until 202608310004. That is the change
+  this entry promised, made in the one place it promised to make it.
+- A member with no `attendance_log` row is **absent from the returned set**,
+  not a zero row. Every caller left-joins and coalesces, so zero-is-real is
+  the caller's rule to keep, and both callers keep it.
+- **Carries no privacy filter**, deliberately unlike `classmate_day_counts()`
+  (202608310003), which folds `show_attendance` into itself. That helper's two
+  callers both want an opted-out member to read as absent; this one's caller
+  has to *exclude* the member from a ranked set instead, and a gate here would
+  produce exactly the coalesced 0 COMM-306 rules out. `feed_leaderboard`
+  applies `can_view_profile_field(member, 'show_attendance')` itself.
+- Not a second definition of "streak": `0034` pins it to
+  `community_profile`'s number for the caller and `0040` for every member on
+  the board, so the two copies cannot drift.
 
 ### Leaderboard and suggestions client contract, COMM-210 to COMM-212, COMM-232
 
@@ -632,10 +657,22 @@ should read those entries instead.
   `following_count`, `active_challenge` (`{id, title, ends_at}`, omitted
   when there is none), `posts`.
 - Present only when `show_workout_results` passes: `training_frequency` (a
-  display string, sessions per week over the last 28 days, omitted at zero),
-  `current_streak` (consecutive ISO weeks with a logged session, counted the
-  same way the consistency achievements count it, and a week not yet trained
-  does not break it), `recent_workouts` (`[{title, date}]`, up to 5).
+  display string, sessions per week over the last 28 days, omitted at zero)
+  and `recent_workouts` (`[{title, date}]`, up to 5). Both read
+  `workout_posts` directly and answer "what did this member choose to share",
+  which is why COMM-306 left them exactly as they were.
+- Present only when `show_workout_results` **and** `show_attendance` both
+  pass: `current_streak` (consecutive ISO weeks with an `attendance_log` day,
+  the same number `consistency_week_streaks()` computes set-wide; a week not
+  yet trained does not break it; 0 for a member with no attendance days,
+  never an error). Since 202608310004, COMM-306. The second toggle is the one
+  addition that ticket's own outline did not name: the number is now derived
+  from attendance, so it may not travel past attendance's own toggle — the
+  rule 202608310001 wrote down for every member-facing Phase 3 reader. It also
+  keeps this function and `feed_leaderboard` saying the same thing about the
+  same member, since an opted-out member is absent from the board. Absent key
+  means hidden, as everywhere else here, and the client already renders it as
+  no row rather than a blank.
 - Present only when `show_prs` passes: `prs` (`[{movement, result,
   achieved_on}]`, up to 20). A missing key hides the Progress tab, an empty
   array shows the no-PRs state.
@@ -649,9 +686,11 @@ should read those entries instead.
   viewer the author did not choose. `result_text` and the numeric
   `metadata` keys are stripped when `show_workout_results` is off, the same
   way `feed_page` strips them.
-- Every number is derived from posts the member published, not from
-  attendance, which has no source yet (COMM-P03). A member who trains and
-  never posts reads as zero here.
+- Every number here except `current_streak` is derived from posts the member
+  published. A member who trains and never posts reads as zero in those. Since
+  COMM-306 (202608310004) `current_streak` is the exception and comes from
+  verified attendance, so the reverse also holds: a member who trains and
+  never posts has a real streak and no `training_frequency`.
 
 ## Client card contract (renderPostCard)
 
@@ -3059,15 +3098,24 @@ What a dependent ticket needs to know changed between the two:
   privacy gate in particular is the last thing that should exist twice. Full
   contract under `## Feed` above. A dependent ticket (COMM-303, COMM-307)
   should reuse it rather than re-derive the overlap.
-- `consistency_week_streaks()` re-created (same signature
-  `table(user_id uuid, streak integer)`): body reads `attendance_log`
-  instead of `workout_posts`. COMM-306, closing COMM-P02 — this is the
-  single place that function's own comment already named as the future
-  change site.
-- `community_profile(user_id uuid)` re-created (same signature):
-  `current_streak`'s inline copy updated to match
-  `consistency_week_streaks()`'s new body, so the two do not drift, per the
-  existing pgTAP cross-check. COMM-306.
+- ~~`consistency_week_streaks()` re-created: body reads `attendance_log`
+  instead of `workout_posts`~~ and ~~`community_profile(user_id uuid)`
+  re-created: `current_streak`'s inline copy updated to match~~ — **both
+  SHIPPED in 202608310004, COMM-306, closing COMM-P02.** No longer forward
+  references: the built contracts are **"### consistency_week_streaks()"**,
+  **"### feed_leaderboard(...)"** and **"### community_profile(...)"** above.
+  Read those, not this. Both shipped as promised — same signatures, same
+  arithmetic, one table swapped, and `feed_leaderboard`'s consistency filter
+  gaining `can_view_profile_field(member, 'show_attendance')` so an opted-out
+  member is absent from the ranked set rather than ranked at 0 — with one
+  addition this section did not name: `community_profile`'s `current_streak`
+  key is gated on `show_attendance` in addition to `show_workout_results`. The
+  number is attendance-derived now, so it may not travel past attendance's own
+  toggle (202608310001's standing rule for every member-facing Phase 3
+  reader), and without it a member would be absent from the board and
+  published on their profile in the same breath. `training_frequency` and
+  `recent_workouts` are untouched and still read `workout_posts` under
+  `show_workout_results` alone.
 - `attendance_classmates_today() returns setof jsonb`,
   `{user_id, display_name, handle, avatar_url}` — `security definer`, same
   boundary-crossing shape as `people_suggestions`. Distinct from COMM-302's
