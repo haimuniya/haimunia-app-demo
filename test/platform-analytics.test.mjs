@@ -16,6 +16,11 @@ const SPEC_77_EVENTS = [
   "profile_opened", "member_followed", "challenge_viewed", "challenge_joined",
   "challenge_completed", "leaderboard_viewed", "event_viewed", "event_rsvp",
   "notification_opened", "weekly_recap_opened", "weekly_recap_shared", "report_submitted",
+  // COMM-233. The Phase 2 surfaces. `recap_viewed` and `recap_shared` from
+  // that ticket are the two weekly_recap_* names above, wired rather than
+  // renamed: they were reserved for this surface in Phase 1 and had never
+  // fired, so a second spelling would only split every recap query.
+  "search_performed", "push_opt_in", "coach_congratulate_sent", "directory_opened",
 ];
 
 // An object built inside the jsdom window carries that realm's
@@ -69,6 +74,71 @@ test("the active-member event set matches the WCAM definition and excludes passi
   for (const name of [a.EVENTS.CLUB_TAB_VIEWED, a.EVENTS.FEED_VIEWED, a.EVENTS.POST_IMPRESSION, a.EVENTS.LEADERBOARD_VIEWED, a.EVENTS.CHALLENGE_VIEWED, a.EVENTS.EVENT_VIEWED]) {
     assert.ok(!a.isActiveMemberEvent(name), `${name} is a passive view and must not count toward WCAM`);
   }
+});
+
+// COMM-233. The Phase 2 names were classified one at a time rather than
+// left to default in or out, so the classification is pinned one at a time
+// too - a new event silently landing in (or out of) the set is exactly the
+// drift this test exists to catch.
+test("the Phase 2 event names are classified for WCAM explicitly, and the doc says the same thing", async () => {
+  const window = await bootApp();
+  const a = window.HaimuniaAnalytics;
+
+  // Sending a congratulation is the coach acting on the community; the
+  // row's user_id is the coach, so this can never make the celebrated
+  // member active off somebody else's action. Sharing a recap figure is a
+  // post, on the same reading as achievement_shared.
+  for (const name of [a.EVENTS.COACH_CONGRATULATE_SENT, a.EVENTS.WEEKLY_RECAP_SHARED, a.EVENTS.CHALLENGE_JOINED, a.EVENTS.CHALLENGE_COMPLETED, a.EVENTS.EVENT_RSVP]) {
+    assert.ok(a.isActiveMemberEvent(name), `${name} must count toward WCAM`);
+  }
+  // Viewing a board, a recap, a roster or a search result is navigation.
+  // Turning push on is account configuration.
+  for (const name of [a.EVENTS.LEADERBOARD_VIEWED, a.EVENTS.WEEKLY_RECAP_OPENED, a.EVENTS.SEARCH_PERFORMED, a.EVENTS.DIRECTORY_OPENED, a.EVENTS.PUSH_OPT_IN]) {
+    assert.ok(!a.isActiveMemberEvent(name), `${name} does not meet the WCAM bar and must not count`);
+  }
+
+  // The rollup query in the doc is the same list in SQL. If the two drift,
+  // a server-side WCAM and this client's WCAM stop being the same number.
+  const doc = fs.readFileSync(new URL("../docs/community/metrics.md", import.meta.url), "utf8");
+  const sql = doc.slice(doc.indexOf("select count(distinct user_id)"), doc.indexOf("```", doc.indexOf("select count(distinct user_id)")));
+  for (const name of a.ACTIVE_MEMBER_EVENTS) {
+    assert.ok(sql.includes(`'${name}'`), `${name} counts toward WCAM but is missing from the rollup query in metrics.md`);
+  }
+  for (const name of Object.values(a.EVENTS)) {
+    if (a.isActiveMemberEvent(name)) continue;
+    assert.ok(!sql.includes(`'${name}'`), `${name} does not count toward WCAM but the rollup query includes it`);
+  }
+});
+
+test("a hand-tracked Phase 2 event carries only its declared props, so free text cannot reach the table by hand either", async () => {
+  const window = await bootApp();
+  const mock = createMockSupabase();
+  const a = window.HaimuniaAnalytics;
+  a.configure({ client: mock.client, userId: "user-1" });
+
+  // Every hand allow-list belongs to a defined name, or it silently
+  // protects nothing.
+  for (const name of Object.keys(a.HAND_PROP_KEYS)) {
+    assert.ok(a.isKnown(name), `${name} has a HAND_PROP_KEYS entry but is not a defined event name`);
+    assert.ok(Array.isArray(a.HAND_PROP_KEYS[name]) && a.HAND_PROP_KEYS[name].length);
+  }
+
+  // The three free-text leaks the ticket named, each attempted through the
+  // real writer.
+  await window.analyticsTrack("challenge_viewed", { challenge_id: "c1", challenge_key: null, source: "boards", rules: "לרוץ 5 ק\"מ כל יום" });
+  assert.deepStrictEqual(plain(mock.db.analytics_events[0].props), { challenge_id: "c1", challenge_key: null, source: "boards" });
+
+  await window.analyticsTrack("weekly_recap_shared", { figure: "streak", post_id: "p1", body: "הרצף שלי עומד על 3 ימים ברצף!" });
+  assert.deepStrictEqual(plain(mock.db.analytics_events[1].props), { figure: "streak", post_id: "p1" });
+
+  await window.analyticsTrack("search_performed", { source: "directory", query_length: 4, member_count: 1, query: "noam" });
+  assert.deepStrictEqual(plain(mock.db.analytics_events[2].props), { source: "directory", query_length: 4, member_count: 1 });
+
+  // A Phase 1 name has no entry and is passed through untouched: narrowing
+  // an event already in the table is a schema change, not a fix.
+  await window.analyticsTrack("post_opened", { post_id: "p1", post_type: "POST_TEXT", source: "feed", extra: 1 });
+  assert.equal(plain(mock.db.analytics_events[3].props).extra, 1);
+  assert.deepStrictEqual(plain(a.projectHandProps("post_opened", { anything: 1 })), { anything: 1 });
 });
 
 test("a tracked event writes one analytics_events row with the schema version and the caller's own user id", async () => {

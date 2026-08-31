@@ -2,7 +2,7 @@
 
 The one place that says what the community measures, what each tracked event
 means, and where it fires from. COMM-013 shipped the helper, COMM-170 wired
-the Phase 1 surfaces.
+the Phase 1 surfaces, COMM-233 wired the Phase 2 ones.
 
 Owner: platform. A feature agent that adds a surface adds a row to the table
 below in the same change.
@@ -33,6 +33,15 @@ below in the same change.
   handle, no caption, no comment body, no report note. The bus bridge
   enforces this with a per-event key allow-list, `BUS_PROP_KEYS`, so a
   producer that widens its payload cannot widen the analytics row.
+- COMM-233 added the same enforcement for the hand-tracked Phase 2 events:
+  `HAND_PROP_KEYS` in `src/analytics.js` lists the props each of those names
+  may carry, and `track()` drops anything else before the row is built. That
+  is what makes "a challenge's rules text, a recap sentence, or the search
+  query" impossible rather than merely avoided by hand at each call site.
+  The Phase 1 names have no entry and pass their props through untouched:
+  narrowing an event already in the table is the kind of change
+  `SCHEMA_VERSION` exists to make visible, and their call sites are pinned
+  by `test/community-analytics-surfaces.test.mjs` instead.
 
 ## The dev switch
 
@@ -58,11 +67,32 @@ week, did at least one of:
 - shared an achievement
 - interacted with a coach or with a community item (opened a post, opened a
   member profile, opened an announcement, opened a notification)
+- shared a weekly recap figure, or, as a coach, sent a congratulation from
+  the Coach Dashboard
 
 Passive views alone do not count. Opening the club tab or scrolling the feed
 is not membership activity. Uniqueness is per member per week, not per
 action, so ten comments from one member is one active member. Week
 boundaries follow the club's local week, not UTC.
+
+COMM-233 reviewed each Phase 2 name against this bar one at a time rather
+than letting a new event default in or out:
+
+- `challenge_joined`, `challenge_completed` and `event_rsvp` count. They
+  were already qualifying activity types here; Phase 2 only gave them real
+  producers.
+- `coach_congratulate_sent` counts, **for the coach**. The row's `user_id`
+  is the actor, so the celebrated member is never made active by somebody
+  else's action - they become active when they answer it, through their own
+  `comment_created` or `reaction_added`.
+- `weekly_recap_shared` counts, on the same reading as `achievement_shared`
+  already in the list: a share is a post the member published.
+- `leaderboard_viewed`, `weekly_recap_opened`, `search_performed` and
+  `directory_opened` do not. Viewing is not the bar set above; a roster and
+  a search box are navigation, not participation. A member who only ever
+  browsed the club is not an active member of it.
+- `push_opt_in` does not. Changing a notification setting is account
+  configuration.
 
 The qualifying event names are `ACTIVE_MEMBER_EVENTS` in `src/analytics.js`,
 and `isActiveMemberEvent(name)` answers for one name. They are kept as data
@@ -77,7 +107,8 @@ from public.analytics_events
 where event_name in (
   'post_created','workout_shared','achievement_shared','comment_created',
   'reaction_added','challenge_joined','challenge_completed','event_rsvp',
-  'post_opened','profile_opened','member_followed','notification_opened')
+  'post_opened','profile_opened','member_followed','notification_opened',
+  'weekly_recap_shared','coach_congratulate_sent')
   and created_at >= :week_start and created_at < :week_end
   and user_id is not null;
 ```
@@ -104,16 +135,20 @@ WCAM marks the events that make a member active for the week.
 | `comment_created` | Bus, `COMMENT_CREATED` | `post_id`, `comment_id`, `parent_comment_id`, `mention_count` | yes |
 | `profile_opened` | `viewCommunityProfile()` on open, before the RPC answers | `user_id`, `self` | yes |
 | `member_followed` | `follow()` on a new follow edge only | `user_id` | yes |
-| `challenge_viewed` | Entering the Boards sub-tab with an active challenge, and the challenge link card | `challenge_id`, `challenge_key`, `source` (`boards`, `post_card`) | no |
-| `challenge_joined` | Bus, `CHALLENGE_JOINED` | `challenge_id`, `challenge_type` | yes |
-| `challenge_completed` | Bus, `CHALLENGE_COMPLETED` | `challenge_id`, `challenge_type` | yes |
-| `leaderboard_viewed` | Entering the Boards sub-tab | `board`, `rows`, `source` | no |
-| `event_viewed` | The event link card on a `POST_EVENT` card | `event_id`, `source` | no |
-| `event_rsvp` | Bus, `EVENT_REGISTERED` | `event_id`, `rsvp_status` | yes |
+| `challenge_viewed` | Entering the Boards sub-tab with an active weekly challenge, and every `openChallenge()` | `challenge_id`, `challenge_key`, `source` (`boards`, `post_card`, `search`, `club_top`, `onboarding`) | no |
+| `challenge_joined` | Bus, `CHALLENGE_JOINED`, emitted by `joinChallenge()` (COMM-207) | `challenge_id`, `challenge_type` | yes |
+| `challenge_completed` | Bus, `CHALLENGE_COMPLETED`, emitted when a member's own progress reaches the target (COMM-207) | `challenge_id`, `challenge_type` | yes |
+| `leaderboard_viewed` | Entering the Boards sub-tab (weekly challenge + consistency boards), and the challenge detail's own progress board | `board` (`weekly_challenge`, `consistency`, `challenge_progress`), `rows`, `source` | no |
+| `event_viewed` | Every `openEvent()`: the Boards list card, the `POST_EVENT` link card, a search result, the club header, the recap's upcoming event, a notification | `event_id`, `source` | no |
+| `event_rsvp` | Bus, `EVENT_REGISTERED`, emitted by `rsvpEvent()` (COMM-214) | `event_id`, `rsvp_status` | yes |
 | `notification_opened` | `openNotif()`, before the mark-read await | `notification_id`, `type`, `target`, `was_unread` | yes |
 | `report_submitted` | `submitReportSheet()` after the report RPC succeeds | `target_type`, `reason` | no |
-| `weekly_recap_opened` | Phase 2, COMM-220. Constant defined, unwired | to be defined | no |
-| `weekly_recap_shared` | Phase 2, COMM-220. Constant defined, unwired | to be defined | no |
+| `weekly_recap_opened` | `openRecap()` on open, before the row is fetched. COMM-233's `recap_viewed` | `source` (`account`, `notification`) | no |
+| `weekly_recap_shared` | `shareRecapFigure()` after `post_create` succeeds. COMM-233's `recap_shared` | `figure` (`sessions`, `streak`, `pr`, `achievement`), `post_id` | yes |
+| `search_performed` | Both search boxes, once per settled search rather than per keystroke | `source` (`community_search`, `directory`), `query_length`, `member_count`, `event_count`, `challenge_count` | no |
+| `push_opt_in` | `enableNotifPush()` after the `push_subscriptions` upsert succeeds | `source` (`notif_pref`), `pref_type` | no |
+| `coach_congratulate_sent` | `congratulateCelebrateItem()` after the comment or post write succeeds | `kind`, `via` (`comment`, `post`) | yes, for the coach |
+| `directory_opened` | Entering the Directory sub-tab | `source` (`club_tab`, `leaderboard`) | no |
 
 ### Events that come from the bus
 
@@ -149,9 +184,25 @@ participation.
 - `member_followed` fires only when the insert succeeds. The follow control
   toggles, and the duplicate-key branch is an unfollow.
 - Every write-backed event is recorded after the write, so a failed action is
-  never counted as one. The two exceptions are `profile_opened` and
-  `notification_opened`, both recorded at the moment of the action because
-  the member opened the thing whether or not the fetch behind it answers.
+  never counted as one. The exceptions are `profile_opened`,
+  `notification_opened` and `weekly_recap_opened`, all recorded at the moment
+  of the action because the member opened the thing whether or not the fetch
+  behind it answers.
+- `directory_opened` rides the same once-per-entry guard as
+  `club_tab_viewed`, so a page of members arriving or a follow toggling is
+  not a second view of the roster.
+- `weekly_recap_opened` fires on the open only. Browsing to the previous or
+  next week refreshes the same open surface, which is not a new open.
+- `search_performed` is debounced by 600 ms, separately from the fetch: both
+  boxes issue a request on every keystroke (COMM-228 chose latency over
+  batching, and the token guard makes it safe), so tracking the raw call
+  would put three rows in the table for a member typing "noam" and turn
+  "searches per week" into "characters typed per week". Backspacing under
+  the two-character floor cancels the pending row: an abandoned search was
+  not a search.
+- `coach_congratulate_sent` fires once per celebrate item. The client-side
+  `congratulated` set makes a second tap a no-op before the write, so the
+  event cannot repeat either.
 
 ## Core metrics
 
@@ -189,24 +240,46 @@ plus the community tables, with no new event name.
   `target_type`, against the queue in `reports`.
 - Share intent split, `workout_shared` by `visibility`, and
   `achievement_shared` by `source`.
+- Recap pull-through, `weekly_recap_opened` by `source` against the recap
+  notifications sent, and `weekly_recap_shared` over it by `figure`.
+- Discovery split, `search_performed` by `source` with `member_count` at
+  zero as the "found nothing" rate, against `directory_opened` for how many
+  members browse the roster instead of searching it.
+- Coach reach, `coach_congratulate_sent` per week by `kind`, against the
+  celebrate items the dashboard offered.
+- Push adoption, `push_opt_in` per week against the unrevoked rows in
+  `push_subscriptions`.
 
 The section 79 list in the product spec was not in this repo when this doc
 was written, so the set above is what the shipped event schema supports.
 Planner to reconcile the two and add anything missing as an additive prop or
 a new constant rather than a rename.
 
-## Not wired in Phase 1
+## Closed in Phase 2, COMM-233
 
-- `weekly_recap_opened` and `weekly_recap_shared`. The recap surface is
-  Phase 2, COMM-220. The constants exist and stay unused until then.
-- `challenge_joined`, `challenge_completed` and `event_rsvp` have no
-  producer yet. The bridge is attached and the prop shape is agreed, so the
-  challenge module (COMM-201) and the event module (COMM-217) only have to
-  emit the bus event.
-- `challenge_viewed` and `event_viewed` fire from the link card tap, which
-  has no detail view to open until those same two tickets land. The tap is
-  still the member asking to see the item. When the detail surfaces exist
-  they record the same event with their own `source`.
+Everything the Phase 1 doc listed as parked is now wired, except attendance:
+
+- `weekly_recap_opened` and `weekly_recap_shared` fire from COMM-221's recap
+  surface. COMM-233 names them `recap_viewed` and `recap_shared`; the wire
+  names stay the two spec 77 reserved, because a second spelling for the
+  same two actions would split every recap query for no gain.
+- `challenge_joined`, `challenge_completed` and `event_rsvp` have real
+  producers now: `joinChallenge()`, the own-progress completion branch
+  (COMM-207) and `rsvpEvent()` (COMM-214). Nothing was added to the bridge -
+  the bus mapping and the prop shape agreed in Phase 1 were what those
+  producers emitted into, and COMM-233 only confirmed the bridge is
+  exercised end to end.
+- `challenge_viewed` and `event_viewed` now open real detail surfaces
+  (COMM-207, COMM-213) and carry the `source` each entry point passes.
+- The Boards list cards were recording `source: "post_card"`, because the
+  handler's default was written for the link card inside a feed post and the
+  list cards carried no `data-source` of their own. Fixed in COMM-233 for
+  both challenges and events: any `challenge_viewed` or `event_viewed` with
+  `source = "post_card"` dated before that change may actually be a Boards
+  open, so a source split across that boundary is not comparable.
+
+## Still not wired
+
 - `post_opened` is not recorded when a notification routes to a post.
   `openNotif()` opens the thread directly rather than through
   `toggleComments()`. `notification_opened` covers that member for WCAM, so

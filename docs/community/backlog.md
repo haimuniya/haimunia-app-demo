@@ -447,7 +447,7 @@ decisions worth carrying forward:
 | ID | Title | Agent | Status |
 |---|---|---|---|
 | COMM-229 | Web push subscription and service worker handler, behind a flag | notifications | review |
-| COMM-233 | Phase 2 analytics events | platform | todo |
+| COMM-233 | Phase 2 analytics events | platform | review |
 | COMM-234 | Phase 2 QA sweep and browser scenarios | qa | todo |
 
 COMM-229 wires subscription storage (the `push_subscriptions` table already
@@ -488,6 +488,29 @@ app.js captures at boot and hands to the community layer once its own
 session is ready - not strictly required by the ticket's own wording, but
 built anyway so "opens one at the deep link" is true end-to-end rather
 than only for the already-open-window case.
+
+COMM-233 found the three bridged names it was asked to confirm
+(`challenge_joined`, `challenge_completed`, `event_rsvp`) already firing end
+to end from COMM-207's and COMM-214's producers, with no wiring to add: the
+Phase 1 bridge and its agreed prop shape were what those producers emitted
+into, which is the payoff of `BUS_EVENT_MAP` having been settled before the
+surfaces existed. Two naming decisions worth carrying: the ticket's
+`recap_viewed` / `recap_shared` were wired as the already-reserved
+`weekly_recap_opened` / `weekly_recap_shared` rather than minted as second
+spellings, since a rename would split every recap query and the reserved
+names had never fired; and the props allow-list discipline `BUS_PROP_KEYS`
+gave bridged events now exists for hand-tracked ones too, as
+`HAND_PROP_KEYS`, applied inside `track()`. It covers the Phase 2 names
+only - retro-fitting it onto Phase 1 events would silently narrow rows
+already in the table, which is what `SCHEMA_VERSION` exists to make visible.
+WCAM was reviewed name by name rather than by default: viewing (leaderboard,
+recap, search, roster) does not count, `coach_congratulate_sent` counts for
+the coach because the row's `user_id` is the actor, and `push_opt_in` is
+account configuration, not participation. One pre-existing mislabel went
+with it: the Boards list cards carried no `data-source`, so every challenge
+or event opened from the Boards sub-tab recorded `source: "post_card"` - a
+source split across that fix is not comparable, noted in metrics.md rather
+than backfilled.
 
 ## Phase 3 tickets, Intelligence (spec V2)
 

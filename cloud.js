@@ -166,8 +166,9 @@
     window.HaimuniaRealtime.configure({ client });
   }
 
-  // --- COMM-170 analytics ------------------------------------------------
+  // --- COMM-170 / COMM-233 analytics -------------------------------------
   // The tracked event names (COMM-013) and the one call into the helper.
+  // COMM-170 wired the Phase 1 surfaces, COMM-233 the Phase 2 ones.
   // Every call below is a measurement of something that already happened:
   // nothing is awaited, nothing sets a message, and nothing here can fail
   // in a way a member sees. Props carry ids, enums, counts and booleans
@@ -713,7 +714,13 @@
       }
     }
     state.coachCelebrate.busy = null;
-    if (ok) { state.coachCelebrate.congratulated[key] = true; setMessage(""); }
+    // COMM-233. After the write, and only on success. The row's user_id is
+    // the coach, which is what makes this count toward the coach's own WCAM
+    // and never the celebrated member's - being congratulated is not an
+    // action they took. `kind` is the celebrate item's own enum and `via`
+    // says which of the two write paths ran; neither the member nor the
+    // generated greeting is a prop.
+    if (ok) { state.coachCelebrate.congratulated[key] = true; setMessage(""); track(A.COACH_CONGRATULATE_SENT, { kind: item.kind || null, via: item.post_id ? "comment" : "post" }); }
     else setMessage("לא ניתן היה לשלוח ברכה. נסו שוב.");
     rerender();
   }
@@ -1900,6 +1907,26 @@
   // not redundant: it is what makes the under-2-chars check agree with the
   // server's, so a query of only "%_,()" never costs a round trip.
   function sanitizeSearchQuery(query) { return String(query || "").trim().replace(/[%_,()]/g, ""); }
+  // COMM-233. One search_performed per search the member actually made,
+  // not one per keystroke. Both boxes fire a request on every input event
+  // (there is no debounce on the fetch itself - COMM-228 chose latency over
+  // batching and the token guard makes it safe), so tracking the raw call
+  // would put three rows in the table for a member typing "noam" and turn
+  // "searches per week" into "characters typed per week". The last result
+  // set to settle inside the window is the one recorded, which is the query
+  // the member actually meant. Never the query text itself: only its
+  // length and the size of each result group, and the helper's own
+  // HAND_PROP_KEYS allow-list drops anything else a future call site adds.
+  const SEARCH_TRACK_DEBOUNCE_MS = 600;
+  let searchTrackTimer = null;
+  function trackSearchPerformed(props) {
+    if (searchTrackTimer) clearTimeout(searchTrackTimer);
+    searchTrackTimer = setTimeout(() => { searchTrackTimer = null; track(A.SEARCH_PERFORMED, props); }, SEARCH_TRACK_DEBOUNCE_MS);
+  }
+  // Clearing the box, or backspacing under the two-character floor, is the
+  // member abandoning the search. Nothing was searched, so nothing pending
+  // is worth recording.
+  function cancelSearchTracking() { if (searchTrackTimer) { clearTimeout(searchTrackTimer); searchTrackTimer = null; } }
   function clearSearchResults() { state.people = []; state.searchEvents = []; state.searchChallenges = []; }
   async function communitySearch(query) {
     if (!state.user) return;
@@ -1910,7 +1937,7 @@
     const token = ++searchToken;
     // Under two characters is empty results, no request and no error -
     // the same threshold the RPC re-applies for a caller that skips it.
-    if (q.length < SEARCH_MIN_CHARS) { clearSearchResults(); state.searchLoading = false; return rerender(); }
+    if (q.length < SEARCH_MIN_CHARS) { cancelSearchTracking(); clearSearchResults(); state.searchLoading = false; return rerender(); }
     state.searchLoading = true;
     rerender();
     const { data, error } = await client.rpc("community_search", { p_query: q, p_limit: SEARCH_GROUP_LIMIT });
@@ -1927,6 +1954,13 @@
     state.people = Array.isArray(groups.members) ? groups.members : [];
     state.searchEvents = Array.isArray(groups.events) ? groups.events : [];
     state.searchChallenges = Array.isArray(groups.challenges) ? groups.challenges : [];
+    trackSearchPerformed({
+      source: "community_search",
+      query_length: q.length,
+      member_count: state.people.length,
+      event_count: state.searchEvents.length,
+      challenge_count: state.searchChallenges.length,
+    });
     rerender();
     // COMM-160. Resolve the coach badge for the result set from the shared
     // server role cache, then re-render.
@@ -2125,6 +2159,12 @@
   // view, which is the honest reading of "viewed" and the only signal
   // cloud.js can see without app.js telling it which top-level tab is up.
   let lastClubTabView = null;
+  // COMM-233. Where the member came from when they land on the roster. Set
+  // by the one control that routes there from somewhere else (COMM-232's
+  // "find people" call to action on the leaderboard), consumed by the next
+  // directory view and reset, so a later plain tab tap is not still
+  // attributed to it.
+  let directoryEntrySource = "club_tab";
   function resetClubTabView() { lastClubTabView = null; }
   function noteClubTabView() {
     if (!state.user || !state.profile) return;
@@ -2142,6 +2182,15 @@
         track(A.CHALLENGE_VIEWED, { challenge_id: null, challenge_key: state.weeklyChallenge.comparisonKey || null, source: "boards" });
       }
       track(A.LEADERBOARD_VIEWED, { board: "weekly_challenge", rows: (state.weeklyLeaderboard || []).length, source: "boards" });
+    }
+    // COMM-233. The roster is a surface in its own right, measured
+    // separately from the sub-tab that contains it, the same way the feed
+    // and the boards already are. It rides this same once-per-entry guard,
+    // so the directory's own re-renders (a page of members arriving, a
+    // follow toggling) record nothing.
+    if (tab === "directory") {
+      track(A.DIRECTORY_OPENED, { source: directoryEntrySource });
+      directoryEntrySource = "club_tab";
     }
   }
 
@@ -2578,7 +2627,7 @@
     d.query = String(query || "");
     const q = sanitizeSearchQuery(query);
     const token = ++directorySearchToken;
-    if (q.length < SEARCH_MIN_CHARS) { d.searchResults = null; d.searchLoading = false; return rerender(); }
+    if (q.length < SEARCH_MIN_CHARS) { cancelSearchTracking(); d.searchResults = null; d.searchLoading = false; return rerender(); }
     d.searchLoading = true;
     rerender();
     const { data, error } = await client.rpc("community_search", { p_query: q, p_limit: DIRECTORY_PAGE_SIZE });
@@ -2587,6 +2636,10 @@
     if (error) { d.searchResults = []; return rerender(); }
     const members = (data && Array.isArray(data.members)) ? data.members : [];
     d.searchResults = members;
+    // The roster's box asks community_search for the members group only, so
+    // the other two counts are absent rather than zero - an absent prop and
+    // a zero prop mean different things and the difference is worth keeping.
+    trackSearchPerformed({ source: "directory", query_length: q.length, member_count: members.length });
     rerender();
     loadMemberRoles(members.map((m) => m.id)).then(() => rerender());
   }
@@ -3830,13 +3883,13 @@
       <div class="flex gap-10" style="align-items:flex-start;">
         ${image}
         <div style="flex:1;min-width:0;">
-          <button class="link-btn" data-community-action="open-challenge" data-id="${safeText(c.id)}" style="padding:0;text-align:right;font-weight:800;font-size:15px;color:inherit;display:block;">${safeText(c.title)}</button>
+          <button class="link-btn" data-community-action="open-challenge" data-id="${safeText(c.id)}" data-source="boards" style="padding:0;text-align:right;font-weight:800;font-size:15px;color:inherit;display:block;">${safeText(c.title)}</button>
           <div style="color:var(--steel);font-size:11.5px;margin-top:2px;">${meta.map(safeText).join(" · ")}</div>
           ${myChallengeCardProgressHtml(c)}
         </div>
       </div>
       <div class="chip-row" style="margin-top:8px;">
-        <button class="chip-btn" data-community-action="open-challenge" data-id="${safeText(c.id)}">פרטים</button>
+        <button class="chip-btn" data-community-action="open-challenge" data-id="${safeText(c.id)}" data-source="boards">פרטים</button>
         ${!isPast && c.status === "active" && !part ? `<button class="chip-btn primary" data-community-action="join-challenge" data-id="${safeText(c.id)}">הצטרפות</button>` : ""}
         ${!isPast && part ? `<span class="admin-tag" style="background:var(--brass);">נרשמת/ה</span>` : ""}
       </div>
@@ -4291,12 +4344,12 @@
       <div class="flex gap-10" style="align-items:flex-start;">
         ${eventCardImageHtml(e)}
         <div style="flex:1;min-width:0;">
-          <button class="link-btn" data-community-action="open-event" data-id="${safeText(e.id)}" style="padding:0;text-align:right;font-weight:800;font-size:15px;color:inherit;display:block;">${safeText(e.title)}</button>
+          <button class="link-btn" data-community-action="open-event" data-id="${safeText(e.id)}" data-source="boards" style="padding:0;text-align:right;font-weight:800;font-size:15px;color:inherit;display:block;">${safeText(e.title)}</button>
           <div style="color:var(--steel);font-size:11.5px;margin-top:2px;">${meta.map(safeText).join(" · ")}</div>
         </div>
       </div>
       <div class="chip-row" style="margin-top:8px;">
-        <button class="chip-btn" data-community-action="open-event" data-id="${safeText(e.id)}">פרטים</button>
+        <button class="chip-btn" data-community-action="open-event" data-id="${safeText(e.id)}" data-source="boards">פרטים</button>
         ${mineLabel ? `<span class="admin-tag" style="background:var(--brass);">${mineLabel}</span>` : ""}
       </div>
     </article>`;
@@ -4757,8 +4810,14 @@
   // RLS is what actually enforces "only my own recaps" - weekly_recaps has
   // an own-row select policy and nothing else, so there is nothing for a
   // client-side check to add here beyond that enforced boundary.
-  async function openRecap(weekStart) {
+  async function openRecap(weekStart, source) {
     if (!state.user || !client) return;
+    // COMM-233. Recorded at the moment of the open, before the row is
+    // fetched, for the same reason profile_opened is: the member asked to
+    // see their week whether or not the read behind it answers. Which week,
+    // and what was in it, is not a prop - the recap row itself is the
+    // record of that, and the figures are the member's own numbers.
+    track(A.WEEKLY_RECAP_OPENED, { source: source || "account" });
     state.recapView = { weekStart: weekStart || null, loading: true, error: false, row: null, olderWeekStart: null, newerWeekStart: null, sharing: null };
     rerender();
     await refreshRecapView(weekStart || null);
@@ -4840,6 +4899,12 @@
     v.sharing = null;
     if (error || !data) { setMessage("שיתוף הסיכום נכשל, אפשר לנסות שוב"); return rerender(); }
     setMessage("הסיכום שותף לקהילה");
+    // COMM-233. After the write, like every other write-backed event: a
+    // failed share is not a share. `figure` is the option key, one of a
+    // fixed four - never the generated sentence, which carries the member's
+    // own PR movement and achievement title. post_created rides the bus off
+    // the same action; two names for one action is not double counting.
+    track(A.WEEKLY_RECAP_SHARED, { figure: key, post_id: data });
     if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.POST_CREATED) {
       try { window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.POST_CREATED, { post_id: data, post_type: "POST_TEXT" }); } catch (e) {}
     }
@@ -5935,7 +6000,7 @@
   // the exact Hebrew copy the ticket specifies and leaves the stored
   // preference untouched, so the toggle reads whatever it already was
   // (in_app by default) - "reverts to In-app".
-  async function enableNotifPush() {
+  async function enableNotifPush(source, prefType) {
     const reason = notifPushUnsupportedReason();
     if (reason) { setMessage(reason); return false; }
     try {
@@ -5954,6 +6019,12 @@
       if (error) { setMessage("לא אושרה הרשאת התראות"); return false; }
       state.notifPushSub = { endpoint: json.endpoint };
       try { localStorage.setItem(NOTIF_PUSH_ENDPOINT_KEY, json.endpoint); } catch (e) {}
+      // COMM-233. Only once the subscription row is actually written -
+      // a granted browser permission whose upsert then failed is not an
+      // opt-in, and the every-return-path-above branches leave it unsent.
+      // The endpoint is a device secret and never a prop: what is measured
+      // is that a member turned push on, and which control asked them to.
+      track(A.PUSH_OPT_IN, { source: source || "notif_pref", pref_type: prefType || null });
       rerender();
       return true;
     } catch (err) {
@@ -5989,7 +6060,7 @@
       if (!notifPushEnabled()) return;                              // push is disabled in V1 default
       if (notifPushUnsupportedReason()) return;                     // the control itself renders disabled for this case
       if (!state.notifPushSub) {
-        const ok = await enableNotifPush();
+        const ok = await enableNotifPush("notif_pref", type);
         if (!ok) return;                                            // permission denied/failed: leaves the stored channel untouched
       }
     }
@@ -6173,7 +6244,7 @@
     } else if (target.profile) {
       viewCommunityProfile(target.profile);
     } else if (target.recapWeek !== undefined) {
-      openRecap(target.recapWeek || null);
+      openRecap(target.recapWeek || null, "notification");
     } else {
       rerender();
     }
@@ -7142,7 +7213,7 @@
     // COMM-212 / COMM-231. The friends-scope empty state routes to the
     // members directory now that it exists, rather than the Account tab's
     // bare search box.
-    else if (action === "leaderboard-find-people") setCommunityTab("directory");
+    else if (action === "leaderboard-find-people") { directoryEntrySource = "leaderboard"; setCommunityTab("directory"); }
     // COMM-232 suggestions strip.
     else if (action === "suggestion-follow") followSuggestion(el.dataset.id);
     else if (action === "confirm-yes") runConfirm();
@@ -7229,12 +7300,15 @@
     // club_summary read) still lands the member on the Boards sub-tab
     // rather than a broken dialog.
     else if (action === "open-active-challenge") { if (el.dataset.id) openChallenge(el.dataset.id, "club_top"); else setCommunityTab("boards"); }
-    // COMM-201/207. openChallenge() itself records CHALLENGE_VIEWED (source
-    // defaults to "boards"), so the POST_CHALLENGE link card's own tap
-    // passes "post_card" through.
+    // COMM-201/207. openChallenge() itself records CHALLENGE_VIEWED, so the
+    // POST_CHALLENGE link card's own tap passes "post_card" through.
     // COMM-228. A search result carries data-source="search" so the same
     // action records where the member came from; anything without one is
     // the POST_CHALLENGE link card it was written for.
+    // COMM-233. Which is why the Boards list cards now carry an explicit
+    // data-source="boards": they had none, so every challenge opened from
+    // the Boards sub-tab was recorded as a post_card open. Only the link
+    // card inside a feed post is allowed to rely on the default.
     else if (action === "open-challenge") { if (el.dataset.id) openChallenge(el.dataset.id, el.dataset.source || "post_card"); }
     else if (action === "close-challenge-view") closeChallengeView();
     else if (action === "join-challenge") joinChallenge(el.dataset.id, "boards");
@@ -7253,7 +7327,9 @@
     else if (action === "challenge-archive") archiveChallenge(el.dataset.id);
     else if (action === "challenge-delete") askConfirm({ title: "מחיקת טיוטה", message: "למחוק את הטיוטה? הפעולה אינה ניתנת לביטול.", confirmLabel: "מחיקה", destructive: true, action: "challenge-delete-draft", payload: { challengeId: el.dataset.id } });
     // COMM-213/217/228. openEvent() itself records EVENT_VIEWED (source
-    // defaults to "post_card"), the same pattern openChallenge() uses -
+    // defaults to "post_card", and COMM-233 labelled the Boards list cards
+    // explicitly for the same reason the challenge ones needed it), the
+    // same pattern openChallenge() uses -
     // this used to only track and never actually open anything (the gap
     // the realtime+search cluster's handoff notes flagged for COMM-228's
     // search result), now closed by COMM-213's detail dialog existing.
@@ -7271,7 +7347,7 @@
     // COMM-222 onboarding sequence.
     else if (action === "onboarding-dismiss") dismissOnboardingStep(el.dataset.step);
     // COMM-221 weekly recap surface + share.
-    else if (action === "open-recap") openRecap(el.dataset.week || null);
+    else if (action === "open-recap") openRecap(el.dataset.week || null, el.dataset.source || "account");
     else if (action === "close-recap-view") closeRecapView();
     else if (action === "recap-older") recapGoOlder();
     else if (action === "recap-newer") recapGoNewer();
@@ -7364,6 +7440,10 @@
         flushFeedImpressions();
         // COMM-170. The next session starts its own club_tab_viewed.
         resetClubTabView();
+        // COMM-233. A search whose debounce window had not closed when the
+        // session ended is dropped rather than written against whoever
+        // signs in next (or against no one at all).
+        cancelSearchTracking();
         // COMM-209 / COMM-227. Sign-out closes every open channel, the
         // other half of the teardown contract src/realtime.js documents.
         // Until this cluster there was nothing live to close; now the

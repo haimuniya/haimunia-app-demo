@@ -11,6 +11,9 @@
 //
 // Phase 0 ships the helper, the constants, and the bus bridge. COMM-170
 // in Phase 1 calls configure() from cloud.js and wires the surfaces.
+// COMM-233 in Phase 2 wires the surfaces that shipped after it, adds the
+// four names those needed, and adds HAND_PROP_KEYS - the same allow-list
+// discipline the bus bridge had, for the events that are tracked by hand.
 //
 // Every tracked event, its trigger surface, its props, and the Weekly
 // Community Active Members definition: docs/community/metrics.md.
@@ -47,15 +50,46 @@
     EVENT_VIEWED: "event_viewed",
     EVENT_RSVP: "event_rsvp",
     NOTIFICATION_OPENED: "notification_opened",
+    // COMM-233 calls these two recap_viewed / recap_shared. The wire names
+    // stay the ones spec 77 reserved and docs/community/metrics.md has
+    // carried since Phase 1: they were defined-but-unwired for exactly this
+    // surface, so wiring them is what the ticket asks for. Minting a second
+    // pair of names for the same two actions would split every recap query
+    // between two spellings for no gain.
     WEEKLY_RECAP_OPENED: "weekly_recap_opened",
     WEEKLY_RECAP_SHARED: "weekly_recap_shared",
     REPORT_SUBMITTED: "report_submitted",
+    // COMM-233. The Phase 2 surfaces.
+    SEARCH_PERFORMED: "search_performed",
+    PUSH_OPT_IN: "push_opt_in",
+    COACH_CONGRATULATE_SENT: "coach_congratulate_sent",
+    DIRECTORY_OPENED: "directory_opened",
   });
   const KNOWN = new Set(Object.values(EVENTS));
 
   // The subset of the above that counts a member as active for the week,
   // per the WCAM definition in docs/community/metrics.md. Kept as data so
   // a rollup query and this client cannot drift apart.
+  //
+  // COMM-233 reviewed every Phase 2 name against the definition rather than
+  // letting a new event default into or out of the set:
+  // - challenge_joined, challenge_completed and event_rsvp were already
+  //   qualifying activity types under the spec 78 definition, and now have
+  //   real producers. No change.
+  // - coach_congratulate_sent counts, for the coach who sent it. The row's
+  //   user_id is the actor, so the celebrated member is never made active
+  //   by somebody else's action - the comment or post it writes reaches
+  //   them through post_created / comment_created on their own behalf when
+  //   they answer it.
+  // - weekly_recap_shared counts, on the same reading as achievement_shared
+  //   already in this list: a share is a post the member published.
+  // - leaderboard_viewed, weekly_recap_opened, search_performed and
+  //   directory_opened do not. Viewing is not the bar the definition sets
+  //   (posting, commenting, reacting, joining, attending, or opening a
+  //   community item somebody else made); a roster and a search box are
+  //   navigation, not participation.
+  // - push_opt_in does not. Changing a notification setting is account
+  //   configuration, not community activity.
   const ACTIVE_MEMBER_EVENTS = Object.freeze([
     EVENTS.POST_CREATED,
     EVENTS.WORKOUT_SHARED,
@@ -69,6 +103,8 @@
     EVENTS.PROFILE_OPENED,
     EVENTS.MEMBER_FOLLOWED,
     EVENTS.NOTIFICATION_OPENED,
+    EVENTS.WEEKLY_RECAP_SHARED,
+    EVENTS.COACH_CONGRATULATE_SENT,
   ]);
   const ACTIVE_MEMBER_EVENT_SET = new Set(ACTIVE_MEMBER_EVENTS);
 
@@ -115,6 +151,42 @@
   // Counted, not carried: an array prop is stored as its length so the
   // signal survives without the contents. `mentions` is the live case.
   const BUS_COUNT_KEYS = Object.freeze({ COMMENT_CREATED: { mentions: "mention_count" } });
+
+  // COMM-233. The same discipline for the hand-tracked Phase 2 events,
+  // which have no bus payload to project: the props each one may carry,
+  // by name. A key not listed here is dropped before the row is built, so
+  // a call site cannot attach a challenge's rules text, a recap figure's
+  // sentence, or what the member typed into the search box - the three
+  // free-text leaks this ticket set out to make impossible rather than
+  // merely avoided by hand at each call site.
+  //
+  // Only the Phase 2 names have entries. The Phase 1 events keep passing
+  // their props through untouched: their call sites are already pinned by
+  // test/community-analytics-surfaces.test.mjs, and retro-fitting an
+  // allow-list onto them would be a silent behaviour change on events that
+  // are already in the table, which is exactly what SCHEMA_VERSION exists
+  // to make visible. An event with no entry is not "unprotected", it is
+  // "not narrowed here".
+  const HAND_PROP_KEYS = Object.freeze({
+    [EVENTS.CHALLENGE_VIEWED]: ["challenge_id", "challenge_key", "source"],
+    [EVENTS.EVENT_VIEWED]: ["event_id", "source"],
+    [EVENTS.LEADERBOARD_VIEWED]: ["board", "rows", "source"],
+    [EVENTS.WEEKLY_RECAP_OPENED]: ["source"],
+    [EVENTS.WEEKLY_RECAP_SHARED]: ["figure", "post_id"],
+    [EVENTS.SEARCH_PERFORMED]: ["source", "query_length", "member_count", "event_count", "challenge_count"],
+    [EVENTS.PUSH_OPT_IN]: ["source", "pref_type"],
+    [EVENTS.COACH_CONGRATULATE_SENT]: ["kind", "via"],
+    [EVENTS.DIRECTORY_OPENED]: ["source"],
+  });
+
+  function projectHandProps(eventName, props) {
+    const keys = HAND_PROP_KEYS[eventName];
+    if (!keys) return props;
+    const body = (props && typeof props === "object" && !Array.isArray(props)) ? props : {};
+    const out = {};
+    for (const key of keys) if (body[key] !== undefined) out[key] = body[key];
+    return out;
+  }
 
   function projectBusPayload(productEvent, payload) {
     const body = (payload && typeof payload === "object" && !Array.isArray(payload)) ? payload : {};
@@ -188,7 +260,7 @@
         console.warn("[analytics] unknown event name, dropped: " + String(eventName));
         return Promise.resolve(false);
       }
-      const fitted = fitProps(props);
+      const fitted = fitProps(projectHandProps(eventName, props));
       let userId = null;
       try { userId = getUserId() || null; } catch (err) { userId = null; }
 
@@ -269,6 +341,7 @@
     ACTIVE_MEMBER_EVENTS,
     BUS_EVENT_MAP,
     BUS_PROP_KEYS,
+    HAND_PROP_KEYS,
     SCHEMA_VERSION,
     MAX_PROPS_BYTES,
     PROPS_BUDGET_BYTES,
@@ -282,6 +355,7 @@
     isDebug,
     fitProps,
     projectBusPayload,
+    projectHandProps,
   };
   window.analyticsTrack = analyticsTrack;
   window.ANALYTICS_EVENTS = EVENTS;

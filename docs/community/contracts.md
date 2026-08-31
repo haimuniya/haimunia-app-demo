@@ -2168,9 +2168,13 @@ reaches another feature's internals to learn that something happened.
   promise resolving true when the row was accepted. It never throws and
   never rejects: a dropped analytics row is acceptable, a broken button is
   not. Every call site may ignore the result.
-- `EVENTS` frozen map of the 21 tracked names from spec section 77. Also
+- `EVENTS` frozen map of the tracked names from spec section 77: the 21
+  Phase 1 names plus `search_performed`, `push_opt_in`,
+  `coach_congratulate_sent` and `directory_opened` from COMM-233. Also
   aliased as `window.ANALYTICS_EVENTS`. An unknown name is warned and
-  dropped, it never reaches the table.
+  dropped, it never reaches the table. COMM-233's `recap_viewed` and
+  `recap_shared` are the already-reserved `weekly_recap_opened` and
+  `weekly_recap_shared`, wired rather than renamed.
 - `props` is trimmed, not rejected. Over `PROPS_BUDGET_BYTES` the largest
   values are dropped first and `_truncated: true` is added. The budget is
   3 KB rather than the server's 4 KB because the trigger measures
@@ -2204,8 +2208,18 @@ reaches another feature's internals to learn that something happened.
   shape a stable contract and keeps member-authored text out of analytics.
   A feature agent never hand-tracks one of the six bridged names: the bridge
   already wrote the row, and a second call would double count.
+- `HAND_PROP_KEYS` (COMM-233) is the same allow-list for the hand-tracked
+  Phase 2 names, applied by `track()` itself through
+  `projectHandProps(eventName, props)`. A key not on the list is dropped
+  before the row is built, so no call site can attach challenge rules text,
+  a recap sentence or the search query. Phase 1 names have no entry and pass
+  their props through unchanged.
 - `ACTIVE_MEMBER_EVENTS` and `isActiveMemberEvent(name)` are the qualifying
-  subset for Weekly Community Active Members, spec section 78.
+  subset for Weekly Community Active Members, spec section 78. COMM-233
+  reviewed every Phase 2 name against it explicitly:
+  `coach_congratulate_sent` (for the coach) and `weekly_recap_shared` count;
+  `leaderboard_viewed`, `weekly_recap_opened`, `search_performed`,
+  `directory_opened` and `push_opt_in` do not.
 - `docs/community/metrics.md` is the metrics contract: the WCAM definition,
   every tracked event with its trigger surface and props, the core and
   additional metrics, and what is deliberately unwired. A feature agent that

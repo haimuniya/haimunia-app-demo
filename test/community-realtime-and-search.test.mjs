@@ -441,6 +441,14 @@ test("COMM-228: the box keeps the typed text and the caret across the renders th
   const mock = seeded();
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openAccount(window);
+  // app.js's boot-time welcome modal focuses its own name field on a 50 ms
+  // timer (openWelcomeModal). On a loaded machine that timer can land after
+  // the typing below and take focus off the search box, failing the
+  // assertion for a reason that has nothing to do with the search box.
+  // Found while adding COMM-233's analytics tests, which made the suite
+  // parallel enough to trip it about half the time; the race is
+  // pre-existing and reproduces on a clean tree under CPU load.
+  await new Promise((r) => setTimeout(r, 150));
   window.document.getElementById("communityPeopleSearch").focus();
   typeSearch(window, "נועם");
 
