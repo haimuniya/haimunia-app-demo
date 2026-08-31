@@ -1863,13 +1863,50 @@
     await flushOutbox();
     setMessage("ההיסטוריה הפרטית סונכרנה לחשבון");
   }
+  // COMM-300. The two private_records types that stand for "I trained
+  // today". Kept in step with attendance_session_record_types() in
+  // 202608310001 - bodyweight and measurement carry a `date` of the same
+  // shape and are deliberately not here, because stepping on a scale is not
+  // training.
+  const ATTENDANCE_SESSION_TYPES = ["strength_entry", "wod_entry"];
+  const ATTENDANCE_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+  // One emit per member per calendar day for the life of this page, mirroring
+  // the (user_id, occurred_on) unique key server-side. Three lifts logged on
+  // one day are one attendance day, so they are one event here too - without
+  // this, "sessions per week" in metrics.md would count sets, not days.
+  const attendanceEmitted = new Set();
+  // COMM-300, and COMM-012's ATTENDANCE_RECORDED getting its first producer
+  // since Phase 0. This is a COURTESY for client consumers (a future
+  // challenge auto-progress rule is the named case) and for the analytics
+  // bridge. It is explicitly NOT what writes public.attendance_log: the
+  // private_records_attendance_log trigger does that, server-side,
+  // independently, from the same upsert that just succeeded. Nothing
+  // downstream may depend on this firing for correctness - a member on a
+  // build without this line still produces attendance rows.
+  function noteAttendanceRecorded(row) {
+    if (!row || row.deleted) return;
+    if (!ATTENDANCE_SESSION_TYPES.includes(row.recordType)) return;
+    const occurredOn = row.payload && row.payload.date;
+    if (typeof occurredOn !== "string" || !ATTENDANCE_DAY_RE.test(occurredOn)) return;
+    const key = `${state.user ? state.user.id : ""}:${occurredOn}`;
+    if (attendanceEmitted.has(key)) return;
+    attendanceEmitted.add(key);
+    if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.ATTENDANCE_RECORDED) {
+      try { window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.ATTENDANCE_RECORDED, { occurred_on: occurredOn }); } catch (e) {}
+    }
+  }
   async function flushOutbox() {
     if (!client || !state.user || !state.syncEnabled || typeof window.dbLoadSyncOutbox !== "function") return;
     const rows = await window.dbLoadSyncOutbox();
     for (const row of rows) {
       const payload = { user_id: state.user.id, record_type: row.recordType, record_id: row.recordId, payload: row.payload || {}, deleted_at: row.deleted ? new Date(row.queuedAt).toISOString() : null, updated_at: new Date(row.queuedAt).toISOString() };
       const { error } = await client.from("private_records").upsert(payload, { onConflict: "user_id,record_type,record_id" });
-      if (!error) await window.dbDeleteSyncOutbox(row.id);
+      if (!error) {
+        await window.dbDeleteSyncOutbox(row.id);
+        // After the write succeeded, never before: a failed sync is not a
+        // session, and the row stays in the outbox to be retried.
+        noteAttendanceRecorded(row);
+      }
     }
   }
   // Every login used to re-fetch and re-apply every private record (up

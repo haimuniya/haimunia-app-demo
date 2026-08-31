@@ -2158,7 +2158,11 @@ reaches another feature's internals to learn that something happened.
   rejected promise from an async handler is caught and logged.
 - Phase 0 ships zero producers and zero consumers. ATTENDANCE_RECORDED is
   defined and accepted with no producer, so wiring attendance later touches
-  no other file.
+  no other file. COMM-300 (Phase 3) gave it one — `flushOutbox()` in
+  cloud.js, payload `{occurred_on}` — and the prediction held: `eventbus.js`
+  needed no change beyond its own comment. A consumer must not assume the
+  emit is authoritative; `attendance_log` is written server-side by a trigger,
+  independently, so an older cached build produces the row without the event.
 
 ### window.HaimuniaAnalytics, COMM-013
 
@@ -2169,8 +2173,9 @@ reaches another feature's internals to learn that something happened.
   never rejects: a dropped analytics row is acceptable, a broken button is
   not. Every call site may ignore the result.
 - `EVENTS` frozen map of the tracked names from spec section 77: the 21
-  Phase 1 names plus `search_performed`, `push_opt_in`,
-  `coach_congratulate_sent` and `directory_opened` from COMM-233. Also
+  Phase 1 names, plus `search_performed`, `push_opt_in`,
+  `coach_congratulate_sent` and `directory_opened` from COMM-233, plus
+  `attendance_recorded` from COMM-300. Also
   aliased as `window.ANALYTICS_EVENTS`. An unknown name is warned and
   dropped, it never reaches the table. COMM-233's `recap_viewed` and
   `recap_shared` are the already-reserved `weekly_recap_opened` and
@@ -2196,17 +2201,21 @@ reaches another feature's internals to learn that something happened.
   flipped on a device that is already running. `isDebug()` reports the state.
 - `BUS_EVENT_MAP` is the one-to-one product-event to analytics-name map:
   POST_CREATED, COMMENT_CREATED, REACTION_CREATED, CHALLENGE_JOINED,
-  CHALLENGE_COMPLETED, EVENT_REGISTERED. WORKOUT_COMPLETED, PR_CREATED,
-  MEMBER_JOINED, ACHIEVEMENT_UNLOCKED and ATTENDANCE_RECORDED are
-  deliberately unmapped: completing a workout is not sharing one, and
-  unlocking an achievement is not sharing it.
+  CHALLENGE_COMPLETED, EVENT_REGISTERED, and ATTENDANCE_RECORDED from
+  COMM-300. WORKOUT_COMPLETED, PR_CREATED, MEMBER_JOINED and
+  ACHIEVEMENT_UNLOCKED are deliberately unmapped: completing a workout is not
+  sharing one, and unlocking an achievement is not sharing it.
+  ATTENDANCE_RECORDED was unmapped for a different reason until Phase 3 — it
+  had no producer at all — and unlike WORKOUT_COMPLETED it is deduplicated to
+  one emit per member per calendar day, which is what makes it genuinely
+  one-to-one rather than a per-set firehose.
 - `BUS_PROP_KEYS` is the per-event prop allow-list the bridge projects each
   payload through, with `projectBusPayload(productEvent, payload)` doing the
   work. A bus payload is built for its consumers, not for this table, so a
   key that is not on the list is dropped and an array prop is stored as its
   length (`mentions` becomes `mention_count`). That is what keeps the props
   shape a stable contract and keeps member-authored text out of analytics.
-  A feature agent never hand-tracks one of the six bridged names: the bridge
+  A feature agent never hand-tracks one of the seven bridged names: the bridge
   already wrote the row, and a second call would double count.
 - `HAND_PROP_KEYS` (COMM-233) is the same allow-list for the hand-tracked
   Phase 2 names, applied by `track()` itself through
@@ -2597,6 +2606,183 @@ timestamptz`. Null means "not shown yet".
   cannot be welcomed through COMM-224; publishing historical welcomes is a
   product decision with a chosen schedule, not a migration side effect.
 
+## Needs from schema, attendance (COMM-300, Phase 3)
+
+Shipped in 202608310001. This is the whole attendance source; nothing reads
+it yet. COMM-302, 304, 305, 306, 307 and 316 all read it once they exist and
+none of them needs to know how it got populated.
+
+### attendance_log (table)
+
+- `attendance_log(id uuid pk default gen_random_uuid(), user_id uuid not null
+  references profiles(id) on delete cascade, club_id uuid not null default
+  default_club_id() references clubs(id), occurred_on date not null,
+  source_record_type text, source_record_id text, recorded_at timestamptz not
+  null default now(), unique (user_id, occurred_on))`.
+- One row per member per calendar day. Three lifts logged on one day are one
+  row, which is the entire point of the unique key.
+- `source_record_type` / `source_record_id` are provenance, nullable, and
+  deliberately not a foreign key: the `private_records` row they name may be
+  soft-deleted or hard-deleted later without touching the attendance day.
+  Nothing may join on them.
+- Index `attendance_log_club_day_idx (club_id, occurred_on desc)` for the
+  cross-member day-window reads COMM-302/304/307 will issue. The unique
+  constraint already serves every own-history read.
+- RLS enabled. `grant select` to `authenticated` and nothing else.
+  - `attendance_log_self_select`: `user_id = auth.uid()`.
+  - `attendance_log_staff_select`: `has_perm('community.analytics.view') or
+    is_staff()`. Two separate permissive policies rather than one OR'd
+    predicate, so a member's own read never pays for the permission lookups.
+  - **No insert, update, or delete grant and no policy for any of the three,
+    for any client role, admin included.** The trigger below is the only
+    writer, the same shape `pins` and `notification_batches` use.
+  - This policy pair is the staff/analytics boundary only. It is **not**
+    gated on `can_view_profile_field(user_id, 'show_attendance')` — that
+    toggle governs what one member may see about another, and every
+    member-facing Phase 3 reader (COMM-302, COMM-306, COMM-307) must apply it
+    in its own body.
+
+### attendance_session_record_types() returns text[]
+
+- Purpose: the session-bearing `private_records.record_type` set in one
+  place, so the trigger's WHEN clause, the backfill, pgTAP and any later
+  Phase 3 reader assert against the same value. Same reasoning as
+  `notification_batch_window()`.
+- Params: none. Returns: `text[]`, currently exactly
+  `array['strength_entry', 'wod_entry']`.
+- `language sql immutable`, `security invoker`, `search_path` pinned.
+- Auth rule: revoked from `public`/`anon`, executable by `authenticated`.
+  It exposes no data.
+- Side effects: none.
+- `bodyweight` and `measurement` are deliberately absent even though both
+  carry a `date` key of the same shape: stepping on a scale is not training.
+  `session_note` is absent because nothing in app.js writes it.
+
+### attendance_parse_day(p_raw text) returns date
+
+- Purpose: turn a client-owned `payload ->> 'date'` into a date, or null.
+  The one place that decision is made, shared by the trigger and the
+  migration's backfill.
+- Params: `p_raw text`. Returns: `date`, or `null` for every rejection.
+- `language plpgsql immutable`, `security invoker`, `search_path` pinned.
+- Auth rule: revoked from `public`/`anon`, executable by `authenticated`.
+- Side effects: none. **Never raises**, including on `'2026-13-45'`, which
+  matches the shape regex and raises `22008` on a bare cast. A raise inside
+  the trigger would wedge the source record in the member's offline outbox
+  forever (`flushOutbox()` only deletes an outbox row after a successful
+  upsert), so nothing on this path is allowed to throw.
+- Accepts exactly `^\d{4}-\d{2}-\d{2}$` plus a successful cast — the same
+  shape `cleanISODate()` in `src/sanitize.js` guarantees, re-asserted
+  server-side because `private_records` takes a direct RLS insert and the
+  payload is member-controlled.
+
+### attendance_log_from_record()
+
+- Trigger function, `security definer`. Fires as
+  `private_records_attendance_log`, AFTER INSERT OR UPDATE on
+  `private_records`, one row per statement row, with
+  `when (new.deleted_at is null and new.record_type = any
+  (attendance_session_record_types()))`.
+- Params: none (trigger). Returns: `trigger`.
+- Purpose: derive one `attendance_log` row per member per calendar day from
+  the member's own existing offline sync. There is no new client call and no
+  new affordance — a member on a months-old cached build produces attendance
+  rows the moment their existing sync runs.
+- `occurred_on` comes from `payload ->> 'date'` via `attendance_parse_day()`.
+  Confirmed against the real producer, not assumed: `queueSyncRecord()` in
+  app.js sets `payload: record` (the whole local record object, unwrapped)
+  and `flushOutbox()` in cloud.js forwards it unchanged, so for the two
+  session types the payload is whatever `sanitizeEntry()` /
+  `sanitizeWodEntry()` returned — both of which carry the logged day as a
+  top-level `date` key already through `cleanISODate()`.
+- Auth rule: revoked from `public`, `anon`, and `authenticated` — not
+  callable as an RPC, reachable as a trigger and nowhere else. No
+  `auth.uid()` check, the same documented exception `notif_queue_batched()`,
+  `seed_onboarding_progress()` and `post_new_member_on_join()` record: it
+  acts on the row being inserted, and that row was already pinned to the
+  caller by `private_records_self_insert` / `private_records_self_update`,
+  which is a stronger check than re-reading `auth.uid()` here. An
+  `auth.uid()` gate would also break the migration's own backfill and any
+  future service-role repair, both of which legitimately have no session.
+  It is `security definer` for exactly one reason: to cross the
+  no-client-write boundary on `attendance_log` on purpose.
+- Side effects: at most one `attendance_log` insert, `on conflict (user_id,
+  occurred_on) do nothing`. Nothing else. It never updates and never deletes.
+- Four ways it produces no row, all silent, none of them an error:
+  1. `attendance_parse_day()` returned null (missing, malformed, or
+     impossible date).
+  2. `occurred_on > current_date + 1`. The future-date rule: **refused, not
+     clamped.** The table is append-only, so a wrong day could never be taken
+     back, and clamping to today would invent a training day the member never
+     claimed. The refusal is of the attendance row, not of the transaction —
+     a member with a broken clock loses the credit for that entry, not the
+     ability to sync their training log. One day of slack is deliberate:
+     `current_date` is the server's UTC day and the client writes a local
+     calendar day, so an Asia/Jerusalem member training at 01:00 legitimately
+     logs "tomorrow" in UTC; zero slack would drop those entries nightly.
+  3. No `profiles` row for `new.user_id`. `private_records.user_id`
+     references `auth.users` while this table references `profiles`, so a
+     member inside the COMM-016 gate window can legally hold private records
+     with no profile to point at. Skipping is the only correct answer; the
+     alternative is a foreign key violation that breaks their sync.
+  4. The WHEN clause did not match (non-session `record_type`, or
+     `deleted_at` set).
+- Append-only, matching the `challenge_progress` "correct forward, not
+  backward" precedent: a later soft-delete of the source record does not
+  retract a day already logged, and a soft-delete UPDATE is a no-op rather
+  than a re-log.
+- AFTER INSERT **OR UPDATE**, not INSERT-only: `flushOutbox()` upserts on
+  `(user_id, record_type, record_id)`, so a record that already exists
+  server-side arrives as an UPDATE. INSERT-only would miss every edited entry
+  and every re-sync from a second device.
+
+### Backfill (202608310001)
+
+- The migration backfills one row per member per day from the
+  `private_records` rows that already existed, under the same four rules,
+  `distinct on` the earliest `created_at` so `source_record_*` matches what
+  the trigger would have written.
+- Not in COMM-300's migration outline; added deliberately. Without it every
+  existing member's attendance history starts at zero on deploy day and
+  COMM-306's consistency board and COMM-304's decline detection both read a
+  club that has apparently never trained. It is also strictly safer here than
+  later: COMM-305 adds an AFTER INSERT trigger on `attendance_log` that mints
+  achievements and posts milestones, and that trigger does not exist yet, so
+  this backfill cannot spam anybody's feed. Run after COMM-305, the same rows
+  would.
+
+### Client side (not a migration)
+
+- `flushOutbox()` in cloud.js emits
+  `HaimuniaEvents.emit(PRODUCT_EVENTS.ATTENDANCE_RECORDED, {occurred_on})`
+  after a successful `private_records` upsert of a non-deleted
+  `strength_entry` / `wod_entry` whose payload date matches
+  `^\d{4}-\d{2}-\d{2}$`. `ATTENDANCE_RECORDED`'s first producer since
+  COMM-012 defined it in Phase 0.
+- Deduplicated to one emit per `(user id, occurred_on)` for the life of the
+  page, mirroring the unique key server-side.
+- **This emit is a courtesy for client consumers and the analytics bridge.
+  It is not what writes `attendance_log`** — the trigger does that,
+  independently, from the same upsert. Nothing downstream may depend on it
+  firing for correctness: a member on an older cached build produces the
+  table row and no event. `attendance_log` is the source of truth for
+  attendance; the event is the source of truth for WCAM.
+- `attendance_recorded` is added to `HaimuniaAnalytics.EVENTS`, bridged from
+  `ATTENDANCE_RECORDED` through `BUS_EVENT_MAP`, projected by `BUS_PROP_KEYS`
+  to `["occurred_on"]` only (no workout title, no result text), and added to
+  `ACTIVE_MEMBER_EVENTS` (WCAM). Documented in `docs/community/metrics.md`,
+  which now closes its own "Still not wired: Attendance" line.
+
+### What "verified attendance" means
+
+Every later Phase 3 ticket title that says "verified attendance" means
+"derived server-side from the member's own private training log, not proxied
+through an optional public post-share" — the same trust boundary
+`private_records` already has. It is not a physical check-in, not
+staff-confirmed, and a determined member could still misdate a local entry
+before it syncs. That is the accepted shape of the 2026-08-30 resolution, not
+a gap this ticket left open.
+
 ## Edge Functions
 
 ### recap_weekly
@@ -2663,30 +2849,33 @@ them are additive to an existing signature (`feed_page`, `feed_leaderboard`,
 `people_suggestions`, `community_profile`, `consistency_week_streaks`) or
 are brand new — no existing signature is narrowed by any entry here.
 
-### Needs from schema, attendance foundation (Phase 3)
+### Needs from schema, attendance foundation (Phase 3) — SHIPPED
 
-COMM-300, the prerequisite for everything else in this section.
+COMM-300, the prerequisite for everything else in this section, shipped in
+202608310001. It is no longer a forward reference: the built contract, with
+the parts that differ from what was promised here, is
+**"## Needs from schema, attendance (COMM-300, Phase 3)"** above. Read that,
+not this.
 
-- `attendance_log(id uuid pk, user_id uuid not null references profiles(id)
-  on delete cascade, club_id uuid not null default default_club_id(),
-  occurred_on date not null, source_record_type text, source_record_id
-  text, recorded_at timestamptz not null default now(), unique(user_id,
-  occurred_on))`. Own-row select for `authenticated`, select-any for
-  `community.analytics.view`/`is_staff()`. No insert, update, or delete
-  grant to any client role at all — the only writer is a trigger.
-- A security-definer AFTER INSERT OR UPDATE trigger on `private_records`
-  (202608260001), filtered to session-bearing `record_type`s
-  (`strength_entry`, `wod_entry` — confirm against a live `payload` sample
-  before writing) and non-deleted rows, reading the logged date from
-  `payload->>'date'`, upserting into `attendance_log` `on conflict
-  (user_id, occurred_on) do nothing`. Append-only: a later soft-delete of
-  the source record does not retract an already-logged day.
-- Client-side (not a migration): `flushOutbox()` in `cloud.js` emits
-  `HaimuniaEvents.emit(PRODUCT_EVENTS.ATTENDANCE_RECORDED, {occurred_on})`
-  after a successful session-bearing sync — a courtesy for client
-  consumers, not what writes `attendance_log`.
-- `attendance_recorded` analytics event, wired off the same bus emit,
-  added to `ACTIVE_MEMBER_EVENTS` (WCAM).
+What a dependent ticket needs to know changed between the two:
+
+- Everything promised here shipped as promised. The table columns, the
+  unique key, the RLS shape, the trigger's timing and filter, the emit and
+  the analytics wiring are all exactly as written above.
+- Two helper functions were added that were not named here and that a
+  dependent ticket should reuse rather than re-derive:
+  `attendance_session_record_types() returns text[]` (the session-bearing
+  set, currently `{strength_entry, wod_entry}`) and
+  `attendance_parse_day(p_raw text) returns date` (the null-on-anything-bad
+  payload date parser).
+- The future-date rule resolved to **refuse the attendance row, never clamp**,
+  with one day of slack for the UTC-vs-local-calendar-day gap.
+- The migration backfills existing `private_records`, which was not in the
+  outline. Members therefore have real attendance history from day one
+  rather than starting at zero.
+- The staff/analytics select policy is **not** gated on
+  `can_view_profile_field(user_id, 'show_attendance')`. Every member-facing
+  reader (COMM-302, COMM-306, COMM-307) applies that toggle in its own body.
 
 ### Needs from schema, feed (Phase 3)
 

@@ -2,7 +2,7 @@
 
 Phase: 3
 Agent: schema
-Status: todo
+Status: review
 Attendance-blocked: no
 
 This ticket IS the thing the parked bucket and COMM-302, 304, 305, 306, 307,

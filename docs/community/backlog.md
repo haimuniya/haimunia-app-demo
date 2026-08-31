@@ -660,9 +660,23 @@ for Phase 2).
 
 ### attendance foundation
 
-| ID | Title | Agent | Attendance-blocked |
-|---|---|---|---|
-| COMM-300 | Attendance-log mechanism and the ATTENDANCE_RECORDED source | schema | no — this is the unblock |
+| ID | Title | Agent | Attendance-blocked | Status |
+|---|---|---|---|---|
+| COMM-300 | Attendance-log mechanism and the ATTENDANCE_RECORDED source | schema | no — this is the unblock | review |
+
+The Phase 3 tables started without the `Status` column every earlier phase's
+table carries, because nothing in the phase had been built yet. This one
+gains it now that a ticket has actually landed; the other Phase 3 tables
+below pick it up as each cluster ships, rather than being pre-filled with
+`todo` in a bulk edit that would touch every other agent's rows.
+
+**COMM-300 is in review, and the six tickets it gated are unblocked.**
+Shipped as `202608310001_attendance_log.sql`, with
+`supabase/tests/0037_attendance_log_test.sql` (54 assertions) and
+`test/community-attendance-log-rls.test.mjs` (22). See "Phase 3 schema
+handoff for qa" below for the per-boundary detail and the three places the
+built thing differs from this ticket's own migration outline. COMM-302,
+COMM-304, COMM-305, COMM-306, COMM-307 and COMM-316 may all start.
 
 Ships first. New `attendance_log` table, one row per `(user_id,
 occurred_on)`, populated by a trigger on the existing `private_records`
@@ -835,6 +849,13 @@ unchanged, until its named Phase 3 ticket actually ships and closes it; this
 table is a historical record of what was parked and why, not a live todo
 list to edit as tickets are written. None of the seven is closed by this
 planning session — only unblocked.
+
+Updated 2026-08-31: COMM-300 has now shipped (202608310001), so "attendance
+source" in the third column is no longer a future thing — `attendance_log`
+exists and is populated. All seven rows are genuinely unblocked and none is
+closed, exactly as the paragraph above describes: each stays here until its
+named Phase 3 ticket ships. COMM-300 built the source and nothing that reads
+it.
 
 ## Phase 0 schema handoff for qa (COMM-019)
 
@@ -1209,6 +1230,55 @@ handoff above.
 | coach_celebrate_feed(), coach_assign_coach(), member_contact_log (202608290013) | `0032_coach_tools_test.sql`: `coach_celebrate_feed` and `coach_assign_coach` both require real staff, inline; `member_contact_log` is staff-read-any, staff-write-own-name only (`contacted_by = auth.uid()`), no member-facing read at all, deliberately no `user_id <> auth.uid()` clause since "someone said hello to you" is not the sensitive signal `coach_engagement_flags` protects against. |
 | POST_NEW_MEMBER trigger (202608290014) | `0033_new_member_post_test.sql`: fires on `invite_redemptions` INSERT alongside `seed_onboarding_progress` (both triggers on the same table fire together), authorless, honestly omits `member_name` when no profile exists yet at trigger time rather than placeholder-filling it. |
 | leaderboard_row, feed_leaderboard(), people_suggestions() (202608290015) | `0034_feed_leaderboard_and_suggestions_test.sql`: every ranked/suggested member passes `can_view_profile_field` for the relevant toggle (which also settles block edges); `consistency_week_streaks()` is pinned to agree with `community_profile`'s own inline streak arithmetic so the two cannot drift; ties are fully broken so `rank` is a real position; the caller's own row always returns even when it fell outside `p_limit`. |
+
+## Phase 3 schema handoff for qa
+
+Same rule as every prior handoff: one line per table/function/trigger saying
+the boundary a test has to assert. Unlike the Phase 2 sections above, every
+line here is already covered by a committed, CI-running pgTAP file written
+alongside the migration, not left as a follow-up — the convention 0030-0034
+set and COMM-234's sweep argued for.
+
+### Attendance log (202608310001, COMM-300)
+
+One new table, two helper functions, one trigger on the existing
+`private_records` table, and a one-time backfill.
+`supabase/tests/0037_attendance_log_test.sql` (54 assertions) runs every
+boundary below on `migration-check`, including the three the ticket named
+explicitly for qa. `test/community-attendance-log-rls.test.mjs` (22 tests)
+pins the static SQL shape and executes the client half in jsdom.
+
+Three things differ from COMM-300's own migration outline, all deliberate,
+none of them narrowing what the ticket promised:
+
+1. **Two helper functions the outline did not name.**
+   `attendance_session_record_types()` and `attendance_parse_day()`. The
+   first keeps the session-bearing set in one place; the second is the
+   null-on-anything-bad payload date parser. A downstream Phase 3 ticket
+   should reuse both rather than re-deriving either.
+2. **The future-date rule resolved to refuse, never clamp**, with one day of
+   slack. Reasoning in the table below.
+3. **The migration backfills existing `private_records`.** Not in the
+   outline. Without it every member's attendance history would start at zero
+   on deploy day and COMM-306's board would read a club that has apparently
+   never trained. It is also strictly safer now than later: COMM-305 adds an
+   AFTER INSERT trigger on this table that mints achievements and posts
+   milestones, and that trigger does not exist yet.
+
+| Table / function / trigger | Boundary to assert |
+|---|---|
+| attendance_log (table) | One row per `(user_id, occurred_on)`, enforced by a unique constraint rather than a counting trigger. `user_id` cascades from `profiles`. `source_record_type`/`source_record_id` are nullable provenance and deliberately not a foreign key — the `private_records` row they name may be deleted later without touching the attendance day, so nothing may join on them. |
+| attendance_log, no client write | `authenticated` has `select` and nothing else; `anon` has nothing. There is no insert, update, or delete policy for any role — not one (asserted by counting `pg_policies` rows with `cmd <> 'SELECT'`, so a later addition fails rather than slipping in). A plain member and an admin both get 42501 inserting their own row, and nobody can delete a day. This is the boundary the whole ticket rests on: COMM-304's flags, COMM-305's achievements and COMM-306's board would all be forgeable if a member could write here. |
+| attendance_log, who can read | Own-row for `authenticated` (`attendance_log_self_select`), any row for a `community.analytics.view` holder or `is_staff()` (`attendance_log_staff_select`), verified for real with a coach and an admin reading another member's rows and a plain member seeing only their own. Deliberately **not** gated on `can_view_profile_field(user_id, 'show_attendance')` — that toggle is member-to-member, and every member-facing Phase 3 reader (COMM-302, COMM-306, COMM-307) must apply it in its own body. |
+| attendance_session_record_types() | Returns exactly `{strength_entry, wod_entry}`. `bodyweight`, `measurement`, `measure_type`, `movement`, `custom_wod` and `session_note` are not in it, and the pgTAP file syncs one of every one of those with a well-formed `date` to prove none produces a day: the filter is on `record_type`, not on having a date. `session_note` is excluded additionally because nothing in app.js writes it. |
+| attendance_parse_day(p_raw) | Accepts exactly `^\d{4}-\d{2}-\d{2}$` plus a successful cast — the same shape `cleanISODate()` in `src/sanitize.js` guarantees. Returns null, never raises, for a missing, null, malformed, or **impossible-but-well-shaped** date (`'2026-13-45'` matches the regex and raises 22008 on a bare cast; a hand-crafted request can send it, since `private_records` takes a direct RLS insert). Nothing on this path may throw: `flushOutbox()` only deletes an outbox row after a successful upsert, so a raise would wedge that record in the member's offline outbox forever. |
+| private_records_attendance_log (AFTER INSERT OR UPDATE on private_records) | **The three boundaries COMM-300 named for qa**: two different session types on the same calendar day produce exactly one row (verified, and `on conflict do nothing` keeps the first record's provenance rather than overwriting it); two different days produce two; `bodyweight` and `measurement` produce none. Plus: INSERT **OR UPDATE**, not INSERT-only, because `flushOutbox()` upserts and a record that already exists server-side arrives as an UPDATE — verified by un-deleting a record and watching the day appear. |
+| private_records_attendance_log, append-only | A soft-delete of the record that first claimed a day leaves the day standing; soft-deleting every session record a member has still leaves every day. A record that arrives already soft-deleted creates no day (the `deleted_at is null` WHEN clause). The trigger body contains no DELETE and no UPDATE at all. Same "correct forward, not backward" precedent `challenge_progress` set in 202608280009. |
+| private_records_attendance_log, future dates | An entry dated 30 days out produces no row — **refused, not clamped**. Clamping to today would have invented a training day the member never claimed, permanently, because the table is append-only. The refusal is of the attendance row, not of the transaction: a member with a broken clock loses the credit for that entry, not the ability to sync. One day of slack is deliberate and load-bearing: `current_date` is the server's UTC day and the client writes a local calendar day, so an Asia/Jerusalem member training at 01:00 legitimately logs "tomorrow" in UTC — zero slack would silently drop those entries every night. Today and today+1 are accepted, today+30 is not. |
+| private_records_attendance_log, missing profile | `private_records.user_id` references `auth.users`; `attendance_log.user_id` references `profiles`. A member inside the COMM-016 gate window can legally hold private records with no profile row, so the trigger skips rather than hitting a foreign key violation that would break their sync. Not independently exercised in 0037 (the fixtures all have profiles) — flagged for qa as the one branch covered by reasoning rather than by an executing assertion. |
+| attendance_log_from_record(), reachability | Revoked from `public`, `anon` and `authenticated` — reachable as a trigger and nowhere else. `prosecdef` is true. It carries no `auth.uid()` check, the same documented exception `notif_queue_batched()`, `seed_onboarding_progress()` and `post_new_member_on_join()` already record: it acts on the row being inserted, which RLS already pinned to the caller, and an `auth.uid()` gate would break the backfill and any future service-role repair. |
+| Backfill (202608310001) | A no-op on a fresh reset (0037 asserts the table starts empty, so every count in that file is about the trigger). Verified by hand against a seeded database with the trigger temporarily disabled: dedupes two records on the same day to one row keyed to the earliest `created_at`, skips soft-deleted rows, skips `bodyweight`, skips an impossible date, skips a future date. |
+| ATTENDANCE_RECORDED emit + attendance_recorded analytics | `test/community-attendance-log-rls.test.mjs`, executing in jsdom: `flushOutbox()` emits `{occurred_on}` and nothing else after a successful write; one emit per calendar day across four records spanning two days; nothing for a `bodyweight`, `measurement`, `movement` or soft-delete; nothing when the write fails; nothing for a malformed local date. The bridge writes `attendance_recorded` with `occurred_on` only, dropping a title, a result string and a record id attached by a hypothetical future producer. It counts toward WCAM, and `metrics.md`'s rollup query agrees (pinned by `test/platform-analytics.test.mjs`). **The emit is a courtesy** — the trigger writes the table independently, so a member on an older cached build produces the row with no event, and nothing downstream may depend on it firing. |
 
 ## Open questions for the user
 

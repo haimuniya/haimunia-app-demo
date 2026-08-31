@@ -21,6 +21,12 @@ const SPEC_77_EVENTS = [
   // renamed: they were reserved for this surface in Phase 1 and had never
   // fired, so a second spelling would only split every recap query.
   "search_performed", "push_opt_in", "coach_congratulate_sent", "directory_opened",
+  // COMM-300. Not a spec 77 name - the attendance source did not exist when
+  // section 77 was written, and metrics.md has carried "Still not wired:
+  // Attendance" ever since. It is the analytics half of the attendance_log
+  // mechanism (202608310001), bridged off ATTENDANCE_RECORDED, and it counts
+  // toward WCAM.
+  "attendance_recorded",
 ];
 
 // An object built inside the jsdom window carries that realm's
@@ -234,6 +240,12 @@ test("configure attaches the bus bridge, and only the one-to-one product events 
   bus.emit(bus.EVENTS.COMMENT_CREATED, { comment_id: "c1" });
   bus.emit(bus.EVENTS.REACTION_CREATED, { post_id: "p1" });
   bus.emit(bus.EVENTS.EVENT_REGISTERED, { event_id: "e1" });
+  // COMM-300 mapped this one. It was on the unmapped list below until Phase
+  // 3 for a different reason than the others - it had no producer at all -
+  // and unlike WORKOUT_COMPLETED it is deduplicated to one emit per member
+  // per calendar day by flushOutbox(), which is what makes it a genuinely
+  // one-to-one mapping rather than a per-set firehose.
+  bus.emit(bus.EVENTS.ATTENDANCE_RECORDED, { occurred_on: "2026-08-10" });
   // Deliberately unmapped: completing a workout is not sharing one, and
   // unlocking an achievement is not sharing it. Mapping either would
   // inflate WCAM with actions that are not community participation.
@@ -241,10 +253,9 @@ test("configure attaches the bus bridge, and only the one-to-one product events 
   bus.emit(bus.EVENTS.ACHIEVEMENT_UNLOCKED, {});
   bus.emit(bus.EVENTS.PR_CREATED, {});
   bus.emit(bus.EVENTS.MEMBER_JOINED, {});
-  bus.emit(bus.EVENTS.ATTENDANCE_RECORDED, {});
   await new Promise((r) => setTimeout(r, 10));
 
-  assert.deepStrictEqual(mock.db.analytics_events.map((r) => r.event_name), ["post_created", "comment_created", "reaction_added", "event_rsvp"]);
+  assert.deepStrictEqual(mock.db.analytics_events.map((r) => r.event_name), ["post_created", "comment_created", "reaction_added", "event_rsvp", "attendance_recorded"]);
 });
 
 test("configuring twice does not double-track, and detach stops the bridge", async () => {

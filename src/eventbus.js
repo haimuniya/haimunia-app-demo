@@ -17,11 +17,19 @@
   "use strict";
 
   // The full typed list. A type not in here is not a product event.
-  // ATTENDANCE_RECORDED is defined and accepted on purpose: the
-  // attendance data source is still unpicked (see the parked bucket in
-  // the plan), so it has no producer, and consumers that handle it are
-  // no-ops until COMM-P03. Defining it now means wiring attendance later
-  // does not change this file.
+  //
+  // ATTENDANCE_RECORDED was defined and accepted in Phase 0 on purpose,
+  // with no producer, because the attendance data source was still
+  // unpicked. COMM-300 (Phase 3) picked it - the member's own training-log
+  // sync - and `flushOutbox()` in cloud.js is now its producer, carrying
+  // `{occurred_on}`. Defining it early paid off exactly as intended: wiring
+  // attendance did not change this file.
+  //
+  // What a consumer must not assume: this emit is a courtesy. The
+  // `attendance_log` row is written server-side by a trigger on
+  // `private_records`, independently, so a member on an older cached build
+  // produces the row without ever emitting here. Nothing may depend on this
+  // event firing for correctness.
   const EVENTS = Object.freeze({
     WORKOUT_COMPLETED: "WORKOUT_COMPLETED",
     PR_CREATED: "PR_CREATED",

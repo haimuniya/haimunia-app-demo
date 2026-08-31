@@ -108,7 +108,7 @@ where event_name in (
   'post_created','workout_shared','achievement_shared','comment_created',
   'reaction_added','challenge_joined','challenge_completed','event_rsvp',
   'post_opened','profile_opened','member_followed','notification_opened',
-  'weekly_recap_shared','coach_congratulate_sent')
+  'weekly_recap_shared','coach_congratulate_sent','attendance_recorded')
   and created_at >= :week_start and created_at < :week_end
   and user_id is not null;
 ```
@@ -149,11 +149,13 @@ WCAM marks the events that make a member active for the week.
 | `push_opt_in` | `enableNotifPush()` after the `push_subscriptions` upsert succeeds | `source` (`notif_pref`), `pref_type` | no |
 | `coach_congratulate_sent` | `congratulateCelebrateItem()` after the comment or post write succeeds | `kind`, `via` (`comment`, `post`) | yes, for the coach |
 | `directory_opened` | Entering the Directory sub-tab | `source` (`club_tab`, `leaderboard`) | no |
+| `attendance_recorded` | Bus, `ATTENDANCE_RECORDED`, emitted by `flushOutbox()` after a session-bearing `private_records` upsert succeeds (COMM-300) | `occurred_on` | yes |
 
 ### Events that come from the bus
 
 `post_created`, `comment_created`, `reaction_added`, `challenge_joined`,
-`challenge_completed` and `event_rsvp` are never hand-tracked. The bridge in
+`challenge_completed`, `event_rsvp` and `attendance_recorded` are never
+hand-tracked. The bridge in
 `src/analytics.js` subscribes to the matching product event and writes the
 row, which is what keeps one producer from having to remember two calls. A
 second hand-written call at the same surface would double count.
@@ -164,11 +166,18 @@ producer sends that is not on the list is dropped, and an array prop named in
 the live case: the bus carries the resolved mention objects for the
 notification consumer, and analytics keeps only `mention_count`.
 
-`WORKOUT_COMPLETED`, `PR_CREATED`, `MEMBER_JOINED`, `ACHIEVEMENT_UNLOCKED`
-and `ATTENDANCE_RECORDED` are deliberately unmapped. Completing a workout is
+`WORKOUT_COMPLETED`, `PR_CREATED`, `MEMBER_JOINED` and
+`ACHIEVEMENT_UNLOCKED` are deliberately unmapped. Completing a workout is
 not sharing one and unlocking an achievement is not sharing it, so mapping
 either would inflate WCAM with actions that are not community
 participation.
+
+`ATTENDANCE_RECORDED` was on that list too until COMM-300, for a different
+reason: it had no producer at all. It has one now, and it is mapped. The
+distinction against `WORKOUT_COMPLETED` is not hair-splitting - one is a
+local UI event that fires per logged set, the other is one emit per member
+per calendar day, after the record reached the server, which is the same
+grain the `attendance_log` table stores.
 
 ### Counting once
 
@@ -203,6 +212,13 @@ participation.
 - `coach_congratulate_sent` fires once per celebrate item. The client-side
   `congratulated` set makes a second tap a no-op before the write, so the
   event cannot repeat either.
+- `attendance_recorded` is one event per member per calendar day, not per
+  logged set. `flushOutbox()` keeps a per-page `(user_id, occurred_on)` set
+  and skips a day it has already emitted, mirroring the `(user_id,
+  occurred_on)` unique key on `attendance_log`. Three lifts logged on one
+  day are one attendance day server-side and one event here. It is emitted
+  only after the `private_records` upsert succeeds - a failed sync is not a
+  session - and never for a soft-delete.
 
 ## Core metrics
 
@@ -278,6 +294,26 @@ Everything the Phase 1 doc listed as parked is now wired, except attendance:
   `source = "post_card"` dated before that change may actually be a Boards
   open, so a source split across that boundary is not comparable.
 
+## Closed in Phase 3, COMM-300
+
+- Attendance. The line that used to sit under "Still not wired"
+  (`ATTENDANCE_RECORDED` has no producer and no analytics name, the source
+  is parked under COMM-P03) is closed. The source is a member's own
+  session-logging sync: the `private_records_attendance_log` trigger
+  (202608310001) derives one `attendance_log` row per member per calendar
+  day from the `strength_entry` / `wod_entry` rows the offline outbox
+  already upserts, `flushOutbox()` emits `ATTENDANCE_RECORDED` alongside it,
+  and `attendance_recorded` is bridged off that emit and counts toward WCAM.
+- Two caveats worth carrying into any query written against it. First, the
+  emit is a courtesy for client consumers and the analytics bridge - it is
+  not what writes `attendance_log`, the trigger is, independently, so
+  `analytics_events` and `attendance_log` can legitimately disagree (a
+  member on an older cached build produces the table row and no event).
+  `attendance_log` is the source of truth for attendance; the event is the
+  source of truth for WCAM. Second, "verified" attendance here means
+  "derived server-side from the member's own private training log", not a
+  physical or staff-confirmed check-in.
+
 ## Still not wired
 
 - `post_opened` is not recorded when a notification routes to a post.
@@ -285,5 +321,3 @@ Everything the Phase 1 doc listed as parked is now wired, except attendance:
   `toggleComments()`. `notification_opened` covers that member for WCAM, so
   nothing is lost from the core metric, and the open-rate denominator is
   feed impressions, which that path does not touch either.
-- Attendance. `ATTENDANCE_RECORDED` has no producer and no analytics name.
-  The attendance data source is parked, COMM-P03.

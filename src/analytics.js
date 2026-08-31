@@ -64,6 +64,11 @@
     PUSH_OPT_IN: "push_opt_in",
     COACH_CONGRATULATE_SENT: "coach_congratulate_sent",
     DIRECTORY_OPENED: "directory_opened",
+    // COMM-300, Phase 3. The first tracked event that is not a community
+    // action at all: it is a training session, derived from the member's own
+    // private log reaching the server. Carries the calendar day and nothing
+    // else - never the workout title, never the result.
+    ATTENDANCE_RECORDED: "attendance_recorded",
   });
   const KNOWN = new Set(Object.values(EVENTS));
 
@@ -90,6 +95,14 @@
   //   navigation, not participation.
   // - push_opt_in does not. Changing a notification setting is account
   //   configuration, not community activity.
+  //
+  // COMM-300 adds attendance_recorded, and it counts. "Attending" is named
+  // outright in the spec 78 definition this list implements, and training is
+  // the strongest participation the club has: a member who showed up and
+  // trained is active for that week whether or not they posted about it.
+  // This is the one qualifying activity WCAM has been missing since Phase 0,
+  // and the only one on this list that can be true for a member who never
+  // opened the Community tab.
   const ACTIVE_MEMBER_EVENTS = Object.freeze([
     EVENTS.POST_CREATED,
     EVENTS.WORKOUT_SHARED,
@@ -105,6 +118,7 @@
     EVENTS.NOTIFICATION_OPENED,
     EVENTS.WEEKLY_RECAP_SHARED,
     EVENTS.COACH_CONGRATULATE_SENT,
+    EVENTS.ATTENDANCE_RECORDED,
   ]);
   const ACTIVE_MEMBER_EVENT_SET = new Set(ACTIVE_MEMBER_EVENTS);
 
@@ -118,11 +132,19 @@
 
   // The one-to-one mappings from the product event bus (COMM-012) to a
   // tracked analytics name. Only genuinely one-to-one entries belong
-  // here. WORKOUT_COMPLETED, PR_CREATED, MEMBER_JOINED,
-  // ACHIEVEMENT_UNLOCKED and ATTENDANCE_RECORDED are deliberately absent:
-  // completing a workout is not sharing one, and unlocking an achievement
-  // is not sharing it, so mapping them would inflate WCAM with actions
-  // that are not community participation.
+  // here. WORKOUT_COMPLETED, PR_CREATED, MEMBER_JOINED and
+  // ACHIEVEMENT_UNLOCKED are deliberately absent: completing a workout is
+  // not sharing one, and unlocking an achievement is not sharing it, so
+  // mapping them would inflate WCAM with actions that are not community
+  // participation.
+  //
+  // COMM-300 maps ATTENDANCE_RECORDED, which was on that absent list until
+  // Phase 3 for a different reason - it had no producer at all. It has one
+  // now (flushOutbox() in cloud.js), and unlike WORKOUT_COMPLETED it is
+  // already deduplicated to one emit per member per calendar day, which is
+  // what makes it a genuinely one-to-one mapping rather than a per-set
+  // firehose. It counts for WCAM; see ACTIVE_MEMBER_EVENTS above for why
+  // that is not the same call as mapping WORKOUT_COMPLETED would be.
   const BUS_EVENT_MAP = Object.freeze({
     POST_CREATED: EVENTS.POST_CREATED,
     COMMENT_CREATED: EVENTS.COMMENT_CREATED,
@@ -130,6 +152,7 @@
     CHALLENGE_JOINED: EVENTS.CHALLENGE_JOINED,
     CHALLENGE_COMPLETED: EVENTS.CHALLENGE_COMPLETED,
     EVENT_REGISTERED: EVENTS.EVENT_RSVP,
+    ATTENDANCE_RECORDED: EVENTS.ATTENDANCE_RECORDED,
   });
 
   // COMM-170. What each bridged bus payload contributes to the analytics
@@ -147,6 +170,11 @@
     CHALLENGE_JOINED: ["challenge_id", "challenge_type"],
     CHALLENGE_COMPLETED: ["challenge_id", "challenge_type"],
     EVENT_REGISTERED: ["event_id", "rsvp_status"],
+    // COMM-300. The calendar day only. The bus payload is already just
+    // {occurred_on}, and the allow-list is what keeps it that way if a
+    // later producer widens it: a workout title or a result string must
+    // never reach this table off a training log entry.
+    ATTENDANCE_RECORDED: ["occurred_on"],
   });
   // Counted, not carried: an array prop is stored as its length so the
   // signal survives without the contents. `mentions` is the live case.
