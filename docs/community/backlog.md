@@ -696,7 +696,7 @@ staff-confirmed check-in.
 | ID | Title | Agent | Attendance-blocked | Status |
 |---|---|---|---|---|
 | COMM-301 | Relationship score from interaction history | feed | no | review |
-| COMM-302 | Recurring classmate score once attendance lands | feed | was — unblocked by COMM-300 | todo |
+| COMM-302 | Recurring classmate score once attendance lands | feed | was — unblocked by COMM-300 | review |
 | COMM-303 | Personalized feed ranking and per-user weights | feed | no | todo |
 | COMM-306 | Consistency leaderboard on verified attendance | feed | was — unblocked by COMM-300 | todo |
 | COMM-307 | Post-class trained-with-you card | feed | was — unblocked by COMM-300 | todo |
@@ -713,14 +713,25 @@ it reweights without knowing its internals. `people_suggestions` (COMM-232)
 was left untouched, per COMM-301's own scope boundary, and 0038 asserts that
 too.
 
+**COMM-302 is in review, and it closes the parked COMM-P01.** Shipped as
+`202608310003_classmate_signal.sql`, with
+`supabase/tests/0039_classmate_signal_test.sql` (37 assertions) and no client
+change at all — both functions keep their exact signatures and
+`people_suggestions`' returned shape only gains a key, so nothing on the node
+side moved (791/790/1/0, unchanged). `feed_page`'s `v_class_connection` is no
+longer a hard 0: it is `least(1.0, shared_days / 8.0)` over a trailing 60-day
+window, multiplied by the `v_w_class = 6` that was reserved for it in
+202608280019. `people_suggestions` gained the fourth branch its own migration
+comment promised, and its priority order is now challenge, classmate,
+interaction, event. One function beyond the ticket's outline:
+`classmate_day_counts()`, internal and ungranted, so the window, the overlap
+count and the `show_attendance` gate exist once rather than twice — see the
+handoff section below.
+
 COMM-301 extracts `feed_page`'s already-inline relationship arithmetic
 (202608280019) into a reusable `relationship_score()` helper with no ranking
 change — a prerequisite for COMM-303's per-user weighting, not for anything
-attendance-related. COMM-302 closes the parked COMM-P01: `feed_page`'s
-`v_class_connection` stops being hard-0'd, and `people_suggestions` (COMM-232)
-gets the fourth signal branch its own migration comment already promised
-("COMM-302/307 can add the verified-attendance signal in a later migration
-without touching the client"). COMM-306 closes COMM-P02 by swapping
+attendance-related. COMM-306 closes COMM-P02 by swapping
 `consistency_week_streaks()`'s body onto `attendance_log`, the single place
 its own 202608290015 comment already named. COMM-307 closes COMM-P05, a new
 feed-top-area card (`attendance_classmates_today()`) distinct from COMM-302's
@@ -868,6 +879,13 @@ exists and is populated. All seven rows are genuinely unblocked and none is
 closed, exactly as the paragraph above describes: each stays here until its
 named Phase 3 ticket ships. COMM-300 built the source and nothing that reads
 it.
+
+Updated 2026-08-31, second pass: **COMM-P01 is closed** by COMM-302
+(202608310003). `feed_page`'s class-connection component is a real number
+computed from `attendance_log`, and `people_suggestions` carries the same
+signal as its second-strongest. The row stays in the table above because this
+section is a record of what was parked and why, not a live todo list; the
+other six remain open and unblocked.
 
 ## Phase 0 schema handoff for qa (COMM-019)
 
@@ -1338,6 +1356,55 @@ extraction stays behaviour-preserving, neither of them changing a number:
 | feed_page vs relationship_score (drift) | **The "two copies cannot drift" pin**, the same pattern 0034 uses for `consistency_week_streaks()` versus `community_profile`: the gap between two feed rows that differ only in their author is asserted equal to 18 (`v_w_relationship`) times the gap between those two members' `relationship_score()`. Time-independent — the recency, engagement, personal and repetition terms are equal on both sides and cancel exactly — so it holds whenever the suite runs. `feed_page` cannot start scoring relationships differently from the function it calls without this failing. |
 | feed_page, COMM-125 block edges | Unchanged and asserted here as well as in 0019: a block in either direction removes that author from the candidate set entirely, however high the relationship score would have been. The extraction must not loosen it, and the fixture deliberately blocks the highest-scoring author to check that the score does not buy a way past the filter. |
 | people_suggestions (COMM-232), untouched | Asserted as a boundary rather than left as a comment: `people_suggestions`' body does not mention `relationship_score`, and `feed_page`'s does. Its shipped priority order — challenge, then interaction, then event — is pinned by 0034 and is a different question from "how close is this pair already". If a later ticket decides the two should share arithmetic, this fails and forces that to be a deliberate decision. |
+
+### Classmate signal (202608310003, COMM-302)
+
+No new table, so no new RLS policy: one new internal function and two
+existing functions re-created around it.
+`supabase/tests/0039_classmate_signal_test.sql` (37 assertions) runs every
+boundary below on `migration-check`. There is no client half — `feed_page`
+and `people_suggestions` keep their exact signatures, and
+`people_suggestions`' returned shape only gains a key — so no `.test.mjs`
+file moved and the node suite is unchanged at 791/790/1/0.
+
+**The assertion pattern that matters most here is the toggle flip, not the
+count.** For both `show_attendance` boundaries the test does not compare a
+member who trained against a member who did not; it flips the toggle on an
+*unchanged* set of `attendance_log` rows and watches the same data go from
+nothing to a full signal and back. That is the difference between "no data"
+and "private data", and it is the only form of the assertion that can catch a
+gate being dropped.
+
+One thing differs from COMM-302's own migration outline, which named only the
+two `create or replace`s:
+
+1. **A third function, `classmate_day_counts()`.** Both re-created functions
+   need the same 60-day window, the same overlapping-`occurred_on` count and
+   the same `show_attendance` gate, and the repo already knows what two copies
+   cost — `community_profile`'s inline streak versus
+   `consistency_week_streaks()` needs a standing pgTAP assertion to stop it
+   drifting. The privacy gate in particular is the last thing that should
+   exist twice: two copies means two chances to forget it. It is
+   set-returning rather than scalar because `people_suggestions` builds its
+   candidate set *from* its signals union, so a member whose only overlap is
+   attendance has to be introduced by that branch or is never a candidate at
+   all. It takes no viewer parameter on purpose — see the row below.
+
+| Table / function / trigger | Boundary to assert |
+|---|---|
+| classmate_day_counts(), reachability | Revoked from `public`, `anon` **and** `authenticated`, `prosecdef` false — the same internal-plumbing shape `relationship_score()` (202608310002) and `consistency_week_streaks()` (202608290015) have. A real authenticated caller reaching for it gets 42501 from the grant, not from a check inside the body: **a member must not be able to ask who trains with whom, only to be ranked by it.** The `public` revoke is asserted separately, because a new function starts with `execute` granted to `PUBLIC`. |
+| classmate_day_counts(), no viewer parameter | Deliberate, and the reason is worth checking in review rather than testing: `can_view_profile_field()` resolves *its* viewer from `auth.uid()` and cannot be told to answer for somebody else, so a `p_viewer` argument would be honoured by the overlap count and silently ignored by the privacy gate. That is the trap COMM-301 refused when it declined to hand `are_friends()` a viewer it would ignore. Both callers want the caller's own overlap anyway. |
+| classmate_day_counts(), the count | One row per member with **at least one** shared day; a member with no overlap is absent, not a zero row, and both callers read absent as 0. Self is excluded, so a viewer's own posts pick up no class connection. Asserted at 4 days and 1 day against a fixture built directly in `attendance_log` (the trigger end is 0037's job, not this file's). |
+| classmate_day_counts(), the 60-day window | A day both members trained **100 days ago** counts for nothing, with `show_attendance` **on** for that member, so nothing but the window can be doing the excluding. Both sides of the pair are filtered by it. The window is stated once, in this function, and is the same 60 days `people_suggestions`' two pre-existing time-stamped signals already use — so all four of that function's signals now share one period. |
+| show_attendance, in both functions | **The boundary the whole ticket rests on.** `show_attendance` is attendance's own toggle (202608280003), separate from `visible_to_club`, and it **defaults to false** — so out of the box no member contributes a classmate signal to anyone. Asserted in three places, each by flipping the toggle on rows that do not change: the helper returns nothing then 4; `feed_page` scores that author 36.328735 then 39.328735, identically to a member with the same four days and the toggle on; `people_suggestions` drops a candidate whose only signal was attendance out of the strip entirely — not ranked lower, no card. Alongside each, an assertion that the member's `attendance_log` rows still exist, because those rows still count toward their own achievements (COMM-305) and their own leaderboard rank (COMM-306). For qa: the row count has to be read as the bootstrap superuser — `attendance_log`'s select policy is own-row for a member, so an authenticated count reads 0 for the wrong reason. |
+| feed_page, the class component's normalisation | `least(1.0, shared_days / 8.0)` before `v_w_class = 6` — the engagement term's shape (a raw count over a saturation constant, capped), reaching the same 0..1 ceiling every other component does. Pinned three ways on three posts identical in every scored respect except their author's overlap: absolute scores to six decimal places (39.328735 / 37.078735 / 36.328735 on a `40 * 0.5^(5/36)` recency base), and the **gaps** between them, which are time-independent because every other term cancels — 4 of the 8 saturating days is exactly 3.000000 and 1 day is exactly 0.750000. The fixture block is self-contained and reproducible in a psql transaction, like 0038's. |
+| feed_page, the cap | 8 shared days and 12 shared days both score exactly 6.000000 above the recency term. Saturating rather than scaling by the window length is deliberate: dividing by 60 would make even a daily training partner worth a rounding error. This is the boundary a "capped at 1 before its weight applies" rule actually means, and the one most easily lost. |
+| feed_page, zero overlap | A viewer who has never logged a session still gets **every** row, all scoring the same, because the class component is 0 for all of them. Zero shared days is a zero — never a missing term, never an omitted row, never a raise. |
+| feed_page, my_classes still parked | Unchanged and deliberate: COMM-302 wired the class-connection **score**, not the my-classes **scope**. `attendance_log` records days, not classes, so it carries no class identity to filter a post by. The scope still returns empty and the client still renders that chip disabled. Flagged for qa as a thing that looks like an omission and is not. |
+| people_suggestions, the new priority order | **challenge, classmate, interaction, event**, asserted as an order across four candidates each carrying a different strongest signal, not as four separate labels. Still lexicographic, not a weighted sum: the fixture's challenge candidate has **one** shared training day and the classmate candidate has **four**, and the challenge candidate still comes first, so no amount of a weaker signal overtakes a stronger one. Position 2 is a product decision COMM-302 states rather than derives. |
+| people_suggestions, additive shape | `signals` gains `shared_classmate_days` carrying the real day count (asserted at 4, not as a boolean); `shared_challenges`, `shared_interactions` and `shared_events` keep their names and their meanings — asserted as a whole-object `jsonb` equality, so a rename or a removal fails rather than slipping past a key-by-key check. `reason` gains `'classmate'`. This is exactly the shape 202608290015's own comment promised, and it is why no client changed. |
+| Block edges, COMM-125, in both functions | A block in **either** direction, on the pair with the highest overlap in the fixture, so nothing can pass on the strength of its signal: the candidate leaves `people_suggestions`, their post leaves `feed_page` entirely (a block is strictly stronger than the class component, not merely heavier than it), and the helper itself refuses the pair. Not re-implemented anywhere — `can_view_profile_field()` settles a block before it consults any toggle, which is what `people_suggestions` already relied on for its other three signals. |
+| The two surfaces cannot drift | The same pin 0034 uses for `consistency_week_streaks()` versus `community_profile` and 0038 uses for `feed_page` versus `relationship_score()`: both function bodies are asserted to mention `classmate_day_counts`, and the `shared_classmate_days` the strip publishes is asserted equal to the number the helper returned. One copy of the window, the overlap count and the privacy gate. |
 
 ## Open questions for the user
 

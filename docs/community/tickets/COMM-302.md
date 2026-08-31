@@ -2,7 +2,7 @@
 
 Phase: 3
 Agent: feed
-Status: todo
+Status: review
 Attendance-blocked: was — unblocked by COMM-300
 
 This is the ticket named against the parked COMM-P01 ("Feed class-connection

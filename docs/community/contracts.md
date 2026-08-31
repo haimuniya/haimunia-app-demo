@@ -160,9 +160,9 @@ client was already built against.
   counts, plus a `next_cursor`.
 - Auth: caller must have a profile and an invite redemption.
 - Side effects: none. Impression writes come from the client after render.
-- Notes: class-connection score is 0 until attendance lands, see COMM-P01.
-  Diversity rules from COMM-112 run inside this function. Block edges from
-  COMM-125 are joined here. `my_classes` scope is parked.
+- Notes: diversity rules from COMM-112 run inside this function. Block edges
+  from COMM-125 are joined here. `my_classes` scope is still parked, and
+  COMM-302 did **not** unpark it — see the last bullet below.
 - Re-created in 202608310002 (COMM-301) with the same signature and the same
   output. Its relationship component is now one call to
   `relationship_score()` instead of an inline CTE; the four `v_rel_*`
@@ -171,6 +171,26 @@ client was already built against.
   `supabase/tests/0038_relationship_score_test.sql` pins the ranked order and
   the `feed_score` values to six decimal places against numbers captured from
   the pre-refactor function.
+- Re-created again in 202608310003 (COMM-302, closing COMM-P01) with the same
+  signature and the same returned columns. **The class-connection component
+  is no longer 0.** `v_class_connection constant numeric := 0` left the
+  declare block; the value now comes from
+  `classmate_day_counts()`, left-joined once per distinct author in the same
+  `author_facts` CTE that resolves `relationship_score()`, and is normalised
+  as `least(1.0, shared_days / 8.0)` before the already-reserved weight
+  `v_w_class = 6` applies. The saturation constant `v_class_saturation = 8.0`
+  is new and sits with the other shaping constants; the weight itself did not
+  move. Practical effect: a member the viewer trained beside on 8 or more
+  days inside the trailing 60 gets the full 6 points, 4 days gets 3, no
+  overlap gets 0 (a zero, never a missing term and never a raise). A member
+  the viewer has blocked in either direction never reaches the scoring pass
+  at all, unchanged. Pinned by
+  `supabase/tests/0039_classmate_signal_test.sql`.
+- `my_classes` stays parked deliberately even though attendance now exists.
+  A class-connection **score** and a my-classes **scope** are different
+  questions: `attendance_log` records days, not classes, so it carries no
+  class identity to filter a post by. The scope still returns empty and the
+  client still renders that chip disabled.
 
 ### relationship_score(p_viewer uuid, p_other uuid, p_as_of timestamptz default now()) returns numeric
 
@@ -212,6 +232,58 @@ client was already built against.
   close is this pair already", which is close to its opposite. 0038 asserts
   `people_suggestions`' body does not mention it, so folding them together
   becomes a deliberate decision rather than a quiet one.
+
+### classmate_day_counts(p_as_of timestamptz default now()) returns table(user_id uuid, shared_days integer)
+
+- Shipped in 202608310003. COMM-302. **Internal, not a client call.**
+- Purpose: how many calendar days inside a trailing 60-day window the caller
+  and another member both have an `attendance_log` row for. The one copy of
+  the recurring-classmate arithmetic, and the one copy of its privacy gate.
+- Params: `p_as_of` is the instant the 60-day window is measured back from.
+  **There is deliberately no viewer parameter** — the viewer is `auth.uid()`.
+  `can_view_profile_field()` resolves *its* viewer from `auth.uid()` and
+  cannot be told to answer for somebody else, so a `p_viewer` argument would
+  be honoured by the overlap count and silently ignored by the privacy gate.
+  That is the same trap COMM-301 refused when it declined to hand
+  `are_friends()` a viewer it would ignore.
+- Returns: one row per member with **at least one** shared day. A member with
+  no overlap is absent, not a zero row; both callers read absent as 0. The
+  caller themselves is never returned.
+- The window is 60 days, stated once here, matching `people_suggestions`'
+  two pre-existing time-stamped signals so all four of that function's
+  signals are measured over the same period. Lower-bounded only, like
+  `relationship_score()`'s 30-day window.
+- Privacy: every returned member passes
+  `can_view_profile_field(member, 'show_attendance')`, applied after the
+  aggregate so it runs once per member who actually shares a day.
+  `show_attendance` is attendance's own toggle, separate from
+  `visible_to_club`, and it **defaults to false** — so out of the box no
+  member contributes a classmate signal to anyone. A member with it off still
+  accumulates `attendance_log` rows and those rows still count toward their
+  own achievements (COMM-305) and their own leaderboard rank (COMM-306).
+  Block edges in both directions and deleted profiles fall out through the
+  same call; they are not re-implemented here. The helper's `is_admin()`
+  short-circuit applies here too, so a real admin's feed and suggestion strip
+  do see classmate signals from members who opted out — that is the
+  module-wide behaviour of the one resolution point, the same way
+  `feed_leaderboard`'s contract already records it, not a rule invented here.
+- Auth: `security invoker`, **no grant to any role** — `public`, `anon` and
+  `authenticated` are all revoked, the same shape `relationship_score()` and
+  `consistency_week_streaks()` have. Called from `feed_page` and
+  `people_suggestions` (both definer, both having already checked
+  `auth.uid()`), it borrows their rights to read other members'
+  `attendance_log` rows past `attendance_log_self_select`. A client reaching
+  it directly gets 42501 — a member must not be able to ask who trains with
+  whom, only to be ranked by it. The null-uid guard in the body returns an
+  empty set rather than raising; it is a correctness guard, not an
+  authorization one.
+- Side effects: none, `stable`.
+- Set-returning rather than scalar, and that is forced rather than stylistic:
+  `people_suggestions` builds its candidate set *from* its signals union, so
+  a member whose only overlap with the caller is attendance has to be
+  introduced by this branch or they are never a candidate at all.
+- Backed by `attendance_log_club_day_idx` (202608310001), created for exactly
+  this read.
 
 ### feed_record_impressions(p_rows jsonb) returns void
 
@@ -312,19 +384,40 @@ client was already built against.
 
 ### people_suggestions(p_limit int default 10) returns setof jsonb
 
-- Shipped in 202608290015. COMM-232, the non-attendance fallback.
+- Shipped in 202608290015. COMM-232. Re-created in 202608310003 (COMM-302)
+  with the **same signature** and an **additive** returned shape.
 - Purpose: "אנשים שאולי תכירו" for the directory strip.
 - Ranks candidates by, in priority order and lexicographically (one shared
-  challenge outranks any number of shared reactions): shared participation in
-  a live challenge (`challenges.status = 'active'` and `end_at >= now()`),
-  then `feed_interactions` of kind `react` or `comment` on the same post by
-  both members, then `event_attendees` with response `going` on the same
-  event by both. Ties break by display name (falling back to handle), then id.
-- The trailing 60-day window applies to the two time-stamped signals
-  (`feed_interactions.created_at`, `event_attendees.registered_at`), on both
-  sides of the pair. The challenge signal is bounded by the challenge being
-  live instead, since an active challenge that started 90 days ago is current
-  by definition.
+  challenge outranks any number of shared training days, and any number of
+  shared training days outranks any number of shared reactions):
+  1. shared participation in a live challenge (`challenges.status = 'active'`
+     and `end_at >= now()`);
+  2. **shared training days** — calendar days both members have an
+     `attendance_log` row for, from `classmate_day_counts()` (COMM-302);
+  3. `feed_interactions` of kind `react` or `comment` on the same post by
+     both members;
+  4. `event_attendees` with response `going` on the same event by both.
+
+  Ties break by display name (falling back to handle), then id. Position 2 is
+  a product decision COMM-302 states rather than derives: recurring
+  in-person overlap outranks a shared reaction or a shared "going" RSVP,
+  because actually training beside someone repeatedly is a stronger reason to
+  know them than tapping the same post once; it does not outrank a shared
+  live challenge, which is a joint commitment with a deadline that both
+  members opted into by name.
+- The trailing 60-day window applies to three of the four signals
+  (`feed_interactions.created_at`, `event_attendees.registered_at`, and
+  `attendance_log.occurred_on` — the last stated inside
+  `classmate_day_counts()`), on both sides of the pair. The challenge signal
+  is bounded by the challenge being live instead, since an active challenge
+  that started 90 days ago is current by definition.
+- The classmate signal is additionally gated on
+  `can_view_profile_field(candidate, 'show_attendance')`, inside
+  `classmate_day_counts()` rather than here, so the gate cannot be applied
+  differently in the two functions that use it. A candidate with attendance
+  private is not merely ranked lower: they contribute no classmate signal at
+  all, and if attendance was their only overlap with the caller they get no
+  card. Their `attendance_log` rows still exist and still count for them.
 - Excludes the caller, any follow edge in either direction, and anything
   `can_view_profile_field(candidate, 'visible_to_club')` or
   `can_view_profile_field(candidate, 'allow_follows')` rejects, which also
@@ -334,20 +427,28 @@ client was already built against.
 - Returns `setof jsonb`, one object per candidate:
   `{user_id, display_name, handle, avatar_url, reason, signals}` where
   `reason` is the advisory label of the strongest signal (`challenge`,
-  `interaction`, `event`) and `signals` is
-  `{shared_challenges, shared_interactions, shared_events}` integer counts.
-  The ranking score itself is internal and not returned.
+  `classmate`, `interaction`, `event`) and `signals` is
+  `{shared_challenges, shared_classmate_days, shared_interactions,
+  shared_events}` integer counts. The ranking score itself is internal and
+  not returned.
+- **The COMM-302 change to this shape is additive only.**
+  `shared_classmate_days` joined `signals`; `shared_challenges`,
+  `shared_interactions` and `shared_events` keep their names and their
+  meanings, so a client reading any of them needs no change. `reason` gained
+  one possible value, `'classmate'`. That is exactly what 202608290015's own
+  migration comment promised ("without renaming or removing a key any client
+  is already reading"), and no client changed for COMM-302.
 - `p_limit` clamps to 1..20 (null means 10).
 - Auth: security definer, raises `not authorized` for a null `auth.uid()` or a
-  caller with no `my_role_code()`. Definer crosses exactly one boundary on
-  purpose: `feed_interactions` is self-select only, so no member could compute
-  overlap otherwise. Only a count of shared posts leaves the function, never a
-  post id or a timestamp.
+  caller with no `my_role_code()`. Definer crosses two boundaries on purpose:
+  `feed_interactions` is self-select only, and `attendance_log`'s policies are
+  own-row plus staff (202608310001), so no member could compute either kind of
+  overlap otherwise. Only counts leave the function — never a post id, never
+  an event id, never a date somebody trained.
 - Side effects: none.
-- COMM-302 and COMM-307 (Phase 3) add a verified-attendance
-  recurring-classmate signal to the same function name and the same returned
-  shape: one more branch in the internal signals union, one more counter, one
-  more `signals` key, one more position in the ordering. No client change.
+- COMM-307 (Phase 3) adds a *different* attendance surface,
+  `attendance_classmates_today()`: "who trained today", not "who to follow".
+  It does not change this function.
 
 ### consistency_week_streaks() returns table(user_id uuid, streak integer)
 
@@ -2938,16 +3039,26 @@ What a dependent ticket needs to know changed between the two:
   two-argument call form above still resolves and a caller with a frozen
   session anchor keeps the same 30-day boundary across every page. A
   dependent ticket that has an anchor should pass it.
-- `feed_page(cursor, limit, scope)` re-created (same signature):
-  `v_class_connection` stops being hard-0'd, computed from `attendance_log`
-  overlap in a trailing window, gated by `can_view_profile_field(author,
-  'show_attendance')`. COMM-302, closing COMM-P01.
-- `people_suggestions(p_limit)` re-created (same signature, same returned
-  shape): one more UNION ALL branch (`classmate`), one more `scored`
-  column, one more `signals` key (`shared_classmate_days`), `reason` gains
-  the `'classmate'` label. Priority order becomes challenge, classmate,
-  interaction, event. COMM-302, matching the forward reference already in
-  this function's own migration comment (202608290015).
+- ~~`feed_page(cursor, limit, scope)` re-created: `v_class_connection` stops
+  being hard-0'd~~ and ~~`people_suggestions(p_limit)` re-created: one more
+  UNION ALL branch~~ — **both SHIPPED in 202608310003, COMM-302, closing
+  COMM-P01.** No longer forward references: the built contracts are
+  **"### feed_page(...)"** and **"### people_suggestions(...)"** under
+  `## Feed` above. Read those, not this. Both shipped as promised — same
+  signatures, `v_class_connection` computed from `attendance_log` overlap in
+  a trailing 60-day window gated by `can_view_profile_field(author,
+  'show_attendance')`, one more UNION ALL branch, one more `scored` column,
+  one more `signals` key `shared_classmate_days`, `reason` gaining
+  `'classmate'`, priority order challenge, classmate, interaction, event —
+  with one addition this section did not name:
+- `classmate_day_counts(p_as_of timestamptz default now()) returns
+  table(user_id uuid, shared_days integer)` — new, internal, `security
+  invoker`, no grant to any role. COMM-302's own migration outline named only
+  the two re-creations; this helper exists because both of them need the same
+  window, the same overlap count and the same `show_attendance` gate, and the
+  privacy gate in particular is the last thing that should exist twice. Full
+  contract under `## Feed` above. A dependent ticket (COMM-303, COMM-307)
+  should reuse it rather than re-derive the overlap.
 - `consistency_week_streaks()` re-created (same signature
   `table(user_id uuid, streak integer)`): body reads `attendance_log`
   instead of `workout_posts`. COMM-306, closing COMM-P02 — this is the
