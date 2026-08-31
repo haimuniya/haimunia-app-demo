@@ -49,10 +49,13 @@ function readPlatformSrc() {
   return platformSrcPaths.map((p) => readFileSync(p, "utf8")).join("\n");
 }
 
-function newDom() {
+function newDom(url) {
   const html = readFileSync(htmlPath, "utf8");
   const dom = new JSDOM(html, {
-    url: "https://example.test/",
+    // COMM-229. Overridable so a test can boot with a ?notif=... query
+    // string (app.js reads it at its own top-level, before any script
+    // below runs) - every other caller keeps the plain origin default.
+    url: url || "https://example.test/",
     // "outside-only" parses the document but does NOT auto-run its <script>
     // tags (no network/file fetch needed for ./app.js or ./theme-init.js);
     // it still exposes window.eval so we can run app.js ourselves below.
@@ -100,8 +103,12 @@ export async function bootApp() {
 // the login/signup gates, publishing, moderation) instead of only
 // regex-matching cloud.js's source text.
 export async function bootCommunity(mock, opts = {}) {
-  const window = newDom();
-  window.HAIMUNIA_CONFIG = { supabaseUrl: "https://mockproj.supabase.co", supabasePublishableKey: "mock-key" };
+  const window = newDom(opts.url);
+  window.HAIMUNIA_CONFIG = { supabaseUrl: "https://mockproj.supabase.co", supabasePublishableKey: "mock-key",
+    // COMM-229. Same shape cloud-config.js ships - a test that stubs the
+    // Push API needs a real (if fake) key here for vapidKeyToUint8Array to
+    // decode, matching what a real browser is handed.
+    notifPushVapidPublicKey: "BD16mHSAcS-jU5cV2xEqkNy09hCQ7MTjkY22CK8UrRw1JpI_5kjReL7tME6O4BFmQhuiaOVCWQ-nqsnoa1_0nAo" };
   window.supabase = { createClient: () => mock.client };
   // cloud.js reads this synchronously at module init (state.syncEnabled),
   // so it has to be set before cloud.js is eval'd below, not after.
@@ -113,6 +120,14 @@ export async function bootCommunity(mock, opts = {}) {
   if (opts.localStorage) {
     for (const [key, value] of Object.entries(opts.localStorage)) window.localStorage.setItem(key, value);
   }
+  // COMM-229. app.js's own `if ("serviceWorker" in navigator)` registration
+  // block (including the "message" listener wired to
+  // communityHandlePushDeepLink) runs synchronously, in the same tick that
+  // hides the #loading indicator below - by the time this function's own
+  // window is handed back there is no later point at which a test could
+  // still inject navigator.serviceWorker and have that block see it, so
+  // this has to land before readAppSrc() is eval'd, not after.
+  if (opts.serviceWorkerStub) window.navigator.serviceWorker = opts.serviceWorkerStub;
 
   const cloudJs = readFileSync(cloudJsPath, "utf8");
   window.eval(readPlatformSrc());

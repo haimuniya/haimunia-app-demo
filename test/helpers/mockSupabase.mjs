@@ -112,6 +112,11 @@ export function createMockSupabase(seedTables = {}) {
       select() { return api; },
       eq(col, val) { filters.push((r) => r[col] === val); return api; },
       neq(col, val) { filters.push((r) => r[col] !== val); return api; },
+      // COMM-229. push_subscriptions' own `where revoked_at is null` reads
+      // and writes need real IS NULL semantics - a real Postgrest client
+      // treats .eq(col, null) differently (it never matches), so this is
+      // its own method rather than reusing eq() for it.
+      is(col, val) { filters.push((r) => (val === null ? (r[col] === null || r[col] === undefined) : r[col] === val)); return api; },
       gt(col, val) { filters.push((r) => r[col] > val); return api; },
       // COMM-221. Recap week browsing needs the "strictly before/after"
       // and "on or after/before" pairs a real Postgrest client has -

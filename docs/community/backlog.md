@@ -446,7 +446,7 @@ decisions worth carrying forward:
 
 | ID | Title | Agent | Status |
 |---|---|---|---|
-| COMM-229 | Web push subscription and service worker handler, behind a flag | notifications | todo |
+| COMM-229 | Web push subscription and service worker handler, behind a flag | notifications | review |
 | COMM-233 | Phase 2 analytics events | platform | todo |
 | COMM-234 | Phase 2 QA sweep and browser scenarios | qa | todo |
 
@@ -457,6 +457,37 @@ or scheduled job, not built by this ticket, the same "storage exists,
 delivery scheduler does not" gap already logged for the Phase 1 batch
 flusher. COMM-233 lands last, once every surface it tracks exists. COMM-234
 is the phase's merge gate, dependent on every other Phase 2 ticket.
+
+COMM-229's client half landed behind `state.featureFlags.notifPush`, the
+same localStorage-backed pattern `featureFlags.coachEngage` (COMM-226) set:
+default off, so `NOTIF_PUSH_ENABLED`'s "off in production" requirement holds
+without a separate constant to keep in sync. A device has exactly one
+PushSubscription regardless of how many notification types route through
+it, so subscribing happens once (the first type switched to Push) and every
+later type switched to Push just upserts its own `notification_preferences`
+row without re-prompting - verified in
+`test/community-web-push.test.mjs`. A real VAPID keypair was generated for
+this ticket (Node's `crypto.generateKeyPair('ec', {namedCurve:
+'prime256v1'})`, no `web-push` dependency added); the public half lives in
+`cloud-config.js` as `notifPushVapidPublicKey` since a VAPID public key is
+meant to be exposed to the browser, and the private half was discarded
+rather than committed anywhere - whoever builds `notif_push_send` needs a
+real one provisioned as a Supabase Edge Function secret at that time, not
+this demo one. An OS-level permission revoke (outside the app) can't be
+detected from a live `PushSubscription` object - the browser simply
+discards it, with no API to recover the dead endpoint - so the client also
+keeps its own last-known endpoint in `localStorage` and reconciles
+`revoked_at` against it the next time the device's push status is
+checked; this is best-effort by nature (a device that never reopens the
+app after a revoke leaves its row unrevoked until `notif_push_send`
+eventually gets a real send failure back from the push service and can
+mark it itself - not built here, out of scope per the ticket). The
+`notificationclick` cold-start path (`sw.js` opening a fresh window, no
+existing one to focus) round-trips through a `?notif=` query param
+app.js captures at boot and hands to the community layer once its own
+session is ready - not strictly required by the ticket's own wording, but
+built anyway so "opens one at the deep link" is true end-to-end rather
+than only for the already-open-window case.
 
 ## Phase 3 tickets, Intelligence (spec V2)
 

@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "3.0.27";
+const APP_VERSION = "3.0.28";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -64,6 +64,24 @@ let entries = [];
 const VALID_TABS = ["add", "history", "calendar", "wod", "community"];
 const urlTab = new URLSearchParams(location.search).get("tab");
 let tab = VALID_TABS.includes(urlTab) ? urlTab : "add";
+// COMM-229. sw.js's notificationclick handler opens a fresh window at
+// ?notif=<deep link> when no app window was already open to focus (see
+// sw.js). Captured once here at boot, the same way ?tab= already is, and
+// handed to the community layer once its own session is ready
+// (window.communityHandlePushDeepLink, defined in cloud.js - cloud.js
+// evaluates before this file per index.html's script order, but it only
+// reads this global from inside an async continuation that resolves after
+// every synchronous top-level script - including this one - has run).
+// Stripped from the URL immediately so a reload never re-fires it.
+const urlNotif = new URLSearchParams(location.search).get("notif");
+if (urlNotif) {
+  window.__pendingPushDeepLink = urlNotif;
+  try {
+    const url = new URL(location.href);
+    url.searchParams.delete("notif");
+    history.replaceState(null, "", url.pathname + (url.search || "") + url.hash);
+  } catch (e) { /* not fatal - the pending link still gets consumed once */ }
+}
 let selectedId = MOVEMENTS[0].id;
 let weight = 20, reps = 5, sets = 1;
 // "reps" (weight×reps×sets, the original/default) or "duration" (a timed
@@ -3755,6 +3773,18 @@ async function init() {
       if (reloading) return;
       reloading = true;
       location.reload();
+    });
+
+    // COMM-229. sw.js's notificationclick handler posts this back when it
+    // focused an already-open window instead of opening a new one — the
+    // actual navigation happens here, in the page, not in the service
+    // worker (the same "the page decides" split SKIP_WAITING above uses).
+    // Inert if the community layer never loaded (window.communityHandlePushDeepLink
+    // absent) or the tapped notification predates any session.
+    navigator.serviceWorker.addEventListener("message", (e) => {
+      if (e.data && e.data.type === "PUSH_NOTIFICATION_CLICK" && typeof window.communityHandlePushDeepLink === "function") {
+        window.communityHandlePushDeepLink(e.data.deepLink);
+      }
     });
   }
 }

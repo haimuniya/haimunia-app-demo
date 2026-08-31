@@ -20,6 +20,15 @@
     myAchievements: [], achUnlock: null,
     // COMM-140..144 notifications cluster.
     notifCenter: null, notifUnread: 0, notifUnreadLoaded: false, notifPrefs: {}, notifPrefsLoaded: false, notifPrefSaving: {}, _notifRtUid: null,
+    // COMM-229. Web push is device-level (one PushSubscription per
+    // browser/device backs every type whose preference is "push" -
+    // notifRoute above still decides per type whether that channel is
+    // used). notifPushSub is this device's existing push_subscriptions row
+    // once confirmed unrevoked (null until checked, or genuinely none).
+    // notifPushChecked guards the lazy load (window.afterRenderCommunity)
+    // to once per flag-on session, the same way coachEngage's own .loaded
+    // guards its own lazy load.
+    notifPushSub: null, notifPushChecked: false,
     // COMM-110..115 feed cluster. state.feed holds feed_page() rows in the
     // exact order the function returned them and is never re-sorted here.
     feedScope: "for_you", feedCursor: null, feedLoading: false, feedError: false,
@@ -111,7 +120,11 @@
     // localStorage-backed pattern as syncEnabled above, so a test can flip
     // it before boot the same way it flips cloud sync). No producer writes
     // coach_engagement_flags in Phase 2 - this only ever reads.
-    featureFlags: { coachEngage: localStorage.getItem("haimunia-demo:coachEngageFlag") === "1" },
+    // COMM-229. Same localStorage-backed pattern as coachEngage above, so a
+    // test can flip it before boot the same way. Stays default off in
+    // production until VAPID keys are provisioned server-side (per the
+    // plan's operator checklist) - this ticket does not flip that default.
+    featureFlags: { coachEngage: localStorage.getItem("haimunia-demo:coachEngageFlag") === "1", notifPush: localStorage.getItem("haimunia-demo:notifPushFlag") === "1" },
     coachEngage: { items: [], loading: false, loaded: false, error: false },
     // COMM-210/211/212 leaderboard cluster. `leaderboard` is the club-wide
     // consistency board on the Boards sub-tab: rows are feed_leaderboard()
@@ -282,6 +295,15 @@
       if (typeof window.syncCommunityMilestones === "function") window.syncCommunityMilestones();
       // COMM-141. Arm the own-row notification channel for this session.
       ensureNotifRealtime();
+      // COMM-229. Consumes window.__pendingPushDeepLink once the session
+      // and its data are actually ready - see communityHandlePushDeepLink
+      // for why this exists (the cold-start "sw.js opened a fresh window"
+      // path).
+      if (window.__pendingPushDeepLink) {
+        const link = window.__pendingPushDeepLink;
+        window.__pendingPushDeepLink = null;
+        communityHandlePushDeepLink(link);
+      }
     }
     rerender();
   }
@@ -5713,10 +5735,12 @@
   // server-side by a trigger or an event-bus consumer (the table has no
   // insert grant) - the full trigger set is documented in
   // docs/community/contracts.md under "Needs from schema, notifications".
-  // Web push is Phase 2 (COMM-229): NOTIF_PUSH_ENABLED stays false, the
-  // Push option renders disabled, no push_subscriptions write happens, and
-  // a stored channel of "push" is read as "in_app".
-  const NOTIF_PUSH_ENABLED = false;
+  // Web push (COMM-229) is behind state.featureFlags.notifPush, default
+  // off (see the state literal above): the Push option renders disabled,
+  // no push_subscriptions write happens, and a stored channel of "push" is
+  // read as "in_app" - see notifPushEnabled() and the web push block below
+  // renderNotifPrefsPanel().
+  function notifPushEnabled() { return !!(state.featureFlags && state.featureFlags.notifPush); }
   const NOTIF_PAGE_SIZE = 20;
   // COMM-141. Rows older than this are not walked by default.
   const NOTIF_RECENT_DAYS = 90;
@@ -5787,7 +5811,7 @@
     if (!def) return { channel: "off", mode: "immediate", suppressed: true };
     let channel = (prefs && prefs[def.pref]) || "in_app";
     if (NOTIF_CHANNELS.indexOf(channel) < 0) channel = "in_app";
-    if (channel === "push" && !NOTIF_PUSH_ENABLED) channel = "in_app";
+    if (channel === "push" && !notifPushEnabled()) channel = "in_app";
     // Operational announcements always land in-app, muted or not.
     if (channel === "off" && def.operational) return { channel: "in_app", mode: def.mode, suppressed: false };
     return { channel: channel, mode: def.mode, suppressed: channel === "off" };
@@ -5819,10 +5843,156 @@
     state.notifPrefsLoaded = !error;
     rerender();
   }
+  // --- COMM-229 web push (behind state.featureFlags.notifPush) ---------
+  //
+  // A browser has exactly one PushSubscription per device, shared by every
+  // notification type - the per-type preference above only decides
+  // whether that type routes through it (notifRoute). This block is what
+  // actually asks for permission, registers the subscription with the
+  // browser's push service, and writes {endpoint, keys} to
+  // push_subscriptions (own-row RLS, table already shipped in
+  // 202608280008 - no schema change). Actually sending a push from the
+  // server is explicitly out of scope; see notif_push_send in
+  // contracts.md.
+  const NOTIF_PUSH_ENDPOINT_KEY = "haimunia-demo:notifPushEndpoint";
+
+  // iOS Safari does not implement the Push API unless the app is installed
+  // to the home screen (Safari 16.4+ once installed is accepted product
+  // scope, per the 2026-08-30 decision - a plain browser tab is not).
+  function isIOSDevice() {
+    const ua = String(navigator.userAgent || "");
+    return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  }
+  function isStandalonePwa() {
+    return !!(navigator.standalone || (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches));
+  }
+  // null when push can be offered in this browser context right now; a
+  // Hebrew explanation otherwise, rendered as visible text under the Push
+  // option (not just a title attribute) so a member on an unsupported
+  // browser sees why, rather than a control that silently does nothing.
+  function notifPushUnsupportedReason() {
+    if (isIOSDevice() && !isStandalonePwa()) {
+      return "כדי לקבל התראות דחיפה ב-iPhone/iPad יש קודם להוסיף את האפליקציה למסך הבית ולפתוח אותה משם.";
+    }
+    const hasApi = ("serviceWorker" in navigator) && (typeof window.PushManager !== "undefined") && (typeof Notification !== "undefined");
+    if (!hasApi) return "הדפדפן הזה לא תומך בהתראות דחיפה.";
+    return null;
+  }
+  // The VAPID public key ships base64url (cloud-config.js), the
+  // uncompressed EC point PushManager.subscribe's applicationServerKey
+  // expects raw bytes for.
+  function vapidKeyToUint8Array(base64urlString) {
+    const padding = "=".repeat((4 - (base64urlString.length % 4)) % 4);
+    const base64 = (base64urlString + padding).replace(/-/g, "+").replace(/_/g, "/");
+    const raw = atob(base64);
+    const arr = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+    return arr;
+  }
+  // Confirms whether THIS device already has a live, unrevoked
+  // subscription. Checked lazily the first time a member with the flag on
+  // lands on the Account tab (window.afterRenderCommunity below), never on
+  // every session - the same lazy-load pattern the other flag-gated
+  // Phase 2 reads use (coachEngage).
+  async function loadNotifPushStatus() {
+    state.notifPushChecked = true;
+    if (!state.user || !client || !notifPushEnabled() || notifPushUnsupportedReason()) { state.notifPushSub = null; return; }
+    try {
+      const hasSw = "serviceWorker" in navigator;
+      const reg = hasSw ? await navigator.serviceWorker.ready : null;
+      const sub = reg ? await reg.pushManager.getSubscription() : null;
+      if (sub) {
+        const { data, error } = await client.from("push_subscriptions")
+          .select("id,endpoint").eq("endpoint", sub.endpoint).is("revoked_at", null).maybeSingle();
+        state.notifPushSub = (!error && data) ? { endpoint: sub.endpoint } : null;
+        if (state.notifPushSub) { try { localStorage.setItem(NOTIF_PUSH_ENDPOINT_KEY, sub.endpoint); } catch (e) {} }
+      } else {
+        state.notifPushSub = null;
+        // The browser has no live subscription right now. If this device
+        // previously had one - permission revoked outside the app, or the
+        // browser otherwise dropped it - the endpoint is gone for good
+        // (there is no API to recover a discarded PushSubscription), so
+        // the last endpoint this app itself wrote is the only thing left
+        // to mark revoked_at on, matching the acceptance criterion that a
+        // revoke never leaves a stale unrevoked row.
+        let stale = null;
+        try { stale = localStorage.getItem(NOTIF_PUSH_ENDPOINT_KEY); } catch (e) {}
+        if (stale) {
+          await client.from("push_subscriptions").update({ revoked_at: new Date().toISOString() }).eq("endpoint", stale).is("revoked_at", null);
+          try { localStorage.removeItem(NOTIF_PUSH_ENDPOINT_KEY); } catch (e) {}
+        }
+      }
+    } catch (err) {
+      state.notifPushSub = null;
+    }
+    rerender();
+  }
+  // Triggers the browser permission prompt - the ticket's own "loading
+  // state is the prompt itself", no spinner needed. On grant, registers a
+  // PushSubscription and writes {endpoint, keys}; only returns true once
+  // that write has actually succeeded, which is what setNotifPref below
+  // gates the preference write itself on. On denial or any failure, shows
+  // the exact Hebrew copy the ticket specifies and leaves the stored
+  // preference untouched, so the toggle reads whatever it already was
+  // (in_app by default) - "reverts to In-app".
+  async function enableNotifPush() {
+    const reason = notifPushUnsupportedReason();
+    if (reason) { setMessage(reason); return false; }
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        const perm = await Notification.requestPermission();
+        if (perm !== "granted") { setMessage("לא אושרה הרשאת התראות"); return false; }
+        const pubKey = (window.HAIMUNIA_CONFIG && window.HAIMUNIA_CONFIG.notifPushVapidPublicKey) || "";
+        sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidKeyToUint8Array(pubKey) });
+      }
+      const json = sub.toJSON ? sub.toJSON() : sub;
+      const { error } = await client.from("push_subscriptions").upsert(
+        { user_id: state.user.id, endpoint: json.endpoint, keys: json.keys || {}, revoked_at: null },
+        { onConflict: "endpoint" });
+      if (error) { setMessage("לא אושרה הרשאת התראות"); return false; }
+      state.notifPushSub = { endpoint: json.endpoint };
+      try { localStorage.setItem(NOTIF_PUSH_ENDPOINT_KEY, json.endpoint); } catch (e) {}
+      rerender();
+      return true;
+    } catch (err) {
+      setMessage("לא אושרה הרשאת התראות");
+      return false;
+    }
+  }
+  // Explicit "turn off on this device" control (renderNotifPrefsPanel).
+  // Revoking sets revoked_at rather than deleting the row, matching the
+  // existing partial index `where revoked_at is null`.
+  async function disableNotifPush() {
+    if (!state.user || !client) return;
+    try {
+      if ("serviceWorker" in navigator) {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) {
+          const endpoint = sub.endpoint;
+          await sub.unsubscribe().catch(() => {});
+          await client.from("push_subscriptions").update({ revoked_at: new Date().toISOString() }).eq("endpoint", endpoint).is("revoked_at", null);
+        }
+      }
+    } catch (err) { /* best-effort; the device just no longer reports itself active */ }
+    try { localStorage.removeItem(NOTIF_PUSH_ENDPOINT_KEY); } catch (e) {}
+    state.notifPushSub = null;
+    rerender();
+  }
+
   async function setNotifPref(type, channel) {
     if (!state.user || !NOTIF_PREF_KEYS.has(type)) return;          // unknown type is ignored
     if (NOTIF_CHANNELS.indexOf(channel) < 0) return;
-    if (channel === "push" && !NOTIF_PUSH_ENABLED) return;         // push is disabled in V1
+    if (channel === "push") {
+      if (!notifPushEnabled()) return;                              // push is disabled in V1 default
+      if (notifPushUnsupportedReason()) return;                     // the control itself renders disabled for this case
+      if (!state.notifPushSub) {
+        const ok = await enableNotifPush();
+        if (!ok) return;                                            // permission denied/failed: leaves the stored channel untouched
+      }
+    }
     const prev = state.notifPrefs[type];
     if (prev === channel) return;
     state.notifPrefs[type] = channel;
@@ -5981,19 +6151,13 @@
     if (q.week || st === "weekly_recap" || /\/recap(\/|$)/.test(path)) return { tab: "account", recapWeek: q.week || null };
     return { tab: "feed" };
   }
-  async function openNotif(id) {
-    const c = state.notifCenter;
-    const row = c && c.rows.find((r) => r.id === id);
-    if (!row) return;
-    const target = resolveNotifTarget(row);
-    // COMM-170. Before the await, so a slow mark-read cannot lose the
-    // event, and once per row because the centre closes right after.
-    // was_unread reads the flag the fetch stamped, not read_at: opening
-    // the centre already marks every row it showed as seen, so read_at is
-    // false for everything by the time a member taps one.
-    track(A.NOTIFICATION_OPENED, { notification_id: id, type: row.type || null, target: target.tab || null, was_unread: !!row._wasUnread });
-    await markNotifRead(id);
-    closeNotifCenter();
+  // COMM-140/COMM-229. The one place that actually navigates once a target
+  // has been resolved - shared by tapping a row in the centre (openNotif,
+  // which additionally marks it read first) and by a push notification's
+  // click (communityHandlePushDeepLink below, which has no stored row to
+  // mark read). Pulled out as its own function rather than duplicated so
+  // there is exactly one navigation path to keep correct.
+  function navigateToNotifTarget(target) {
     setCommunityTab(target.tab || "feed");
     if (target.post) {
       state.openComments[target.post] = true;
@@ -6014,6 +6178,51 @@
       rerender();
     }
   }
+  async function openNotif(id) {
+    const c = state.notifCenter;
+    const row = c && c.rows.find((r) => r.id === id);
+    if (!row) return;
+    const target = resolveNotifTarget(row);
+    // COMM-170. Before the await, so a slow mark-read cannot lose the
+    // event, and once per row because the centre closes right after.
+    // was_unread reads the flag the fetch stamped, not read_at: opening
+    // the centre already marks every row it showed as seen, so read_at is
+    // false for everything by the time a member taps one.
+    track(A.NOTIFICATION_OPENED, { notification_id: id, type: row.type || null, target: target.tab || null, was_unread: !!row._wasUnread });
+    await markNotifRead(id);
+    closeNotifCenter();
+    navigateToNotifTarget(target);
+  }
+  // COMM-229. Reached from two places: sw.js's notificationclick handler
+  // posting back to an already-open window (see app.js's serviceWorker
+  // "message" listener), and window.__pendingPushDeepLink - a ?notif=
+  // query param app.js captures at boot for the "no window was open, the
+  // service worker opened a fresh one" cold-start case, consumed once the
+  // session is ready (refreshSession below). Both hand back the same
+  // deep_link string notifications.deep_link already uses, so this reuses
+  // resolveNotifTarget - the one place that turns a route into a
+  // navigation - rather than a second parser. There is no notification id
+  // to mark read here: a real push payload is not necessarily backed by a
+  // row the centre has ever loaded.
+  function communityHandlePushDeepLink(deepLink) {
+    if (!deepLink || !state.user) return;
+    // The Community sub-tab (setCommunityTab, inside navigateToNotifTarget)
+    // is not the same as app.js's own top-level tab bar (add/history/
+    // calendar/wod/community) - a push notification can arrive while a
+    // completely different top-level tab is open. cloud.js has no direct
+    // reference into app.js's own `tab`/`render` (they are two separate
+    // <script> evaluations in the test harness, and reaching past
+    // window.* into another script's bare bindings is not a pattern used
+    // anywhere else in this codebase - see window.renderCommunityApp for
+    // the actual convention: app.js calls INTO cloud.js through window,
+    // never the reverse). A real click on the existing tab button is the
+    // same DOM-level bridge every other cross-file test in this repo
+    // already relies on.
+    const topBtn = document.getElementById("tabCommunityBtn");
+    if (topBtn && !topBtn.classList.contains("active")) topBtn.click();
+    navigateToNotifTarget(resolveNotifTarget({ deep_link: deepLink }));
+  }
+  window.communityHandlePushDeepLink = communityHandlePushDeepLink;
 
   // --- COMM-209 / COMM-227 realtime wiring ---------------------------
   // Every channel below is opened through HaimuniaRealtime (COMM-014), never
@@ -6251,30 +6460,65 @@
     </div>`;
   }
 
-  // COMM-144. The Preferences panel, rendered in the Account tab.
+  // COMM-144/229. The Preferences panel, rendered in the Account tab.
   function renderNotifPrefsPanel() {
+    // COMM-229. pushOn mirrors the state.featureFlags.notifPush check every
+    // other push code path uses; pushReason is null when push can actually
+    // be offered right now, "בקרוב" when the flag itself is off (the V1
+    // default - unchanged copy/behavior from before this ticket), and a
+    // real Hebrew explanation (unsupported browser, or iOS Safari without
+    // an installed PWA) when the flag is on but this browser can't do it -
+    // rendered as visible text, not just a title, so it is never a
+    // silent failed prompt.
+    const pushOn = notifPushEnabled();
+    const pushReason = pushOn ? notifPushUnsupportedReason() : "בקרוב";
+    const pushDisabled = !!pushReason;
     const rowFor = (t) => {
       const stored = state.notifPrefs[t.key] || "in_app";
-      const eff = (stored === "push" && !NOTIF_PUSH_ENABLED) ? "in_app" : stored;
+      const eff = (stored === "push" && !pushOn) ? "in_app" : stored;
       const saving = !!state.notifPrefSaving[t.key];
-      const btn = (ch, label, disabled) =>
-        `<button type="button" class="chip-btn${eff === ch ? " primary" : ""}" data-community-action="notif-pref" data-type="${t.key}" data-channel="${ch}"${(disabled || saving) ? " disabled" : ""}${disabled ? ' aria-disabled="true" title="בקרוב"' : ""}>${label}</button>`;
+      const btn = (ch, label, disabled, title) =>
+        `<button type="button" class="chip-btn${eff === ch ? " primary" : ""}" data-community-action="notif-pref" data-type="${t.key}" data-channel="${ch}"${(disabled || saving) ? " disabled" : ""}${disabled && title ? ` aria-disabled="true" title="${safeText(title)}"` : ""}>${label}</button>`;
       const noteHtml = t.note ? `<span style="color:var(--steel);font-size:11px;">${safeText(t.note)}</span>` : "";
+      // Populated (COMM-229 frontend states): an active subscription on
+      // THIS device shows "פעיל" next to the push option, only for a row
+      // whose effective channel actually is push. Empty (push never opted
+      // into) renders no badge at all - the row looks exactly like any
+      // other channel, per the ticket's own wording.
+      const pushBadge = (pushOn && eff === "push" && state.notifPushSub)
+        ? `<span style="color:var(--green);font-size:11px;">פעיל</span>` : "";
+      // Explanatory text, visible (not just a tooltip), only when the flag
+      // is on but this browser genuinely cannot do push right now.
+      const explainHtml = (pushOn && pushDisabled)
+        ? `<span style="color:var(--steel);font-size:11px;">${safeText(pushReason)}</span>` : "";
       return `<div class="log-row" style="flex-direction:column;align-items:stretch;gap:6px;">
         <span style="font-size:13px;">${safeText(t.label)}</span>
         ${noteHtml}
         <div class="chip-row" role="group" aria-label="${safeText(t.label)}" style="margin-top:0;">
-          ${btn("push", "התראת דחיפה · בקרוב", true)}
+          ${btn("push", pushOn ? "התראת דחיפה" : "התראת דחיפה · בקרוב", pushDisabled, pushDisabled ? pushReason : null)}
+          ${pushBadge}
           ${btn("in_app", "באפליקציה", false)}
           ${btn("off", "כבוי", false)}
         </div>
+        ${explainHtml}
       </div>`;
     };
     const rows = state.notifPrefsLoaded
       ? NOTIF_PREF_TYPES.map(rowFor).join("")
       : `<div class="log-row" aria-hidden="true"><span style="height:12px;width:60%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`.repeat(4);
+    // COMM-229. One device-level control, not one per row: a
+    // PushSubscription is per browser/device, so "turn push off" is a
+    // single action here rather than duplicated ten times. Shown only once
+    // the flag is on and this device actually has an active subscription.
+    const deviceStatusHtml = (pushOn && state.notifPushSub)
+      ? `<div class="chip-row" style="margin-top:0;margin-bottom:8px;align-items:center;"><span style="font-size:12px;color:var(--steel);">התראות דחיפה פעילות במכשיר זה.</span><button type="button" class="link-btn" data-community-action="notif-push-disable">כיבוי במכשיר זה</button></div>`
+      : "";
+    const introHtml = pushOn
+      ? "בחרו איך כל סוג התראה מגיע אליכם. הודעות תפעוליות מהמועדון תמיד יופיעו כאן, גם אם כיביתם אותן."
+      : "בחרו איך כל סוג התראה מגיע אליכם. התראות דחיפה יגיעו בגרסה הבאה. הודעות תפעוליות מהמועדון תמיד יופיעו כאן, גם אם כיביתם אותן.";
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--brass)", "העדפות התראות")}
-      <div style="color:var(--steel);font-size:12px;line-height:1.6;margin-bottom:8px;">בחרו איך כל סוג התראה מגיע אליכם. התראות דחיפה יגיעו בגרסה הבאה. הודעות תפעוליות מהמועדון תמיד יופיעו כאן, גם אם כיביתם אותן.</div>
+      <div style="color:var(--steel);font-size:12px;line-height:1.6;margin-bottom:8px;">${introHtml}</div>
+      ${deviceStatusHtml}
       <div class="log-list">${rows}</div>
     </div>`;
   }
@@ -6772,6 +7016,13 @@
     // COMM-154. The audit view is lazy: fetched the first time an analytics
     // holder lands on the Account tab, not on every session.
     if (state.communityTab === "account" && hasPerm(PERM.ANALYTICS_VIEW) && !state.auditLoaded && !state.auditLoading) loadAuditLog(true);
+    // COMM-229. Same lazy pattern: this device's push subscription status
+    // is only worth checking once the flag is on and a member actually
+    // lands on the Account tab where the preferences panel lives - never
+    // on every session, and never at all while the flag is off (the V1
+    // default), so no serviceWorker.ready wait is introduced for anyone
+    // who cannot act on it anyway.
+    if (state.communityTab === "account" && state.user && notifPushEnabled() && !state.notifPushChecked) loadNotifPushStatus();
     // COMM-210. Same lazy pattern for the consistency board: one
     // feed_leaderboard() call the first time a member lands on the Boards
     // sub-tab, not on every session boot.
@@ -6972,6 +7223,7 @@
     else if (action === "notif-open") openNotif(el.dataset.id);
     else if (action === "notif-toggle-group") { const c = state.notifCenter; if (c) { c.expanded[el.dataset.key] = !c.expanded[el.dataset.key]; rerender(); } }
     else if (action === "notif-pref") setNotifPref(el.dataset.type, el.dataset.channel);
+    else if (action === "notif-push-disable") disableNotifPush();
     // COMM-201/207. The club-top shortcut opens the real challenge detail
     // when club_summary handed back an id; a missing id (an older/failed
     // club_summary read) still lands the member on the Boards sub-tab
@@ -7094,6 +7346,17 @@
           .then(pingActivity)
           .then(() => { if (typeof window.syncCommunityMilestones === "function") window.syncCommunityMilestones(); })
           .then(ensureNotifRealtime)
+          // COMM-229. Same pending-deep-link consumption as refreshSession,
+          // for a member who opened the app from a push notification's
+          // cold-start window before signing in - the link waits for a
+          // real session instead of being dropped.
+          .then(() => {
+            if (window.__pendingPushDeepLink) {
+              const link = window.__pendingPushDeepLink;
+              window.__pendingPushDeepLink = null;
+              communityHandlePushDeepLink(link);
+            }
+          })
           .then(rerender);
       } else {
         // COMM-114. Whatever the signed-out member had seen is written
@@ -7111,7 +7374,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} }; state.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false };
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.notifPushSub = null; state.notifPushChecked = false; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} }; state.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false };
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();

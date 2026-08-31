@@ -2,7 +2,7 @@
 // Version is the single source of truth for the cache name — bumping
 // APP_VERSION in app.js is what ships an update. Don't edit SW_VERSION by
 // hand: run `npm run sync-version` (see app.js) to copy it here.
-const SW_VERSION = "3.0.27";
+const SW_VERSION = "3.0.28";
 // "haimunia-demo-v..." — deliberately distinct from the production app's
 // own "haimunia-v..." cache prefix. Both service workers are scoped to
 // the same origin (haimuniya.github.io), and the activate handler below
@@ -108,6 +108,65 @@ self.addEventListener("activate", (e) => {
 // The update banner in index.html triggers the swap explicitly.
 self.addEventListener("message", (e) => {
   if (e.data && e.data.type === "SKIP_WAITING") self.skipWaiting();
+});
+
+// COMM-229. Behind NOTIF_PUSH_ENABLED client-side (cloud.js); this handler
+// itself has nothing to gate on — a push event only ever arrives if this
+// device actually has a live subscription, which only exists once the
+// flag was on when it was created. Actually sending a push is out of this
+// ticket's scope (notif_push_send, a separate service-role job, not built
+// here) — this is the receiving half, ready for when that exists.
+self.addEventListener("push", (e) => {
+  let payload = {};
+  if (e.data) {
+    // A malformed or plain-text payload still shows something rather than
+    // throwing and dropping the notification silently.
+    try { payload = e.data.json(); } catch (err) {
+      try { payload = { body: e.data.text() }; } catch (err2) { payload = {}; }
+    }
+  }
+  const title = payload.title || "האימוניה";
+  const deepLink = payload.deep_link || payload.deepLink || "./";
+  const options = {
+    body: payload.body || "",
+    icon: payload.icon || "./icon-192.png",
+    badge: payload.badge || "./icon-192-maskable.png",
+    tag: payload.tag || undefined,
+    // Read back by notificationclick below — the deep link is the whole
+    // reason this notification exists, so it travels with the
+    // Notification object itself rather than needing a second payload.
+    data: { deepLink: deepLink },
+  };
+  e.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const deepLink = (e.notification.data && e.notification.data.deepLink) || "./";
+  e.waitUntil(
+    (async () => {
+      const allClients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      for (const c of allClients) {
+        if ("focus" in c) {
+          // The service worker never touches app state directly (the same
+          // split SKIP_WAITING above uses) — it focuses the window and
+          // hands the deep link to the page, which does the actual
+          // navigation (app.js's own serviceWorker "message" listener,
+          // wired to cloud.js's communityHandlePushDeepLink).
+          c.postMessage({ type: "PUSH_NOTIFICATION_CLICK", deepLink: deepLink });
+          return c.focus();
+        }
+      }
+      // No window was open to focus: open one directly at the deep link,
+      // via the same ?tab=/?notif= query-param convention the manifest
+      // shortcuts already use (see the fetch handler's ignoreSearch
+      // comment below) — app.js reads ?notif= at boot and hands it to the
+      // community layer once its session is ready.
+      if (self.clients.openWindow) {
+        return self.clients.openWindow("./index.html?tab=community&notif=" + encodeURIComponent(deepLink));
+      }
+    })()
+  );
 });
 
 // Only app-shell files get written back to the cache, so a stray same-origin
