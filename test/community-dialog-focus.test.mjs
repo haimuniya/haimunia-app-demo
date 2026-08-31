@@ -401,3 +401,130 @@ test("moderation context sheet: focus-in, trap, Escape restores focus, backdrop 
   await waitFor(() => !window.document.querySelector(sel), 3000);
   assert.ok(!window.document.querySelector(sel), "modContext: backdrop click closes");
 });
+
+// ===== COMM-234: the three real Phase 2 modal dialogs =================
+//
+// challengeView, eventView and recapView are wired into the exact same
+// CLOUD_DIALOGS registry every dialog above uses (see cloud.js, "Shared
+// Phase 1 dialog focus + keyboard management") but had never had the
+// contract itself pinned. These are the actual new modal-overlay dialogs
+// Phase 2 shipped.
+//
+// COMM-234's own acceptance criteria instead names five different dialogs
+// -"challenge create/edit, event create/edit, directory filter panel, push
+// permission prompt, coach Congratulate confirm" - as needing this same
+// contract. None of the five are wired into CLOUD_DIALOGS or render as a
+// .modal-overlay at all:
+//   - challenge create/edit (renderChallengeForm) and event create/edit
+//     (renderEventForm) are inline <form class="chart-card admin-card">
+//     cards in the normal document flow, not overlays - see cloud.js.
+//   - there is no directory filter panel anywhere in the shipped Directory
+//     screen (COMM-231); it is a search box plus a staff/members split, no
+//     separate filter UI exists to test.
+//   - the "push permission prompt" is the native
+//     Notification.requestPermission() browser chrome (COMM-229's
+//     enableNotifPush()), entirely outside the DOM - there is no app markup
+//     to trap focus inside.
+//   - Congratulate (COMM-225) is deliberately one-tap-is-confirmation, no
+//     confirm dialog at all (see congratulateCelebrateItem()'s own comment
+//     in cloud.js and the disabled-after-send/no-second-send coverage in
+//     test/community-coach-tools.test.mjs).
+// This is a real mismatch between COMM-234's acceptance-criteria wording
+// and what the five features actually shipped as, not a coverage gap this
+// sweep can close by writing tests against markup that does not exist -
+// flagged back rather than papered over, per the standing qa rule. The
+// three tests below are the real, actionable half of that criterion.
+function seededChallengeEventRecap(extra) {
+  return createMockSupabase(Object.assign({
+    profiles: [{ id: "u1", handle: "dana", display_name: "דנה", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true }],
+    invite_redemptions: [{ user_id: "u1", invite_id: "inv-1", role: "member", redeemed_at: VERIFIED }],
+    clubs: [{ id: "club-1", name: "חיימוניה" }],
+    challenges: [], challenge_participants: [], challenge_teams: [], challenge_progress: [],
+    events: [], event_attendees: [], post_comments: [],
+    weekly_recaps: [], onboarding_progress: [{ user_id: "u1", welcomed_at: VERIFIED, first_week_shown_at: VERIFIED, first_month_shown_at: VERIFIED }],
+    workout_posts: [], feed_page_rows: [], analytics_events: [], notifications: [], notification_preferences: [],
+  }, extra || {}));
+}
+
+test("challengeView: focus-in, trap, Escape restores focus, backdrop closes", async () => {
+  const NOW = Date.now();
+  const iso = (d) => new Date(NOW + d * 86400000).toISOString();
+  const mock = seededChallengeEventRecap({
+    challenges: [{ id: "c1", challenge_type: "individual_target", title: "12 אימונים החודש", description: "", metric_type: "session_count", target_value: 12, start_at: iso(-5), end_at: iso(20), status: "active", join_mode: "open", visibility: "club", created_by: "u1", config: {} }],
+    challenge_participants: [{ challenge_id: "c1", user_id: "u1", club_id: "club-1", team_id: null, joined_at: iso(-1), status: "active", progress_value: 4, completed_at: null }],
+  });
+  mock.setUser({ id: "u1", is_anonymous: false, email: "dana@members.haimuniya.invalid" });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCommunity(window);
+  window.document.querySelector('[data-community-action="set-tab"][data-tab="boards"]').click();
+  await waitFor(() => !!window.document.querySelector('[data-challenge-id="c1"]'), 3000);
+
+  // The real opener is the card's own "open-challenge" button inside
+  // #content, not a synthetic one appended to <body>: cloud.js's focus
+  // restore re-resolves a CSS selector built from the clicked element's own
+  // data-* attributes (see cloudOpenerSelector's own comment - the real
+  // control lives inside #content and does not survive the re-render its
+  // own click triggers), and a synthetic opener sharing the same
+  // data-community-action/data-id would resolve to whichever DOM node that
+  // selector matches first - the real card, not the synthetic stand-in -
+  // so the getter below re-queries the live card, the same "notification
+  // bell" pattern the notifCenter test above already uses.
+  const getOpener = () => window.document.querySelector('[data-challenge-id="c1"] [data-community-action="open-challenge"]');
+  getOpener().focus();
+  getOpener().click();
+  await waitFor(() => !!window.document.querySelector('[data-community-action="leave-challenge"]'), 3000);
+
+  await assertDialogContract(window, "challengeView", getOpener, async () => { getOpener().click(); });
+});
+
+test("eventView: focus-in, trap, Escape restores focus, backdrop closes", async () => {
+  const NOW = Date.now();
+  const iso = (h) => new Date(NOW + h * 3600000).toISOString();
+  const mock = seededChallengeEventRecap({
+    events: [{ id: "e1", event_type: "workshop", title: "סדנת גמישות", description: "", status: "published", start_at: iso(24), end_at: null, location: "אולם 1", capacity: null, registration_deadline: null, created_by: "u1" }],
+  });
+  mock.setUser({ id: "u1", is_anonymous: false, email: "dana@members.haimuniya.invalid" });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCommunity(window);
+  window.document.querySelector('[data-community-action="set-tab"][data-tab="boards"]').click();
+  await waitFor(() => !!window.document.querySelector('[data-event-id="e1"]'), 3000);
+
+  // Same reasoning as challengeView above: re-resolve the real card's own
+  // opener button by selector rather than using a synthetic stand-in.
+  const getOpener = () => window.document.querySelector('[data-event-id="e1"] [data-community-action="open-event"]');
+  getOpener().focus();
+  getOpener().click();
+  await waitFor(() => !!window.document.querySelector('[data-cloud-dialog="eventView"]'), 3000);
+  // let the async detail load settle so the RSVP controls (real focusables
+  // beyond the close button) are actually in the DOM.
+  await waitFor(() => !!window.document.querySelector('[data-cloud-dialog="eventView"] [data-community-action="event-rsvp"]'), 3000);
+
+  await assertDialogContract(window, "eventView", getOpener, async () => { getOpener().click(); });
+});
+
+test("recapView: focus-in, trap, Escape restores focus, backdrop closes", async () => {
+  const mock = seededChallengeEventRecap({
+    weekly_recaps: [{
+      id: "wr-1", user_id: "u1", week_start: "2026-08-17",
+      sessions_completed: 5, streak: 2, prs: [], achievements: [],
+      challenge_progress: [], club_challenge_progress: {}, upcoming_event: null,
+      generated_at: VERIFIED,
+    }],
+  });
+  mock.setUser({ id: "u1", is_anonymous: false, email: "dana@members.haimuniya.invalid" });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCommunity(window);
+  window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();
+  await waitFor(() => window.document.body.textContent.includes("הסיכום השבועי שלי"), 3000);
+
+  // Same reasoning as challengeView above: re-resolve the real "View Week"
+  // control by selector rather than using a synthetic stand-in, since the
+  // Account tab it lives on re-renders too.
+  const getOpener = () => window.document.querySelector('[data-community-action="open-recap"]');
+  getOpener().focus();
+  getOpener().click();
+  await waitFor(() => !!window.document.querySelector('[data-cloud-dialog="recapView"]'), 3000);
+  await waitFor(() => !!window.document.querySelector('[data-cloud-dialog="recapView"] [data-community-action="share-recap"]'), 3000);
+
+  await assertDialogContract(window, "recapView", getOpener, async () => { getOpener().click(); });
+});

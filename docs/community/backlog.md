@@ -256,13 +256,13 @@ logged as a blocker.
 
 | ID | Title | Agent | Status |
 |---|---|---|---|
-| COMM-201 | Challenge model generalization from the weekly challenge | challenges | todo |
-| COMM-202 | Individual target and individual performance challenges | challenges | todo |
-| COMM-203 | Cooperative challenge with club aggregate and contributors | challenges | todo |
-| COMM-204 | Team challenge with per-team totals | challenges | todo |
-| COMM-205 | Consistency challenge on non-attendance metrics | challenges | todo |
-| COMM-206 | Coach custom-rules challenge | challenges | todo |
-| COMM-207 | Challenge list, detail, join and leave | challenges | todo |
+| COMM-201 | Challenge model generalization from the weekly challenge | challenges | done |
+| COMM-202 | Individual target and individual performance challenges | challenges | done |
+| COMM-203 | Cooperative challenge with club aggregate and contributors | challenges | done |
+| COMM-204 | Team challenge with per-team totals | challenges | done |
+| COMM-205 | Consistency challenge on non-attendance metrics | challenges | done |
+| COMM-206 | Coach custom-rules challenge | challenges | done |
+| COMM-207 | Challenge list, detail, join and leave | challenges | done |
 
 COMM-201 to COMM-207 build on `challenges`, `challenge_teams`,
 `challenge_participants`, `challenge_progress` from 202608280009 (COMM-006),
@@ -281,11 +281,11 @@ schema for this cluster.
 
 | ID | Title | Agent | Status |
 |---|---|---|---|
-| COMM-213 | Events tables consumption, list and detail | events | review |
-| COMM-214 | Event RSVP and capacity | events | review |
-| COMM-215 | Event types and add to calendar | events | review |
-| COMM-216 | Event comments | events | review |
-| COMM-217 | Upcoming event card in the feed top area | events | review |
+| COMM-213 | Events tables consumption, list and detail | events | done |
+| COMM-214 | Event RSVP and capacity | events | done |
+| COMM-215 | Event types and add to calendar | events | done |
+| COMM-216 | Event comments | events | done |
+| COMM-217 | Upcoming event card in the feed top area | events | done |
 
 `events` and `event_attendees`, `event_rsvp`, and the capacity/deadline
 trigger already shipped in 202608280010 (COMM-007). COMM-216 is a design
@@ -327,11 +327,11 @@ exported on `window` for that reason, same pattern as
 
 | ID | Title | Agent | Status |
 |---|---|---|---|
-| COMM-218 | Announcement priority levels and expiry | admin-moderation | review |
-| COMM-219 | Announcement notification toggle and urgent path | notifications | review |
-| COMM-220 | Weekly member recap Edge Function | recaps | review |
-| COMM-221 | Weekly recap surface and share | recaps | review |
-| COMM-222 | New member onboarding sequence, non-attendance steps | recaps | review |
+| COMM-218 | Announcement priority levels and expiry | admin-moderation | done |
+| COMM-219 | Announcement notification toggle and urgent path | notifications | done |
+| COMM-220 | Weekly member recap Edge Function | recaps | done |
+| COMM-221 | Weekly recap surface and share | recaps | done |
+| COMM-222 | New member onboarding sequence, non-attendance steps | recaps | done |
 
 COMM-218 replaces the Phase 1 `important` boolean with a three-tier
 `priority` and an `expires_at` column; `important` stays as a generated
@@ -347,10 +347,10 @@ built, carrying a TODO to COMM-P07 and COMM-316.
 
 | ID | Title | Agent | Status |
 |---|---|---|---|
-| COMM-223 | Coach dashboard shell with Celebrate | coach-tools | review |
-| COMM-224 | Coach Welcome section | coach-tools | review |
-| COMM-225 | One-tap congratulate action | coach-tools | review |
-| COMM-226 | Coach Engage section scaffold, hidden | coach-tools | review |
+| COMM-223 | Coach dashboard shell with Celebrate | coach-tools | done |
+| COMM-224 | Coach Welcome section | coach-tools | done |
+| COMM-225 | One-tap congratulate action | coach-tools | done |
+| COMM-226 | Coach Engage section scaffold, hidden | coach-tools | done |
 
 COMM-223 needs a new staff-only `coach_celebrate_feed` function. COMM-224
 needs `profiles.assigned_coach_id` and a new `member_contact_log` table.
@@ -362,15 +362,15 @@ empty, unchanged from Phase 1, until COMM-304.
 
 | ID | Title | Agent | Status |
 |---|---|---|---|
-| COMM-209 | Challenge realtime progress | platform | review |
-| COMM-227 | Realtime for comments and reaction counts | platform | review |
-| COMM-228 | Member, event, and challenge search | platform | review |
-| COMM-210 | Consistency leaderboard mode, non-attendance | feed | review |
-| COMM-211 | Progress leaderboard mode | feed | review |
-| COMM-212 | Friends leaderboard mode and hide-my-result | feed | review |
-| COMM-230 | Following system surface and states | engagement | review |
-| COMM-231 | Members directory screen | engagement | review |
-| COMM-232 | People you train with suggestions, non-attendance fallback | feed | review |
+| COMM-209 | Challenge realtime progress | platform | done |
+| COMM-227 | Realtime for comments and reaction counts | platform | done |
+| COMM-228 | Member, event, and challenge search | platform | done |
+| COMM-210 | Consistency leaderboard mode, non-attendance | feed | done |
+| COMM-211 | Progress leaderboard mode | feed | done |
+| COMM-212 | Friends leaderboard mode and hide-my-result | feed | done |
+| COMM-230 | Following system surface and states | engagement | done |
+| COMM-231 | Members directory screen | engagement | done |
+| COMM-232 | People you train with suggestions, non-attendance fallback | feed | done |
 
 COMM-209, COMM-227 and COMM-228 are complete, both halves. Schema shipped in
 202608290007 and 202608290008: `challenge_progress`,
@@ -446,9 +446,9 @@ decisions worth carrying forward:
 
 | ID | Title | Agent | Status |
 |---|---|---|---|
-| COMM-229 | Web push subscription and service worker handler, behind a flag | notifications | review |
-| COMM-233 | Phase 2 analytics events | platform | review |
-| COMM-234 | Phase 2 QA sweep and browser scenarios | qa | todo |
+| COMM-229 | Web push subscription and service worker handler, behind a flag | notifications | done |
+| COMM-233 | Phase 2 analytics events | platform | done |
+| COMM-234 | Phase 2 QA sweep and browser scenarios | qa | done |
 
 COMM-229 wires subscription storage (the `push_subscriptions` table already
 shipped in 202608280008, no schema change) and the `sw.js` client handler.
@@ -511,6 +511,125 @@ with it: the Boards list cards carried no `data-source`, so every challenge
 or event opened from the Boards sub-tab recorded `source: "post_card"` - a
 source split across that fix is not comparable, noted in metrics.md rather
 than backfilled.
+
+**COMM-234, the Phase 2 QA sweep and merge gate, DONE.** Cross-referenced
+every Phase 2 ticket's acceptance criteria against the existing suite,
+closed the real gaps found, and re-verified all three CI jobs independently
+rather than trusting any earlier agent's own report. `npm test`: 764 -> 769
+(768 pass, 1 skip, 0 fail). `npx supabase test db`: 884 -> 940 assertions
+across 2 new files, verified from a clean `supabase db reset` (all 43
+migrations apply) exactly like `migration-check` runs it - this session had
+a working local Docker Supabase stack, unlike earlier Phase 2 sessions.
+`scripts/browser-check`: 10 -> 17 scripts, all green, including 7 new
+Community scenarios.
+
+Also found: the challenges cluster's own backlog rows (COMM-201-207) had
+been sitting at `todo` this whole phase, never bumped to `review` when the
+schema and client commits landed - a bookkeeping gap, not a build gap (the
+tests were real and passing throughout). Promoted straight to `done` here
+along with every other Phase 2 ticket this sweep confirms.
+
+Real bug found and fixed, not just flagged: `renderConfirmDialog()`
+concatenated `renderConfirmSheet()` FIRST, before `renderChallengeViewOverlay()`,
+`renderEventViewOverlay()`, and `renderPostComposer()`. Every one of those
+overlays shares the same `.modal-overlay` class and the same fixed
+`z-index:50` (index.html), so two open at once stack by DOM order, not by
+which one is logically on top - and `askConfirm()` is always a
+modal-on-modal nested inside whatever triggered it (leave-challenge fires it
+with challengeView still open, event-cancel with eventView still open,
+composer-discard with the post composer still open). In a real browser the
+confirm button was rendered but visually unreachable, pointer-events
+intercepted by the still-open parent dialog. No existing test caught this in
+over 700 prior tests because jsdom's programmatic `.click()` has no
+hit-testing - a real Chromium `scripts/browser-check/community-challenge-lifecycle.mjs`
+run (built for this sweep) is what surfaced it. Fixed by moving
+`renderConfirmSheet()` to the end of the concatenation; pinned two ways, a
+source-order change-detector and a real render-path DOM-position assertion,
+both in `test/community-confirm-flow.test.mjs`.
+
+Browser scenario coverage: `scripts/browser-check/lib/mockCloud.mjs` is a
+new harness that boots the real `index.html`/`cloud.js` in real Chromium
+against the same `test/helpers/mockSupabase.mjs` every node integration test
+already uses - `vendor/supabase.js`'s network request is intercepted and
+replaced with a no-op script, and an `addInitScript` defines
+`window.supabase.createClient()` to return the mock client before any page
+script runs, plus a defensive `page.route(/supabase\.co/, abort)` net. This
+was necessary, not optional: `cloud-config.js` points at the real, live
+production Supabase project (see the module's own build notes), there is no
+local-only demo backend, and running unattended CI browser scenarios that
+write real challenges/events/follows/coach actions against that project was
+never going to be acceptable. Seven scenarios, one file each:
+`community-challenge-lifecycle.mjs` (create/join/leave), `community-event-rsvp.mjs`
+(RSVP + the capacity figure updating immediately after the write - see that
+file's own header for why genuine cross-device Postgres realtime push still
+cannot be simulated this way, the same class of gap already logged for
+Phase 0's local pgTAP situation), `community-notification-center.mjs`,
+`community-search.mjs`, `community-directory-follow.mjs`, `community-recap.mjs`,
+`community-coach-congratulate.mjs`.
+
+Dialog keyboard/focus coverage: `challengeView`, `eventView`, and
+`recapView` are real new Phase 2 modal dialogs wired into the exact same
+`CLOUD_DIALOGS` shared-contract registry every Phase 1 dialog uses, but had
+never had the opener-stored/first-control-focused/Tab-trap/Escape/restore
+contract pinned - closed in `test/community-dialog-focus.test.mjs`, 3 new
+tests, following COMM-190's established pattern exactly.
+
+**A real mismatch, flagged rather than papered over**: COMM-234's own
+acceptance criteria name five dialogs needing this same keyboard contract -
+"challenge create/edit, event create/edit, directory filter panel, push
+permission prompt, coach Congratulate confirm." None of the five exist as
+an actual `.modal-overlay` dialog in the shipped client. Challenge and event
+create/edit (`renderChallengeForm`/`renderEventForm`) are inline
+`<form class="chart-card admin-card">` cards in the normal document flow,
+never overlays. There is no directory filter panel anywhere in COMM-231's
+shipped Directory screen - a search box plus a staff/members split, nothing
+else. The "push permission prompt" is the native
+`Notification.requestPermission()` browser chrome COMM-229's
+`enableNotifPush()` calls - entirely outside the DOM, no app markup to trap
+focus inside. Congratulate (COMM-225) is deliberately one-tap-is-confirmation
+by design, no confirm dialog at all - `congratulateCelebrateItem()`'s own
+comment in cloud.js says so, and `test/community-coach-tools.test.mjs`
+already covers the disabled-after-send/no-second-send/failed-retry shape
+that design implies. This is a wording mismatch between COMM-234's own
+acceptance criteria and what those five earlier tickets actually shipped as
+- not a gap this sweep could close by writing tests against markup that
+does not exist. Documented in `test/community-dialog-focus.test.mjs`'s own
+comment so a future sweep does not miscount it as untested.
+
+Spec-ambiguity pinning, per COMM-234's own acceptance criteria: COMM-208
+(joined/completed notification routing - batched to every OTHER active
+participant, never the actor, never immediate) is now pinned twice, once at
+the DB layer (`supabase/tests/0035_challenge_progress_notifications_test.sql`,
+new this sweep) and once implicitly at the client layer (the notification
+center just renders whatever rows exist, so the DB layer is the only place
+this behavior can actually be pinned). COMM-216 (companion `POST_EVENT` +
+reused `post_comments`, not a polymorphic comment target) and COMM-224
+(Welcome as a public `add_post_comment` on the member's own card, not a
+private message - consistent with the phase's "no Message affordance
+anywhere" resolution) were both already pinned as executing tests before
+this sweep, in `test/community-events.test.mjs` and
+`test/community-coach-tools.test.mjs` respectively - confirmed, not
+re-added.
+
+Confirmed, not re-tested: the COMM-228 search-result-to-event-detail wiring
+this cluster's own note above already says COMM-213 closed
+(`test/community-events.test.mjs`, "a search result's open-event action
+opens the real event detail"). The `follows_visible` RLS scope limit
+(another member's profile shows a plain follower count, no expand) is
+intentional by design and already pinned as such in
+`test/community-following-surface.test.mjs` ("offers no expand affordance") -
+confirmed this is not a silently-missing feature, no change needed. The
+COMM-228 caret-preservation flake logged in the analytics cluster's commit
+(a boot-time welcome-modal focus timer racing a test's own focus call) has
+its 150ms settle delay already inherited by every new `activeElement`-
+asserting test added this sweep, via the shared `openCommunity()` helper in
+`test/community-dialog-focus.test.mjs`; re-ran that file three times back to
+back with no flake observed.
+
+No schema boundary bug was found by any of this sweep's new RLS/runtime
+coverage - every new assertion passed on first real run against the
+existing shipped SQL, so no COMM-019/020-style follow-up migration was
+needed this time.
 
 ## Phase 3 tickets, Intelligence (spec V2)
 
@@ -857,12 +976,16 @@ the boundary a test has to assert.
 No new table - four columns added to `challenge_progress` and `challenges`,
 one composite type, one read function, two triggers on `challenge_progress`,
 one write RPC, one service-role RPC, two triggers on `challenge_participants`.
-Verified locally this run via `supabase db reset` plus manual psql smoke
-tests impersonating fixture members through `tests.set_auth()`
-(`supabase/tests/rls_helpers.sql`'s shim - each impersonate-then-act pair has
-to run inside one explicit `begin; ... commit;`, since `set_auth`'s
-`set_config(..., true)` is transaction-local and evaporates between
-autocommitted statements otherwise).
+Originally verified only locally (`supabase db reset` plus manual psql smoke
+tests) when this migration landed, with no committed, CI-running pgTAP file -
+a real gap COMM-234's sweep found and closed:
+`supabase/tests/0035_challenge_progress_notifications_test.sql` (39
+assertions) now runs every boundary below for real on every
+`migration-check`, including the COMM-208 routing rows this table exists to
+pin. One item below is still genuinely open, not silently claimed: the
+`team_id` snapshot's "still counts after leaving" case (a participant
+delete plus a re-read) - flagged again for a future run, not attempted here
+either.
 
 | Function / trigger / column | Boundary to assert |
 |---|---|
@@ -879,13 +1002,13 @@ autocommitted statements otherwise).
 ### Realtime publication and community_search (202608290007, 202608290008)
 
 No new table - a publication membership change plus one new read function.
-Verified locally this run via `supabase db reset` plus manual psql smoke
-tests impersonating fixture members through `tests.set_auth()`, same shim
-and same one-`begin;`-per-impersonation-switch caveat as the challenges run
-above. `test/community-realtime-search-rls.test.mjs` pins the static half
-(grant list, security definer shape, the exact predicate mirrored from each
-source policy); everything below is the runtime half that only a real
-two-role Postgres can show.
+`test/community-realtime-search-rls.test.mjs` pins the static half (grant
+list, security definer shape, the exact predicate mirrored from each source
+policy). The runtime half below was originally only verified locally by
+hand, with its own text here noting "this is where a pgTAP suite covering
+the runtime half belongs next" - COMM-234's sweep added that suite:
+`supabase/tests/0036_realtime_and_search_runtime_test.sql` (17 assertions),
+run for real by `migration-check` from here on.
 
 | Function / migration | Boundary to assert |
 |---|---|
@@ -897,6 +1020,26 @@ two-role Postgres can show.
 | community_search, events group | A `draft` event is invisible to a caller who is neither its creator nor a `community.event.manage` holder (verified: m2 searching does not see m1's draft), visible to its creator (verified: m1 sees its own draft) and to a manage-permission holder who did not create it (verified: coach sees m1's draft). Non-draft statuses (`published`, `cancelled`, `past`) are visible to everyone regardless of creator, matching `events_read`'s actual `status <> 'draft'` predicate rather than a narrower "published only" reading. |
 | community_search, challenges group | Same shape as events, verified against `challenges_read`'s `community.challenge.create` permission: a `draft` challenge is invisible to a non-creator without that permission, visible to its creator, and visible to a permission holder who did not create it. |
 | community_search, p_limit | Each group is capped independently by the clamped `p_limit` (verified: `p_limit = 1` against two matching challenges returns exactly one). |
+
+### Announcements, recaps, coach-tools, new-member post, and leaderboards (202608290010, 011, 013, 014, 015)
+
+Unlike every table/function above, these five migrations' own pgTAP files
+(`supabase/tests/0030` through `0034`) were written and committed alongside
+each cluster's schema commit, not left as a follow-up - the note here is
+purely that this handoff section itself never listed them, which is a real
+documentation gap COMM-234's sweep is closing, not a test gap: `npx supabase
+test db` already runs all five, 884 assertions total before this sweep's own
+0035/0036 additions. One line per new table, same rule as every other
+handoff above.
+
+| Table / function | Boundary asserted (see the named file for the executing detail) |
+|---|---|
+| announcements.priority / expires_at (202608290010) | `0030_announcement_priority_expiry_test.sql`: only `is_staff()` sets priority or expiry; an expired announcement drops out of `announcements_read` at read time, no cron; the `important` mirror trigger keeps firing off the 3-tier value so the Phase 1 escalation trigger needs no edit. |
+| weekly_recaps (202608290011) | `0031_recaps_and_onboarding_test.sql`: own-row read only, zero client write grant of any kind including the owning member - only `service_role` (the Edge Function, bypassing RLS) writes; the `(user_id, week_start)` unique key both rejects a duplicate and carries `recap_weekly`'s upsert idempotency; `week_start` is CHECK'd to a Monday. |
+| onboarding_progress (202608290011) | `0031_recaps_and_onboarding_test.sql`: seeded only by the `invite_redemptions` AFTER INSERT trigger, never by a client insert; own-row read and update; a stamp is one-way (a clear or a re-stamp is a silent no-op, not an error); a redemption UPDATE (coach grant) does not re-seed or reset it. |
+| coach_celebrate_feed(), coach_assign_coach(), member_contact_log (202608290013) | `0032_coach_tools_test.sql`: `coach_celebrate_feed` and `coach_assign_coach` both require real staff, inline; `member_contact_log` is staff-read-any, staff-write-own-name only (`contacted_by = auth.uid()`), no member-facing read at all, deliberately no `user_id <> auth.uid()` clause since "someone said hello to you" is not the sensitive signal `coach_engagement_flags` protects against. |
+| POST_NEW_MEMBER trigger (202608290014) | `0033_new_member_post_test.sql`: fires on `invite_redemptions` INSERT alongside `seed_onboarding_progress` (both triggers on the same table fire together), authorless, honestly omits `member_name` when no profile exists yet at trigger time rather than placeholder-filling it. |
+| leaderboard_row, feed_leaderboard(), people_suggestions() (202608290015) | `0034_feed_leaderboard_and_suggestions_test.sql`: every ranked/suggested member passes `can_view_profile_field` for the relevant toggle (which also settles block edges); `consistency_week_streaks()` is pinned to agree with `community_profile`'s own inline streak arithmetic so the two cannot drift; ties are fully broken so `rank` is a real position; the caller's own row always returns even when it fell outside `p_limit`. |
 
 ## Open questions for the user
 

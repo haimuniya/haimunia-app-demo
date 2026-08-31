@@ -17,3 +17,15 @@ export async function resolveTarget() {
   const { url, close } = await startStaticServer(projectRoot);
   return { url, local: true, close };
 }
+
+// Community scenarios (see lib/mockCloud.mjs) drive the app against an
+// in-page mock Supabase client, never the real backend. They must never
+// point at TARGET_URL even if a caller has it set for the rest of the
+// suite — a deployed site still ships the real vendor/supabase.js and the
+// real cloud-config.js, and this repo never runs community writes against
+// the live production project from an unattended check. Always the local
+// static server, regardless of the environment.
+export async function resolveLocalOnlyTarget() {
+  const { url, close } = await startStaticServer(projectRoot);
+  return { url, local: true, close };
+}

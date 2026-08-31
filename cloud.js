@@ -6601,9 +6601,24 @@
   // Composed cloud overlay: the confirm sheet plus every posts-cluster dialog,
   // rendered by app.js after every tab so a PR prompt or an open composer is
   // not tied to the Community tab being active.
+  // COMM-234 QA sweep: renderConfirmSheet() used to be concatenated FIRST
+  // here, which put it EARLIER in DOM order than every other overlay this
+  // function renders. All of them share the same .modal-overlay class and
+  // the same fixed z-index:50 (index.html), so two open at once stack by
+  // DOM order, not by which one is logically "on top" - a later sibling
+  // paints over an earlier one. askConfirm() is meant to be a modal-on-modal
+  // confirmation nested inside whatever triggered it (leave-challenge fires
+  // it while challengeView is still open, event-cancel while eventView is
+  // still open, composer-discard while the post composer is still open,
+  // etc.), so it has to render LAST, not first - a real Chromium browser
+  // check caught this (jsdom's programmatic .click() has no hit-testing, so
+  // every existing node test clicked straight through the invisible overlap
+  // and never noticed a real user cannot reach the confirm button at all in
+  // this state). See scripts/browser-check/community-challenge-lifecycle.mjs.
   function renderConfirmDialog() {
-    return renderConfirmSheet() + renderPostComposer() + renderPrSharePrompt() + renderAchievementUnlockCelebration() + renderCommunityProfileOverlay() + renderNotificationCenter()
-      + renderReportSheet() + renderModActionSheet() + renderModContextOverlay() + renderChallengeViewOverlay() + renderEventViewOverlay() + renderRecapViewOverlay();
+    return renderPostComposer() + renderPrSharePrompt() + renderAchievementUnlockCelebration() + renderCommunityProfileOverlay() + renderNotificationCenter()
+      + renderReportSheet() + renderModActionSheet() + renderModContextOverlay() + renderChallengeViewOverlay() + renderEventViewOverlay() + renderRecapViewOverlay()
+      + renderConfirmSheet();
   }
   // COMM-151. The report reason sheet. Reasons are a fixed list, an optional
   // capped free-text note, and a plain acknowledgement that discloses

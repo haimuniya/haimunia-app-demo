@@ -10,10 +10,15 @@
 //   TARGET_URL=<url> node roadmap.mjs # a deployed site
 import { chromium } from "playwright";
 import { mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { resolveTarget } from "./lib/target.mjs";
 import { selectMovement, dismissCelebrationIfOpen, consoleErrorCollector } from "./lib/actions.mjs";
 
-const outDir = "C:/Users/shaha/.claude/jobs/f023e6d8/tmp/screenshots";
+// Screenshots are a debugging aid, not an artifact this repo commits — the
+// OS temp dir keeps this script working on any machine, not just the one
+// whose path got hardcoded here originally.
+const outDir = path.join(tmpdir(), "haimunia-roadmap-screenshots");
 mkdirSync(outDir, { recursive: true });
 
 let failed = false;

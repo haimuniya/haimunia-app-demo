@@ -12,8 +12,14 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import fs from "node:fs";
+import { bootCommunity, waitFor } from "./helpers/boot.mjs";
+import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
 const src = fs.readFileSync(new URL("../cloud.js", import.meta.url), "utf8");
+
+const VERIFIED = new Date().toISOString();
+const NOW = Date.now();
+const iso = (deltaDays) => new Date(NOW + deltaDays * 86400000).toISOString();
 
 test("no raw window.confirm() remains in cloud.js", () => {
   assert.doesNotMatch(src, /window\.confirm\(/);
@@ -46,6 +52,59 @@ test("deletePost is scoped to the caller's own post, and only the author sees a 
   assert.match(src, /async function deletePost\(postId\) \{\s*if \(!state\.user\) return;\s*const \{ error \} = await client\.from\("workout_posts"\)\.delete\(\)\.eq\("id", postId\)\.eq\("author_id", state\.user\.id\);/);
   assert.match(src, /post\.author_id === \(state\.user && state\.user\.id\) \? `<button class="chip-btn" data-community-action="delete-post"/);
   assert.match(src, /askConfirm\(\{ title: "הסרת שיתוף".*action: "delete-post", payload: \{ postId: el\.dataset\.id \} \}\)/);
+});
+
+test("COMM-234: renderConfirmSheet() is concatenated LAST in renderConfirmDialog(), so it stacks on top of every other .modal-overlay it can be nested inside", () => {
+  // Found by a real-Chromium browser-check run (community-challenge-lifecycle.mjs
+  // - leave-challenge's confirm fires while challengeView is still open):
+  // every overlay this function returns shares the .modal-overlay class and
+  // the same fixed z-index:50 (index.html), so two open at once stack by DOM
+  // order, not by which one is logically "on top". askConfirm() is always a
+  // modal-on-modal nested inside whatever triggered it (leave-challenge/
+  // event-cancel/composer-discard all fire it with their own overlay still
+  // open), so its markup has to be the last thing concatenated. jsdom's
+  // programmatic .click() has no hit-testing, so this real bug was invisible
+  // to every prior test that clicked confirm-yes directly - this source-order
+  // assertion is the change-detector; the real-browser click-through proof
+  // lives in scripts/browser-check/community-challenge-lifecycle.mjs.
+  const fnStart = src.indexOf("function renderConfirmDialog()");
+  const fnEnd = src.indexOf("\n  }", fnStart);
+  const body = src.slice(fnStart, fnEnd);
+  const confirmIdx = body.indexOf("renderConfirmSheet()");
+  assert.ok(confirmIdx > -1, "renderConfirmSheet() must still be called from renderConfirmDialog()");
+  for (const other of ["renderPostComposer()", "renderChallengeViewOverlay()", "renderEventViewOverlay()", "renderRecapViewOverlay()", "renderNotificationCenter()", "renderCommunityProfileOverlay()"]) {
+    const otherIdx = body.indexOf(other);
+    assert.ok(otherIdx > -1, `${other} must still be called from renderConfirmDialog()`);
+    assert.ok(confirmIdx > otherIdx, `renderConfirmSheet() must be concatenated after ${other}, so it paints on top`);
+  }
+});
+
+test("COMM-234: leaving a challenge through the real render path puts the confirm sheet's markup after the still-open challengeView overlay's markup in the DOM", async () => {
+  const mock = createMockSupabase({
+    profiles: [{ id: "u1", handle: "dana", display_name: "דנה", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true, allow_follows: true, in_leaderboards: true }],
+    invite_redemptions: [{ user_id: "u1", invite_id: "inv-1", role: "member", redeemed_at: VERIFIED }],
+    clubs: [{ id: "club-1", name: "חיימוניה" }],
+    challenges: [{ id: "c1", challenge_type: "individual_target", title: "12 אימונים החודש", description: "", metric_type: "session_count", target_value: 12, start_at: iso(-5), end_at: iso(20), status: "active", join_mode: "open", visibility: "club", created_by: "u1", config: {} }],
+    challenge_participants: [{ challenge_id: "c1", user_id: "u1", club_id: "club-1", team_id: null, joined_at: iso(-1), status: "active", progress_value: 4, completed_at: null }],
+    challenge_progress: [], workout_posts: [], feed_page_rows: [], analytics_events: [], notifications: [], notification_preferences: [],
+  });
+  mock.setUser({ id: "u1", is_anonymous: false, email: "dana@members.haimuniya.invalid" });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  window.document.querySelector('[data-community-action="set-tab"][data-tab="boards"]').click();
+  await waitFor(() => !!window.document.querySelector('[data-challenge-id="c1"]'), 3000);
+  window.document.querySelector('[data-challenge-id="c1"] [data-community-action="open-challenge"]').click();
+  await waitFor(() => !!window.document.querySelector('[data-community-action="leave-challenge"]'), 3000);
+  window.document.querySelector('[data-community-action="leave-challenge"]').click();
+  await waitFor(() => !!window.document.querySelector('[data-community-action="confirm-yes"]'), 3000);
+
+  const overlays = [...window.document.querySelectorAll(".modal-overlay.open")];
+  const challengeOverlay = overlays.find((o) => o.getAttribute("data-cloud-dialog") === "challengeView");
+  const confirmOverlay = overlays.find((o) => o.querySelector('[data-community-action="confirm-yes"]'));
+  assert.ok(challengeOverlay && confirmOverlay, "both overlays must be open at once, matching the real nested-confirm flow");
+  const position = challengeOverlay.compareDocumentPosition(confirmOverlay);
+  assert.ok(position & window.Node.DOCUMENT_POSITION_FOLLOWING, "the confirm overlay must be a later DOM sibling than challengeView, so it paints on top under the shared z-index");
 });
 
 test("the confirm dialog is exposed globally (not just inside the Community tab's own output) and reset on sign-out", () => {
