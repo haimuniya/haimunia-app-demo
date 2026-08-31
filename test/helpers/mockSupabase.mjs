@@ -978,6 +978,68 @@ export function createMockSupabase(seedTables = {}) {
             || String(a.user_id).localeCompare(String(b.user_id)));
           return Promise.resolve({ data: out.slice(0, limit), error: null });
         }
+        // COMM-307. attendance_classmates_today(p_limit) - "who else trained
+        // today" (202608310005). A stand-in for the four behaviours the client
+        // half actually depends on, and no more: (1) the returned rows carry
+        // exactly the four documented keys, so a card that renders a fifth
+        // would have nothing to render it from; (2) the ORDER is the server's
+        // (recorded_at desc, then display name falling back to handle, then
+        // id) and the cut at p_limit happens after it, so a test can prove the
+        // client never re-sorts; (3) an empty set is the one answer for all
+        // three server-side empties - the caller did not train today, the
+        // caller trained alone, or the CALLER's own show_attendance is off -
+        // because the whole card hangs on those being indistinguishable; and
+        // (4) p_limit clamps 1..20 with null meaning 6.
+        //
+        // "Today" is the mock's own current date, matching the real function's
+        // current_date, so a fixture seeds attendance_log rows with an
+        // occurred_on of today to be on the card at all.
+        //
+        // The per-candidate privacy gate is spelled out here rather than
+        // delegated, because it is what makes the empty-card fixtures honest -
+        // but it is NOT what this file is proving. The gate, the block edges,
+        // the deleted/visible_to_club fallout, the admin short-circuit and the
+        // ordering itself are Postgres and are pinned by 35 assertions in
+        // supabase/tests/0041_attendance_classmates_today_test.sql.
+        if (name === "attendance_classmates_today") {
+          const uid = currentUser && currentUser.id;
+          if (!uid) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          const limit = Math.max(1, Math.min(Number((args && args.p_limit) != null ? args.p_limit : 6), 20));
+          const today = new Date().toISOString().slice(0, 10);
+          const me = rows("profiles").find((p) => p.id === uid && !p.deleted_at);
+          // The caller's own toggle, a direct column read the way the real
+          // function does it - can_view_profile_field answers true for the
+          // caller before it reads any toggle, so it cannot express this.
+          if (!me || me.show_attendance !== true) return Promise.resolve({ data: [], error: null });
+          const mine = rows("attendance_log").find((r) => r.user_id === uid && r.occurred_on === today);
+          if (!mine) return Promise.resolve({ data: [], error: null });
+          const isAdminCaller = !!me.is_admin;
+          const out = [];
+          for (const row of rows("attendance_log")) {
+            if (row.occurred_on !== today || row.user_id === uid) continue;
+            const p = rows("profiles").find((x) => x.id === row.user_id);
+            if (!p || p.deleted_at) continue;
+            if (!isAdminCaller) {
+              const blocked = rows("blocks").some((b) => (b.blocker_id === uid && b.blocked_id === p.id) || (b.blocker_id === p.id && b.blocked_id === uid));
+              if (blocked) continue;
+              if (p.visible_to_club === false) continue;
+              if (p.show_attendance !== true) continue;
+            }
+            out.push({
+              user_id: p.id, display_name: p.display_name || null,
+              handle: p.handle || null, avatar_url: p.avatar_url || null,
+              _at: row.recorded_at || "",
+            });
+          }
+          const nameOf = (r) => String(r.display_name || "").trim() || String(r.handle || "");
+          out.sort((a, b) => String(b._at).localeCompare(String(a._at))
+            || nameOf(a).localeCompare(nameOf(b))
+            || String(a.user_id).localeCompare(String(b.user_id)));
+          return Promise.resolve({
+            data: out.slice(0, limit).map((r) => ({ user_id: r.user_id, display_name: r.display_name, handle: r.handle, avatar_url: r.avatar_url })),
+            error: null,
+          });
+        }
         if (name === "mark_recovery_verified") {
           const prof = rows("profiles").find((r) => currentUser && r.id === currentUser.id);
           const hasCreds = currentUser && (currentUser.email || rows("__credentials").some((c) => c.userId === currentUser.id));

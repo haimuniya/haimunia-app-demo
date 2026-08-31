@@ -154,7 +154,22 @@
     // community_search's members group once the query reaches
     // SEARCH_MIN_CHARS, or null when the box is empty/under threshold (in
     // which case the visible rows are a client-side filter over items).
-    directory: { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false } };
+    directory: { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false },
+    // COMM-307. attendance_classmates_today() output - the members other than
+    // the caller who logged a session today, in the order the function
+    // returned them (most recently recorded first; it is a total order and the
+    // client never re-sorts it). There is deliberately no `busy` map beside
+    // this one, unlike peopleSuggestions: a classmate row is not a suggestion
+    // card that disappears when followed, so the Follow control is the same
+    // plain `follow` action the directory and the following lists use.
+    //
+    // `error` and "loaded with zero items" both mean exactly one thing to the
+    // renderer - no card - so nothing downstream ever has to tell them apart.
+    // Neither does the server: an empty set is what a member gets when they
+    // did not train today, when they trained alone, and when their own
+    // show_attendance is off, and that indistinguishability is the function's
+    // own privacy answer (202608310005), not a gap here.
+    classmatesToday: { items: [], loading: false, loaded: false, error: false } };
   const photoUrlCache = {};
 
   // COMM-141. The notification badge refreshes on a realtime own-row
@@ -4839,6 +4854,155 @@
     </div>`;
   }
 
+  // ---- Trained-with-you-today card in the feed top area (COMM-307) -----------
+  // The client half of COMM-307, closing COMM-P05. The schema half shipped as
+  // 202608310005; read its header and contracts.md's
+  // "attendance_classmates_today(p_limit int default 6)" entry before changing
+  // anything here, because three of the decisions below are only correct
+  // because of what that function already guarantees.
+  //
+  // WHAT THIS CARD SAYS, and nothing more: these members logged a session on
+  // the same day you did. No count, no streak, no time of day, no "trained 2
+  // hours ago" - attendance_log records a day, not a time, and the function
+  // deliberately returns four keys and no fifth. Anything more would be the
+  // client inventing a claim the data does not make.
+  //
+  // THE OMISSION IS THE WHOLE DESIGN. An empty result renders NOTHING - no
+  // heading, no empty state, no retry - which is COMM-232's "on no signal,
+  // show nothing" precedent adopted by name in COMM-307's acceptance criteria.
+  // The server returns an empty set in three indistinguishable cases: the
+  // caller did not train today, the caller trained but nobody else did, and
+  // the caller's own show_attendance is off (a direct profiles column read
+  // inside the function - it is a reciprocity rule, and it is enforced there
+  // rather than here because every boundary in this module is server-side).
+  // Nothing in this file tries to tell those three apart. It cannot, by
+  // design, and the card would look identical if it could.
+  //
+  // NO CLIENT-SIDE "TODAY". `current_date` is the server's UTC day, the same
+  // day attendance_log's trigger compares against when it writes the row this
+  // card reads. A client-side date check for "did I train today" would drift
+  // from that by up to a timezone and gate the card on a different day than
+  // the one that produced it, so there is no date arithmetic here at all: the
+  // client calls, and renders what comes back.
+  //
+  // NO "MESSAGE" AFFORDANCE, per the phase's standing no-messaging
+  // resolution. Direct messaging was removed from scope entirely; there is no
+  // Message button anywhere in this file and this card does not add the first.
+  //
+  // LIMIT. 6, the function's own default, passed explicitly rather than
+  // relied on: the clamp range (1..20) is the server's and is fixed, but
+  // 202608310005 records that "the default inside it is the client half's to
+  // revisit", so the number the card actually wants lives here, at the card.
+  // Six is two rows of three or six list rows - a card in COMM-115's feed top
+  // area, where people_suggestions' 10 is a horizontally scrolling strip.
+  const CLASSMATES_TODAY_LIMIT = 6;
+  // COMM-307. One classmates_card_viewed per feed-session load of this card,
+  // never one per re-render - the same shape as lastClubTabView above. A
+  // cheer, a comment arriving over realtime or a photo URL resolving all
+  // re-render the feed, and none of them is a second view of this card.
+  // Cleared when a fresh load starts (a new session, or a scope change that
+  // re-enters the feed), so the next real render counts again.
+  let classmatesCardViewLogged = false;
+  async function loadClassmatesToday() {
+    if (!client || !state.user) return;
+    const s = state.classmatesToday;
+    s.loading = true; s.error = false;
+    classmatesCardViewLogged = false;
+    rerender();
+    const { data, error } = await client.rpc("attendance_classmates_today", { p_limit: CLASSMATES_TODAY_LIMIT });
+    s.loading = false; s.loaded = true;
+    // Silently omitted on a failed fetch, the same choice people_suggestions
+    // makes for its own strip: a secondary surface that failed is worse than
+    // a surface that is not there, and a retry button on a card most members
+    // will never see is a permanent fixture built out of an error path.
+    if (error) { s.error = true; s.items = []; return rerender(); }
+    // Rendered in the order returned. attendance_classmates_today() orders by
+    // recorded_at desc then display name then id - a total order, so the cut
+    // at p_limit is the server's and re-sorting here would throw away the one
+    // ordering decision the function actually made.
+    s.items = (Array.isArray(data) ? data : []).filter(Boolean);
+    rerender();
+  }
+  function classmateRowHtml(item) {
+    const name = item.display_name || (item.handle ? "@" + item.handle : "חבר/ה");
+    // avatar_url rides along in state and is not drawn: avatarHtml() is the
+    // one avatar renderer in this file and it is initials-only for every
+    // member row in the app today. When profile photos land, that helper
+    // changes once and this row follows for free.
+    //
+    // THE FOLLOW CONTROL IS ALWAYS RENDERED, and that is the one place this
+    // row deliberately differs from memberRowHtml()/followListRowHtml(),
+    // which both write `allow_follows === false ? "" : button`. Those two read
+    // profiles directly and get the column; attendance_classmates_today()
+    // returns four keys and allow_follows is not one of them, on purpose -
+    // contracts.md: "this is not a follow strip, it is 'who trained today',
+    // and hiding a classmate who simply does not want followers would be
+    // wrong." Copying the guard here would compare undefined to false, never
+    // hide anything, and read as if it were doing something. So the control
+    // is shown for everyone and a refusal is the server's to make:
+    // follows_insert_self (202608280003) enforces allow_follows on the
+    // insert, and follow() already turns a rejected write into the same
+    // "עדכון המעקב נכשל" message every other follow button in this file
+    // produces. No new follow mechanism, no new error path, no pre-filter
+    // that would leak another member's setting into the card.
+    return `<div class="log-row" data-classmate-user="${safeText(item.user_id)}">
+      <button class="link-btn" data-community-action="view-profile" data-id="${safeText(item.user_id)}" style="padding:0;display:flex;gap:10px;align-items:center;color:inherit;text-align:right;">
+        ${avatarHtml(name, 32)}
+        <span style="min-width:0;"><span style="font-weight:700;display:block;">${safeText(name)}</span>${item.handle ? `<span style="color:var(--steel);font-size:12px;">@${safeText(item.handle)}</span>` : ""}</span>
+      </button>
+      <div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="follow" data-id="${safeText(item.user_id)}">מעקב</button></div>
+    </div>`;
+  }
+  function renderClassmatesTodayCard() {
+    const s = state.classmatesToday;
+    // The three no-card branches, all of which return the same empty string:
+    // a failed fetch, a load that has not answered yet, and an answer with no
+    // rows. The middle one is why there is no skeleton here - see below.
+    //
+    // This first line is belt-and-braces and says so: loadClassmatesToday()
+    // already empties items on an error, so the `!s.items.length` check below
+    // would catch it anyway. It is written out because "error omits the card"
+    // is one of COMM-307's four named frontend states, and a state that is
+    // only satisfied as a side effect of another branch is one refactor away
+    // from becoming a retry button.
+    if (s.error) return "";
+    // LOADING RENDERS NOTHING, deliberately, and this is the one frontend
+    // state where COMM-307's wording and COMM-115's actual slot disagree, so
+    // it is written down rather than left to a reader to notice. The other
+    // card in this slot (renderUpcomingEventCard, COMM-217) has no skeleton
+    // either: a card that is omitted entirely more often than it renders
+    // cannot hold a placeholder open, because the placeholder would then be
+    // the thing most members see - a grey box that appears on every visit to
+    // the Feed sub-tab and vanishes. show_attendance defaults to FALSE, so
+    // out of the box this card is empty for every member of the club, which
+    // makes "usually nothing" the common case and not the edge one. Reusing
+    // the log-list skeleton the directory and the boards use would be reusing
+    // the wrong pattern for this slot; the pattern this slot actually has is
+    // the upcoming-event card's, and it is to show nothing until there is
+    // something. A reload with rows already on screen keeps them (the
+    // condition is `!s.items.length`), the same way the leaderboard holds its
+    // previous rows under a refresh.
+    if (!s.items.length) return "";
+    return `<div class="chart-card" style="margin-top:10px;margin-bottom:10px;" data-classmates-today="ready">
+      <div style="font-weight:800;font-size:14px;">💪 התאמנו היום גם</div>
+      <div class="log-list" style="margin-top:8px;">${s.items.map(classmateRowHtml).join("")}</div>
+    </div>`;
+  }
+  // COMM-307's analytics, called from afterRenderCommunity() for the same
+  // reason noteClubTabView() is: that hook is the only place cloud.js learns
+  // the card is actually on screen, rather than merely fetched. It is
+  // recorded once per load of the card (the guard above), it carries the row
+  // count and the surface and nothing member-identifying, and it does NOT
+  // count for WCAM - see ACTIVE_MEMBER_EVENTS in src/analytics.js and the
+  // reasoning leaderboard_viewed already uses: viewing is not participation.
+  function noteClassmatesCardView() {
+    if (classmatesCardViewLogged) return;
+    if (!state.user || !state.profile) return;
+    if (!document.querySelector('[data-classmates-today="ready"]')) return;
+    classmatesCardViewLogged = true;
+    track(A.CLASSMATES_CARD_VIEWED, { rows: state.classmatesToday.items.length, source: "feed" });
+  }
+
   // ---- COMM-221 weekly recap surface + share ---------------------------
   // Reachable from (a) the weekly_recap notification's deep link
   // (resolveNotifTarget below) and (b) the "View Week" entry point in the
@@ -6843,6 +7007,15 @@
     // COMM-217: the soonest published, non-cancelled upcoming event, or
     // nothing at all - never an empty placeholder.
     const upcomingEventHtml = renderUpcomingEventCard();
+    // COMM-307: who else logged a session today, or - far more often -
+    // nothing at all. Same chart-card shell and same "renders nothing"
+    // omission style as the upcoming-event card above; it sits ABOVE the feed
+    // list rather than beside that card because it is a post-class moment
+    // ("right after logging a session, a member sees who else trained today")
+    // and a moment buried under twenty ranked posts is not a moment.
+    // renderClassmatesTodayCard() is the only thing that decides whether it
+    // exists, so there is no branch here.
+    const classmatesTodayHtml = renderClassmatesTodayCard();
 
     // COMM-111 filter chips. My Classes is rendered disabled, tied to
     // COMM-P01, and setFeedScope refuses it on the way in as well.
@@ -6877,7 +7050,7 @@
         ${state.feedMoreError ? `<div class="footer-note" role="alert" style="text-align:center;color:var(--red);">לא ניתן היה לטעון עוד.</div>` : ""}
         <div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="feed-load-more"${state.feedLoadingMore ? " disabled" : ""}>${state.feedLoadingMore ? "טוען…" : state.feedMoreError ? "ניסיון חוזר" : "טעינת עוד"}</button></div>`;
     const composeBtn = `<button class="chip-btn primary" data-community-action="open-composer" style="margin:0 0 10px;">כתיבת פוסט</button>`;
-    const feedHtml = `<div class="ach-section">${sectionHead("var(--blue)", "הפיד שלי")}${composeBtn}${filterHtml}${feed}${upcomingEventHtml}${feedMoreHtml}</div>`;
+    const feedHtml = `<div class="ach-section">${sectionHead("var(--blue)", "הפיד שלי")}${composeBtn}${filterHtml}${classmatesTodayHtml}${feed}${upcomingEventHtml}${feedMoreHtml}</div>`;
 
     // COMM-155. The pinned strip sits above everything else on the Club home.
     const feedTab = renderPinnedStrip() + renderOnboardingStep() + clubTopHtml + announcementsHtml + feedHtml;
@@ -7156,6 +7329,19 @@
     // COMM-232. The suggestions strip now renders on the Directory sub-tab -
     // see the PLACEMENT NOTE above renderPeopleSuggestions().
     if (state.communityTab === "directory" && state.user && !state.peopleSuggestions.loaded && !state.peopleSuggestions.loading) loadPeopleSuggestions();
+    // COMM-307. The trained-with-you card, on the same lazy sub-tab pattern
+    // as the four loads above rather than in refreshSession()'s boot
+    // Promise.all beside loadEvents(). Three reasons, all of them about this
+    // particular call: show_attendance defaults to false, so for most of the
+    // club the answer is an empty set and a boot round-trip buys nothing;
+    // the boot batch is what first paint waits on, and this card is not
+    // first-paint content; and the member's own attendance row for today is
+    // written by the private_records trigger behind flushOutbox(), which
+    // runs AFTER that batch, so asking during boot could ask before the row
+    // that anchors the whole join exists. Asking when the Feed sub-tab is
+    // actually on screen asks once, late enough, and only of members looking
+    // at the surface the card lives on.
+    if (state.communityTab === "feed" && state.user && !state.classmatesToday.loaded && !state.classmatesToday.loading) loadClassmatesToday();
     // COMM-212. The hide-my-result checkbox persists per device on change,
     // the same no-save-button pattern the privacy toggles below use - except
     // this one writes localStorage, never the server.
@@ -7200,6 +7386,11 @@
     // runs when a notification routes to a tab the member never looked at.
     // noteClubTabView() de-dupes, so running on every render is harmless.
     noteClubTabView();
+    // COMM-307. Same hook, same reason, same de-duping shape: the card is
+    // "viewed" when it is in the document with rows in it, which is a fact
+    // only this hook can see. Runs on every render and records at most once
+    // per load of the card.
+    noteClassmatesCardView();
     // COMM-141. Re-arm the own-row notification channel; setCommunityTab
     // tears every channel down, so this self-heals the same way the feed
     // observers above do.
@@ -7506,7 +7697,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.notifPushSub = null; state.notifPushChecked = false; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} }; state.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false };
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.notifPushSub = null; state.notifPushChecked = false; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} }; state.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false }; state.classmatesToday = { items: [], loading: false, loaded: false, error: false }; classmatesCardViewLogged = false; /* COMM-307: the next member to sign in on this device gets a fresh card and a fresh classmates_card_viewed, never the previous session's rows or its already-counted view. */
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();

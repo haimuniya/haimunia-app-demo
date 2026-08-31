@@ -27,6 +27,13 @@ const SPEC_77_EVENTS = [
   // mechanism (202608310001), bridged off ATTENDANCE_RECORDED, and it counts
   // toward WCAM.
   "attendance_recorded",
+  // COMM-307. Not a spec 77 name either, and for a related reason: the
+  // surface it measures could not exist until attendance did. The
+  // trained-with-you card in the feed top area was shown with at least one
+  // classmate on it. Unlike attendance_recorded it does NOT count toward
+  // WCAM - viewing a card is not participation, the same reading
+  // leaderboard_viewed has always had.
+  "classmates_card_viewed",
 ];
 
 // An object built inside the jsdom window carries that realm's

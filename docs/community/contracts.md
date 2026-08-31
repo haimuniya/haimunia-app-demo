@@ -287,9 +287,11 @@ client was already built against.
 
 ### attendance_classmates_today(p_limit int default 6) returns setof jsonb
 
-- Shipped in 202608310005. COMM-307, closing COMM-P05. **Schema half only** —
-  the feed-top card, the follow action and the `classmates_card_viewed`
-  analytics event are the client half and are still open.
+- Shipped in 202608310005. COMM-307, closing COMM-P05. **Both halves are now
+  in.** The client half landed in `cloud.js` in the same ticket: the
+  trained-with-you card in COMM-115's feed top area, the follow action reusing
+  `follow()` (COMM-230) and the `classmates_card_viewed` event. See "The
+  client's side of this contract" at the end of this entry.
 - Purpose: "who else trained today". Members other than the caller who have an
   `attendance_log` row for `current_date`, returned only when the caller has
   one too.
@@ -380,6 +382,34 @@ client was already built against.
 - Side effects: none, `stable`.
 - Backed by `attendance_log_club_day_idx` (202608310001), which named this read
   when it was created.
+- **The client's side of this contract** (`cloud.js`, COMM-307's client half):
+  - One call per feed session, `p_limit: 6` passed explicitly rather than
+    defaulted — the clamp is the server's, the number the card wants lives at
+    the card. Issued from `afterRenderCommunity()` when the Feed sub-tab is on
+    screen, on the same lazy pattern the consistency board and the directory
+    use, **not** from `refreshSession()`'s boot batch: the member's own row for
+    today is written by the `private_records` trigger behind `flushOutbox()`,
+    which runs after that batch, so a boot-time call could ask before the row
+    that anchors the join exists.
+  - **Empty, failed and not-yet-answered all render nothing** — no heading, no
+    empty state, no retry, no skeleton. `people_suggestions`' own error choice,
+    and COMM-232's "on no signal, show nothing" for the empty case. The client
+    does not try to tell the three server-side empties apart and has no
+    client-side notion of "today" at all.
+  - **The Follow control is rendered for every row**, unlike
+    `memberRowHtml()`/`followListRowHtml()`, which guard on `allow_follows`.
+    That is a direct consequence of the "no `allow_follows` key" decision two
+    bullets up: there is nothing to guard on, `follows_insert_self` refuses the
+    insert server-side, and `follow()` already surfaces a refused write the
+    same way it does everywhere else. No pre-filter, so no other member's
+    setting leaks into the card.
+  - **No Message affordance**, per the phase's standing no-messaging
+    resolution.
+  - `classmates_card_viewed` (`rows`, `source`) fires once per load of the
+    card, from the render hook rather than the fetch, and only when the card is
+    on screen with rows on it. Not in `ACTIVE_MEMBER_EVENTS` — see
+    `docs/community/metrics.md`.
+  - Covered by `test/community-classmates-today.test.mjs`.
 
 ### feed_record_impressions(p_rows jsonb) returns void
 
@@ -3237,11 +3267,12 @@ What a dependent ticket needs to know changed between the two:
     never a raise. COMM-307's acceptance criteria stated the behaviour but not
     where it lives; it lives server-side because every boundary in this module
     does. Full reasoning in the contract above.
-  - **Still open: COMM-307's client half.** The feed-top card (COMM-115's
-    slot), the follow action reusing `follow()` (COMM-230) and the
-    `classmates_card_viewed` analytics event in `metrics.md` are not built.
-    Nothing in this ticket's schema half depends on them, and nothing else in
-    Phase 3 depends on them either.
+  - ~~**Still open: COMM-307's client half.**~~ — **also SHIPPED**, in the
+    same ticket: the feed-top card in COMM-115's slot, the follow action
+    reusing `follow()` (COMM-230) and the `classmates_card_viewed` event with
+    its `metrics.md` row. The built contract for it is the last bullet of
+    "### attendance_classmates_today(p_limit int default 6) returns setof
+    jsonb" above.
 - `member_feed_weights(user_id uuid pk, weights jsonb not null default
   '{}', computed_at timestamptz not null default now())` — own-row select
   only, no client write grant. `feed_page` re-created again to read it and

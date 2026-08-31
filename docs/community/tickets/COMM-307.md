@@ -2,7 +2,7 @@
 
 Phase: 3
 Agent: feed
-Status: schema half in review (202608310005) — client half still todo
+Status: review — both halves in (schema 202608310005, client `cloud.js`)
 Attendance-blocked: was — unblocked by COMM-300
 
 Closes the parked COMM-P05, and is the second half of the forward reference
@@ -84,9 +84,27 @@ empty set, never a raise, and a direct `profiles` column read because
 toggle), and the row order is most-recently-logged first with a display-name
 then id tie-break.
 
-**None of the acceptance criteria above are ticked**, deliberately: every one
-of them is about the card, the follow action or the analytics event, and all
-three are still to build.
+**Client half shipped 2026-08-31** in `cloud.js` and `src/analytics.js`, with
+`test/community-classmates-today.test.mjs` (11 tests; node suite 791/790/1/0 →
+802/801/1/0) and the `classmates_card_viewed` row in
+`docs/community/metrics.md`. Every acceptance criterion above is now met. Three
+decisions this half made that the criteria stated without settling, all written
+up in `docs/community/contracts.md` under the function's own entry and in
+`backlog.md`'s Phase 3 handoff section:
+
+- **The Follow control renders on every row**, because the function returns no
+  `allow_follows` key to pre-filter on and `follows_insert_self` enforces the
+  toggle server-side. Copying the directory's `allow_follows === false ? "" :
+  button` guard would compare `undefined` to `false` and hide nothing while
+  looking like it did.
+- **Loading renders nothing**, not a skeleton. "The feed top area's existing
+  skeleton pattern (COMM-115)" was read as the pattern that slot actually has —
+  the upcoming-event card has no skeleton either — because `show_attendance`
+  defaults to false, which makes the omitted card the common case and a
+  placeholder the thing most members would see.
+- **The card sits above the feed list**, not beside the upcoming-event card
+  below it, because this ticket's own user outcome is a post-class moment and a
+  moment under twenty ranked posts is not one.
 
 ## Validation rules and limits
 

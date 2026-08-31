@@ -699,7 +699,7 @@ staff-confirmed check-in.
 | COMM-302 | Recurring classmate score once attendance lands | feed | was — unblocked by COMM-300 | review |
 | COMM-303 | Personalized feed ranking and per-user weights | feed | no | todo |
 | COMM-306 | Consistency leaderboard on verified attendance | feed | was — unblocked by COMM-300 | review |
-| COMM-307 | Post-class trained-with-you card | feed | was — unblocked by COMM-300 | schema half in review — **client half still todo** |
+| COMM-307 | Post-class trained-with-you card | feed | was — unblocked by COMM-300 | review — **both halves in; the client half landed too** |
 
 **COMM-301 is in review.** Shipped as `202608310002_relationship_score.sql`,
 with `supabase/tests/0038_relationship_score_test.sql` (26 assertions) and no
@@ -746,13 +746,12 @@ outline: `community_profile`'s `current_streak` key is gated on that toggle
 too, because the number is attendance-derived now — see the handoff section
 below. `training_frequency` and `recent_workouts` are untouched.
 
-**COMM-307's SCHEMA HALF is in review. Its client half is not built and
-COMM-P05 is not closed.** Shipped as
+**COMM-307 is in review — BOTH HALVES — and it closes the parked COMM-P05.**
+The schema half shipped as
 `202608310005_attendance_classmates_today.sql`, with
 `supabase/tests/0041_attendance_classmates_today_test.sql` (35 assertions).
 One new function, `attendance_classmates_today(p_limit int default 6)`, and
-nothing else: no new table, no re-created function, no changed signature, no
-client call moved, so the node suite is unchanged at 791/790/1/0. It joins
+nothing else: no new table, no re-created function, no changed signature. It joins
 `attendance_log` to itself on `occurred_on = current_date` and returns
 `{user_id, display_name, handle, avatar_url}` for every other member who
 trained today, gated per candidate by
@@ -764,11 +763,46 @@ own** `show_attendance` is enforced inside the function (empty set, never a
 raise) rather than left to the client, and `p_limit` clamps 1..20 defaulting
 to 6.
 
-**Still open for the feed agent**, and deliberately not started here: the
-feed-top-area card in COMM-115's slot, the follow action reusing `follow()`
-(COMM-230), and the `classmates_card_viewed` row in
-`docs/community/metrics.md`. That is the same two-phase split every other
-Phase 2/3 cluster used. Nothing else in Phase 3 is waiting on either half.
+**The client half has now landed too**, in `cloud.js`, `src/analytics.js` and
+`docs/community/metrics.md`, with `test/community-classmates-today.test.mjs`
+(11 tests). The node suite moves 791/790/1/0 → **802/801/1/0**. What is in it:
+
+- The card in COMM-115's feed top area, above the feed list, in the same
+  `chart-card` shell and the same "renders nothing at all" omission style as
+  the upcoming-event card (COMM-217) that shares the slot. One
+  `attendance_classmates_today({ p_limit: 6 })` per feed session, issued from
+  `afterRenderCommunity()` on the Feed sub-tab — the lazy pattern the
+  consistency board and the directory already use, **not** `refreshSession()`'s
+  boot batch, because the caller's own row for today is written by the
+  `private_records` trigger behind `flushOutbox()`, which runs *after* that
+  batch. Rendered in the order returned; never re-sorted.
+- **Four ways to get no card, one behaviour.** Empty set, caller did not train,
+  caller's own `show_attendance` off, failed fetch — all render nothing at all.
+  No heading, no empty state, no retry, and no skeleton either: the slot's
+  other occupant has none, and `show_attendance` defaults to false, so a
+  placeholder would be the thing most members actually see. The client makes no
+  attempt to tell the three server-side empties apart; it cannot, by design.
+- **The Follow control is rendered on every row**, unlike `memberRowHtml()` and
+  `followListRowHtml()`, which guard on `allow_follows`. The RPC returns four
+  keys and `allow_follows` is not one of them, on purpose (contracts.md: "this
+  is not a follow strip"), so there is nothing to guard on;
+  `follows_insert_self` refuses the insert server-side and the existing
+  `follow()` error path reports it exactly as it does everywhere else. No new
+  follow mechanism and no client pre-filter that would leak another member's
+  setting into the card.
+- No Message affordance, per the standing no-messaging resolution — asserted,
+  not just absent.
+- `classmates_card_viewed` (`rows`, `source`), once per load of the card and
+  never per re-render, fired from the render hook rather than the fetch because
+  a fetch that answered is not yet a view. **Not** in `ACTIVE_MEMBER_EVENTS`:
+  viewing a card is not participation (`leaderboard_viewed`'s reasoning), and
+  the training behind it is already counted once as `attendance_recorded`.
+
+One thing a reviewer should look at rather than skim: **the ticket's "Loading:
+the feed top area's existing skeleton pattern (COMM-115)" was read as "the
+pattern that slot actually has", which is no skeleton.** See the comment in
+`renderClassmatesTodayCard()`. Nothing else in Phase 3 is waiting on either
+half.
 
 COMM-301 extracts `feed_page`'s already-inline relationship arithmetic
 (202608280019) into a reusable `relationship_score()` helper with no ranking
@@ -932,6 +966,15 @@ Updated 2026-08-31, third pass: **COMM-P02 is closed** by COMM-306
 count weeks a member actually trained, from `attendance_log`, instead of weeks
 they posted a workout or a PR. The row stays in the table above for the same
 reason; five remain open and unblocked.
+
+Updated 2026-08-31, fourth pass: **COMM-P05 is closed** by COMM-307
+(202608310005 plus the client half in `cloud.js`). The post-class
+trained-with-you card exists: `attendance_classmates_today()` answers "who else
+logged a session today" from `attendance_log`, and the card in COMM-115's feed
+top area renders it — or, far more often, renders nothing at all, which is the
+whole design. Unlike the three closures above, this one needed both halves;
+the schema half alone would not have closed it. The row stays in the table
+above for the same reason; four remain open and unblocked.
 
 ## Phase 0 schema handoff for qa (COMM-019)
 
@@ -1502,17 +1545,17 @@ One thing differs from COMM-306's own migration outline, which named the
 | community_profile, training_frequency and recent_workouts | **The boundary COMM-306 draws by exclusion**, asserted rather than left as a comment: both still read `workout_posts`, both are still under `show_workout_results` alone, and both are **still present on a profile whose `current_streak` the attendance toggle has just removed**. Plus the two halves shown apart: a member whose only activity is posts has `training_frequency` and a 0 streak; a member who trains and never posts has a real streak and no `training_frequency` at all. The two numbers answer different questions and did not merge. A static pin backs it — `community_profile`'s body mentions both tables. |
 | The two copies still cannot drift | 0034's original pin (the caller's own board value equals their `community_profile` `current_streak`) is re-run against the new source and kept. 0040 widens it to the whole board at once: an `is_empty` over every ranked member whose value disagrees with the streak their own profile publishes, with an `isnt_empty` beside it so an all-zero fixture cannot pass it vacuously — the shape 0038 established. Readable set-wide only because every fixture member has both profile toggles on. |
 
-### Trained-with-you today (202608310005, COMM-307 — SCHEMA HALF ONLY)
+### Trained-with-you today (202608310005, COMM-307)
 
 No new table, so no new RLS policy: one new function and not one existing
 function re-created. `supabase/tests/0041_attendance_classmates_today_test.sql`
-(35 assertions) runs every boundary below on `migration-check`. There is no
-client half **yet** — and unlike COMM-301, COMM-302 and COMM-306, that is
-because it has not been built, not because the ticket does not need one.
-COMM-307's card, its follow action and its `classmates_card_viewed` event are
-still open for the feed agent, so **do not read this section as the ticket
-being done**. The node suite is unchanged at 791/790/1/0 because nothing on
-the client moved, which is the expected state of a schema half.
+(35 assertions) runs every boundary below on `migration-check`. Unlike
+COMM-301, COMM-302 and COMM-306, this ticket does need a client half, and it
+now has one: the card, the follow action and the `classmates_card_viewed`
+event landed in the same ticket, covered by
+`test/community-classmates-today.test.mjs` (11 tests, node suite
+791/790/1/0 → 802/801/1/0). The boundaries below are still the schema half's;
+the client half's own are the last row of the table.
 
 **Two things the ticket left to this half to decide**, both settled here and
 both worth a reviewer's attention rather than a skim:
@@ -1552,7 +1595,7 @@ both worth a reviewer's attention rather than a skim:
 | Self exclusion | The caller never appears in their own results. A member is not their own classmate — the same self-exclusion `classmate_day_counts()` and `relationship_score()` both keep. |
 | p_limit, the clamp | Asserted against a pool of **27 eligible candidates** (25 extra opted-in members inserted for this section alone), so the upper clamp is a real cut and not "all of them": default 6, `3` → 3, `null` → 6, `0` → 1, `-5` → 1, `50` → 20. Zero clamping **up** to 1 rather than returning an empty card is deliberate — an empty card would look exactly like a member who trained alone. For qa: the clamp range is fixed server-side now, so the client half can lower the default it passes but cannot widen the range. |
 | The order | Most recently recorded first (`attendance_log.recorded_at`), then display name falling back to handle, then id. Asserted across two fixture groups with different `recorded_at` values, so both the recency ordering **and** the alphabetical tie-break inside a tied group are exercised — a fixture that let `recorded_at` default would tie every row, since `now()` is frozen for the transaction, and the documented order would never run. Every member in the set trained today so there is no signal to rank by and the order is a choice: an alphabetical cut would show the same few members every single day in a club bigger than `p_limit`. `recorded_at` is when the row was written, not when the member trained — `attendance_log` records a day, not a time — which is why it is only the first key of a total order and not a claim the card makes. |
-| **Not yet covered: COMM-307's client half** | Flagged for qa as an open gap, not an omission. The card in COMM-115's feed-top slot, its omitted/loading/error/populated states, the follow action reusing `follow()` (COMM-230), the standing no-messaging rule, and the `classmates_card_viewed` event and its `metrics.md` row are all unbuilt. There is no `test/*.test.mjs` for this ticket yet and there should not be one until that half lands. |
+| COMM-307's client half | Now built, in `test/community-classmates-today.test.mjs` (11 tests) rather than pgTAP. What qa should re-check by hand rather than trust the test names for: **the omission**, which has four separate paths to the same nothing (empty set, caller did not train today, caller's own `show_attendance` off, failed fetch) and no heading, empty state, retry or skeleton in any of them — a regression here shows up as a stray grey box on the Feed sub-tab for members who never opted in, since `show_attendance` defaults false and the empty card is the common case, not the edge one. **The Follow control**, which is rendered on every row and deliberately does *not* copy the `allow_follows === false ? "" : button` guard the directory and following lists use, because the RPC has no such key and copying it would compare `undefined` to `false` and read as if it were doing something; `follows_insert_self` is the real gate. **No Message affordance**, asserted on the card and on the whole surface. **`classmates_card_viewed`**, once per load and not per re-render, absent entirely when there is no card, carrying a row count and a source and no member identity, and **not** in `ACTIVE_MEMBER_EVENTS`. Also worth a look: the client passes `p_limit: 6` explicitly rather than defaulting, so the card-sized number lives at the card; and there is no client-side date arithmetic anywhere, so "today" is only ever the server's. |
 
 ## Open questions for the user
 

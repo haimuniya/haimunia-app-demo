@@ -94,6 +94,16 @@ than letting a new event default in or out:
 - `push_opt_in` does not. Changing a notification setting is account
   configuration.
 
+COMM-307 reviewed `classmates_card_viewed` against the same bar and it does
+**not** count, on the `leaderboard_viewed` reasoning above. Two things make it
+a clearer no than most: the card appearing is not an action the member took -
+it is a fact about their training and somebody else's - and the training that
+produced it is already counted once, as `attendance_recorded`, so counting the
+card too would count one session twice and would also let another member's
+session make this member active. Acting *from* the card does count, through
+`member_followed` and `profile_opened`, which is where the participation
+actually is.
+
 The qualifying event names are `ACTIVE_MEMBER_EVENTS` in `src/analytics.js`,
 and `isActiveMemberEvent(name)` answers for one name. They are kept as data
 so a rollup query and the client cannot drift apart. The WCAM column in the
@@ -150,6 +160,7 @@ WCAM marks the events that make a member active for the week.
 | `coach_congratulate_sent` | `congratulateCelebrateItem()` after the comment or post write succeeds | `kind`, `via` (`comment`, `post`) | yes, for the coach |
 | `directory_opened` | Entering the Directory sub-tab | `source` (`club_tab`, `leaderboard`) | no |
 | `attendance_recorded` | Bus, `ATTENDANCE_RECORDED`, emitted by `flushOutbox()` after a session-bearing `private_records` upsert succeeds (COMM-300) | `occurred_on` | yes |
+| `classmates_card_viewed` | `afterRenderCommunity()`, once per load of COMM-307's trained-with-you card, and only when it renders with at least one classmate on it | `rows`, `source` (`feed`) | no |
 
 ### Events that come from the bus
 
@@ -219,6 +230,17 @@ grain the `attendance_log` table stores.
   day are one attendance day server-side and one event here. It is emitted
   only after the `private_records` upsert succeeds - a failed sync is not a
   session - and never for a soft-delete.
+- `classmates_card_viewed` rides the same once-per-entry guard shape as
+  `club_tab_viewed`, keyed to the card's own load rather than to a sub-tab: a
+  cheer, a comment arriving over realtime or a photo URL resolving all
+  re-render the feed and none of them is a second view. It fires from
+  `afterRenderCommunity()` and not from the fetch, because the card only
+  exists once it is in the document - a fetch that answered with rows is not
+  yet a view. It never fires for an empty or failed `attendance_classmates_today()`,
+  since there is no card at all in either case, which means "card impressions"
+  and "how often the card had anything to show" are the same number by
+  construction. `rows` is a count, never the members: the card's whole content
+  is other people's identities and none of it reaches `analytics_events`.
 
 ## Core metrics
 
@@ -265,6 +287,13 @@ plus the community tables, with no new event name.
   celebrate items the dashboard offered.
 - Push adoption, `push_opt_in` per week against the unrevoked rows in
   `push_subscriptions`.
+- Trained-with-you reach, `classmates_card_viewed` per week with `rows` as the
+  size of the overlap it found, against `attendance_recorded` for the share of
+  training days that produced a card at all. A low ratio is `show_attendance`
+  adoption, not a broken card: the toggle defaults to false and both sides of
+  every pair have to have flipped it. `member_followed` and `profile_opened`
+  in the same session are the conversion off it, and neither carries a prop
+  saying the card was the source - the card's own event is the denominator.
 
 The section 79 list in the product spec was not in this repo when this doc
 was written, so the set above is what the shipped event schema supports.

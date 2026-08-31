@@ -69,6 +69,17 @@
     // private log reaching the server. Carries the calendar day and nothing
     // else - never the workout title, never the result.
     ATTENDANCE_RECORDED: "attendance_recorded",
+    // COMM-307, Phase 3. The trained-with-you card in the feed top area was
+    // shown with at least one classmate on it. A new name rather than a reuse
+    // of leaderboard_viewed or event_viewed, which were the two candidates:
+    // both of those are "a member looked at a named object" and both feed
+    // existing metrics.md queries (leaderboard pull, event pull), so folding a
+    // passive feed card into either would silently inflate a number that
+    // already means something else. The card is also the only surface in the
+    // app whose whole point is that it usually does not exist, which makes
+    // "how often did it exist, and how many people were on it" a question no
+    // other event can answer.
+    CLASSMATES_CARD_VIEWED: "classmates_card_viewed",
   });
   const KNOWN = new Set(Object.values(EVENTS));
 
@@ -103,6 +114,17 @@
   // This is the one qualifying activity WCAM has been missing since Phase 0,
   // and the only one on this list that can be true for a member who never
   // opened the Community tab.
+  //
+  // COMM-307 adds classmates_card_viewed and it does NOT count, on exactly
+  // the reasoning leaderboard_viewed already uses: viewing is not the bar the
+  // definition sets. The card appearing is not something the member did - it
+  // is something their training and somebody else's happened to make true -
+  // and the training that produced it is already counted, once, as
+  // attendance_recorded. Counting the card too would count one member's
+  // session twice and would also make a member active for a week on the
+  // strength of another member's session. A follow or a profile open from the
+  // card counts, through member_followed and profile_opened, because those
+  // are the member acting.
   const ACTIVE_MEMBER_EVENTS = Object.freeze([
     EVENTS.POST_CREATED,
     EVENTS.WORKOUT_SHARED,
@@ -205,6 +227,11 @@
     [EVENTS.PUSH_OPT_IN]: ["source", "pref_type"],
     [EVENTS.COACH_CONGRATULATE_SENT]: ["kind", "via"],
     [EVENTS.DIRECTORY_OPENED]: ["source"],
+    // COMM-307. A count and a surface. Never a user_id, never a handle: the
+    // card's whole content is other members' identities, and a props
+    // allow-list is the thing that keeps them from riding along into a table
+    // whose read grant is community.analytics.view.
+    [EVENTS.CLASSMATES_CARD_VIEWED]: ["rows", "source"],
   });
 
   function projectHandProps(eventName, props) {
