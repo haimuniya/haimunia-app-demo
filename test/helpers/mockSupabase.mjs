@@ -122,7 +122,13 @@ export function createMockSupabase(seedTables = {}) {
       in(col, vals) { const set = new Set(vals || []); filters.push((r) => set.has(r[col])); return api; },
       or() { return api; },
       order(col, opts) { api._orderCol = col; api._orderAsc = !opts || opts.ascending !== false; return api; },
-      limit() { return api; },
+      // COMM-231. Was a no-op until the members directory needed a real
+      // page-size cap on a direct .from("profiles") read to test against
+      // (rather than an RPC, which every other paginated surface here
+      // already used and which the mock has always been able to cap
+      // per-call). Verified against the full suite before this change
+      // landed: nothing relied on the old no-op behavior.
+      limit(n) { api._limit = n; return api; },
       insert(payload) { mode = "insert"; pendingPayload = payload; return api; },
       upsert(payload, opts) { mode = "upsert"; pendingPayload = payload; api._onConflict = opts && opts.onConflict; return api; },
       update(payload) { mode = "update"; pendingPayload = payload; return api; },
@@ -166,6 +172,7 @@ export function createMockSupabase(seedTables = {}) {
         }
         let matched = rows(table).filter((r) => filters.every((f) => f(r)));
         if (api._orderCol) matched = matched.slice().sort((a, b) => (a[api._orderCol] > b[api._orderCol] ? 1 : -1) * (api._orderAsc ? 1 : -1));
+        if (api._limit != null) matched = matched.slice(0, api._limit);
         return { data: matched, error: null };
       },
       then(onFulfilled, onRejected) { return Promise.resolve(api._resolve()).then(onFulfilled, onRejected); },

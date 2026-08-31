@@ -347,8 +347,11 @@ test("COMM-212: friends scope with no mutual follows shows the follow-people sta
   const returned = await mock.client.rpc("feed_leaderboard", { p_mode: "consistency", p_scope: "friends", p_limit: 50 });
   assert.deepStrictEqual(returned.data.map((r) => r.user_id), ["u1"]);
   assert.match(board(window).textContent, /עקבו אחרי חברים כדי להשוות תוצאות\./);
+  // COMM-231. "Find people" now routes to the members directory rather than
+  // the Account tab's bare search box.
   board(window).querySelector('[data-community-action="leaderboard-find-people"]').click();
-  await waitFor(() => !!window.document.getElementById("communityPeopleSearch"), 4000);
+  await waitFor(() => !!window.document.getElementById("communityDirectorySearch"), 4000);
+  assert.ok(window.document.querySelector('[data-community-action="set-tab"][data-tab="directory"].active'));
 });
 
 test("COMM-212: hide-my-result is a render choice - it hides the caller's row, persists per device, and is never a query parameter", async () => {
@@ -433,7 +436,7 @@ test("COMM-232: the Account tab renders people_suggestions(10) in the order retu
     ],
   });
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openTab(window, "account");
+  await openTab(window, "directory");
   await waitFor(() => !!suggestionsStrip(window) && suggestionsStrip(window).dataset.peopleSuggestions === "ready", 4000);
   assert.deepStrictEqual(JSON.parse(JSON.stringify(mock.callsTo("people_suggestions"))), [{ p_limit: 10 }]);
   const cards = Array.from(suggestionsStrip(window).querySelectorAll("[data-suggestion-user]"));
@@ -454,7 +457,7 @@ test("COMM-232: Follow on a suggestion writes the follow edge through the same p
     ],
   });
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openTab(window, "account");
+  await openTab(window, "directory");
   await waitFor(() => !!suggestionsStrip(window) && !!suggestionsStrip(window).querySelector('[data-suggestion-user="u3"]'), 4000);
   suggestionsStrip(window).querySelector('[data-suggestion-user="u3"] [data-community-action="suggestion-follow"]').click();
   await waitFor(() => mock.db.follows.some((f) => f.follower_id === "u1" && f.followed_id === "u3"), 4000);
@@ -464,7 +467,7 @@ test("COMM-232: Follow on a suggestion writes the follow edge through the same p
 test("COMM-232: a member with no qualifying overlap sees the honest empty state, not a padded list", async () => {
   const mock = seeded();
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openTab(window, "account");
+  await openTab(window, "directory");
   await waitFor(() => !!suggestionsStrip(window) && suggestionsStrip(window).dataset.peopleSuggestions === "empty", 4000);
   assert.match(suggestionsStrip(window).textContent, /עדיין אין המלצות\. התחילו לבלות בקהילה כדי לקבל הצעות\./);
   assert.equal(suggestionsStrip(window).querySelector("[data-suggestion-user]"), null);
@@ -476,9 +479,9 @@ test("COMM-232: a failed people_suggestions omits the strip entirely - no headin
   const mock = seeded();
   mock.onRpc("people_suggestions", () => ({ data: null, error: { message: "boom" } }));
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openTab(window, "account");
+  await openTab(window, "directory");
   await waitFor(() => mock.callsTo("people_suggestions").length === 1, 4000);
-  await waitFor(() => !!window.document.getElementById("communityPeopleSearch"), 4000);
+  await waitFor(() => !!window.document.getElementById("communityDirectorySearch"), 4000);
   assert.equal(suggestionsStrip(window), null);
   assert.equal(window.document.body.textContent.includes("אנשים שאולי תכירו"), false);
   assert.equal(window.document.querySelector('[data-community-action="suggestion-follow"]'), null);

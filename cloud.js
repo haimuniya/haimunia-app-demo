@@ -133,7 +133,15 @@
     // (the function already ranks by strongest signal). busy holds the ids
     // of in-flight follows. An error leaves the strip omitted entirely, so
     // there is deliberately no retry affordance keyed off `error` here.
-    peopleSuggestions: { items: [], loading: false, loaded: false, error: false, busy: {} } };
+    peopleSuggestions: { items: [], loading: false, loaded: false, error: false, busy: {} },
+    // COMM-231 members directory. items is the paginated roster loaded so
+    // far (display_name order, cursor = the last row's own display_name,
+    // page size DIRECTORY_PAGE_SIZE). query is what the member typed, kept
+    // verbatim the same way searchQuery is. searchResults is
+    // community_search's members group once the query reaches
+    // SEARCH_MIN_CHARS, or null when the box is empty/under threshold (in
+    // which case the visible rows are a client-side filter over items).
+    directory: { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false } };
   const photoUrlCache = {};
 
   // COMM-141. The notification badge refreshes on a realtime own-row
@@ -1949,15 +1957,27 @@
     if (error) { state.profile[field] = prev; setMessage("לא ניתן לשמור הגדרה זו"); return; }
     setMessage("הגדרת הפרטיות נשמרה");
   }
+  // COMM-230. Returns { error } so a caller that needs to know whether the
+  // toggle actually succeeded (the following list's own optimistic
+  // remove/rollback) can tell, without a second write path: every follow or
+  // unfollow anywhere in the app - search, suggestions, the profile header,
+  // the directory, the following surface - still goes through this one
+  // function. Callers that never read the return value (most of them, still)
+  // are unaffected.
   async function follow(userId) {
-    if (!state.user) return;
+    if (!state.user) return { error: { message: "not signed in" } };
     const { error } = await client.from("follows").insert({ follower_id: state.user.id, followed_id: userId });
-    if (error && error.code === "23505") await client.from("follows").delete().eq("follower_id", state.user.id).eq("followed_id", userId);
+    let finalError = error || null;
+    if (error && error.code === "23505") {
+      const del = await client.from("follows").delete().eq("follower_id", state.user.id).eq("followed_id", userId);
+      finalError = del.error || null;
+    }
     // COMM-170. This control toggles: the 23505 branch above is an
     // unfollow, and a rejected insert is neither. Only a real new follow
     // edge is tracked, and there is no member_unfollowed in the event set.
     else if (!error) track(A.MEMBER_FOLLOWED, { user_id: userId });
-    await loadFeed(); setMessage(error && error.code !== "23505" ? "עדכון המעקב נכשל" : "המעקב עודכן");
+    await loadFeed(); setMessage(finalError ? "עדכון המעקב נכשל" : "המעקב עודכן");
+    return { error: finalError };
   }
   async function block(userId) {
     if (!state.user) return;
@@ -2337,11 +2357,10 @@
     const name = row.display_name || (row.handle ? "@" + row.handle : "חבר/ה");
     return `<div class="log-row" data-leaderboard-user="${safeText(row.user_id)}"${isSelf ? ` data-leaderboard-self="1" style="border-color:var(--energy);"` : ""}><span>${Number(row.rank)}. ${safeText(name)}${isSelf ? " (את/ה)" : ""}</span><span class="mono" style="color:var(--brass);">${formatValue(row)}</span></div>`;
   }
-  // COMM-212. The friends empty state points at the existing search UI on the
-  // Account tab, which is the only people-finding surface that exists today.
-  // TODO(COMM-231): once the members directory ships, this should point there
-  // as well (or instead) - the ticket names the directory first and search as
-  // the fallback, and the directory screen is the next cluster after this one.
+  // COMM-212 / COMM-231. The friends empty state points at the members
+  // directory, which is now the real people-finding surface (it ships its
+  // own search, reusing COMM-228, so nothing is lost by pointing here
+  // instead of the Account tab's search box).
   function leaderboardFriendsEmptyHtml() {
     return `<div class="empty" data-leaderboard-empty="friends">עקבו אחרי חברים כדי להשוות תוצאות.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="leaderboard-find-people">חיפוש אנשים</button></div></div>`;
   }
@@ -2390,13 +2409,12 @@
   // ==========================================================================
   // COMM-232 - "אנשים שאולי תכירו"
   // ==========================================================================
-  // PLACEMENT NOTE. COMM-232 says this strip belongs on the members directory
-  // (COMM-231). That screen does not exist yet - it is the next cluster after
-  // this one - so the strip lives on the Account sub-tab, directly under the
-  // COMM-228 search UI, which is the only people-finding surface shipped
-  // today. TODO(COMM-231): move (or additionally mount) renderPeopleSuggestions()
-  // on the directory screen when it lands; nothing here is Account-specific,
-  // it is one call and one string of markup.
+  // PLACEMENT NOTE. COMM-232 named the members directory (COMM-231) as this
+  // strip's real home; it rendered on the Account sub-tab only as a stand-in
+  // until that screen existed. Now that COMM-231 has shipped,
+  // renderPeopleSuggestions() is called from renderDirectorySection() only -
+  // moved, not duplicated, since a member who has already followed everyone
+  // suggested on one surface should not see the same cards again on another.
   //
   // The error state is unusual on purpose: the strip is omitted entirely
   // rather than showing a retry, because this is a secondary surface and a
@@ -2467,6 +2485,141 @@
     return `<div class="ach-section" style="margin-top:18px;" data-people-suggestions="ready">${head}
       <div class="flex gap-10" style="overflow-x:auto;padding-bottom:4px;align-items:stretch;">${s.items.map(suggestionCardHtml).join("")}</div>
     </div>`;
+  }
+
+  // ==========================================================================
+  // COMM-231 - members directory
+  // ==========================================================================
+  // A browsable, alphabetical roster of every club member with
+  // visible_to_club on - what search never was (search only ever answers
+  // "is there a member named X"; this answers "who is in this club").
+  // Paginated by display_name, page size DIRECTORY_PAGE_SIZE, cursor = the
+  // last row's own display_name (COMM-113's convention: the audit log's
+  // cursor is its last row's created_at the same way, with the same
+  // accepted duplicate-value edge case - this is not a new risk, it is the
+  // existing one, on a different column). The caller's own row is excluded,
+  // matching community_search's own convention: a member finds their own
+  // profile through the Account tab, not a roster of "everyone including
+  // me". A blocked member never appears - profiles_read_authenticated
+  // already drops a block edge in either direction, same as every other
+  // profiles read in this file.
+  const DIRECTORY_PAGE_SIZE = 40;
+  const DIRECTORY_ERROR_TEXT = "לא ניתן היה לטעון את רשימת החברים. נסו שוב.";
+  const DIRECTORY_EMPTY_TEXT = "אין חברים להצגה.";
+  async function loadDirectory(reset) {
+    if (!state.user) return;
+    const d = state.directory;
+    if (reset) { d.items = []; d.cursor = null; d.end = false; d.loaded = false; }
+    if (d.loading || d.loadingMore) return;
+    if (reset) d.loading = true; else d.loadingMore = true;
+    d.error = false;
+    rerender();
+    let q = client.from("profiles").select("id,handle,display_name,avatar_url,allow_follows,visible_to_club")
+      .neq("id", state.user.id).order("display_name", { ascending: true }).limit(DIRECTORY_PAGE_SIZE);
+    if (d.cursor) q = q.gt("display_name", d.cursor);
+    const { data, error } = await q;
+    d.loading = false; d.loadingMore = false;
+    // Set before the error check, same as loadAuditLog's own cursor read:
+    // a failed load still counts as "the first attempt happened", so the
+    // afterRenderCommunity() lazy-load trigger (gated on !d.loaded) does not
+    // re-fire this on every render and loop forever retrying a failure the
+    // member has not asked to retry yet.
+    d.loaded = true;
+    if (error) { d.error = true; rerender(); return; }
+    const raw = Array.isArray(data) ? data : [];
+    // Defence in depth, not a second real gate: profiles_read_authenticated
+    // already lets the caller's own row through regardless of
+    // visible_to_club (dropped above by neq()) and a real admin's read
+    // through regardless of the target's visible_to_club (is_admin() OR in
+    // the policy) - a roster of "everyone visible to the club" is not the
+    // right surface for an admin's widened read, so this filters strictly
+    // on the column itself rather than trusting the policy's own reason for
+    // returning the row.
+    const visible = raw.filter((r) => r && r.visible_to_club);
+    d.items = d.items.concat(visible);
+    d.cursor = raw.length ? raw[raw.length - 1].display_name : d.cursor;
+    d.end = raw.length < DIRECTORY_PAGE_SIZE;
+    rerender();
+    loadMemberRoles(visible.map((r) => r.id)).then(() => rerender());
+  }
+  let directorySearchToken = 0;
+  // Reuses community_search (COMM-228) for two characters or more - the
+  // same members group, the same sanitization, the same result shape
+  // searchMemberRowHtml already renders - rather than inventing a second
+  // search path. Below that threshold community_search would answer empty
+  // anyway (its own documented floor), so this falls back to a client-side
+  // substring filter over whatever page of the roster is already loaded,
+  // per the ticket's own "falling back to the existing client-side filter"
+  // clause. Clearing the box returns to the plain paginated roster.
+  async function directorySearch(query) {
+    const d = state.directory;
+    d.query = String(query || "");
+    const q = sanitizeSearchQuery(query);
+    const token = ++directorySearchToken;
+    if (q.length < SEARCH_MIN_CHARS) { d.searchResults = null; d.searchLoading = false; return rerender(); }
+    d.searchLoading = true;
+    rerender();
+    const { data, error } = await client.rpc("community_search", { p_query: q, p_limit: DIRECTORY_PAGE_SIZE });
+    if (token !== directorySearchToken) return; // a slower earlier keystroke must not overwrite a later one's results
+    d.searchLoading = false;
+    if (error) { d.searchResults = []; return rerender(); }
+    const members = (data && Array.isArray(data.members)) ? data.members : [];
+    d.searchResults = members;
+    rerender();
+    loadMemberRoles(members.map((m) => m.id)).then(() => rerender());
+  }
+  function directoryRows() {
+    const d = state.directory;
+    const q = String(d.query || "").trim();
+    if (!q) return d.items;
+    if (Array.isArray(d.searchResults)) return d.searchResults;
+    const needle = q.toLowerCase();
+    return d.items.filter((m) => (m.display_name || "").toLowerCase().indexOf(needle) >= 0 || (m.handle || "").toLowerCase().indexOf(needle) >= 0);
+  }
+  function directorySkeletonHtml(n) {
+    const row = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:52%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
+    return `<div class="log-list" aria-busy="true" data-directory-skeleton="1">${row.repeat(n || 6)}</div>`;
+  }
+  // Coach/head_coach members split to their own group above everyone else
+  // (COMM-160's badge, reused, not reinvented) - each group keeps the
+  // alphabetical order the roster (or the search result) already came back
+  // in, so splitting never re-sorts anything.
+  function splitDirectoryStaff(rows) {
+    const staff = [], rest = [];
+    rows.forEach((m) => (isCoachRole(memberRole(m.id)) ? staff : rest).push(m));
+    return { staff, rest };
+  }
+  function renderDirectorySection() {
+    const d = state.directory;
+    const q = String(d.query || "").trim();
+    const searchBox = `<input class="text-input" id="communityDirectorySearch" placeholder="חיפוש לפי שם" value="${safeText(d.query || "")}" aria-label="חיפוש חברים" style="margin-bottom:10px;"/>`;
+    const stillSearching = !!q && q.length >= SEARCH_MIN_CHARS && d.searchLoading && d.searchResults == null;
+    let body;
+    if (d.loading && !d.items.length) body = directorySkeletonHtml(6);
+    else if (d.error && !d.items.length) {
+      body = `<div class="empty" role="alert" data-directory-empty="error">${DIRECTORY_ERROR_TEXT}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="directory-retry">ניסיון חוזר</button></div></div>`;
+    } else if (stillSearching) {
+      body = directorySkeletonHtml(3);
+    } else {
+      const rows = directoryRows();
+      if (!rows.length) {
+        body = `<div class="empty" data-directory-empty="empty">${DIRECTORY_EMPTY_TEXT}</div>`;
+      } else {
+        const { staff, rest } = splitDirectoryStaff(rows);
+        const staffHtml = staff.length ? `<div class="log-list" data-directory-group="staff">${staff.map(searchMemberRowHtml).join("")}</div>` : "";
+        const restHtml = rest.length ? `<div class="log-list" data-directory-group="members"${staff.length ? ' style="margin-top:10px;"' : ""}>${rest.map(searchMemberRowHtml).join("")}</div>` : "";
+        // Paging only applies to the plain roster - a search result set
+        // (community_search or the client-side filter) is already the whole
+        // answer for that query, not a page of one.
+        const moreHtml = (!q && !d.end) ? `<div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="directory-more"${d.loadingMore ? " disabled" : ""}>${d.loadingMore ? "טוען…" : "טעינת עוד"}</button></div>` : "";
+        body = staffHtml + restHtml + moreHtml;
+      }
+    }
+    // COMM-232's suggestions strip lives here now - see the PLACEMENT NOTE
+    // above renderPeopleSuggestions(): this is the surface COMM-232 always
+    // named as its real home, the Account tab was only ever the stand-in
+    // until this screen existed.
+    return `<div class="ach-section">${sectionHead("var(--blue)", "חברי המועדון")}${searchBox}${body}</div>${renderPeopleSuggestions()}`;
   }
 
   // ---- COMM-228 grouped search -------------------------------------------
@@ -5306,7 +5459,23 @@
     // overlay is torn down and rebuilt on each open, so a re-render of an
     // already-open profile does not reach this line.
     track(A.PROFILE_OPENED, { user_id: userId, self: userId === (state.user && state.user.id) });
-    state.profileView = { userId, loading: true, tab: "overview", data: null, error: false };
+    // COMM-230. followLists holds the follower/following expand state for
+    // this open profile: one entry per side, each independently
+    // collapsed/loaded/erroring. Reset on every open, same as the rest of
+    // profileView, so a stale expanded list from a previously viewed member
+    // never bleeds into the next one.
+    state.profileView = {
+      userId, loading: true, tab: "overview", data: null, error: false,
+      followLists: {
+        followers: { open: false, loading: false, loaded: false, error: false, items: [] },
+        // actionError is separate from error: error means the list itself
+        // failed to load (the whole section falls back to the error state);
+        // actionError means the list loaded fine but the last unfollow tap
+        // failed, in which case the restored row stays visible and only a
+        // banner is added above it - tapping "הפסקת מעקב" again is the retry.
+        following: { open: false, loading: false, loaded: false, error: false, actionError: false, items: [] },
+      },
+    };
     rerender();
     const { data, error } = await client.rpc("community_profile", { user_id: userId });
     if (!state.profileView || state.profileView.userId !== userId) return;
@@ -5325,6 +5494,148 @@
   function closeCommunityProfile() { state.profileView = null; rerender(); }
   function setProfileViewTab(tab) { if (state.profileView) { state.profileView.tab = tab; rerender(); } }
   const PROFILE_ROLE_LABELS = { owner: "בעלים", admin: "מנהל/ת", staff: "צוות", head_coach: "מאמן/ת ראשי/ת", coach: "מאמן/ת", member: "חבר/ה" };
+
+  // ==========================================================================
+  // COMM-230 - following surface (follower/following lists on a profile)
+  // ==========================================================================
+  // The counts (follower_count/following_count) already come back from
+  // community_profile, gated by the same visible_to_club check the RPC
+  // applies to every other optional key - present on the caller's own
+  // profile, present on another member's only when it passes, absent
+  // otherwise, in which case this section renders nothing at all.
+  //
+  // The actual list of who is on each side is a *different* read: a direct
+  // RLS select on `follows`, per the ticket's own contract (no new RPC).
+  // follows_visible (202608260001) is `follower_id = auth.uid() or
+  // followed_id = auth.uid()` - it returns a row only when the caller is one
+  // of its two ends. For the caller's own profile that is exactly the two
+  // queries below (my followers = followed_id = me, who I follow =
+  // follower_id = me), so the list is complete and correct. For another
+  // member's profile it is not: RLS would silently narrow "their followers"
+  // down to "the one row that happens to also be me", which is not their
+  // follower list, it is a coin flip that looks like one. Rather than render
+  // a list that is quietly wrong, EXPAND is only offered on the caller's own
+  // profile; another member's profile keeps the plain count it already had
+  // pre-COMM-230. This is a deliberate scope call, not a partial
+  // implementation - enumerating a third party's real follower list would
+  // need a new definer RPC, which is out of this ticket's stated scope.
+  const FOLLOW_LIST_ERROR_TEXT = "לא ניתן היה לעדכן את המעקב. נסו שוב.";
+  const FOLLOW_LIST_EMPTY_TEXT = { followers: "עדיין אין עוקבים", following: "עדיין לא עוקבים אחרי אף אחד." };
+  function followListCanExpand(pv) { return !!(pv && state.user && pv.userId === state.user.id); }
+  async function loadFollowList(pv, side) {
+    const st = pv.followLists[side];
+    st.loading = true; st.error = false;
+    rerender();
+    const matchCol = side === "followers" ? "followed_id" : "follower_id";
+    const idCol = side === "followers" ? "follower_id" : "followed_id";
+    const { data, error } = await client.from("follows").select(idCol + ",created_at").eq(matchCol, pv.userId).order("created_at", { ascending: false });
+    if (state.profileView !== pv) return; // the profile closed or moved on while this was in flight
+    st.loading = false;
+    if (error) { st.error = true; st.items = []; rerender(); return; }
+    const ids = (Array.isArray(data) ? data : []).map((r) => r[idCol]).filter(Boolean);
+    if (!ids.length) { st.items = []; st.loaded = true; rerender(); return; }
+    const { data: profs, error: perr } = await client.from("profiles").select("id,handle,display_name,avatar_url,allow_follows").in("id", ids);
+    if (state.profileView !== pv) return;
+    if (perr) { st.error = true; st.items = []; rerender(); return; }
+    const byId = {};
+    (Array.isArray(profs) ? profs : []).forEach((p) => { byId[p.id] = p; });
+    // Preserve the follows-table order (most recent edge first); a member
+    // hidden from this caller by RLS (blocked, or - not applicable to self,
+    // but kept for symmetry - visible_to_club) simply drops out rather than
+    // rendering a blank row.
+    st.items = ids.map((id) => byId[id]).filter(Boolean);
+    st.loaded = true;
+    rerender();
+    loadMemberRoles(st.items.map((m) => m.id)).then(() => rerender());
+  }
+  function toggleFollowListSection(side) {
+    const pv = state.profileView;
+    if (!followListCanExpand(pv) || (side !== "followers" && side !== "following")) return;
+    const st = pv.followLists[side];
+    st.open = !st.open;
+    if (st.open && !st.loaded && !st.loading) loadFollowList(pv, side);
+    rerender();
+  }
+  function retryFollowList(side) {
+    const pv = state.profileView;
+    if (!followListCanExpand(pv) || (side !== "followers" && side !== "following")) return;
+    loadFollowList(pv, side);
+  }
+  // The "following" list is the one place a plain tap really does remove a
+  // row: everyone in it is, by definition, someone the caller already
+  // follows, so this always means unfollow, and it is a real unfollow -
+  // follow() itself decides insert vs. delete. No confirmation dialog per
+  // the ticket (low-stakes, reversible). Optimistic: the row disappears
+  // immediately and is put back with the shared error copy if the write
+  // failed - never a silent drop.
+  async function unfollowFromFollowingList(userId) {
+    const pv = state.profileView;
+    if (!pv || !userId) return;
+    const st = pv.followLists.following;
+    const idx = st.items.findIndex((m) => m && m.id === userId);
+    if (idx < 0) return;
+    const removed = st.items[idx];
+    st.items = st.items.slice(0, idx).concat(st.items.slice(idx + 1));
+    st.actionError = false;
+    rerender();
+    const result = await follow(userId); // same single toggle every follow control uses
+    if (state.profileView !== pv) return;
+    if (result && result.error) {
+      // Put the row back exactly where it was and say so - the list itself
+      // is fine (st.error stays false), only this one tap failed, so tapping
+      // "הפסקת מעקב" again on the restored row is the retry: no separate
+      // control needed.
+      st.items = st.items.slice(0, idx).concat([removed], st.items.slice(idx));
+      st.actionError = true;
+    } else {
+      st.actionError = false;
+    }
+    rerender();
+  }
+  function followListSkeletonHtml() {
+    const row = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:52%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
+    return `<div class="log-list" aria-busy="true" data-follow-list-skeleton="1">${row.repeat(3)}</div>`;
+  }
+  function followListRowHtml(m, side) {
+    const name = m.display_name || (m.handle ? "@" + m.handle : "חבר/ה");
+    const badge = isCoachRole(memberRole(m.id)) ? " " + coachBadgeHtml(memberRole(m.id)) : "";
+    const actionBtn = side === "following"
+      ? `<button class="chip-btn" data-community-action="following-unfollow" data-id="${safeText(m.id)}">הפסקת מעקב</button>`
+      : (m.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${safeText(m.id)}">מעקב</button>`);
+    return `<div class="log-row"><button class="link-btn" data-community-action="view-profile" data-id="${safeText(m.id)}" style="padding:0;display:flex;gap:10px;align-items:center;color:inherit;text-align:right;">${avatarHtml(name, 32)}<span style="font-weight:700;">${safeText(name)}${badge}</span></button><div class="chip-row" style="margin-top:0;">${actionBtn}</div></div>`;
+  }
+  function followListSectionHtml(pv, side, label, count) {
+    if (count == null) return "";
+    if (!followListCanExpand(pv)) {
+      return `<div class="log-row"><span>${safeText(label)}</span><span class="mono" style="color:var(--brass);">${Number(count) || 0}</span></div>`;
+    }
+    const st = pv.followLists[side];
+    const toggleBtn = `<button class="chip-btn" data-community-action="following-toggle" data-side="${side}" aria-expanded="${st.open ? "true" : "false"}">${safeText(label)} (${Number(count) || 0})${st.open ? " ▲" : " ▼"}</button>`;
+    if (!st.open) return `<div style="margin-bottom:8px;">${toggleBtn}</div>`;
+    let body;
+    if (st.loading && !st.loaded) body = followListSkeletonHtml();
+    else if (st.error) {
+      body = `<div class="empty" role="alert" data-follow-list-error="${side}">${FOLLOW_LIST_ERROR_TEXT}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="following-retry" data-side="${side}">ניסיון חוזר</button></div></div>`;
+    } else if (!st.items.length) {
+      body = `<div class="empty" data-follow-list-empty="${side}">${FOLLOW_LIST_EMPTY_TEXT[side]}</div>`;
+    } else {
+      // A failed unfollow (following side only) keeps the list on screen
+      // and restores the row - the banner is additive, never a replacement.
+      const actionBanner = (side === "following" && st.actionError)
+        ? `<div class="empty" role="alert" data-follow-list-action-error="1">${FOLLOW_LIST_ERROR_TEXT}</div>` : "";
+      body = actionBanner + `<div class="log-list">${st.items.map((m) => followListRowHtml(m, side)).join("")}</div>`;
+    }
+    return `<div style="margin-bottom:14px;">${toggleBtn}<div style="margin-top:8px;">${body}</div></div>`;
+  }
+  // The whole "Following" tab. Absent entirely (no tab shown at all) when
+  // neither count came back from community_profile - the same "an absent
+  // key means the field is hidden" rule every other optional section here
+  // already follows.
+  function followingTabAvailable(d) { return d.follower_count != null || d.following_count != null; }
+  function renderFollowingTab(pv, d) {
+    return followListSectionHtml(pv, "followers", "עוקבים", d.follower_count)
+      + followListSectionHtml(pv, "following", "עוקב/ת אחרי", d.following_count);
+  }
   function renderCommunityProfileOverlay() {
     const pv = state.profileView;
     if (!pv) return "";
@@ -5337,6 +5648,11 @@
       { id: "achievements", label: "הישגים" },
       { id: "posts", label: "פוסטים" },
     ];
+    // COMM-230. Present only when community_profile actually returned at
+    // least one of the two counts - the caller's own profile always has it,
+    // another member's only when their visible_to_club passes, matching the
+    // gating community_profile already applies to these two keys.
+    if (followingTabAvailable(d)) profileTabs.push({ id: "following", label: "עוקבים" });
     const active = pv.tab || "overview";
     let bodyHtml;
     if (pv.loading) bodyHtml = `<div class="empty">טוען פרופיל…</div>`;
@@ -5361,13 +5677,15 @@
       bodyHtml = ach == null ? `<div class="empty">ההישגים מוסתרים</div>`
         : ach.length ? `<div class="badge-grid" style="display:flex;flex-wrap:wrap;gap:8px;">${ach.map((a) => `<div class="chart-card" style="flex:0 0 auto;padding:8px 10px;">${safeText(a.badge_icon || "🏅")} ${safeText(a.title || "")}</div>`).join("")}</div>`
         : `<div class="empty">אין עדיין הישגים</div>`;
-    } else {
+    } else if (active === "posts") {
       const posts = Array.isArray(d.posts) ? d.posts : [];
       bodyHtml = posts.length ? `<div class="log-list">${posts.map((pp) => renderPostCard(pp)).join("")}</div>` : `<div class="empty">אין עדיין פוסטים</div>`;
+    } else {
+      // COMM-230's "following" tab, only reachable when followingTabAvailable(d)
+      // pushed it above.
+      bodyHtml = renderFollowingTab(pv, d);
     }
     const followBtn = d.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${safeText(pv.userId)}">מעקב</button>`;
-    const counts = (d.follower_count != null || d.following_count != null)
-      ? `<span style="font-size:11px;color:var(--steel);align-self:center;">${Number(d.follower_count || 0)} עוקבים · ${Number(d.following_count || 0)} עוקב/ת</span>` : "";
     return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="profileViewTitle" data-cloud-dialog="profileView" style="align-items:flex-start;padding:20px 12px;">
       <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:520px;">
         <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
@@ -5381,7 +5699,7 @@
             </div>
             <button class="link-btn" data-community-action="close-profile" aria-label="סגירה">סגירה</button>
           </div>
-          <div class="chip-row" style="margin-top:0;">${followBtn}${counts}</div>
+          <div class="chip-row" style="margin-top:0;">${followBtn}</div>
           <div class="subtabbar" style="margin-top:12px;">${profileTabs.map((t) => `<button class="subtabbtn${t.id === active ? " active" : ""}" data-community-action="profile-tab" data-tab="${t.id}">${t.label}</button>`).join("")}</div>
           <div style="margin-top:12px;">${bodyHtml}</div>
         </div>
@@ -6246,14 +6564,12 @@
     const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מתאמנים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין מתאמנים חדשים לאחרונה</div>`}</div>` : "";
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
-    // COMM-232. Temporary home: directly under the search UI on the Account
-    // sub-tab, because the members directory it belongs on (COMM-231) is not
-    // built yet. See the PLACEMENT NOTE above renderPeopleSuggestions().
-    const suggestions = renderPeopleSuggestions();
-
-    const accountTab = account + recapEntry + privacyPanel + people + suggestions + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
+    const accountTab = account + recapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
+
+    // ---- Directory tab: the club roster (COMM-231) -----------------------
+    const directoryTab = renderDirectorySection();
 
     // COMM-152. The badge counts open queue items for a holder of the
     // moderation permission (or a real admin), not the legacy reports list.
@@ -6262,6 +6578,7 @@
     const tabs = [
       { id: "feed", label: "פיד", html: feedTab },
       { id: "boards", label: "לוחות", html: boardsTab },
+      { id: "directory", label: "חברים", html: directoryTab },
       { id: "account", label: "חשבון", html: accountTab, badge: pendingReports },
     ];
     // COMM-223. A dedicated 4th sub-tab, added only for isStaff(), as an
@@ -6445,6 +6762,13 @@
     }
     const adminInput = document.getElementById("adminMemberSearch");
     if (adminInput) adminInput.addEventListener("input", () => searchMembers(adminInput.value));
+    // COMM-231. Same restore-focus-and-caret pattern as communityPeopleSearch
+    // above, for the directory's own search box.
+    const dirInput = document.getElementById("communityDirectorySearch");
+    if (dirInput) dirInput.addEventListener("input", () => directorySearch(dirInput.value));
+    if (dirInput && dirInput.value && (!document.activeElement || document.activeElement === document.body)) {
+      try { dirInput.focus(); dirInput.setSelectionRange(dirInput.value.length, dirInput.value.length); } catch (e) { /* not a text input in this browser */ }
+    }
     // COMM-154. The audit view is lazy: fetched the first time an analytics
     // holder lands on the Account tab, not on every session.
     if (state.communityTab === "account" && hasPerm(PERM.ANALYTICS_VIEW) && !state.auditLoaded && !state.auditLoading) loadAuditLog(true);
@@ -6452,8 +6776,12 @@
     // feed_leaderboard() call the first time a member lands on the Boards
     // sub-tab, not on every session boot.
     if (state.communityTab === "boards" && state.user && !state.leaderboard.loaded && !state.leaderboard.loading) loadConsistencyLeaderboard();
-    // COMM-232. And for the suggestions strip on the Account sub-tab.
-    if (state.communityTab === "account" && state.user && !state.peopleSuggestions.loaded && !state.peopleSuggestions.loading) loadPeopleSuggestions();
+    // COMM-231. The directory's own paginated roster, fetched the first time
+    // a member lands on the Directory sub-tab.
+    if (state.communityTab === "directory" && state.user && !state.directory.loaded && !state.directory.loading) loadDirectory(true);
+    // COMM-232. The suggestions strip now renders on the Directory sub-tab -
+    // see the PLACEMENT NOTE above renderPeopleSuggestions().
+    if (state.communityTab === "directory" && state.user && !state.peopleSuggestions.loaded && !state.peopleSuggestions.loading) loadPeopleSuggestions();
     // COMM-212. The hide-my-result checkbox persists per device on change,
     // the same no-save-button pattern the privacy toggles below use - except
     // this one writes localStorage, never the server.
@@ -6531,6 +6859,9 @@
       askConfirm({ title: "פרסום תוצאה", message: `לפרסם ${audience}?${preview ? " " + preview : ""}`, confirmLabel: "פרסום", action: "publish", payload: { type: el.dataset.type, id: el.dataset.id, visibility: el.dataset.visibility, file } });
     }
     else if (action === "follow") follow(el.dataset.id);
+    // COMM-231 members directory.
+    else if (action === "directory-retry") loadDirectory(true);
+    else if (action === "directory-more") loadDirectory(false);
     else if (action === "block") askConfirm({ title: "חסימת משתמש", message: "לחסום את המשתמש? לא תראו זה את זה בקהילה.", confirmLabel: "חסימה", destructive: true, action: "block", payload: { userId: el.dataset.id } });
     else if (action === "delete-post") askConfirm({ title: "הסרת שיתוף", message: "להסיר את השיתוף מהפיד? הפעולה לא ניתנת לביטול.", confirmLabel: "הסרה", destructive: true, action: "delete-post", payload: { postId: el.dataset.id } });
     else if (action === "compare") compare(el.dataset.key, el.dataset.id);
@@ -6557,11 +6888,10 @@
     else if (action === "challenge-board-scope") setChallengeBoardScope(el.dataset.scope);
     else if (action === "challenge-board-retry") { if (state.challengeView) loadChallengeBoard(state.challengeView.id, { rerender: true }); }
     else if (action === "challenge-board-full") expandChallengeBoard();
-    // COMM-212. The friends-scope empty state points at the only
-    // people-finding surface that exists today, COMM-228's search on the
-    // Account sub-tab. TODO(COMM-231): route to the members directory once
-    // that screen ships.
-    else if (action === "leaderboard-find-people") setCommunityTab("account");
+    // COMM-212 / COMM-231. The friends-scope empty state routes to the
+    // members directory now that it exists, rather than the Account tab's
+    // bare search box.
+    else if (action === "leaderboard-find-people") setCommunityTab("directory");
     // COMM-232 suggestions strip.
     else if (action === "suggestion-follow") followSuggestion(el.dataset.id);
     else if (action === "confirm-yes") runConfirm();
@@ -6618,6 +6948,10 @@
     else if (action === "view-profile") viewCommunityProfile(el.dataset.id);
     else if (action === "close-profile") closeCommunityProfile();
     else if (action === "profile-tab") setProfileViewTab(el.dataset.tab);
+    // COMM-230 following surface.
+    else if (action === "following-toggle") toggleFollowListSection(el.dataset.side);
+    else if (action === "following-retry") retryFollowList(el.dataset.side);
+    else if (action === "following-unfollow") unfollowFromFollowingList(el.dataset.id);
     else if (action === "pr-share") sharePrPrompt();
     else if (action === "pr-not-now") dismissPrPrompt();
     else if (action === "pr-add-note") { if (state.prPrompt) { state.prPrompt.showNote = true; rerender(); } }
@@ -6777,7 +7111,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} };
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} }; state.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false };
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();

@@ -368,8 +368,8 @@ empty, unchanged from Phase 1, until COMM-304.
 | COMM-210 | Consistency leaderboard mode, non-attendance | feed | review |
 | COMM-211 | Progress leaderboard mode | feed | review |
 | COMM-212 | Friends leaderboard mode and hide-my-result | feed | review |
-| COMM-230 | Following system surface and states | engagement | todo |
-| COMM-231 | Members directory screen | engagement | todo |
+| COMM-230 | Following system surface and states | engagement | review |
+| COMM-231 | Members directory screen | engagement | review |
 | COMM-232 | People you train with suggestions, non-attendance fallback | feed | review |
 
 COMM-209, COMM-227 and COMM-228 are complete, both halves. Schema shipped in
@@ -414,15 +414,33 @@ coverage. Three decisions worth carrying forward:
   nor a stable tie-break. "The full board at 50" is the same panel re-asking,
   not a second screen. `chal_progress`'s key is untouched; the client just no
   longer reads it.
-- COMM-232's strip is temporarily mounted on the **Account** sub-tab, directly
-  under COMM-228's search UI, because the members directory it belongs on
-  (COMM-231) is not built yet. Both the strip and COMM-212's friends-scope
-  empty state carry `TODO(COMM-231)` markers; the directory cluster should pick
-  up both, the same way the events cluster picked up the realtime/search
-  cluster's event-search-result note above.
+- COMM-232's strip was temporarily mounted on the Account sub-tab until the
+  members directory existed to hold it. COMM-231 closes this: both
+  `TODO(COMM-231)` markers left by this cluster are picked up -
+  `renderPeopleSuggestions()` now renders only on the Directory sub-tab (moved,
+  not duplicated), and COMM-212's friends-scope empty state now routes to the
+  directory instead of the Account tab's bare search box.
 
-COMM-230 and COMM-231 need no new contract, both direct RLS reads on
-`follows` and `profiles`.
+COMM-230 and COMM-231 are now complete, both agreed to need no new contract
+(no schema, no new RPC) and both delivered as such - a direct RLS read on
+`follows` and a direct RLS cursor-paginated read on `profiles`. See
+`test/community-following-surface.test.mjs` and
+`test/community-members-directory.test.mjs` for the executing coverage. Two
+decisions worth carrying forward:
+
+- COMM-230's follower/following expand is only offered on the caller's own
+  profile. `follows_visible` (202608260001) is `follower_id = auth.uid() or
+  followed_id = auth.uid()` - a direct RLS read of another member's follower
+  list would silently narrow to "the one edge that happens to also touch the
+  caller", which is not that member's real follower list. Rather than render
+  a list that is quietly wrong, another member's profile keeps the plain
+  count (unchanged from pre-COMM-230) with no expand control. Enumerating a
+  third party's real follower list would need a new definer RPC, out of this
+  ticket's stated no-new-contract scope.
+- COMM-231's directory reuses `community_search` (COMM-228) at its own
+  2-character floor and falls back to a client-side filter over the
+  already-loaded page below that, per the ticket's own "use your judgment"
+  clause - documented at `directorySearch()` in `cloud.js`.
 
 ### web push, analytics, qa
 
