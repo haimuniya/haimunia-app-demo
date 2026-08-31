@@ -633,27 +633,188 @@ needed this time.
 
 ## Phase 3 tickets, Intelligence (spec V2)
 
-Ticket files not written yet. Titles and owners only.
+ID range COMM-300 to COMM-317. Ticket files are in `docs/community/tickets/`.
+COMM-300 is a new ticket number, not one of the 17 titles this phase started
+with: it is the attendance-logging mechanism itself — the thing the
+2026-08-30 resolution settled the *source* of ("self-reported, a
+workout/session log entry standing in for a class check-in, not Arbox, not a
+dedicated check-in flow") but never built. It did not fit as a subsection of
+any of the 17 existing titles without hiding a real, separately-testable
+piece of schema work inside an unrelated ticket, so it gets its own number,
+consistent with the existing COMM-3xx convention, immediately before
+COMM-301.
 
-| ID | Title | Agent |
-|---|---|---|
-| COMM-301 | Relationship score from interaction history | feed |
-| COMM-302 | Recurring classmate score once attendance lands | feed |
-| COMM-303 | Personalized feed ranking and per-user weights | feed |
-| COMM-304 | Coach Engage activation and attendance-decline detection | coach-tools |
-| COMM-305 | Attendance milestone posts and achievements activation | achievements |
-| COMM-306 | Consistency leaderboard on verified attendance | feed |
-| COMM-307 | Post-class trained-with-you card | feed |
-| COMM-308 | Advanced challenge team management | challenges |
-| COMM-309 | Monthly club recap Edge Function with admin preview | recaps |
-| COMM-310 | Admin community analytics dashboard, full metric set | admin-moderation |
-| COMM-311 | Member engagement segmentation | admin-moderation |
-| COMM-312 | Community health score, internal only | admin-moderation |
-| COMM-313 | Retention correlation views | admin-moderation |
-| COMM-314 | Versioned abandoned-profile purge Edge Function and runbook | identity-privacy |
-| COMM-315 | Member of the week rotation across recognition categories | coach-tools |
-| COMM-316 | Monthly recap classmates and onboarding class steps, attendance | recaps |
-| COMM-317 | Phase 3 QA sweep | qa |
+**Build order: COMM-300 first, ahead of every other Phase 3 schema work.**
+It is the critical path for six of the seventeen numbered tickets
+(COMM-302, COMM-304, COMM-305, COMM-306, COMM-307, COMM-316) and closes all
+seven items in the parked bucket below (COMM-P06 and COMM-P07 both fold into
+COMM-316). Recommended order after that: feed (COMM-301 for the extraction,
+then COMM-302 since it is now unblocked, then COMM-306, COMM-307, COMM-303
+last since it builds on 301/302), achievements (COMM-305), coach-tools
+(COMM-304, then COMM-315), recaps (COMM-309, then COMM-316), challenges
+(COMM-308, unblocked from the start, no ordering constraint), admin-moderation
+(COMM-310 through COMM-313, in that order — each later one in that cluster
+reads the one before it), identity-privacy (COMM-314, unblocked from the
+start), qa (COMM-317, last, the phase's merge gate, same role COMM-234 played
+for Phase 2).
+
+### attendance foundation
+
+| ID | Title | Agent | Attendance-blocked |
+|---|---|---|---|
+| COMM-300 | Attendance-log mechanism and the ATTENDANCE_RECORDED source | schema | no — this is the unblock |
+
+Ships first. New `attendance_log` table, one row per `(user_id,
+occurred_on)`, populated by a trigger on the existing `private_records`
+table (the offline training log's own sync store, 202608260001) — not a new
+check-in screen. No client insert/update/delete grant on the table at all;
+the trigger is the only writer. Gives `ATTENDANCE_RECORDED` (defined with
+zero producers since COMM-012) its first real client-side emit and its
+first analytics event. Builds nothing that *reads* attendance yet — every
+downstream ticket below does that. See COMM-300's own "Note on what
+'verified' means here": every later ticket titled "verified attendance"
+means "derived server-side from the member's own private training log," the
+same trust boundary `private_records` already has today, not a physical or
+staff-confirmed check-in.
+
+### feed
+
+| ID | Title | Agent | Attendance-blocked |
+|---|---|---|---|
+| COMM-301 | Relationship score from interaction history | feed | no |
+| COMM-302 | Recurring classmate score once attendance lands | feed | was — unblocked by COMM-300 |
+| COMM-303 | Personalized feed ranking and per-user weights | feed | no |
+| COMM-306 | Consistency leaderboard on verified attendance | feed | was — unblocked by COMM-300 |
+| COMM-307 | Post-class trained-with-you card | feed | was — unblocked by COMM-300 |
+
+COMM-301 extracts `feed_page`'s already-inline relationship arithmetic
+(202608280019) into a reusable `relationship_score()` helper with no ranking
+change — a prerequisite for COMM-303's per-user weighting, not for anything
+attendance-related. COMM-302 closes the parked COMM-P01: `feed_page`'s
+`v_class_connection` stops being hard-0'd, and `people_suggestions` (COMM-232)
+gets the fourth signal branch its own migration comment already promised
+("COMM-302/307 can add the verified-attendance signal in a later migration
+without touching the client"). COMM-306 closes COMM-P02 by swapping
+`consistency_week_streaks()`'s body onto `attendance_log`, the single place
+its own 202608290015 comment already named. COMM-307 closes COMM-P05, a new
+feed-top-area card (`attendance_classmates_today()`) distinct from COMM-302's
+suggestions-strip signal — "who trained today", not "who to follow". COMM-303
+lands last in this cluster: it personalizes the weights COMM-301 extracted
+and reads COMM-302's class-connection component as one of the things it can
+reweight.
+
+### achievements
+
+| ID | Title | Agent | Attendance-blocked |
+|---|---|---|---|
+| COMM-305 | Attendance milestone posts and achievements activation | achievements | was — unblocked by COMM-300 |
+
+Closes COMM-P03. Flips the four seeded `ATTENDANCE_RECORDED`
+`achievement_definitions` rows (202608280007) to `enabled = true` and gives
+`POST_ATTENDANCE_MILESTONE` (a post_type enum label and client card contract
+since Phase 1, never produced) its first real producer. Evaluated directly
+off `attendance_log` by a table trigger, the same "no generic event-bus
+consumer exists in this codebase, a table trigger does the job instead"
+precedent `challenge_progress_apply`'s milestone post already set — this
+ticket does not build the still-missing generic `ach_evaluate` path either.
+Never client-claimable: `ach_claim` already refuses any
+`trigger_type = 'ATTENDANCE_RECORDED'` code (202608280020) and this ticket
+does not touch that refusal.
+
+### coach-tools
+
+| ID | Title | Agent | Attendance-blocked |
+|---|---|---|---|
+| COMM-304 | Coach Engage activation and attendance-decline detection | coach-tools | was — unblocked by COMM-300 |
+| COMM-315 | Member of the week rotation across recognition categories | coach-tools | no |
+
+COMM-304 closes COMM-P04. `coach_engagement_flags` has shipped empty since
+Phase 0 (202608280011) with a comment naming this exact ticket; COMM-226
+already built the Engage section as a flag-gated hidden shell reading it —
+this ticket gives the table its first producer (a scheduled
+baseline-vs-recent `attendance_log` comparison) and flips COMM-226's flag to
+default-on. The single most important existing rule, `user_id <>
+auth.uid()` on every policy, is untouched by this ticket and gets extra qa
+scrutiny in COMM-317 now that the table has real rows for the first time.
+COMM-315 has no forward reference anywhere in this repo's docs and is
+flagged as an open question in its own ticket file — the category set and
+rotation order proposed there (consistency streak, PRs, challenge
+completion, coach's pick) is this planner's best-effort reading of the
+title, not settled spec text.
+
+### recaps
+
+| ID | Title | Agent | Attendance-blocked |
+|---|---|---|---|
+| COMM-309 | Monthly club recap Edge Function with admin preview | recaps | no |
+| COMM-316 | Monthly recap classmates and onboarding class steps, attendance | recaps | was — unblocked by COMM-300 |
+
+COMM-309 is not attendance-blocked in the gating sense — it can be built any
+time after COMM-300 exists in the schema (which, per the build order above,
+it already will be) since one of its aggregate figures (`sessions_logged`)
+reads `attendance_log`, but every other figure does not depend on it. It is
+also the first ticket to give aggregate, club-wide attendance figures any
+club visibility, and stays aggregate-only forever, unlike COMM-316's
+per-recap classmates line. COMM-316 closes both COMM-P06 and COMM-P07 in one
+ticket: `weekly_recaps` gains a named classmates line (an own-row surface,
+so naming individuals is fine, unlike COMM-309's club-wide one) and
+`onboarding_progress` gains the two class-attendance steps COMM-222
+explicitly deferred here by name.
+
+### challenges
+
+| ID | Title | Agent | Attendance-blocked |
+|---|---|---|---|
+| COMM-308 | Advanced challenge team management | challenges | no |
+
+Not attendance-blocked, no ordering constraint against the rest of the
+phase. Coach-driven team CRUD, member reassignment, and a captain label on
+top of COMM-204's existing team challenge shape — no forward reference
+existed for this one either, but the delta from COMM-204's shipped scope is
+concrete enough that this ticket does not carry the same "open question"
+flag COMM-311/312/313/315 do.
+
+### admin-moderation
+
+| ID | Title | Agent | Attendance-blocked |
+|---|---|---|---|
+| COMM-310 | Admin community analytics dashboard, full metric set | admin-moderation | no |
+| COMM-311 | Member engagement segmentation | admin-moderation | no |
+| COMM-312 | Community health score, internal only | admin-moderation | no |
+| COMM-313 | Retention correlation views | admin-moderation | no |
+
+None of these four are attendance-blocked, but COMM-313's onboarding-step
+correlation reads COMM-316's two new columns, so it is ordered after the
+recaps cluster above despite not being attendance-blocked itself. COMM-310
+is the one ticket in this cluster with real grounding: `docs/community/
+metrics.md`'s existing "Core metrics" and "Additional metrics" sections are
+its whole scope, no new metric invented. COMM-311, COMM-312, and COMM-313
+have no forward reference anywhere in this repo's docs — each ticket file
+flags this explicitly and proposes a conservative, best-effort shape rather
+than inventing spec text this planner never had.
+
+### identity-privacy
+
+| ID | Title | Agent | Attendance-blocked |
+|---|---|---|---|
+| COMM-314 | Versioned abandoned-profile purge Edge Function and runbook | identity-privacy | no |
+
+Not the same job as the already-shipped `purge_due_accounts()`
+(202608260001, a member's own *explicit* deletion request, purged 30 days
+after they ask). This is a different, new category: an anonymous
+`auth.users` account that never redeemed an invite and never verified
+recovery, sitting abandoned. The exact retention window is flagged as an
+open question in the ticket file rather than guessed at a specific number
+of days.
+
+### qa
+
+| ID | Title | Agent | Attendance-blocked |
+|---|---|---|---|
+| COMM-317 | Phase 3 QA sweep | qa | no |
+
+Last, the phase's merge gate, same role COMM-234 played for Phase 2.
+Depends on every other Phase 3 ticket.
 
 ## Parked, attendance-blocked
 
@@ -666,6 +827,14 @@ Ticket files not written yet. Titles and owners only.
 | COMM-P05 | Post-class trained-with-you card | attendance source | COMM-307 |
 | COMM-P06 | Weekly recap classmates line | attendance source | COMM-316 |
 | COMM-P07 | Onboarding first and third class steps | attendance source | COMM-316 |
+
+The attendance *source* was resolved 2026-08-30 (self-reported, see below),
+but the *mechanism* — the actual table and write path — did not exist until
+this planning pass named it COMM-300. Every row above stays in this table,
+unchanged, until its named Phase 3 ticket actually ships and closes it; this
+table is a historical record of what was parked and why, not a live todo
+list to edit as tickets are written. None of the seven is closed by this
+planning session — only unblocked.
 
 ## Phase 0 schema handoff for qa (COMM-019)
 
@@ -1075,8 +1244,18 @@ Resolved 2026-08-30:
   reaches web push; the iOS installed-PWA-only limitation (Safari 16.4+)
   is accepted.
 
+Resolved 2026-08-31 (planning pass, no code):
+- Item 1's mechanism half. The *source* was resolved 2026-08-30
+  (self-reported). The *mechanism* — the table and the write path — did not
+  exist as a ticket until this pass: it is now COMM-300, a new ticket
+  number ahead of COMM-301, not a renumbering of any of the 17 existing
+  Phase 3 titles. See "attendance foundation" under Phase 3 tickets above.
+  Nothing here is built yet — this closes the planning gap, not the
+  engineering one.
+
 Still open: item 9 (recap scheduling note — awareness only, not a decision
-that blocks anything).
+that blocks anything), and four new ones raised while writing Phase 3
+tickets, numbered 11-14 below.
 
 1. Attendance data source. Still unpicked. It gates the whole parked bucket
    and seven Phase 3 tickets. Options: pull from Arbox, an in-app class
@@ -1115,3 +1294,31 @@ that blocks anything).
     and iOS support is installed-PWA only on Safari 16.4 or newer. Confirm
     the team will provision VAPID keys and that iOS coverage limit is
     acceptable.
+11. Member engagement segmentation, community health score, and retention
+    correlation views (COMM-311, COMM-312, COMM-313) have no forward
+    reference anywhere in this repo's docs, unlike every other Phase 3
+    ticket. Each ticket file proposes a conservative, best-effort shape and
+    flags it explicitly. Recommendation: confirm the real spec text for
+    these three (segment set and thresholds, health-score formula and who
+    sees it, cohort window and correlation cuts) before a feature agent
+    builds against the proposed shape.
+12. Member of the week (COMM-315) has the same gap: no forward reference,
+    a proposed category rotation (consistency, PRs, challenge completion,
+    coach's pick) this planner invented from the title alone. Confirm or
+    correct before build.
+13. Abandoned-profile retention window (COMM-314). `purge_abandoned_profiles`
+    was already named in `docs/community/contracts.md` as a Phase 3 stub,
+    but no number of days for "abandoned" appears anywhere. Recommendation:
+    pick a number (30 days, matching the existing `purge_due_accounts()`
+    explicit-deletion window, is a reasonable default to confirm or
+    override) before COMM-314 is built.
+14. Phase 3 has no dedicated analytics ticket the way Phase 2 had COMM-233.
+    Every Phase 3 ticket that adds a real surface names its own
+    `metrics.md` update inline in its acceptance criteria instead (COMM-300,
+    COMM-304, COMM-307, COMM-309, COMM-315), but nothing plays COMM-233's
+    role of reviewing the whole set together and re-checking WCAM inclusion
+    once every Phase 3 producer exists. Recommendation: either fold that
+    review into COMM-317's QA sweep explicitly (COMM-317's own acceptance
+    criteria do not currently name a full WCAM re-review), or confirm a new
+    ticket number should be minted for it — this planner did not invent one
+    on its own, since it was not among the 17 titles given.

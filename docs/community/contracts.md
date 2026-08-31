@@ -2636,9 +2636,170 @@ timestamptz`. Null means "not shown yet".
 
 - Schedule: monthly. Admin preview before publish. Phase 3, COMM-309.
 - Output: aggregate club figures. No member names in public sections.
+- Full shape (added when COMM-309's ticket file was written): writes a draft
+  `monthly_club_recaps` row (unpublished, `published_at null`); a staff
+  `community.analytics.view` or admin holder previews it and calls
+  `recap_monthly_publish(p_id)` to fan out the notification and make it
+  member-readable. See "Needs from schema, recaps (Phase 3)" below.
 
 ### purge_abandoned_profiles
 
 - Schedule: daily. Versioned. Idempotent. Phase 3, COMM-314.
 - Purpose: remove abandoned anonymous profiles per the retention rule.
 - Records success and failure counts with no personal content.
+- Not the same job as the already-shipped `purge_due_accounts()`
+  (202608260001, a member's own explicit deletion request purged 30 days
+  after they ask). "Abandoned" here means `auth.users.is_anonymous = true`,
+  no `invite_redemptions` row, no `profiles.recovery_verified_at`, older
+  than a named retention window. See "Needs from schema, identity-privacy
+  (Phase 3)" below — the exact window is an open question, not yet decided.
+
+## Phase 3 forward contracts (not yet built)
+
+Every function below is named by a Phase 3 ticket in
+`docs/community/tickets/` and recorded here before it is built, per this
+file's own standing rule. None of these exist in a migration yet. All of
+them are additive to an existing signature (`feed_page`, `feed_leaderboard`,
+`people_suggestions`, `community_profile`, `consistency_week_streaks`) or
+are brand new — no existing signature is narrowed by any entry here.
+
+### Needs from schema, attendance foundation (Phase 3)
+
+COMM-300, the prerequisite for everything else in this section.
+
+- `attendance_log(id uuid pk, user_id uuid not null references profiles(id)
+  on delete cascade, club_id uuid not null default default_club_id(),
+  occurred_on date not null, source_record_type text, source_record_id
+  text, recorded_at timestamptz not null default now(), unique(user_id,
+  occurred_on))`. Own-row select for `authenticated`, select-any for
+  `community.analytics.view`/`is_staff()`. No insert, update, or delete
+  grant to any client role at all — the only writer is a trigger.
+- A security-definer AFTER INSERT OR UPDATE trigger on `private_records`
+  (202608260001), filtered to session-bearing `record_type`s
+  (`strength_entry`, `wod_entry` — confirm against a live `payload` sample
+  before writing) and non-deleted rows, reading the logged date from
+  `payload->>'date'`, upserting into `attendance_log` `on conflict
+  (user_id, occurred_on) do nothing`. Append-only: a later soft-delete of
+  the source record does not retract an already-logged day.
+- Client-side (not a migration): `flushOutbox()` in `cloud.js` emits
+  `HaimuniaEvents.emit(PRODUCT_EVENTS.ATTENDANCE_RECORDED, {occurred_on})`
+  after a successful session-bearing sync — a courtesy for client
+  consumers, not what writes `attendance_log`.
+- `attendance_recorded` analytics event, wired off the same bus emit,
+  added to `ACTIVE_MEMBER_EVENTS` (WCAM).
+
+### Needs from schema, feed (Phase 3)
+
+- `relationship_score(p_viewer uuid, p_other uuid) returns numeric` —
+  `security invoker`, no grant to any client role, internal only. COMM-301.
+  Extracted from `feed_page`'s existing inline relationship CTE
+  (202608280019), same numbers.
+- `feed_page(cursor, limit, scope)` re-created (same signature):
+  `v_class_connection` stops being hard-0'd, computed from `attendance_log`
+  overlap in a trailing window, gated by `can_view_profile_field(author,
+  'show_attendance')`. COMM-302, closing COMM-P01.
+- `people_suggestions(p_limit)` re-created (same signature, same returned
+  shape): one more UNION ALL branch (`classmate`), one more `scored`
+  column, one more `signals` key (`shared_classmate_days`), `reason` gains
+  the `'classmate'` label. Priority order becomes challenge, classmate,
+  interaction, event. COMM-302, matching the forward reference already in
+  this function's own migration comment (202608290015).
+- `consistency_week_streaks()` re-created (same signature
+  `table(user_id uuid, streak integer)`): body reads `attendance_log`
+  instead of `workout_posts`. COMM-306, closing COMM-P02 — this is the
+  single place that function's own comment already named as the future
+  change site.
+- `community_profile(user_id uuid)` re-created (same signature):
+  `current_streak`'s inline copy updated to match
+  `consistency_week_streaks()`'s new body, so the two do not drift, per the
+  existing pgTAP cross-check. COMM-306.
+- `attendance_classmates_today() returns setof jsonb`,
+  `{user_id, display_name, handle, avatar_url}` — `security definer`, same
+  boundary-crossing shape as `people_suggestions`. Distinct from COMM-302's
+  signal: "today" only, no window, no historical count. COMM-307, closing
+  COMM-P05.
+- `member_feed_weights(user_id uuid pk, weights jsonb not null default
+  '{}', computed_at timestamptz not null default now())` — own-row select
+  only, no client write grant. `feed_page` re-created again to read it and
+  fall back to today's fixed defaults when absent. COMM-303.
+
+### Needs from schema, achievements (Phase 3)
+
+- `update achievement_definitions set enabled = true where trigger_type =
+  'ATTENDANCE_RECORDED'`. COMM-305, closing COMM-P03.
+- One security-definer AFTER INSERT trigger on `attendance_log`: computes
+  the member's total distinct days and current streak, inserts a
+  `member_achievements` row on a genuine crossing (1, 25, 100 days; a fresh
+  4-week streak for the repeatable code), and, for the two count
+  milestones only, an authorless `POST_ATTENDANCE_MILESTONE` post gated by
+  the member's own `show_attendance`. Same "table trigger instead of the
+  still-missing generic `ach_evaluate`" shape `challenge_progress_apply`'s
+  milestone post already established. Never client-claimable — `ach_claim`
+  already refuses `trigger_type = 'ATTENDANCE_RECORDED'`, untouched.
+
+### Needs from schema, coach-tools (Phase 3)
+
+- `coach_detect_engagement_decline()` — service-role only, same auth shape
+  as `chal_notify_ending_soon()`. Reads `attendance_log`, writes
+  `coach_engagement_flags` (empty since 202608280011). COMM-304, closing
+  COMM-P04. Flips COMM-226's `state.featureFlags.coachEngage` to
+  default-on.
+- `member_of_week(...)` table, own-row-free (club-wide select once
+  published), no client write grant. `member_of_week_candidates(p_week_start)`
+  and `member_of_week_publish(p_week_start, p_user_id, p_reason)`, both
+  `security definer`, staff-gated. COMM-315 — flagged as an open question
+  in its own ticket file, category set not spec-grounded.
+
+### Needs from schema, challenges (Phase 3)
+
+- `challenge_teams` gains `captain_id uuid references profiles(id) on
+  delete set null`.
+- `chal_reassign_team(p_challenge_id, p_user_id, p_team_id)` and
+  `chal_set_captain(p_team_id, p_user_id)`, both `security definer`,
+  `community.challenge.create` gated, both writing `admin_actions`. COMM-308.
+
+### Needs from schema, recaps (Phase 3)
+
+- `monthly_club_recaps(id uuid pk, club_id uuid not null default
+  default_club_id(), month_start date not null unique check
+  (extract(day from month_start) = 1), sessions_logged integer not null
+  default 0, posts_created integer not null default 0, new_members integer
+  not null default 0, challenges_completed integer not null default 0,
+  events_held integer not null default 0, generated_at timestamptz not null
+  default now(), published_at timestamptz)`. Staff select-any; plain member
+  select only `published_at is not null`; no client write grant.
+  `recap_monthly_publish(p_id uuid)`, `security definer`,
+  `community.analytics.view`/`is_admin` gated, stamps `published_at`, fans
+  out the notification, writes `admin_actions`. COMM-309.
+- `weekly_recaps` gains `classmates jsonb not null default '[]'`, written
+  only by `recap_weekly` (service role). `onboarding_progress` gains
+  `first_class_shown_at timestamptz` and `third_class_shown_at
+  timestamptz`, both covered by the existing `onboarding_progress_pin`
+  trigger. COMM-316, closing COMM-P06 and COMM-P07.
+
+### Needs from schema, admin-moderation (Phase 3)
+
+- `analytics_dashboard(p_period_start date, p_period_end date) returns
+  jsonb` — `security definer`, `community.analytics.view`/`is_admin`
+  gated, one call for every metric in `docs/community/metrics.md`'s "Core
+  metrics" and "Additional metrics" sections. COMM-310.
+- `member_segments(p_as_of date default current_date) returns setof jsonb`
+  — `security definer`, same gate. COMM-311. Open question: segment set and
+  thresholds not spec-grounded, see the ticket file.
+- `community_health_scores(...)` table plus
+  `community_health_history(p_weeks int default 12) returns setof jsonb` —
+  real `is_admin` only, narrower than the other three tickets in this
+  cluster. COMM-312. Open question: weighting formula not spec-grounded.
+- `retention_cohorts(p_cohort_months int default 6)`,
+  `retention_onboarding_correlation()`, `retention_welcome_correlation()` —
+  real `is_admin` only. COMM-313. Open question: cohort window and which
+  correlations, not spec-grounded. Depends on COMM-316's two new
+  `onboarding_progress` columns.
+
+### Needs from schema, identity-privacy (Phase 3)
+
+- `purge_abandoned_profiles` Edge Function, service-role only, same
+  explicit `Authorization: Bearer <service role key>` check
+  `recap_weekly` already established. No new table — reads `auth.users`,
+  `invite_redemptions`, `profiles` directly. COMM-314. Open question: the
+  retention window (days of inactivity before eligible) is not decided.
