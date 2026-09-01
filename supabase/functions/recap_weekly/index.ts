@@ -15,9 +15,14 @@
 //   (user_id, week_start) - the same unique constraint the table's own
 //   comment documents as what makes this idempotent per user per week.
 // - Notifies (once) only for a row that did not exist before this run.
-// - Never builds the classmates line (parked, COMM-316/attendance) and
-//   never wires a scheduler (pg_cron or otherwise) - both explicitly out
-//   of this ticket's scope, the same "storage exists, scheduler does not"
+// - Builds the classmates line (COMM-316, closing COMM-P06) by calling
+//   public.recap_weekly_classmates() once per member per week - see
+//   computeClassmates() below. Every privacy gate (self-exclusion, block
+//   edges, visible_to_club, show_attendance on both the subject and each
+//   candidate) lives inside that function, not here; this file only
+//   stores whatever jsonb array it returns.
+// - Never wires a scheduler (pg_cron or otherwise) - explicitly out of
+//   this ticket's scope, the same "storage exists, scheduler does not"
 //   shape the Phase 1 notification batch flusher left. Invoking this
 //   function on a schedule is a separate, later decision.
 //
@@ -227,6 +232,25 @@ async function computeUpcomingEvent(supabase: SupabaseClient, now: Date): Promis
   return event ? { id: event.id, title: event.title, start_at: event.start_at } : null;
 }
 
+// COMM-316, closing COMM-P06. The one field weekly_recaps' own column
+// comment named as "not cleared to expose" until this ticket. All of the
+// privacy reasoning - self-exclusion, block edges either direction,
+// visible_to_club, show_attendance on the candidate AND on the subject -
+// is written once, inside public.recap_weekly_classmates()
+// (202609010003), which runs as security definer with p_user passed
+// explicitly (can_view_profile_field() cannot be used from a service-role
+// caller with no auth.uid(); see that migration's header). This function
+// does not re-implement or re-check any of it: it calls the RPC and
+// returns whatever jsonb array comes back, which the function's own
+// contract guarantees is always an array, never null - an empty array is
+// the honest "no overlap" or "opted out" case and not a distinct branch
+// here.
+async function computeClassmates(supabase: SupabaseClient, userId: string, weekStart: string) {
+  const { data, error } = await supabase.rpc("recap_weekly_classmates", { p_user: userId, p_week_start: weekStart });
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
+
 async function loadActiveMemberIds(supabase: SupabaseClient): Promise<string[]> {
   const [{ data: profiles, error: profilesErr }, { data: redemptions, error: redemptionsErr }] = await Promise.all([
     supabase.from("profiles").select("id").is("deleted_at", null),
@@ -246,11 +270,12 @@ async function buildRecapFields(
   clubChallengeProgress: ClubChallengeProgress,
   upcomingEvent: UpcomingEvent,
 ) {
-  const [{ sessions, prs }, achievements, streak, challengeProgress] = await Promise.all([
+  const [{ sessions, prs }, achievements, streak, challengeProgress, classmates] = await Promise.all([
     computeSessionsAndPrs(supabase, userId, weekStart, weekEnd),
     computeAchievements(supabase, userId, weekStart, weekEnd),
     computeStreak(supabase, userId),
     computeChallengeProgress(supabase, userId),
+    computeClassmates(supabase, userId, weekStart),
   ]);
   return {
     sessions_completed: sessions,
@@ -260,6 +285,7 @@ async function buildRecapFields(
     challenge_progress: challengeProgress,
     club_challenge_progress: clubChallengeProgress,
     upcoming_event: upcomingEvent,
+    classmates,
     generated_at: new Date().toISOString(),
   };
 }

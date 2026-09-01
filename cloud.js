@@ -228,7 +228,17 @@
     // did not train today, when they trained alone, and when their own
     // show_attendance is off, and that indistinguishability is the function's
     // own privacy answer (202608310005), not a gap here.
-    classmatesToday: { items: [], loading: false, loaded: false, error: false } };
+    classmatesToday: { items: [], loading: false, loaded: false, error: false },
+    // COMM-316 (closing COMM-P07). The member's own attendance_log row count,
+    // read directly under attendance_log_self_select - the ONLY thing the
+    // two new onboarding steps (first_class, third_class) need to decide
+    // eligibility. attendance_log is unique on (user_id, occurred_on)
+    // (202608310001), so this plain row count already IS the distinct-day
+    // count; no separate query. `loaded` false is read by
+    // currentOnboardingStep() as "not due yet", never as "due" - see that
+    // function for why an undetermined answer must never flash a step on
+    // and then off.
+    onboardingAttendance: { count: 0, loading: false, loaded: false, error: false } };
   const photoUrlCache = {};
 
   // COMM-141. The notification badge refreshes on a realtime own-row
@@ -469,17 +479,42 @@
   }
 
   // ---- COMM-222 onboarding sequence -----------------------------------
-  // Steps tied to the first and third class attendance are explicitly
-  // deferred here, not built: they need attendance, which does not exist
-  // yet. TODO(COMM-316/COMM-P07): add those two steps once attendance
-  // lands - onboarding_progress deliberately has no columns for them yet
-  // either (see "Needs from schema, recaps" in contracts.md).
-  const ONBOARDING_STEP_COLUMNS = { welcome: "welcomed_at", first_week: "first_week_shown_at", first_month: "first_month_shown_at" };
-  // Which single step (if any) is due right now, in a fixed order: welcome,
-  // then first-week, then first-month. Only one shows at a time; a later
-  // step becoming due never hides an earlier one still undismissed, and
-  // dismissing one never blocks the next from appearing on its own
-  // schedule (each column is independent).
+  // COMM-316 (closing COMM-P07) added the two steps tied to the member's
+  // first and third class, once attendance existed to tie them to.
+  const ONBOARDING_STEP_COLUMNS = { welcome: "welcomed_at", first_week: "first_week_shown_at", first_month: "first_month_shown_at", first_class: "first_class_shown_at", third_class: "third_class_shown_at" };
+  // Which single step (if any) is due right now. THE ORDER, and why it is
+  // safe:
+  //
+  //   welcome -> first_week -> first_month -> first_class -> third_class
+  //
+  // The first three are COMM-222, UNCHANGED - same columns, same elapsed-
+  // time conditions, checked first and in the same order they always were.
+  // That is what makes COMM-316's own acceptance criterion ("these two
+  // steps do not block or reorder the three already-shipped steps") true
+  // STRUCTURALLY rather than by convention: the two attendance checks below
+  // only run once none of the three time-based steps is due, so a first or
+  // third class landing early, late, or never cannot move welcome's Day-1
+  // firing, first_week's 7-day firing or first_month's 30-day firing by so
+  // much as a render.
+  //
+  // JUDGMENT CALL (the ticket names this as one, not fully specified):
+  // first-class ranks below all three existing steps rather than between
+  // welcome and first-week. The tempting alternative - an eager member who
+  // logs a class on day one seeing "first class" before or instead of
+  // "welcome" - was rejected because the single onboarding slot can only
+  // show one card, and letting an attendance milestone occupy that slot
+  // ahead of (or instead of) welcome/first_week would be exactly the
+  // "reorder" effect the ticket's own criterion asks this file to avoid.
+  // Appending the two new checks after the three, rather than interleaving
+  // them, is the version where that claim can be verified by reading the
+  // first three lines below and stopping - they are byte-for-byte what
+  // COMM-222 shipped. first-class ranks above third-class for the obvious
+  // reason: three classes cannot happen before one.
+  //
+  // Only one step shows at a time, the same COMM-222 shape: a later step
+  // becoming due never hides an earlier one still undismissed, and
+  // dismissing one lets whichever step is due next - by this same order -
+  // show on the very next render.
   function currentOnboardingStep() {
     const row = state.onboardingProgress;
     const redeemedAtRaw = state.redemption && state.redemption.redeemed_at;
@@ -491,7 +526,42 @@
     if (row.welcomed_at == null) return "welcome";
     if (row.first_week_shown_at == null && elapsed >= 7 * DAY_MS) return "first_week";
     if (row.first_month_shown_at == null && elapsed >= 30 * DAY_MS) return "first_month";
+    // COMM-316. Eligibility here is attendance, not elapsed time - "do I
+    // have at least one attendance_log row" / "...at least three distinct
+    // occurred_on days" - read client-side under attendance_log_self_select
+    // (202608310001) by loadOnboardingAttendance(), never a server column or
+    // RPC (the schema migration's own comment: "the client asks the table
+    // it already reads"). `!loaded` reads as "not due yet", the same as any
+    // step whose data has not arrived - never as "due", which would risk a
+    // step flashing on before its real eligibility is known and then off
+    // once the real answer turns out to be "not yet".
+    if (!state.onboardingAttendance.loaded) return null;
+    if (row.first_class_shown_at == null && state.onboardingAttendance.count >= 1) return "first_class";
+    if (row.third_class_shown_at == null && state.onboardingAttendance.count >= 3) return "third_class";
     return null;
+  }
+  // COMM-316. Own-row attendance count - the only input the two new steps'
+  // eligibility needs. attendance_log is unique on (user_id, occurred_on)
+  // (202608310001), so a plain row count already IS the distinct-day count;
+  // there is no separate "distinct days" query to write. Lazy, and fetched
+  // from the Feed sub-tab rather than the boot Promise.all, for the exact
+  // reason renderClassmatesTodayCard's own loader documents for the same
+  // table: the member's own attendance row for a class taken today is
+  // written by the private_records trigger behind flushOutbox(), which runs
+  // AFTER the boot batch, so asking during boot could ask before that row
+  // exists and read a stale "not eligible yet" answer for an entire
+  // session.
+  async function loadOnboardingAttendance() {
+    if (!client || !state.user) return;
+    const s = state.onboardingAttendance;
+    s.loading = true;
+    rerender();
+    const { data, error } = await client.from("attendance_log").select("occurred_on").eq("user_id", state.user.id);
+    s.loading = false; s.loaded = true;
+    if (error) { s.error = true; s.count = 0; return rerender(); }
+    s.error = false;
+    s.count = Array.isArray(data) ? data.length : 0;
+    rerender();
   }
   // The write only ever happens from a Dismiss click inside the card that
   // is already on screen (COMM-222: "shown" means actually rendered, not
@@ -566,6 +636,24 @@
       : `החודש הראשון שלכם: ${summary.sessions} אימונים, ${summary.prs} שיאים ו-${summary.achievements} הישגים חדשים. כל הכבוד!`;
     return renderOnboardingCard("החודש הראשון שלכם במועדון", body, "first_month");
   }
+  // COMM-316. Static copy, same shape as the three above - no dependent
+  // data to load beyond the attendance count that already decided the step
+  // is due (currentOnboardingStep), so there is no loading/error variant
+  // here the way first_month's summary needs one.
+  function renderOnboardingFirstClassStep() {
+    return renderOnboardingCard(
+      "הגעתם לאימון הראשון!",
+      `האימון הראשון שלכם כבר נרשם במערכת. ממשיכים באותו הקצב?`,
+      "first_class",
+    );
+  }
+  function renderOnboardingThirdClassStep() {
+    return renderOnboardingCard(
+      "אימון שלישי — אתם כבר בקצב!",
+      `שלושה אימונים כבר מאחוריכם. ככה בונים הרגל אימונים.`,
+      "third_class",
+    );
+  }
   function renderOnboardingStep() {
     const step = currentOnboardingStep();
     if (!state.onboardingProgress) {
@@ -577,7 +665,9 @@
     if (!step) return "";
     if (step === "welcome") return renderOnboardingWelcomeStep();
     if (step === "first_week") return renderOnboardingFirstWeekStep();
-    return renderOnboardingFirstMonthStep();
+    if (step === "first_month") return renderOnboardingFirstMonthStep();
+    if (step === "first_class") return renderOnboardingFirstClassStep();
+    return renderOnboardingThirdClassStep();
   }
   // COMM-218. The three-tier client-facing control that replaces the plain
   // `important` boolean; `announcements.important` still exists server-side
@@ -5736,6 +5826,30 @@
     const challengeHtml = Array.isArray(row.challenge_progress) && row.challenge_progress.length
       ? `<div class="log-list">${row.challenge_progress.map((c) => `<div class="log-row"><span>${safeText(c.title)}</span><span class="mono" style="color:var(--brass);">${safeText(c.progress)}${c.target != null ? ` / ${safeText(c.target)}` : ""}</span></div>`).join("")}</div>`
       : `<div class="empty">לא נרשמה השתתפות באתגר השבוע</div>`;
+    // COMM-316 (closing COMM-P06). weekly_recaps.classmates is up to 5
+    // {user_id, display_name, handle, avatar_url} objects, already fully
+    // privacy-gated server-side by recap_weekly_classmates() (both this
+    // row's own show_attendance AND each named candidate's) - nothing here
+    // re-filters or re-sorts, the same "render in the order returned"
+    // discipline classmateRowHtml() uses for attendance_classmates_today().
+    // A recap is an own-row surface (weekly_recaps' only RLS policy is
+    // own-row SELECT), which is exactly why naming individuals is safe HERE
+    // and never in the club-wide monthly recap (COMM-309).
+    //
+    // QUIET-WEEK CHOICE, this ticket's own call: an empty array renders a
+    // message rather than being omitted. Every other section in this
+    // function (PRs, achievements, challenge progress, the upcoming event)
+    // already renders an `.empty` line instead of disappearing when there
+    // is nothing to show, and a recap that is browsed week to week (COMM-
+    // 221's prev/next) would otherwise look inconsistent - some weeks with
+    // six labelled sections, some with five and no visible reason why.
+    const classmatesList = Array.isArray(row.classmates) ? row.classmates : [];
+    const classmatesHtml = classmatesList.length
+      ? `<div data-recap-classmates="ready">${classmatesList.map((m) => {
+          const name = m.display_name || (m.handle ? "@" + m.handle : "חבר/ה");
+          return `<button class="link-btn" data-community-action="view-profile" data-id="${safeText(m.user_id)}" style="padding:0;color:inherit;font-weight:700;text-decoration:underline;">${safeText(name)}</button>`;
+        }).join(", ")} התאמנו איתכם השבוע.</div>`
+      : `<div class="empty" data-recap-classmates="empty">אין חברים משותפים השבוע</div>`;
     const club = row.club_challenge_progress && row.club_challenge_progress.title
       ? `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">${safeText(row.club_challenge_progress.title)}</div><div class="mono" style="color:var(--brass);">${safeText(row.club_challenge_progress.total)}${row.club_challenge_progress.target != null ? ` / ${safeText(row.club_challenge_progress.target)}` : ""}</div>${row.club_challenge_progress.participants != null ? `<div style="color:var(--steel);font-size:12px;">${safeText(row.club_challenge_progress.participants)} משתתפים</div>` : ""}</div>`
       : "";
@@ -5750,6 +5864,7 @@
       <div class="field-label" style="margin:10px 0 4px;">שיאים</div>${prsHtml}
       <div class="field-label" style="margin:10px 0 4px;">הישגים</div>${achHtml}
       <div class="field-label" style="margin:10px 0 4px;">ההתקדמות שלי באתגר</div>${challengeHtml}
+      <div class="field-label" style="margin:10px 0 4px;">מי עוד התאמן איתכם השבוע</div>${classmatesHtml}
       ${club}
       ${event}
       ${shareHtml}`;
@@ -7966,6 +8081,13 @@
     // actually on screen asks once, late enough, and only of members looking
     // at the surface the card lives on.
     if (state.communityTab === "feed" && state.user && !state.classmatesToday.loaded && !state.classmatesToday.loading) loadClassmatesToday();
+    // COMM-316. Same lazy, same-subtab, same after-boot-batch pattern as
+    // loadClassmatesToday just above, and for the identical reason: this
+    // reads the member's own attendance_log rows, which the private_records
+    // trigger behind flushOutbox() only finishes writing after the boot
+    // Promise.all. Only the two attendance-tied onboarding steps depend on
+    // this; welcome/first_week/first_month never look at it.
+    if (state.communityTab === "feed" && state.user && !state.onboardingAttendance.loaded && !state.onboardingAttendance.loading) loadOnboardingAttendance();
     // COMM-212. The hide-my-result checkbox persists per device on change,
     // the same no-save-button pattern the privacy toggles below use - except
     // this one writes localStorage, never the server.
@@ -8353,7 +8475,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.notifPushSub = null; state.notifPushChecked = false; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false, profiles: {}, reachedOut: {}, busy: null }; state.coachMemberOfWeek = { loading: false, loaded: false, error: false, envelope: null, publishedProfile: null, previousProfile: null, pickHandle: "", pickReason: "", busy: null, publishErr: "" }; state.coachMonthlyRecap = { loading: false, loaded: false, error: false, row: null, busy: null, publishErr: "" }; state.monthlyRecap = { loading: false, loaded: false, error: false, row: null }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} }; state.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false }; state.classmatesToday = { items: [], loading: false, loaded: false, error: false }; classmatesCardViewLogged = false; /* COMM-307: the next member to sign in on this device gets a fresh card and a fresh classmates_card_viewed, never the previous session's rows or its already-counted view. */
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.notifPushSub = null; state.notifPushChecked = false; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false, profiles: {}, reachedOut: {}, busy: null }; state.coachMemberOfWeek = { loading: false, loaded: false, error: false, envelope: null, publishedProfile: null, previousProfile: null, pickHandle: "", pickReason: "", busy: null, publishErr: "" }; state.coachMonthlyRecap = { loading: false, loaded: false, error: false, row: null, busy: null, publishErr: "" }; state.monthlyRecap = { loading: false, loaded: false, error: false, row: null }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} }; state.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false }; state.classmatesToday = { items: [], loading: false, loaded: false, error: false }; classmatesCardViewLogged = false; /* COMM-307: the next member to sign in on this device gets a fresh card and a fresh classmates_card_viewed, never the previous session's rows or its already-counted view. */ state.onboardingAttendance = { count: 0, loading: false, loaded: false, error: false }; /* COMM-316: same reset reasoning as classmatesToday just above - the next member on this device gets a fresh count, never the previous member's. */
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();

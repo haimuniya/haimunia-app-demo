@@ -16,6 +16,13 @@
 //   never automatically.
 // - The weekly_recap notification's deep link opens the recap dialog on
 //   the exact week it names.
+// - COMM-316 (closing COMM-P06): the classmates line renders straight off
+//   weekly_recaps.classmates - populated, in the row's own order, each name
+//   linking to a profile - and a quiet week (empty array, or a fixture that
+//   predates the column entirely) renders the documented quiet-week
+//   message rather than an omission or an error. The privacy gate itself
+//   (recap_weekly_classmates(), 202609010003) is Postgres and is not
+//   re-verified here - see supabase/tests/0047_recap_classmates_and_onboarding_classes_test.sql.
 import { test } from "node:test";
 import assert from "node:assert";
 import { bootCommunity, waitFor } from "./helpers/boot.mjs";
@@ -192,4 +199,61 @@ test("resolveNotifTarget maps the recap deep link to the account tab and the nam
   await waitFor(() => !!window.document.getElementById("communityClubTop"), 4000);
   const R = window.notifResolveTarget;
   assert.deepEqual(R({ deep_link: "/community/recap?week=2026-08-17" }), { tab: "account", recapWeek: "2026-08-17" });
+});
+
+// COMM-316, closing COMM-P06. weekly_recaps.classmates - already fully
+// privacy-gated server-side by recap_weekly_classmates() (202609010003) -
+// is rendered straight off the row: no client-side re-filter, no
+// re-sorting, in the order the row already carries.
+const classmatesLine = (window) => recapDialog(window).querySelector("[data-recap-classmates]");
+
+test("COMM-316: a populated classmates line names each member, in the row's own order, each linking to their profile", async () => {
+  const mock = seeded({
+    weekly_recaps: [quietRow({
+      sessions_completed: 4, streak: 2,
+      classmates: [
+        { user_id: "u2", display_name: "נועם", handle: "noam", avatar_url: null },
+        { user_id: "u3", display_name: "טל", handle: "tal", avatar_url: null },
+      ],
+    })],
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openAccountTab(window);
+  window.document.querySelector('[data-community-action="open-recap"]').click();
+  await waitFor(() => !!recapDialog(window), 3000);
+  await waitFor(() => !!classmatesLine(window), 3000);
+
+  assert.equal(classmatesLine(window).dataset.recapClassmates, "ready");
+  const links = Array.from(classmatesLine(window).querySelectorAll('[data-community-action="view-profile"]'));
+  assert.deepEqual(links.map((l) => l.dataset.id), ["u2", "u3"], "rendered in the order the row returned, never re-sorted client-side");
+  const text = classmatesLine(window).textContent;
+  assert.match(text, /נועם/);
+  assert.match(text, /טל/);
+});
+
+test("COMM-316: a quiet week (no overlap, or the member's own show_attendance off) renders a quiet-week message, not an omission and not an error", async () => {
+  const mock = seeded({
+    weekly_recaps: [quietRow({ sessions_completed: 3, classmates: [] })],
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openAccountTab(window);
+  window.document.querySelector('[data-community-action="open-recap"]').click();
+  await waitFor(() => !!recapDialog(window), 3000);
+  await waitFor(() => !!classmatesLine(window), 3000);
+
+  assert.equal(classmatesLine(window).dataset.recapClassmates, "empty");
+  assert.match(classmatesLine(window).textContent, /אין חברים משותפים השבוע/);
+  assert.equal(classmatesLine(window).querySelector('[data-community-action="view-profile"]'), null);
+});
+
+test("COMM-316: a row with no classmates field at all (older fixture shape) is treated the same as an empty array, never throws", async () => {
+  const row = quietRow({ sessions_completed: 1 });
+  delete row.classmates;
+  const mock = seeded({ weekly_recaps: [row] });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openAccountTab(window);
+  window.document.querySelector('[data-community-action="open-recap"]').click();
+  await waitFor(() => !!recapDialog(window), 3000);
+  await waitFor(() => !!classmatesLine(window), 3000);
+  assert.equal(classmatesLine(window).dataset.recapClassmates, "empty");
 });

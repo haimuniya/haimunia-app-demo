@@ -4176,33 +4176,46 @@ is there. Same open infra item `notif_batch_flush_due()`,
   and how that key reaches the caller without living in a client bundle)
   remains the same open infra item the notification batch flusher already
   has - not built here.
-- **COMM-316, the classmates line — schema side shipped, Edge Function side
-  OPEN.** The file's own header still says "Never builds the classmates line
-  (parked, COMM-316/attendance)"; 202609010003 unparked it by adding
-  `weekly_recaps.classmates` and
-  `public.recap_weekly_classmates(p_user, p_week_start, p_limit)`. The
-  remaining change is **one call and one field**: inside
-  `buildRecapFields()`, `supabase.rpc('recap_weekly_classmates', { p_user:
-  userId, p_week_start: weekStart })` and put the returned array on the
-  upsert as `classmates`. Notes for whoever writes it:
+- ~~**COMM-316, the classmates line — schema side shipped, Edge Function side
+  OPEN.**~~ — **SHIPPED, client half.** `computeClassmates()` in
+  `supabase/functions/recap_weekly/index.ts` calls
+  `supabase.rpc('recap_weekly_classmates', { p_user: userId, p_week_start:
+  weekStart })` inside `buildRecapFields()`'s existing `Promise.all`, and the
+  returned array lands on the upsert as `classmates` verbatim (a null/error
+  response is normalised to `[]` before it reaches the row, never dropped —
+  `classmates` is `not null`). It reuses the per-member `try`/`catch` already
+  in `generateRecaps()`'s loop rather than adding a second one, per
+  202609010003's own comment ("recap_weekly's per-member try/catch only ever
+  sees a genuine fault"). No TypeScript re-implementation of the privacy gate
+  was added — the RPC is the only source, exactly as prescribed below.
+  `p_week_start: weekStart` is passed explicitly, the same `targetWeek()`
+  value every other figure in the row is keyed off. The notification body is
+  unchanged — naming a classmate in a push notification was never in scope,
+  since the argument that permits the line depends entirely on
+  `weekly_recaps`' own-row RLS and a notification body is a different
+  surface. The client render is `cloud.js`'s `renderRecapBody()`: a labelled
+  line under "מי עוד התאמן איתכם השבוע", each name a `view-profile` link,
+  rendered in the order the row already carries (no client re-sort). An
+  empty array renders a quiet-week message (`data-recap-classmates="empty"`)
+  rather than being omitted — the recaps agent's own call, made for
+  consistency with every other section of this exact function (PRs,
+  achievements, challenge progress, the upcoming event), which already
+  render an `.empty` line instead of disappearing. Covered by
+  `test/community-recaps.test.mjs`. **Gap, stated rather than papered over:
+  `recap_weekly/index.ts` itself has no executing test coverage anywhere in
+  this repo** — it is the only Edge Function that exists, there is no
+  Deno/Node harness for it, and `computeClassmates()`/the per-member
+  try/catch wiring is therefore verified by code inspection against
+  202609010003's contract, not by a running test. The original notes for
+  whoever wrote this, kept for the record:
   - The RPC returns the **array itself**, so `data` goes straight onto the
-    row; there is no `.map()` and no shape to rebuild. A null or errored
-    response should become `[]`, not be dropped — `classmates` is `not
-    null`.
+    row; there is no `.map()` and no shape to rebuild.
   - **Do not compute the line in TypeScript.** The privacy gate — block
     edges both ways, deleted profiles, `visible_to_club`, the candidate's
     `show_attendance` and the subject's own `show_attendance` — lives in the
     function precisely so it does not exist in two languages, and the
     service-role client bypasses RLS, so a hand-rolled query would have no
     gate at all.
-  - Pass `p_week_start: weekStart` explicitly even though null would resolve
-    to the same week. `targetWeek()` is computed once per run and every
-    other figure is keyed off it; letting the RPC re-derive it would put a
-    second definition of "which week" in the loop.
-  - The notification body is unchanged. Naming a classmate in a push
-    notification is **not** covered by "a recap is an own-row surface" — the
-    argument that permits the line depends entirely on `weekly_recaps`'
-    own-row RLS, and a notification body is a different surface.
 
 ### ~~recap_monthly_club~~ — NOT BUILT AS AN EDGE FUNCTION
 
