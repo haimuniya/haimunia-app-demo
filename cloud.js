@@ -302,7 +302,25 @@
       loading: false, loaded: false, error: false, errorText: "",
       cohorts: [], onboarding: [], welcome: [],
       onboardingStep: "welcomed_at", showOnboarding: false, showWelcome: false,
-    } };
+    },
+    // COMM-312 community health score, client half. Same is_admin()-only bar
+    // as COMM-313 (not the hasPerm(PERM.ANALYTICS_VIEW) || isAdmin() pair
+    // COMM-310/311 use), for the same reason: community_health_history()
+    // itself is gated on real is_admin() alone, per that function's own
+    // migration comment. Its own top-level ach-section
+    // (renderCommunityHealthScore(), wired in next to
+    // renderRetentionCorrelations() in the account tab) and its own lazy
+    // load (loadCommunityHealth()), not piggybacking on either COMM-310's or
+    // COMM-313's load. weeks is the RAW array community_health_history()
+    // returned - {week_start, score, components} per row, already ordered
+    // OLDEST FIRST by the RPC itself, so it is drawn left-to-right with no
+    // re-sort here (see renderCommunityHealthTrend()). There is no p_weeks
+    // selector in state: COMMUNITY_HEALTH_WEEKS is a fixed constant passed on
+    // every load, per the ticket's own "your call" on offering a selector -
+    // this ticket's frontend states name no such control, and COMM-313's own
+    // sibling section has none either.
+    communityHealth: { loading: false, loaded: false, error: false, errorText: "", weeks: [] },
+  };
   const photoUrlCache = {};
 
   // COMM-141. The notification badge refreshes on a realtime own-row
@@ -1847,6 +1865,44 @@
     if (!RETENTION_ONBOARDING_STEPS.some((s) => s.id === step)) return;
     if (state.retention.onboardingStep === step) return;
     state.retention.onboardingStep = step;
+    rerender();
+  }
+  // ---- Community health score (COMM-312) --------------------------------
+  // ONE read path: community_health_history(p_weeks default 12) returns
+  // setof jsonb, {week_start, score, components} per row - security definer,
+  // gated on real is_admin() ALONE (202609010009), same narrower bar as
+  // COMM-313's three functions and, like them, NOT the hasPerm(PERM.
+  // ANALYTICS_VIEW) || isAdmin() pair COMM-310/311 use. There is no write
+  // path reachable from here at all: community_health_generate() is
+  // service_role only, revoked from authenticated, so this half is read-only
+  // by construction - no "recompute now" button exists here because one
+  // would just 42501.
+  const COMMUNITY_HEALTH_WEEKS = 12;
+  // The one real Postgres error community_health_history() raises, mapped to
+  // short Hebrew - same error.message === "..." pattern
+  // RETENTION_ERROR_LABELS/MEMBER_SEGMENTS_ERROR_LABELS use. Anything else
+  // (network, a permission revoked mid-session) falls back to COMM-312's own
+  // frontend-states copy for the Error state, verbatim: "לא ניתן היה לטעון
+  // את הציון."
+  const COMMUNITY_HEALTH_ERROR_LABELS = {
+    "not authorized": "אין לך הרשאה לצפות בציון זה.",
+  };
+  function communityHealthErrorText(error) {
+    const msg = error && error.message;
+    return (msg && COMMUNITY_HEALTH_ERROR_LABELS[msg]) || "לא ניתן היה לטעון את הציון.";
+  }
+  async function loadCommunityHealth() {
+    if (!state.user || !isAdmin()) { state.communityHealth.weeks = []; return; }
+    const h = state.communityHealth;
+    h.loading = true; h.error = false; h.errorText = "";
+    rerender();
+    const { data, error } = await client.rpc("community_health_history", { p_weeks: COMMUNITY_HEALTH_WEEKS });
+    h.loading = false; h.loaded = true;
+    if (error) { h.error = true; h.errorText = communityHealthErrorText(error); rerender(); return; }
+    // setof jsonb comes back as a plain array from PostgREST; defensive
+    // Array.isArray() guard only - the RPC itself already returns it OLDEST
+    // FIRST, so nothing here re-sorts it.
+    h.weeks = Array.isArray(data) ? data : [];
     rerender();
   }
   // ---- Admin audit view (COMM-154) -----------------------------------
@@ -4363,6 +4419,126 @@
         + renderRetentionWelcomeOverlay();
     }
     return `<div class="ach-section" style="margin-top:18px;" data-retention-correlations="1">${sectionHead("var(--purple)", "מתאמי שימור (מנהלים בלבד)", true)}${body}</div>`;
+  }
+  // ---- Community health score rendering (COMM-312) -----------------------
+  // Deliberately simpler than COMM-313's cohort curves, per the ticket's own
+  // "just one score per week, one line": one score card for the latest
+  // computed week, its four-component breakdown, and a trend line that is a
+  // plain week-by-week list of scores (this codebase draws every other trend
+  // - see renderAdminAnalyticsWcam's own weeks list - the same way; there is
+  // no charting library here to reach for).
+  //
+  // Key order matches components' own jsonb_build_object key order in
+  // 202609010009 (wcam_share, engagement_per_post, moderation_load,
+  // retention) rather than the weights' narrative order in that migration's
+  // comments, or AC1's prose order - the stored row is the one definition.
+  const COMMUNITY_HEALTH_COMPONENT_ORDER = ["wcam_share", "engagement_per_post", "moderation_load", "retention"];
+  const COMMUNITY_HEALTH_COMPONENT_LABELS = {
+    wcam_share: "נוכחות שבועית (WCAM)",
+    engagement_per_post: "מעורבות לפוסט",
+    moderation_load: "עומס דיווחים (הפוך)",
+    retention: "שימור",
+  };
+  // `value` is in the component's own units (a share, a per-post ratio, a
+  // per-100-members rate) - never the 0..1 sub_score, which is an internal
+  // mapping this card does not surface. null/undefined (component
+  // unavailable - community_health_component()'s own null rule) renders as
+  // an em dash, the same convention adminAnalyticsRatioText() uses.
+  function communityHealthComponentValueText(key, comp) {
+    const v = comp && comp.value;
+    if (v === null || v === undefined) return "—";
+    const n = Number(v);
+    if (!isFinite(n)) return "—";
+    if (key === "wcam_share" || key === "retention") return (Math.round(n * 1000) / 10) + "%";
+    if (key === "moderation_load") return (Math.round(n * 10) / 10) + " דיווחים ל-100 חברים";
+    return (Math.round(n * 100) / 100) + " לפוסט";
+  }
+  // THE CAVEAT. community_health_component()'s own comment: weight_applied
+  // is 0 "when the component had no data" and the migration's own composite
+  // block says a partial-component score "does not announce that on its
+  // face" unless a reader is told. So a weight_applied of 0 (or a null
+  // sub_score - the same condition, restated defensively) renders a visible
+  // "not included this week" line INSTEAD OF a 0% weight, rather than next
+  // to it - 0% read on its own looks like a rounding artefact, not an
+  // exclusion.
+  function communityHealthComponentDropped(comp) {
+    if (!comp) return true;
+    if (comp.sub_score === null || comp.sub_score === undefined) return true;
+    const wa = Number(comp.weight_applied);
+    return !isFinite(wa) || wa === 0;
+  }
+  function renderCommunityHealthComponents(components) {
+    if (!components || typeof components !== "object") return "";
+    const rows = COMMUNITY_HEALTH_COMPONENT_ORDER.map((key) => {
+      const comp = components[key];
+      if (!comp) return "";
+      const dropped = communityHealthComponentDropped(comp);
+      const valueText = communityHealthComponentValueText(key, comp);
+      const weightHtml = dropped
+        ? `<span data-community-health-dropped="1" style="color:var(--red);">לא נכלל בציון השבוע</span>`
+        : `<span style="color:var(--steel);">במשקל ${Math.round(Number(comp.weight_applied) * 1000) / 10}%</span>`;
+      return `<div class="log-row" data-community-health-component="${key}">
+        <span>${safeText(COMMUNITY_HEALTH_COMPONENT_LABELS[key] || key)}</span>
+        <span class="mono" style="color:var(--brass);text-align:left;">${safeText(valueText)}<br/>${weightHtml}</span>
+      </div>`;
+    }).join("");
+    return `<div class="log-list" data-community-health-components="1">${rows}</div>`;
+  }
+  function communityHealthScoreText(row) {
+    const s = row && row.score;
+    if (s === null || s === undefined) return "—";
+    const n = Number(s);
+    return isFinite(n) ? String(Math.round(n * 10) / 10) : "—";
+  }
+  function renderCommunityHealthScoreCard(row) {
+    if (!row) return "";
+    return `<div class="chart-card" style="margin-bottom:10px;" data-community-health-score-card="1">
+      <div style="font-size:12px;color:var(--steel);margin-bottom:4px;">שבוע ${safeText(row.week_start || "")}</div>
+      <div style="font-size:34px;font-weight:800;color:var(--brass);" data-community-health-score-value="1">${safeText(communityHealthScoreText(row))}</div>
+      <div style="font-size:12px;color:var(--steel);margin-bottom:8px;">מתוך 100</div>
+      ${renderCommunityHealthComponents(row.components)}
+    </div>`;
+  }
+  // ONE ROW: no trend line at all, per the ticket's own empty-state wording
+  // ("fewer than 2 computed weeks shows the latest score with no trend line
+  // rather than a broken chart") - the caller does not even call this
+  // helper below that count. TWO OR MORE: every stored week, oldest first
+  // (community_health_history()'s own return order - no re-sort here),
+  // rendered as a plain log-list the same shape renderAdminAnalyticsWcam()
+  // already uses for a weekly series.
+  function renderCommunityHealthTrend(weeks) {
+    const rows = (weeks || []).map((w) => adminAnalyticsRow(w.week_start || "", communityHealthScoreText(w))).join("");
+    return adminAnalyticsCard("מגמת ציון הקהילה", `<div class="log-list" data-community-health-trend="1">${rows}</div>`);
+  }
+  // Frontend states, COMM-312's own list: loading is a skeleton
+  // (data-community-health-skeleton); error is the ticket's own exact copy
+  // ("לא ניתן היה לטעון את הציון.") unless the server named the one real
+  // refusal ('not authorized'); 0 computed weeks is a true empty state
+  // (data-community-health-empty, "no scheduler wired yet" is the expected
+  // common case until one exists, same as several other Phase 3 schema
+  // halves); 1 week shows the score card with no trend line; 2+ weeks shows
+  // the score card plus the trend line.
+  function renderCommunityHealthScore() {
+    if (!isAdmin()) return "";
+    const h = state.communityHealth;
+    let body;
+    if (h.loading && !h.loaded) {
+      const skRow = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:55%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
+      body = `<div class="chart-card" style="margin-bottom:10px;" aria-busy="true" data-community-health-skeleton="1">
+        <div style="height:34px;width:90px;background:var(--border);border-radius:8px;margin-bottom:10px;"></div>
+        <div class="log-list">${skRow.repeat(4)}</div>
+      </div>`;
+    } else if (h.error) {
+      body = `<div class="empty">${safeText(h.errorText || "לא ניתן היה לטעון את הציון.")}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="community-health-retry">ניסיון חוזר</button></div></div>`;
+    } else if (!h.loaded) {
+      body = `<div class="empty">אין עדיין נתונים לתצוגה.</div>`;
+    } else if (!h.weeks.length) {
+      body = `<div class="empty" data-community-health-empty="1">טרם חושב ציון קהילה עבור המועדון.</div>`;
+    } else {
+      const latest = h.weeks[h.weeks.length - 1];
+      body = renderCommunityHealthScoreCard(latest) + (h.weeks.length >= 2 ? renderCommunityHealthTrend(h.weeks) : "");
+    }
+    return `<div class="ach-section" style="margin-top:18px;" data-community-health-score="1">${sectionHead("var(--brass)", "ציון בריאות הקהילה (מנהלים בלבד)", true)}${body}</div>`;
   }
   // COMM-155. The pinned strip at the very top of the Club home, above the
   // club top card. Up to three chips; staff with community.content.pin get
@@ -8878,7 +9054,7 @@
     const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מתאמנים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין מתאמנים חדשים לאחרונה</div>`}</div>` : "";
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
-    const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderAdminAnalyticsDashboard() + renderRetentionCorrelations() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
+    const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderAdminAnalyticsDashboard() + renderRetentionCorrelations() + renderCommunityHealthScore() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
 
@@ -9096,6 +9272,12 @@
     // triggers the three retention RPCs, matching that this section must not
     // render for them at all.
     if (state.communityTab === "account" && isAdmin() && !state.retention.loaded && !state.retention.loading) loadRetentionCorrelations();
+    // COMM-312. Same lazy pattern and same is_admin()-only gate as COMM-313's
+    // load just above, its own independent trigger (not piggybacked on
+    // loadRetentionCorrelations() even though the two sections sit side by
+    // side and share a gate) - the two RPCs have nothing to do with each
+    // other from the client's point of view.
+    if (state.communityTab === "account" && isAdmin() && !state.communityHealth.loaded && !state.communityHealth.loading) loadCommunityHealth();
     // COMM-309. The monthly club recap's member-facing card: fetched the
     // first time a member lands on the Account tab, same lazy pattern as
     // the audit view just above (and every other tab-scoped load in this
@@ -9312,6 +9494,8 @@
     else if (action === "retention-toggle-onboarding") toggleRetentionOnboardingOverlay();
     else if (action === "retention-toggle-welcome") toggleRetentionWelcomeOverlay();
     else if (action === "retention-onboarding-step") setRetentionOnboardingStep(el.dataset.step);
+    // COMM-312 community health score.
+    else if (action === "community-health-retry") loadCommunityHealth();
     // COMM-155 pins.
     else if (action === "unpin") unpinTarget(el.dataset.type, el.dataset.id);
     else if (action === "pin") pinTarget(el.dataset.type, el.dataset.id, el.dataset.note || "");
