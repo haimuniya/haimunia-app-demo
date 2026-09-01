@@ -94,6 +94,18 @@
     // recapView is the open weekly recap dialog (COMM-221); its own
     // load/prev/next calls read straight off weekly_recaps, own row only.
     onboardingProgress: null, onboardingFirstMonth: null, recapView: null,
+    // COMM-309. The member-facing monthly club recap, an inline Account-tab
+    // card rather than a dialog (unlike recapView above) - there is one
+    // club-wide row to browse, not a per-member history to page through.
+    // row is the newest PUBLISHED month only: the query behind
+    // loadMonthlyRecap() filters `published_at is not null` itself rather
+    // than leaning on RLS, so a draft can never surface here even before
+    // the row reaches this client. Empty (no row yet) and error both mean
+    // "render nothing" - COMM-309's own frontend states ask for the surface
+    // to simply not show a monthly recap entry before a month is published,
+    // and there is no separate error affordance specified for the member
+    // side (unlike the staff preview, which does have one).
+    monthlyRecap: { loading: false, loaded: false, error: false, row: null },
     // COMM-223..226 coach-tools cluster. The whole Coach Dashboard sub-tab
     // (only ever added to the tab bar for isStaff(), see the render
     // function) - Celebrate, Welcome, Engage. Challenges re-surfaces
@@ -163,6 +175,16 @@
     // holds the user_id of whichever candidate publish is in flight, or the
     // literal "pick" for the free-selection form's own publish.
     coachMemberOfWeek: { loading: false, loaded: false, error: false, envelope: null, publishedProfile: null, previousProfile: null, pickHandle: "", pickReason: "", busy: null, publishErr: "" },
+    // COMM-309. Coach Dashboard's sixth section: the monthly club recap
+    // staff preview. row is a single monthly_club_recaps row - the newest
+    // month, draft or published, exactly as RLS hands it to a staff/
+    // community.analytics.view reader (monthly_club_recaps_staff_select),
+    // never reshaped. null means no month has ever been generated (there is
+    // no scheduler yet - see the migration's own note - so this is a real,
+    // expected state, not a load failure). busy holds the row id whose
+    // publish is in flight, the same single-flight shape
+    // coachMemberOfWeek.busy uses for its own publish action.
+    coachMonthlyRecap: { loading: false, loaded: false, error: false, row: null, busy: null, publishErr: "" },
     // COMM-210/211/212 leaderboard cluster. `leaderboard` is the club-wide
     // consistency board on the Boards sub-tab: rows are feed_leaderboard()
     // output in the exact order the function returned them and are never
@@ -1155,6 +1177,114 @@
     // flight - the same literal the state comment above documents.
     await publishMemberOfWeek(data.id, reason, "pick");
   }
+
+  // ---- Monthly club recap (COMM-309) ---------------------------------------
+  // Schema half shipped in 202609010002_monthly_club_recap.sql. The client
+  // never calls or triggers generation - `recap_monthly_generate()` is
+  // service_role-only, granted to nobody else - it only reads
+  // `monthly_club_recaps` directly under RLS and calls
+  // `recap_monthly_publish(p_id)`. See the migration's own comments and
+  // contracts.md, "Needs from schema, monthly club recap (COMM-309, Phase
+  // 3)" for the full reasoning.
+  //
+  // Two separate loaders for two separate audiences reading the same table
+  // under two different RLS policies, not one shared function:
+  //   loadCoachMonthlyRecap() - the Coach Dashboard staff preview. No
+  //     `published_at` filter at all: monthly_club_recaps_staff_select lets
+  //     a staff/community.analytics.view reader see ANY row, draft or
+  //     published, and the preview's whole job is to show the newest month
+  //     regardless of its state.
+  //   loadMonthlyRecap() - the member-facing surface. Filters
+  //     `published_at is not null` itself, in the query, rather than
+  //     leaning on RLS to do it: RLS enforces the same boundary for a real
+  //     plain member, but a staff member (who can also read drafts) lands
+  //     on the Account tab too, and this filter is what keeps a draft from
+  //     leaking into their own member-facing card. Both loaders use the
+  //     same "select, order desc, limit 1, read data[0]" shape
+  //     refreshRecapView already uses for "no explicit week" rather than
+  //     .maybeSingle(), since order()+limit() only apply to a real query,
+  //     not to a .maybeSingle() short-circuit.
+  async function loadCoachMonthlyRecap() {
+    if (!state.user || !isStaff()) return;
+    state.coachMonthlyRecap.loading = true;
+    state.coachMonthlyRecap.error = false;
+    rerender();
+    const { data, error } = await client.from("monthly_club_recaps").select("*")
+      .order("month_start", { ascending: false }).limit(1);
+    state.coachMonthlyRecap.loading = false;
+    state.coachMonthlyRecap.loaded = true;
+    if (error) {
+      state.coachMonthlyRecap.error = true;
+      state.coachMonthlyRecap.row = null;
+      rerender();
+      return;
+    }
+    state.coachMonthlyRecap.error = false;
+    state.coachMonthlyRecap.row = (Array.isArray(data) && data.length) ? data[0] : null;
+    rerender();
+  }
+  async function loadMonthlyRecap() {
+    if (!state.user) return;
+    state.monthlyRecap.loading = true;
+    state.monthlyRecap.error = false;
+    rerender();
+    const { data, error } = await client.from("monthly_club_recaps").select("*")
+      .not("published_at", "is", null).order("month_start", { ascending: false }).limit(1);
+    state.monthlyRecap.loading = false;
+    state.monthlyRecap.loaded = true;
+    if (error) {
+      state.monthlyRecap.error = true;
+      state.monthlyRecap.row = null;
+      rerender();
+      return;
+    }
+    state.monthlyRecap.error = false;
+    state.monthlyRecap.row = (Array.isArray(data) && data.length) ? data[0] : null;
+    rerender();
+  }
+  // The two real Postgres errors recap_monthly_publish() raises (the schema
+  // half's own comment on that function, verbatim), mapped to short Hebrew -
+  // the same setMessage()-surfaced, error.message === "..." pattern
+  // coachEngageResolveFlag and memberOfWeekErrorText both already use for a
+  // failed staff action. Any other error (network, "not authorized" for a
+  // caller whose permission changed between page-load and click) falls back
+  // to the same generic retry copy the rest of this cluster uses.
+  const MONTHLY_RECAP_ERROR_LABELS = {
+    "recap not found": "התקציר לא נמצא.",
+    "recap already published": "התקציר כבר פורסם.",
+  };
+  function monthlyRecapErrorText(error) {
+    const msg = error && error.message;
+    return (msg && MONTHLY_RECAP_ERROR_LABELS[msg]) || "הפרסום נכשל. נסו שוב.";
+  }
+  // recap_monthly_publish(p_id) is narrower than the staff read policy - it
+  // requires community.analytics.view or real is_admin(), which a plain
+  // coach does not hold (the migration's own long comment on this asymmetry
+  // is the reason renderCoachMonthlyRecapSection() gates the button on
+  // hasPerm(PERM.ANALYTICS_VIEW) || isAdmin(), not on isStaff()). This
+  // function does not re-check that client-side before calling - the button
+  // it is wired to is already absent for a caller who lacks it, and the
+  // server is the real authority regardless - it only maps the refusal if
+  // one somehow arrives anyway (e.g. a permission revoked mid-session).
+  async function publishMonthlyRecap(id) {
+    if (!id || state.coachMonthlyRecap.busy) return;
+    state.coachMonthlyRecap.busy = id;
+    state.coachMonthlyRecap.publishErr = "";
+    rerender();
+    const { error } = await client.rpc("recap_monthly_publish", { p_id: id });
+    if (error) {
+      state.coachMonthlyRecap.busy = null;
+      state.coachMonthlyRecap.publishErr = monthlyRecapErrorText(error);
+      setMessage(state.coachMonthlyRecap.publishErr);
+      rerender();
+      return;
+    }
+    setMessage("התקציר החודשי פורסם");
+    await loadCoachMonthlyRecap();
+    state.coachMonthlyRecap.busy = null;
+    rerender();
+  }
+
   // ==========================================================================
   // COMM-150..156  admin-moderation cluster.
   // The moderation queue, its actions, the pinned strip and the admin audit
@@ -4417,6 +4547,91 @@
     }
     return `<div class="ach-section" style="margin-top:18px;">${head}${body}</div>`;
   }
+  // ---- Monthly club recap (COMM-309) ----------------------------------------
+  // The five aggregate figures, shared verbatim between the staff preview
+  // (draft or published) and the member-facing card (published only) - same
+  // shape, same labels, same order the migration lists them in. No member
+  // name, handle or per-member figure anywhere in this row by table design
+  // (monthly_club_recaps has no user_id column at all), so nothing here has
+  // to filter anything out - rendering exactly what came back is already
+  // aggregate-only.
+  function renderMonthlyRecapFigures(r) {
+    return `<div class="log-list">
+      <div class="log-row"><span>אימונים שנרשמו</span><span class="mono" style="color:var(--brass);">${safeText(r.sessions_logged)}</span></div>
+      <div class="log-row"><span>פוסטים</span><span class="mono" style="color:var(--brass);">${safeText(r.posts_created)}</span></div>
+      <div class="log-row"><span>חברים חדשים</span><span class="mono" style="color:var(--brass);">${safeText(r.new_members)}</span></div>
+      <div class="log-row"><span>אתגרים שהושלמו</span><span class="mono" style="color:var(--brass);">${safeText(r.challenges_completed)}</span></div>
+      <div class="log-row"><span>אירועים שהתקיימו</span><span class="mono" style="color:var(--brass);">${safeText(r.events_held)}</span></div>
+    </div>`;
+  }
+  // The Coach Dashboard's sixth section: the staff preview + publish
+  // control. Frontend states, in order, exactly as COMM-309 names them:
+  // loading (skeleton, same shape renderCoachMemberOfWeekSection's own
+  // skeleton uses), error ("לא ניתן היה לטעון את התקציר לתצוגה מקדימה." -
+  // COMM-309's own copy, verbatim), no-row-yet (an honest empty state - see
+  // loadCoachMonthlyRecap's own comment on why null is a real, expected
+  // state here and not a load failure, since there is no scheduler yet),
+  // populated-draft (figures + a gated "פרסם" control) and
+  // populated-published (figures, read-only, no control at all - COMM-309's
+  // own "a published recap cannot be un-published or edited").
+  //
+  // THE PERMISSION GATE. canPublish combines hasPerm(PERM.ANALYTICS_VIEW)
+  // and isAdmin() with the same OR the moderation queue already uses for
+  // its own two-permission gates (hasPerm(PERM.COMMENT_MODERATE) ||
+  // isAdmin(), see loadModQueue/renderModQueue) - not a new mechanism, just
+  // this ticket's own pair. It is the exact pair
+  // recap_monthly_publish() itself requires server-side
+  // (`has_perm('community.analytics.view') or is_admin()`). Deliberately
+  // NOT isStaff(): the migration's own long comment on
+  // monthly_club_recaps_staff_select spells out that a coach may PREVIEW a
+  // draft (is_staff() is enough for the read policy) but may NOT publish
+  // one (the function's check is narrower) - gating the button on
+  // isStaff() would show a coach a control the database refuses.
+  function renderCoachMonthlyRecapSection() {
+    const s = state.coachMonthlyRecap;
+    const head = sectionHead("var(--purple)", "סיכום חודשי למועדון");
+    if (s.loading && !s.loaded) {
+      return `<div class="ach-section" style="margin-top:18px;">${head}<div aria-busy="true"><div class="chart-card" style="height:120px;background:var(--border);opacity:.35;"></div></div></div>`;
+    }
+    if (s.error) {
+      return `<div class="ach-section" style="margin-top:18px;">${head}<div class="empty">לא ניתן היה לטעון את התקציר לתצוגה מקדימה.<div class="chip-row" style="justify-content:center;"><button class="chip-btn" data-community-action="coach-monthly-recap-retry">ניסיון חוזר</button></div></div></div>`;
+    }
+    if (!s.row) {
+      // No scheduler is built (the migration's own note): a draft only
+      // exists once someone has run recap_monthly_generate() by hand, so a
+      // clean "nothing yet" is a real state, not an error.
+      return `<div class="ach-section" style="margin-top:18px;">${head}<div class="empty">עדיין לא נוצר תקציר חודשי.</div></div>`;
+    }
+    const r = s.row;
+    const canPublish = hasPerm(PERM.ANALYTICS_VIEW) || isAdmin();
+    const busy = s.busy === r.id;
+    let control;
+    if (r.published_at) {
+      control = `<div style="color:var(--steel);font-size:11px;margin-top:8px;">פורסם ${relativeTime(r.published_at)}</div>`;
+    } else if (canPublish) {
+      control = `<div class="chip-row" style="margin-top:8px;"><button class="chip-btn primary" data-community-action="coach-monthly-recap-publish" data-id="${safeText(r.id)}"${s.busy ? " disabled" : ""}>${busy ? "מפרסמ/ת…" : "פרסום"}</button></div>${s.publishErr ? `<div class="field-error" role="alert">${safeText(s.publishErr)}</div>` : ""}`;
+    } else {
+      // A coach previewing a draft, per the asymmetry above - named rather
+      // than simply omitted, so a coach understands why there is no button
+      // rather than wondering if the draft is broken.
+      control = `<div class="footer-note" style="margin-top:8px;">רק בעל/ת הרשאת אנליטיקה או מנהל/ת יכולים לפרסם.</div>`;
+    }
+    return `<div class="ach-section" style="margin-top:18px;">${head}<div class="chart-card"><div class="field-label" style="margin-bottom:6px;">${safeText(r.month_start)}${r.published_at ? "" : " · טיוטה"}</div>${renderMonthlyRecapFigures(r)}${control}</div></div>`;
+  }
+  // The member-facing surface: an inline Account-tab card, sibling to the
+  // COMM-221 "View Week" entry (recapEntry in the tab builder below), not a
+  // new nav destination and not a dialog - there is one club-wide row to
+  // show, not a per-member history to browse. Renders nothing at all - not
+  // a skeleton, not an empty-state card - until state.monthlyRecap.row is
+  // actually populated: COMM-309's own "Empty (member view)" frontend state
+  // is explicit that the surface simply does not show a monthly recap entry
+  // before a month is published, and loadMonthlyRecap's own query already
+  // guarantees row is only ever a published row.
+  function renderMonthlyRecapMemberSection() {
+    const r = state.monthlyRecap.row;
+    if (!r) return "";
+    return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--purple)", "סיכום החודש של הקהילה")}<div class="chart-card"><div class="field-label" style="margin-bottom:6px;">${safeText(r.month_start)}</div>${renderMonthlyRecapFigures(r)}</div></div>`;
+  }
   // COMM-226 built this absent entirely (not merely styled hidden) unless
   // the flag is on; COMM-304 flips that flag default-on and gives it real
   // rows, but the same absent-when-off gate stays exactly as it was, for
@@ -4454,7 +4669,7 @@
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מעקב מעורבות")}${body}</div>`;
   }
   function renderCoachTab() {
-    return renderCoachCelebrateSection() + renderCoachMemberOfWeekSection() + renderCoachWelcomeSection() + renderChallengesListSection() + renderCoachEngageSection();
+    return renderCoachCelebrateSection() + renderCoachMemberOfWeekSection() + renderCoachWelcomeSection() + renderChallengesListSection() + renderCoachEngageSection() + renderCoachMonthlyRecapSection();
   }
 
   // ---- Rendering: create/edit form (COMM-201) ------------------------------
@@ -7493,6 +7708,12 @@
 
     // COMM-221. The "View Week" entry point into the recap surface.
     const recapEntry = `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--teal)", "הסיכום השבועי שלי")}<button class="chip-btn primary" data-community-action="open-recap">צפייה בשבוע</button></div>`;
+    // COMM-309. The monthly club recap's member-facing card, right beside
+    // its weekly sibling above - see renderMonthlyRecapMemberSection's own
+    // comment for why this is an inline card rather than a new dialog or a
+    // wholly new nav destination. Renders to "" (nothing at all) until a
+    // published month actually exists.
+    const monthlyRecapEntry = renderMonthlyRecapMemberSection();
 
     // COMM-228. One box, three labeled groups (members, events, challenges).
     const people = renderCommunitySearch();
@@ -7500,7 +7721,7 @@
     const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מתאמנים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין מתאמנים חדשים לאחרונה</div>`}</div>` : "";
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
-    const accountTab = account + recapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
+    const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
 
@@ -7708,6 +7929,13 @@
     // COMM-154. The audit view is lazy: fetched the first time an analytics
     // holder lands on the Account tab, not on every session.
     if (state.communityTab === "account" && hasPerm(PERM.ANALYTICS_VIEW) && !state.auditLoaded && !state.auditLoading) loadAuditLog(true);
+    // COMM-309. The monthly club recap's member-facing card: fetched the
+    // first time a member lands on the Account tab, same lazy pattern as
+    // the audit view just above (and every other tab-scoped load in this
+    // block) rather than in refreshSession()'s boot Promise.all - most
+    // months this answers "nothing published yet", so it is not worth a
+    // boot round-trip for every session.
+    if (state.communityTab === "account" && state.user && !state.monthlyRecap.loaded && !state.monthlyRecap.loading) loadMonthlyRecap();
     // COMM-229. Same lazy pattern: this device's push subscription status
     // is only worth checking once the flag is on and a member actually
     // lands on the Account tab where the preferences panel lives - never
@@ -7753,6 +7981,11 @@
       if (!state.coachCelebrate.loaded && !state.coachCelebrate.loading) loadCoachCelebrate();
       if (!state.coachWelcome.loaded && !state.coachWelcome.loading) loadCoachWelcome();
       if (!state.coachMemberOfWeek.loaded && !state.coachMemberOfWeek.loading) loadCoachMemberOfWeek();
+      // COMM-309. The staff preview, same lazy sub-tab pattern as the three
+      // loads above it - no flag gate, since this section renders for every
+      // isStaff() caller (the button inside it is what is permission-gated,
+      // not the section itself).
+      if (!state.coachMonthlyRecap.loaded && !state.coachMonthlyRecap.loading) loadCoachMonthlyRecap();
       if (state.featureFlags.coachEngage && !state.coachEngage.loaded && !state.coachEngage.loading) loadCoachEngageFlags();
     }
     // COMM-224. The assign-by-handle and mark-contacted note fields are
@@ -8029,6 +8262,9 @@
     else if (action === "coach-engage-reach-out") coachEngageReachOut(el.dataset.id);
     else if (action === "coach-engage-review") coachEngageResolveFlag(el.dataset.id, "reviewed");
     else if (action === "coach-engage-dismiss") coachEngageResolveFlag(el.dataset.id, "dismissed");
+    // COMM-309 monthly club recap.
+    else if (action === "coach-monthly-recap-retry") loadCoachMonthlyRecap();
+    else if (action === "coach-monthly-recap-publish") publishMonthlyRecap(el.dataset.id);
   };
   window.isCommunitySignedIn = function () { return !!(state.user && state.profile); };
   window.shareAchievementToCommunity = function (achievementId, title, rule) { publishAchievement(achievementId, title, rule); };
@@ -8117,7 +8353,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.notifPushSub = null; state.notifPushChecked = false; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false, profiles: {}, reachedOut: {}, busy: null }; state.coachMemberOfWeek = { loading: false, loaded: false, error: false, envelope: null, publishedProfile: null, previousProfile: null, pickHandle: "", pickReason: "", busy: null, publishErr: "" }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} }; state.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false }; state.classmatesToday = { items: [], loading: false, loaded: false, error: false }; classmatesCardViewLogged = false; /* COMM-307: the next member to sign in on this device gets a fresh card and a fresh classmates_card_viewed, never the previous session's rows or its already-counted view. */
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.notifPushSub = null; state.notifPushChecked = false; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false, profiles: {}, reachedOut: {}, busy: null }; state.coachMemberOfWeek = { loading: false, loaded: false, error: false, envelope: null, publishedProfile: null, previousProfile: null, pickHandle: "", pickReason: "", busy: null, publishErr: "" }; state.coachMonthlyRecap = { loading: false, loaded: false, error: false, row: null, busy: null, publishErr: "" }; state.monthlyRecap = { loading: false, loaded: false, error: false, row: null }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} }; state.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false }; state.classmatesToday = { items: [], loading: false, loaded: false, error: false }; classmatesCardViewLogged = false; /* COMM-307: the next member to sign in on this device gets a fresh card and a fresh classmates_card_viewed, never the previous session's rows or its already-counted view. */
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();

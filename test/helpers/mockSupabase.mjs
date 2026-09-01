@@ -117,6 +117,20 @@ export function createMockSupabase(seedTables = {}) {
       // treats .eq(col, null) differently (it never matches), so this is
       // its own method rather than reusing eq() for it.
       is(col, val) { filters.push((r) => (val === null ? (r[col] === null || r[col] === undefined) : r[col] === val)); return api; },
+      // COMM-309. Monthly club recap's member-facing read needs the real
+      // Postgrest `.not(col, "is", null)` negation - "published_at IS NOT
+      // NULL" - which is what actually enforces "no draft ever appears on
+      // the member surface" in the mock, since (unlike the RPC stand-ins
+      // above) plain `.from()` reads here carry no RLS simulation at all.
+      // Only the "is" operator is implemented, the one caller in this file
+      // needs; any other operator falls back to a plain inequality.
+      not(col, op, val) {
+        filters.push((r) => {
+          if (op === "is") return val === null ? !(r[col] === null || r[col] === undefined) : r[col] !== val;
+          return r[col] !== val;
+        });
+        return api;
+      },
       gt(col, val) { filters.push((r) => r[col] > val); return api; },
       // COMM-221. Recap week browsing needs the "strictly before/after"
       // and "on or after/before" pairs a real Postgrest client has -
