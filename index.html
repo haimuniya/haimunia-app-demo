@@ -89,6 +89,10 @@
     --color-scheme:light;
     --stripe-a:var(--energy); --stripe-b:#22345C;
     --stripe:repeating-linear-gradient(135deg, var(--stripe-a) 0 14px, var(--stripe-b) 14px 28px);
+    /* Card elevation: a light rim highlight plus a soft, low-contrast drop —
+       tuned per theme since a shadow strong enough to read on a dark surface
+       would look like a smudge on white. */
+    --shadow-card: 0 1px 0 rgba(255,255,255,.6) inset, 0 10px 20px -14px rgba(28,37,54,.16);
   }
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
@@ -99,6 +103,7 @@
       --energy:#E85D3D;
       --color-scheme:dark;
       --stripe-a:var(--energy); --stripe-b:#ffffff;
+      --shadow-card: 0 1px 0 rgba(255,255,255,.04) inset, 0 14px 28px -18px rgba(0,0,0,.65);
     }
   }
   :root[data-theme="dark"]{
@@ -109,6 +114,7 @@
     --energy:#E85D3D;
     --color-scheme:dark;
     --stripe-a:var(--energy); --stripe-b:#ffffff;
+    --shadow-card: 0 1px 0 rgba(255,255,255,.04) inset, 0 14px 28px -18px rgba(0,0,0,.65);
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html,body{ margin:0; padding:0; background:var(--bg); color:var(--chalk); font-family:'Rubik',sans-serif; overscroll-behavior-y:contain; touch-action:pan-y; overflow-x:hidden; width:100%; }
@@ -141,20 +147,26 @@
   .tabbar{ display:flex; background:var(--surface); border-radius:14px; padding:4px; margin-bottom:20px; border:1px solid var(--border); gap:2px; }
   .tabbtn{ flex:1; min-width:0; min-height:44px; padding:10px 0; border-radius:10px; font-weight:700; font-size:12.5px; color:var(--steel); border:1px solid transparent; transition:all .15s; white-space:nowrap; }
   .tabbtn.active{ background:var(--surface2); color:var(--chalk); border-color:var(--border); box-shadow:inset 0 -2px 0 var(--energy); }
-  .card{ background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 14px; }
-  .exercise-select{ width:100%; display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:14px 16px; margin-bottom:12px; }
+  .card{ background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:12px 14px; box-shadow:var(--shadow-card); }
+  .exercise-select{ width:100%; display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:14px 16px; margin-bottom:12px; box-shadow:var(--shadow-card); }
   .dot{ width:8px; height:8px; border-radius:999px; flex-shrink:0; }
   .stat-row{ display:flex; gap:8px; margin-bottom:16px; }
-  .stat-card{ flex:1; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:10px 12px; }
+  .stat-card{ flex:1; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:10px 12px; box-shadow:var(--shadow-card); }
   .stat-label{ color:var(--steel); font-size:11px; font-weight:600; }
   .stat-value{ font-weight:800; font-size:16px; }
-  .bar-wrap{ background:var(--surface); border:1px solid var(--border); border-radius:18px; margin-bottom:16px; position:relative; overflow:hidden; transition:border-color .3s; }
+  .bar-wrap{ background:var(--surface); border:1px solid var(--border); border-radius:20px; margin-bottom:16px; position:relative; overflow:hidden; transition:border-color .3s; box-shadow:var(--shadow-card); }
   .bar-wrap.pr{ border-color:var(--brass); animation:pop .4s ease; }
   .pr-flash{ position:absolute; inset:0; background-image:var(--stripe); display:flex; align-items:center; justify-content:center; gap:6px; color:#fff; font-weight:800; font-size:14px; z-index:1; text-shadow:0 1px 3px rgba(0,0,0,.5); }
   @keyframes pop{ 0%{transform:scale(1);} 40%{transform:scale(1.04);} 100%{transform:scale(1);} }
   .barbell{ display:flex; flex-direction:column; align-items:center; gap:10px; padding:14px 0; }
   .bar-row{ display:flex; align-items:center; height:78px; }
-  .plate{ border-radius:3px; border:1px solid rgba(0,0,0,.35); box-shadow:inset 0 0 0 1px rgba(255,255,255,.08); flex-shrink:0; transition:all .2s; }
+  .plate{ border-radius:3px; border:1px solid rgba(0,0,0,.35); box-shadow:inset 0 0 0 1px rgba(255,255,255,.08); flex-shrink:0; transition:all .2s; position:relative; overflow:hidden; }
+  /* A metallic sheen layered over each plate's own weight-tier color (set
+     inline per plate by renderBarbell()) via a pseudo-element rather than a
+     background-image on .plate itself — an inline style="background:..."
+     always wins the cascade for that property and would blank out any
+     background-image set here, silently losing the real color coding. */
+  .plate::after{ content:""; position:absolute; inset:0; background-image:linear-gradient(180deg, rgba(255,255,255,.32), transparent 45%, rgba(0,0,0,.2)); pointer-events:none; }
   .collar{ width:10px; height:10px; border-radius:2px; background:#4a4d54; flex-shrink:0; }
   .sleeve{ width:46px; height:8px; background:#5a5e66; border-radius:2px; flex-shrink:0; }
   .bar-center{ width:64px; height:20px; display:flex; align-items:center; justify-content:center; background:var(--surface2); border:1px solid var(--border); border-radius:6px; font-weight:700; font-size:13px; color:var(--brass); flex-shrink:0; direction:ltr; unicode-bidi:isolate; }
@@ -170,18 +182,32 @@
   .est-line b{ color:var(--brass); font-weight:700; }
   .section-label{ color:var(--steel); font-size:12px; font-weight:700; margin-bottom:10px; letter-spacing:.5px; }
   .empty{ color:var(--steel); font-size:13px; text-align:center; padding:24px 0; }
-  .log-row{ display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:10px 12px; }
+  .log-row{ display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:10px 12px; box-shadow:var(--shadow-card); }
   .log-list{ display:flex; flex-direction:column; gap:8px; }
-  .exercise-row{ width:100%; display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 14px; text-align:right; transition:all .15s; margin-bottom:8px; }
+  .exercise-row{ width:100%; display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:12px 14px; text-align:right; transition:all .15s; margin-bottom:8px; box-shadow:var(--shadow-card); }
   .exercise-row.active{ background:var(--surface2); border-color:var(--brass); }
-  .chart-card{ background:var(--surface); border:1px solid var(--border); border-radius:18px; padding:16px; margin-bottom:16px; }
+  .chart-card{ background:var(--surface); border:1px solid var(--border); border-radius:20px; padding:16px; margin-bottom:16px; box-shadow:var(--shadow-card); }
   .rep-table{ display:flex; gap:6px; margin-top:14px; padding-top:12px; border-top:1px solid var(--border); }
   .rep-cell{ flex:1; background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:8px 4px; text-align:center; }
   .rep-cell-label{ color:var(--steel); font-size:10px; font-weight:700; }
   .rep-cell-val{ font-weight:700; font-size:13px; }
   .bottom-bar{ position:fixed; left:0; right:0; bottom:0; display:flex; justify-content:center; background:linear-gradient(to top, var(--bg) 60%, transparent); padding:10px 16px calc(env(safe-area-inset-bottom,0px) + 14px); z-index:30; }
-  .save-btn{ width:100%; max-width:448px; background:var(--energy); color:#1a0d08; font-family:'Anton',sans-serif; font-weight:400; letter-spacing:0.5px; font-size:19px; padding:16px 0; border-radius:16px; display:flex; align-items:center; justify-content:center; gap:8px; box-shadow:0 8px 28px rgba(232,93,61,.4); transition:opacity .15s; }
+  .save-btn{ width:100%; max-width:448px; background:linear-gradient(180deg, color-mix(in srgb, var(--energy) 78%, white), var(--energy)); color:#1a0d08; font-family:'Anton',sans-serif; font-weight:400; letter-spacing:0.5px; font-size:19px; padding:16px 0; border-radius:16px; display:flex; align-items:center; justify-content:center; gap:8px; box-shadow:0 10px 26px -6px rgba(232,93,61,.5); transition:opacity .15s; }
   .save-btn:active{ opacity:.85; }
+  /* Shared tinted icon chip, reused by the Phase 2 nav menu and anywhere a
+     generic gray icon badge would otherwise be re-derived inline per call
+     site. color-mix() keeps every tint theme-correct automatically — it
+     always mixes against the live value of the base color custom property,
+     so it never needs separate light/dark literals the way a baked rgba()
+     copied from a single-theme mockup would. */
+  .icon-chip{ width:30px; height:30px; border-radius:10px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .icon-chip-energy{ background:color-mix(in srgb, var(--energy) 16%, transparent); color:var(--energy); }
+  .icon-chip-blue{ background:color-mix(in srgb, var(--blue) 16%, transparent); color:var(--blue); }
+  .icon-chip-yellow{ background:color-mix(in srgb, var(--yellow) 16%, transparent); color:var(--yellow); }
+  .icon-chip-purple{ background:color-mix(in srgb, var(--purple) 18%, transparent); color:var(--purple); }
+  .icon-chip-teal{ background:color-mix(in srgb, var(--teal) 16%, transparent); color:var(--teal); }
+  .icon-chip-brass{ background:color-mix(in srgb, var(--brass) 20%, transparent); color:var(--brass); }
+  .icon-chip-steel{ background:var(--surface2); color:var(--steel); }
   .footer{ text-align:center; margin-top:28px; }
   .footer-note{ color:var(--steel); font-size:11px; margin-bottom:8px; }
   .link-btn{ color:var(--steel); font-size:11px; text-decoration:underline; }
@@ -196,7 +222,7 @@
   .cat-group{ margin-bottom:14px; }
   .cat-head{ display:flex; align-items:center; gap:6px; margin-bottom:6px; }
   .cat-name{ color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; }
-  .movement-btn{ width:100%; display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:12px 14px; text-align:right; margin-bottom:6px; }
+  .movement-btn{ width:100%; display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 14px; text-align:right; margin-bottom:6px; box-shadow:var(--shadow-card); }
   .movement-btn.active{ background:var(--surface2); border-color:var(--brass); }
   @media (prefers-reduced-motion: reduce){ *{ transition:none !important; animation:none !important; } }
 
@@ -213,7 +239,7 @@
   .cal-daynum{ font-size:12px; font-weight:600; color:var(--chalk); }
   .cal-dot{ width:5px; height:5px; border-radius:999px; background:var(--steel); }
   .cal-dot.pr{ background:var(--brass); }
-  .report-row{ display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:10px 12px; margin-bottom:8px; }
+  .report-row{ display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:10px 12px; margin-bottom:8px; box-shadow:var(--shadow-card); }
   .report-flag{ font-size:11px; font-weight:700; padding:2px 8px; border-radius:999px; }
   .subtabbar{ display:flex; background:var(--surface2); border-radius:12px; padding:3px; margin-bottom:16px; border:1px solid var(--border); }
   .subtabbtn{ flex:1; min-height:44px; padding:8px 0; border-radius:9px; font-weight:700; font-size:13px; color:var(--steel); }
