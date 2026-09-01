@@ -91,12 +91,17 @@ test("after the first month: the personal summary aggregates the member's own we
     invite_redemptions: [{ user_id: "u1", invite_id: "inv-1", role: "member", redeemed_at: redeemedDaysAgo(35) }],
     onboarding_progress: [{ user_id: "u1", welcomed_at: redeemedDaysAgo(34), first_week_shown_at: redeemedDaysAgo(27), first_month_shown_at: null }],
     weekly_recaps: [
-      { id: "wr1", user_id: "u1", week_start: "2026-07-27", sessions_completed: 3, streak: 1, prs: [{ movement: "סקוואט", result: "100", achieved_on: "2026-07-28" }], achievements: [], challenge_progress: [], club_challenge_progress: {}, upcoming_event: null, generated_at: redeemedDaysAgo(28) },
-      { id: "wr2", user_id: "u1", week_start: "2026-08-03", sessions_completed: 2, streak: 2, prs: [], achievements: [{ title: "שיא ראשון", badge_icon: "⭐", code: "first_pr", unlocked_at: "2026-08-04T00:00:00Z" }], challenge_progress: [], club_challenge_progress: {}, upcoming_event: null, generated_at: redeemedDaysAgo(21) },
+      // week_start values are relative to redeemed_at (35 days ago), the
+      // same wall-clock arithmetic as every other field in this file - not
+      // hardcoded calendar dates, which would drift out of the query's
+      // [redeemedAt, redeemedAt+30d] window depending on which real day the
+      // suite happens to run on.
+      { id: "wr1", user_id: "u1", week_start: redeemedDaysAgo(34).slice(0, 10), sessions_completed: 3, streak: 1, prs: [{ movement: "סקוואט", result: "100", achieved_on: redeemedDaysAgo(33) }], achievements: [], challenge_progress: [], club_challenge_progress: {}, upcoming_event: null, generated_at: redeemedDaysAgo(28) },
+      { id: "wr2", user_id: "u1", week_start: redeemedDaysAgo(27).slice(0, 10), sessions_completed: 2, streak: 2, prs: [], achievements: [{ title: "שיא ראשון", badge_icon: "⭐", code: "first_pr", unlocked_at: redeemedDaysAgo(26) }], challenge_progress: [], club_challenge_progress: {}, upcoming_event: null, generated_at: redeemedDaysAgo(21) },
       // Another member's row in the same window must never leak into this
       // member's own first-month summary - own-row RLS in production, and
       // the client query is scoped by user_id regardless.
-      { id: "wr-other", user_id: "u2", week_start: "2026-08-03", sessions_completed: 99, streak: 99, prs: [], achievements: [], challenge_progress: [], club_challenge_progress: {}, upcoming_event: null, generated_at: redeemedDaysAgo(21) },
+      { id: "wr-other", user_id: "u2", week_start: redeemedDaysAgo(27).slice(0, 10), sessions_completed: 99, streak: 99, prs: [], achievements: [], challenge_progress: [], club_challenge_progress: {}, upcoming_event: null, generated_at: redeemedDaysAgo(21) },
     ],
   });
   const window = await bootCommunity(mock, { syncEnabled: false });
