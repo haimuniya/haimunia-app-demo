@@ -2395,6 +2395,19 @@
   // directory) is driven by the server role set, never a client guess:
   // invite_redemptions.role for each user id, looked up once and cached.
   // Batched so a feed page or a comment thread is a single query.
+  //
+  // POST-PHASE-3 FIX. This used to be a direct
+  // client.from("invite_redemptions").select(...).in("user_id", need) read.
+  // invite_redemptions has carried exactly one SELECT policy since Phase 0
+  // (202608270003), own-row only, never widened - so that read could only
+  // ever return the CALLER's own row; every other id in `need` came back
+  // silently absent under real RLS, and the coach badge this function backs
+  // has been unable to identify anyone but the viewer themselves since it
+  // was built. Invisible to this repo's own tests, because mockSupabase.mjs's
+  // plain `.from()` reads carry no RLS simulation. Now calls
+  // member_roles(uuid[]), a definer function added specifically for this
+  // (202609010011) that returns only {user_id, role} for the requested ids -
+  // never the whole table, never redeemed_at or code.
   function memberRole(userId) { return (userId && state.memberRoles[userId]) || null; }
   function isCoachRole(role) { return role === "coach" || role === "head_coach"; }
   async function loadMemberRoles(ids) {
@@ -2402,7 +2415,7 @@
     for (const id of ids || []) if (id && !(id in state.memberRoles)) need.push(id);
     if (!need.length) return;
     for (const id of need) state.memberRoles[id] = null;
-    const { data } = await client.from("invite_redemptions").select("user_id,role").in("user_id", need);
+    const { data } = await client.rpc("member_roles", { p_ids: need });
     for (const r of (data || [])) state.memberRoles[r.user_id] = r.role || null;
   }
   function toggleComments(postId) {

@@ -337,14 +337,23 @@ export function createMockSupabase(seedTables = {}) {
         if (handler) return Promise.resolve(handler(args, { db, currentUser }));
         // COMM-110..113. A stand-in for public.feed_page() that is honest
         // about what it is: it serves fixture rows in the order the fixture
-        // lists them, cuts pages on an opaque cursor, and answers the scope
-        // and limit it was given. It does NOT rank and does NOT diversify.
-        // Ranking and diversity are Postgres, are unit-tested in
-        // supabase/tests/0019_feed_page_test.sql, and a JS re-implementation
-        // here would only ever assert itself. What this DOES let a test
-        // assert for real is the client half: that the returned order is
-        // rendered untouched, that the cursor round-trips, that a page is
-        // twenty rows, and that a scope reaches the server.
+        // Post-Phase-3 fix. loadMemberRoles() used to read invite_redemptions
+        // directly; that read only ever worked under real RLS for the
+        // caller's own row (202608270003's own-row-only policy was never
+        // widened), so it moved to member_roles(uuid[]) (202609010011), a
+        // definer function returning only {user_id, role} for the requested
+        // ids. This mock has no RLS to get wrong, so it can just answer from
+        // the seeded table directly - the real privacy boundary (own row
+        // only under RLS, any row through the function) is Postgres and is
+        // asserted in pgTAP, not here; this only proves the client calls the
+        // RPC with the right ids and reads the response shape it returns.
+        if (name === "member_roles") {
+          const ids = new Set((args && Array.isArray(args.p_ids) ? args.p_ids : []).map(String));
+          const data = rows("invite_redemptions")
+            .filter((r) => ids.has(String(r.user_id)))
+            .map((r) => ({ user_id: r.user_id, role: r.role }));
+          return Promise.resolve({ data, error: null });
+        }
         if (name === "feed_page") {
           const all = rows("feed_page_rows").length ? rows("feed_page_rows") : rows("community_feed");
           const scope = (args && args.p_scope) || "for_you";
