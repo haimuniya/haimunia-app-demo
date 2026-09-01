@@ -2,7 +2,7 @@
 
 Phase: 3
 Agent: coach-tools
-Status: todo
+Status: review — schema half shipped as 202609010001; client half open
 Attendance-blocked: no
 
 No forward reference for this ticket exists anywhere in
@@ -101,3 +101,31 @@ over time.
 The exact category set, the rotation order, and whether "coach's pick" is
 even a real spec category are not grounded in text available to this
 session. Flagged rather than guessed at specifics beyond the shape above.
+
+## Resolution, schema half (202609010001)
+
+Answered by the build; full reasoning is in the migration's own comments and
+in contracts.md, "Needs from schema, member of the week (COMM-315, Phase 3)".
+
+- **Rotation index**: whole weeks since the epoch Monday `2026-01-05`,
+  modulo 4, in `member_of_week_category(date)` — the single copy of the
+  rule. Deliberately not "ISO week number mod 4": an ISO year has 52 or 53
+  weeks, so that form repeats a category two weeks running at every 53-week
+  year (2026 is one).
+- **Post pattern**: an authorless, club-visibility `POST_ANNOUNCEMENT`, the
+  first producer that post type has ever had. Not COMM-225's
+  comment-on-the-member's-card pattern, which needs a source post that three
+  of the four categories do not have; and authorless rather than
+  coach-authored because member of the week is club voice, with
+  `member_of_week.published_by` carrying the accountability.
+- **Coach's-pick fallback**: the category is derived at publish rather than
+  passed, so the three-parameter signature stands. Publishing somebody the
+  week's computed shortlist did not contain *is* a coach's pick and the row
+  records it as one.
+- **Two refusals beyond the two named above**: an empty reason on a coach's
+  pick, and a member whose `visible_to_club` is false (read from the raw
+  column, not `can_view_profile_field()`, because publishing is
+  broadcasting).
+- **Known limitation**: the consistency category reads `feed_leaderboard`,
+  which reports the streak as of now and takes no as-of date, so publishing
+  a months-old week under that category credits a present-day streak.

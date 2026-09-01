@@ -893,7 +893,7 @@ does not touch that refusal.
 | ID | Title | Agent | Attendance-blocked | Status |
 |---|---|---|---|---|
 | COMM-304 | Coach Engage activation and attendance-decline detection | coach-tools | was — unblocked by COMM-300 | review — both halves in |
-| COMM-315 | Member of the week rotation across recognition categories | coach-tools | no |
+| COMM-315 | Member of the week rotation across recognition categories | coach-tools | no | review — schema half in (202609010001), client half open |
 
 **COMM-304 is in review — BOTH HALVES — and it closes the parked COMM-P04.**
 `coach_engagement_flags` has shipped empty since Phase 0 (202608280011) with
@@ -917,11 +917,40 @@ actually shipped (went with the ticket's literal text), and
 `is_admin()`, not `is_staff()` — a non-admin coach resolving a flagged
 member with a hidden profile gets a generic fallback label rather than a
 name; the client degrades safely, but the policy gap itself is unfixed.
-COMM-315 has no forward reference anywhere in this repo's docs and is
+COMM-315 had no forward reference anywhere in this repo's docs and was
 flagged as an open question in its own ticket file — the category set and
 rotation order proposed there (consistency streak, PRs, challenge
-completion, coach's pick) is this planner's best-effort reading of the
-title, not settled spec text.
+completion, coach's pick) was the planner's best-effort reading of the
+title, not settled spec text. **The user confirmed that proposal as-is on
+2026-08-31, and the schema half is now in review as `202609010001`.** The
+rotation index is whole weeks since the epoch Monday 2026-01-05 modulo 4,
+not the ISO week number — an ISO year has 52 or 53 weeks, so the mod-4 form
+of the week number repeats a category two weeks running at every 53-week
+year (2026 is one), which a "stated, auditable, repeatable" order cannot
+afford. Three of the four categories compute a suggestion from existing
+data and none of them auto-publishes; every candidate passes the subject's
+own toggle (`in_leaderboards` for streak and challenge, `show_prs` for PRs,
+the same rule `coach_celebrate_feed` follows) **and the same toggles read
+from the raw `profiles` columns**, which is the one place this went past the
+Celebrate pattern. `can_view_profile_field()` short-circuits to true for an
+admin before it reads any toggle, so through the helper alone an admin would
+have been offered — and could have published — a "most PRs this week"
+celebration of a member who keeps their PRs private. Celebrate shows a coach
+a private dashboard row; this shows a caller a row they are about to
+broadcast, so an admin's rank must not override a member's own choice. The
+helper call is kept alongside the columns because it is the only thing that
+settles block edges, and both halves are mutation-tested separately in 0045. Publishing writes an authorless
+`POST_ANNOUNCEMENT` — the first producer that post type has ever had —
+rather than reusing COMM-225's comment-on-a-card pattern, because three of
+the four categories have no source post to comment on. Three real gaps left
+open and not papered over: the consistency category reads
+`feed_leaderboard`, which reports the streak **as of now** and takes no
+as-of date, so publishing a months-old week under that category credits a
+present-day streak; `show_attendance` and `show_prs` both default **false**,
+so in a club where nobody has opted in, two of the four categories will
+legitimately show the empty state most weeks; and nothing notifies the
+member they were chosen, which the ticket does not ask for and which would
+be a `notif_create` fan-out in the client half or a follow-up.
 
 ### recaps
 
@@ -1830,6 +1859,70 @@ two; only `trigger_type` and the absent `client_claimable` key are left.
 | ACHIEVEMENT_UNLOCKED, no new code | Asserted rather than assumed, because the claim being made is "nothing was needed": `member_achievements_notify` (202608280027) is AFTER INSERT on `member_achievements` with `tgqual is null` — no `WHEN` clause, no filter on how the row got there — and a real `achievement_unlocked` notification row is found joined back to the attendance-sourced `member_achievements` row. An attendance unlock notifies exactly like a claimed one. |
 | ach_evaluate is still not built | Asserted as an absence: no `public.ach_evaluate` exists. COMM-305 follows the direct table-trigger precedent `challenge_progress_apply` set and explicitly does not build the generic event-bus consumer. Attendance is now the only trigger type with a real server-side producer; everything community-, challenge- and club-shaped in the seed still cannot be earned at all. |
 | No backfill, and what happens instead | The migration awards nothing at migration time — 202608310001's `attendance_log` backfill is finished before this trigger exists, which that migration said in as many words was the reason to backfill there rather than later. **For qa:** because the count branch reads state, a member whose backfilled history already stands at 60 days earns `attendance_first_class` and `attendance_25_classes` on their *next* logged session, once each, spread across the club as members sync rather than as a deploy-day burst. The feed side of that is bounded by `show_attendance` defaulting to false. |
+
+### Member of the week (202609010001, COMM-315)
+
+One new table, four new functions, one widened `CHECK` on
+`admin_actions.action_type`, no existing policy touched and no existing
+function re-created. `supabase/tests/0045_member_of_week_test.sql` (76
+assertions) runs every boundary below on `migration-check`, taking the suite
+1292 → **1368**. There is no client half yet — the suggestion card, the
+publish control and the coach's-pick form land separately — so no `.test.mjs`
+file moved.
+
+**Four things a reviewer should look at rather than skim:**
+
+1. **The rotation index is weeks-since-a-fixed-Monday mod 4, not the ISO week
+   number mod 4**, which is what COMM-315 offered as an example. An ISO year
+   has 52 or 53 weeks, so the week-number form repeats a category two weeks
+   running at every 53-week year — 2026 is one, and the concrete boundary
+   (2026-W52, 2026-W53, 2027-W01) is asserted directly rather than argued.
+2. **The privacy filter has two halves and needs both.** Every candidate
+   passes `can_view_profile_field()` *and* has the relevant toggle true read
+   from the raw `profiles` column. The helper short-circuits to true for an
+   admin before it reads any toggle, so on its own it filters nothing for
+   exactly the caller most likely to be publishing; the columns on their own
+   cannot see a block edge. Both halves were mutation-tested separately —
+   deleting the column reads fails three admin assertions, deleting the
+   helper calls fails the block assertion.
+3. **The publish-post choice is an authorless `POST_ANNOUNCEMENT`**, the
+   first producer that post type has ever had, not COMM-225's
+   comment-on-a-card pattern. That pattern needs a source post, and three of
+   the four categories have none.
+4. **The category is derived at publish, not passed.** Publishing somebody
+   the shortlist did not contain *is* a coach's pick. `admin_actions.after_data`
+   keeps both the recorded `category` and the week's `rotation_category`, so
+   an auditor can see when the two differed.
+
+**Three gaps left open, not papered over:** the consistency category reads
+`feed_leaderboard`, which reports the streak **as of now** and takes no as-of
+date, so publishing a months-old week under that category credits a
+present-day streak; `show_attendance` and `show_prs` both default **false**,
+so in a club where nobody has opted in, two of the four categories will
+legitimately show the empty state most weeks and the coach's-pick fallback
+will carry the feature; and nothing notifies the chosen member, which the
+ticket does not ask for.
+
+| Table / function | Boundary to assert |
+|---|---|
+| member_of_week_category(date) | `IMMUTABLE`, reads no table. Five consecutive Mondays give the four categories in order and then the first again. The cycle is exactly 28 days wide across 600 Mondays running from 2020 — six years *before* the epoch — which also proves the `((x % 4) + 4) % 4` form really handles a negative offset rather than falling off the `case`. Three consecutive Mondays across the 2026/2027 ISO boundary get three *different* categories, with the fixture dates first verified to really be ISO weeks 52, 53 and 1. |
+| member_of_week, no client write | `authenticated` has `select` and nothing else; `anon` has nothing. Exactly one policy on the table and it is a SELECT policy (asserted by reading `pg_policy`, so a later addition fails rather than slipping in). A plain member, a **coach** and an **admin** each get 42501 on insert/update/delete respectively, and the row count is unchanged after all three tried. This is the boundary the whole ticket rests on: the once-per-week rule, the adjacency refusal, the category resolution and the audit row would all be bypassable by a direct insert. |
+| member_of_week, club-wide read | A plain member who is the subject of none of the five published weeks reads all five, and reads all five celebratory posts through the ordinary `post_visible_to_viewer()` rule with no special case. Publishing means public. |
+| Staff gate on both functions | Both are executable by `authenticated` — the `is_staff()` test is in the body, not in the grant, so a coach who is not an admin can still call them — and a plain member gets P0001 `not authorized` from both. `anon` and PUBLIC hold execute on neither; PUBLIC is asserted separately, since a new function starts with execute granted to PUBLIC. `member_of_week_candidate_set` is revoked from every role including `authenticated`: it carries the privacy filters but no staff gate of its own, because both callers have one. |
+| Candidates, consistency_streak | The member with the **longest** streak is absent because `in_leaderboards` is off, and a second member is absent because `show_attendance` is off — the third gate inherited from `feed_leaderboard`, since the ranked value is attendance-derived. What is left is ordered by streak and carries the number. Asserted for a coach and again for an **admin**, where `can_view_profile_field()` filters nothing and only the column reads are doing the work. |
+| Candidates, most_prs | The member with **10** PRs that week is absent (`visible_to_club` off) and the member with **5** is absent (`show_prs` off); the answer is the member with 3. Both would have been at the head. The count is 3 and not 7, because four of that member's PRs are in the week before — the window is `coalesce(occurred_on, created_at::date)` in `[week_start, week_start+6]`. Another member counts 1 and not 2 because their second PR that week is `only_me` and `post_visible_to_viewer()` keeps it out. |
+| Candidates, challenge_completion | The member with **two** completions that week — the most of anyone — is absent because `in_leaderboards` is off. One candidate counts 1 and not 2 because their second completion is on a **draft** challenge, which would have put them at the head had it counted; another counts 1 and not 3 because one completion is outside the week and one is `withdrawn`. |
+| Candidates, blocks | A member stops being suggested the moment they block the calling coach — a block the coach did not make, in the direction they did not make it. This is the half of the filter no column read can do, and it is why `can_view_profile_field()` is kept alongside the columns rather than swapped for them. |
+| Candidates, coachs_pick and the empty state | The coach's-pick week returns `free_selection: true` and an empty shortlist — by definition, not by exhaustion. A PR week nobody logged a PR in returns zero candidates **and still names the category**, which is what the `אין מועמדים השבוע לקטגוריה זו` state needs. Two identical calls return an identical envelope: the order is total (value, display name, id). `p_week_start` null means this week, and the envelope's `week_start`, `category` and `rotation_index` are all checked against the current ISO Monday. |
+| Candidates writes nothing | `member_of_week` is empty after every read above. This is the draft half of COMM-309's generated-draft/staff-publishes shape; the club sees nothing until a human publishes. |
+| No two consecutive weeks | The member published in week N is refused in week N+1 with P0001 `member was recognised last week` — and the refused member was **not on that week's shortlist at all**, so the call could only have arrived as a hand-made coach's pick and is still refused. Then the two-sided proof: the same member is published again two weeks later, because the rule is about **adjacency**, not repetition. The shortlist also drops last week's member before the server would have to refuse them, and the envelope reports them as `previous_week_user_id`. |
+| One publish per week | A second call for a published week raises P0001 `week already published` and leaves **nothing** behind — same member on the row, same row count, same post count, same audit count. Not an upsert, deliberately, unlike `weekly_recaps`: the post has already reached the feed. A **mid-week date** (the Friday of that week) collides with the same row rather than opening a parallel week, which is the normalisation working. Underneath, the `unique (week_start)` constraint and the `isodow = 1` CHECK are asserted directly as the superuser — the only caller they can ever have, since there is no client write path. |
+| visible_to_club at publish | A member hidden from the club is refused with P0001 even as a free coach's pick and even though the calling coach can see them perfectly well. Read from the column, not `can_view_profile_field()`, for the same reason as the shortlist. |
+| Reason handling | Trimmed, control characters stripped (the same `0x01`-`0x08`/`0x0B`-`0x1F` class `post_create` strips, because this text reaches the club feed), **capped** at 500 rather than rejected — asserted in one publish that sends 600 characters, a leading `chr(7)` and surrounding whitespace. Required and only required when the resolved category is `coachs_pick`: a computed category publishes fine with an empty reason, because the category *is* the reason. |
+| The category is derived, not passed | Publishing a member who is on the week's shortlist records the rotation category; publishing one who is not records `coachs_pick`, asserted on a consistency week whose chosen member could never be on that shortlist (`show_attendance` off). That is the ticket's "staff can fall back to coach's pick" empty state, expressed as a fact about who was chosen. |
+| The celebratory post | Read off the row, not the migration text: `post_type = 'POST_ANNOUNCEMENT'`, `author_id` **null**, `visibility = 'club'`, `status = 'active'`, `source_type = 'announcement'`, `source_id` = the `member_of_week.id`, `occurred_on` = `week_start`, `metadata` carrying `member_id`, `category`, `week_start` and a non-empty `title` (which `renderAnnouncementPostCard` reads *first*), and a body naming the member. `club` is verified as a real target by having another member read all five posts through `post_visible_to_viewer()`. |
+| admin_actions | One row per successful publish and none for any of the five refusals, each with `action_type = 'member_of_week_publish'`, `target_type = 'member'`, `target_id` the recognised member, `admin_id` the publishing coach, and `after_data ->> 'category'`. **For qa:** the count has to be read past `admin_actions`'s own policy — it is gated on `community.analytics.view`, which a coach does not hold, so an authenticated count reads 0 for the wrong reason. 0045 uses a `security definer` helper in the `tests` schema for exactly this. The `action_type` CHECK gained its twelfth value here, the first widening since 202608280002; `target_type` was not widened, since `'member'` already fits. |
+| member_of_week category CHECK | A closed list of the four rotation categories, asserted as the superuser, so a typo cannot invent a fifth that no rotation week would ever produce. |
 
 ## Open questions for the user
 

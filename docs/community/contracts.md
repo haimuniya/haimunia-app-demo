@@ -3447,6 +3447,278 @@ on the client side moved.
   across the club as members sync, never as a burst. The feed side of that is
   bounded by `show_attendance` defaulting to false.
 
+## Needs from schema, member of the week (COMM-315, Phase 3)
+
+Shipped in `202609010001_member_of_week.sql`. One table, four functions, and
+one widened `CHECK` on `admin_actions.action_type`. The forward reference
+under "Needs from schema, coach-tools (Phase 3)" is closed by this section;
+read this one.
+
+The client half (the suggestion card, the publish control, the coach's-pick
+form) is not in that migration and lands separately, the same two-phase split
+the Phase 2 coach-tools cluster used.
+
+### The rotation
+
+Four categories, one per week, in this fixed order and never randomly:
+
+| index | category | source of the candidate |
+| --- | --- | --- |
+| 0 | `consistency_streak` | `feed_leaderboard('consistency')` |
+| 1 | `most_prs` | count of `POST_PR` posts in the week |
+| 2 | `challenge_completion` | count of `challenge_participants` completions in the week |
+| 3 | `coachs_pick` | none — free staff selection |
+
+The index is **whole weeks since the epoch Monday `2026-01-05`, modulo 4**,
+not the ISO week number. ISO week number mod 4 was the example COMM-315
+offered and it is not a cycle: an ISO year has 52 or 53 weeks, so at every
+53-week year (2026 is one) the sequence runs week 52 → index 0, week 53 →
+index 1, week 1 of the next year → index 1 again, repeating a category two
+weeks running, silently, every few years. Counting weeks from a fixed Monday
+has no year boundary in it. The modulo is written `((x % 4) + 4) % 4` because
+Postgres's `%` keeps the sign of the dividend, so weeks before the epoch
+resolve correctly rather than falling off the `case`.
+
+### member_of_week_category(p_week_start date) returns text (202609010001)
+
+- Purpose: the rotation rule, and the only copy of it, so the suggestion side
+  and the publish side can never disagree about whose week it is.
+- Params: `p_week_start date`, the Monday of an ISO week. Not normalised
+  here — both callers normalise before calling.
+- Returns: one of the four category codes above. Never null for any date,
+  including dates before the epoch.
+- Auth: `immutable`, `security invoker`, reads no table, so no `auth.uid()`
+  check. Executable by `authenticated` (revoked from `public` and `anon`) so
+  a client can label a week without re-deriving the rule in JavaScript.
+- Side effects: none.
+
+### member_of_week_category_label(p_category text) returns text (202609010001)
+
+- Purpose: the Hebrew display label for a category code, kept beside the rule
+  so the suggestion card and the published post name a category identically.
+- Returns: `עקביות באימונים`, `שיאים אישיים השבוע`, `השלמת אתגר`,
+  `בחירת המאמן/ת`, or `''` for an unknown code.
+- Auth: `immutable`, no table read, executable by `authenticated`.
+- Side effects: none.
+
+### member_of_week (table, 202609010001)
+
+- `id uuid pk default gen_random_uuid()`, `club_id uuid not null default
+  default_club_id() references clubs(id)`, `week_start date not null unique
+  check (extract(isodow from week_start) = 1)`, `category text not null check
+  (category in ('consistency_streak','most_prs','challenge_completion',
+  'coachs_pick'))`, `user_id uuid not null references profiles(id) on delete
+  cascade`, `reason text not null default '' check (char_length(reason) <=
+  500)`, `post_id uuid references workout_posts(id) on delete set null`,
+  `published_by uuid references profiles(id) on delete set null`,
+  `published_at timestamptz not null default now()`.
+- One row per **published** week. There is no draft row and no nullable
+  `published_at`: a generated draft here is not a row, it is what
+  `member_of_week_candidates()` returns.
+- RLS: enabled. **One policy, `member_of_week_read`, `for select to
+  authenticated using (true)`.** Club-wide, because a published member of
+  the week is public by construction. **No write grant and no write policy of
+  any kind** — not for staff, not for an admin, not for the owner. The `pins`
+  shape (202608280017), for the same reason: the once-per-week rule, the
+  consecutive-week refusal, the category resolution and the `admin_actions`
+  row would all be bypassable by a direct insert.
+- `category` is **stored, not re-derived on read.** It records what was
+  actually published, which can be `coachs_pick` on a week whose rotation
+  said something else; re-deriving would rewrite the past if the rotation is
+  ever re-tuned.
+- The unique key is on `week_start` alone, as COMM-315's outline writes it,
+  and deliberately **not** `(club_id, week_start)`. `club_id` is provenance
+  here exactly as it is on `weekly_recaps`, `challenges` and
+  `challenge_progress`, none of which carry it in a unique key either. The
+  module is single-club, so the two are the same constraint today; the day a
+  second club exists this changes along with every other table in the module,
+  not on its own.
+- Indexes: `member_of_week_recent_idx (week_start desc)`,
+  `member_of_week_user_idx (user_id, week_start desc)`.
+
+### member_of_week_candidate_set(p_category text, p_week_start date, p_limit int default 3) returns table (user_id uuid, value numeric, detail jsonb) (202609010001)
+
+- **Internal, not in COMM-315's outline.** It exists because
+  `member_of_week_publish` has to ask the identical "is this member on the
+  shortlist" question that `member_of_week_candidates` asks, and a second
+  copy of three queries would drift.
+- `security invoker`, **no grant to any role** — `public`, `anon` and
+  `authenticated` all revoked. Called from the two definer functions it runs
+  with the migration owner's rights; called from anywhere else it cannot be
+  called at all. It carries no staff gate of its own because both callers
+  have one.
+- Privacy is applied here, once, for both callers. Per category:
+  `consistency_streak` delegates to `feed_leaderboard('consistency', null,
+  'club', 50)` and therefore inherits all three of that board's gates —
+  `in_leaderboards`, `visible_to_club` and, since COMM-306,
+  `show_attendance`; `most_prs` applies `can_view_profile_field(author,
+  'show_prs')` plus `post_visible_to_viewer(post)` on each counted post,
+  exactly as `coach_celebrate_feed`'s PR branch does; `challenge_completion`
+  applies `can_view_profile_field(user, 'in_leaderboards')`, exactly as
+  `coach_celebrate_feed`'s completion branch does. `coachs_pick` returns
+  nothing, by definition rather than by exhaustion.
+- **One addition beyond `coach_celebrate_feed`'s pattern**, stated because it
+  is an addition: every branch **also** reads the relevant toggles from the
+  **raw `profiles` columns**, on top of the `can_view_profile_field()` call
+  and never instead of it — `visible_to_club and in_leaderboards and
+  show_attendance` for consistency, `visible_to_club and show_prs` for PRs,
+  `visible_to_club and in_leaderboards` for completions.
+
+  The two answer different questions. `can_view_profile_field()` asks "may
+  this caller see this?": it settles block edges in both directions, returns
+  true for the caller's own row, and **short-circuits to true for an admin
+  before it consults any toggle** (202608280003). That is the right question
+  for a dashboard row a coach reads, which is all Celebrate is, and the admin
+  short-circuit is that resolution point's module-wide behaviour rather than
+  anything this ticket should fight. It is the wrong question *on its own*
+  here, because a candidate is a suggestion the caller is about to
+  **broadcast**. Read through the helper alone, an admin would be offered —
+  and could publish — a "most PRs this week" celebration of a member who
+  keeps their PRs private. A member's own toggle has to outrank the caller's
+  rank when the output is a club-wide post.
+
+  Both are kept because each does something the other cannot: the helper is
+  the only thing that settles blocks, and the columns are the only thing that
+  survives an admin caller. 0045 mutation-tests them separately — deleting
+  the column reads fails three admin assertions, deleting the helper calls
+  fails the block assertion.
+- The member recognised in the immediately prior week is excluded from the
+  shortlist. That is the courtesy; `member_of_week_publish`'s refusal is the
+  rule.
+- Windowing: `most_prs` keys on `coalesce(occurred_on, created_at::date)`
+  between `week_start` and `week_start + 6`, the same key
+  `community_profile`'s PR block uses. `challenge_completion` keys on
+  `completed_at::date` in the same range, excludes `status = 'withdrawn'`
+  participants and `status = 'draft'` challenges.
+- **Known limitation, flagged rather than hidden.** `feed_leaderboard`'s
+  consistency mode reports the streak **as of now**: it takes no as-of date
+  and `consistency_week_streaks()` anchors on `current_date`. Asking for a
+  past week returns today's streaks. For the intended use — staff publishing
+  the current or the just-ended week — the two are the same. Publishing a
+  months-old week under that category would credit a present-day streak.
+  Fixing it means COMM-306's arithmetic growing an as-of parameter, which is
+  a change to a shipped contract and out of COMM-315's scope.
+
+### member_of_week_candidates(p_week_start date default null) returns setof jsonb (202609010001)
+
+- Purpose: the suggestion half of COMM-309's generated-draft/staff-publishes
+  shape. It writes nothing and it is `stable`; the club sees nothing until a
+  human calls `member_of_week_publish`.
+- Params: `p_week_start date`, default null. Null means the current week.
+  Any other date is **normalised to the Monday of its own ISO week** rather
+  than rejected — a coach tapping a date picker means the week a human means.
+  The same normalisation runs in `member_of_week_publish`.
+- Returns: `setof jsonb`, and **always exactly one row**. The signature is
+  `setof` because COMM-315's contract pins it; the envelope carries the
+  category as well as the list because the empty state needs both — "no
+  candidates this week for *this* category" cannot be rendered from an empty
+  set of rows. The client reads `data[0]` and joins nothing:
+
+  ```
+  { week_start, category, category_label, rotation_index, free_selection,
+    published, previous_week_user_id, candidates[] }
+  ```
+
+  - `rotation_index` is 0..3, sent so the client can show "week N of 4"
+    without re-deriving the rule.
+  - `free_selection` is true only for `coachs_pick`. The client branches on
+    the flag rather than string-matching the category name.
+  - `published` is null for an unpublished week, otherwise
+    `{id, user_id, category, reason, post_id, published_at}`.
+  - `previous_week_user_id` is last week's member, who publish will refuse —
+    sent so the free-selection form can grey them out rather than letting a
+    coach discover the rule by hitting it.
+  - `candidates` is at most 3 of `{user_id, handle, display_name,
+    avatar_url, value, detail}`, ordered by `value` desc then display name
+    then id, which is a **total** order — two identical calls return an
+    identical envelope. `detail` is category-shaped: `{streak_weeks, rank}`,
+    `{pr_count}`, or `{completions, titles}`. Always `[]` for `coachs_pick`.
+- Auth: `security definer`, `auth.uid()` checked first, then `is_staff()`
+  inline. Both raise `not authorized` (P0001). Executable by `authenticated`
+  only — the staff test is in the body, not in the grant, so a coach who is
+  not an admin can still call it.
+- Side effects: none.
+
+### member_of_week_publish(p_week_start date, p_user_id uuid, p_reason text) returns uuid (202609010001)
+
+- Purpose: the **only** writer of `member_of_week`, and the first and only
+  producer of a `POST_ANNOUNCEMENT` row anywhere in this schema.
+- Params: `p_week_start` normalised as above, null meaning the current week;
+  `p_user_id` required; `p_reason` trimmed, control characters stripped
+  (`0x01`-`0x08`, `0x0B`-`0x1F`, keeping tab and newline — the same class
+  `post_create` strips, because this text reaches the club feed), then
+  **capped** at 500 rather than rejected.
+- Returns: the new `member_of_week.id`.
+- Auth: `security definer`, `auth.uid()` first, then `is_staff()` inline.
+- **Refusals**, all checked before the first insert, so a rejected publish is
+  never a half-published one:
+  - `week already published` — a second call for a week that already has a
+    row. Explicitly **not** an upsert, unlike `weekly_recaps`: a recap is a
+    regenerated summary, this is a public act of recognition that has already
+    reached the feed, and quietly replacing it would leave the post naming
+    one member and the row naming another. The `unique (week_start)`
+    constraint stands underneath as the backstop.
+  - `member was recognised last week` — a row exists for `week_start - 7`
+    with the same `user_id`. A real refusal, not a suggestion-level nicety:
+    it holds for a hand-made call and for a coach's pick that never fetched
+    the shortlist. It is about **adjacency**, not repetition — the same
+    member may be published again after a gap of one week.
+  - `member not found` — no profile, or soft-deleted.
+  - `member is not visible to the club` — **the one refusal COMM-315 does not
+    name.** Read from the raw `visible_to_club` column, not through
+    `can_view_profile_field()`, for the reason given on the candidate set
+    above: publishing is broadcasting, and a member who removed themselves
+    from the club's view did not consent to being its headline. Reverting it
+    is deleting one `if`.
+  - `reason required for a coach's pick` — an empty reason when the resolved
+    category is `coachs_pick`. A free selection with no stated reason
+    publishes a name and nothing else; the three computed categories carry
+    their reason in the category itself, so an empty reason is fine there.
+- **Category resolution, and why there is no `p_category` parameter.** The
+  signature is fixed by the ticket, so the category is derived by *looking*:
+  if `p_user_id` is in the week's computed shortlist, the row records the
+  week's rotation category; if not, it records `coachs_pick`. That is exactly
+  COMM-315's stated empty state ("nobody logged a PR that week … staff can
+  fall back to coach's pick"), expressed as a fact about who was chosen
+  rather than as a flag the client must remember to send. `admin_actions`
+  keeps both: `after_data` carries `category` and `rotation_category`.
+- **The post pattern, decided here because COMM-315 required it be stated:
+  an authorless, club-visibility `POST_ANNOUNCEMENT`.** Not COMM-225's
+  comment-on-the-member's-card pattern, for three reasons. (1) That pattern
+  needs a card to comment on — it branches on Celebrate's `post_id`, which is
+  non-null only for a PR, and three of the four categories here have no
+  source post at all, so it would work for one category in four and silently
+  degrade for the rest. (2) Member of the week is club voice, not a coach's
+  reply; rendering it under one coach's face would make it read as that
+  coach's opinion of a member. `author_id` is null, which 202608280004 made
+  legal for exactly this kind of row, and `member_of_week.published_by` keeps
+  the accountability where an audit wants it. (3) `cloud.js`'s
+  `renderAnnouncementPostCard` already reads `metadata.title` falling back to
+  `title` and already passes `authorless: !postAuthorName(post)`, so the row
+  renders correctly with no client change.
+- The post: `post_type = 'POST_ANNOUNCEMENT'`, `author_id = null`,
+  `visibility = 'club'`, `status = 'active'`, `title = 'חבר/ת השבוע'`,
+  `body` naming the member, the category label and the reason,
+  `source_type = 'announcement'`, `source_id` = the `member_of_week.id`
+  (generated before both inserts so the two rows reference each other in one
+  transaction), `occurred_on = week_start`, and `metadata`
+  `{title, member_of_week: true, member_id, member_name, category,
+  category_label, week_start, reason}`.
+- Side effects, all in one transaction: one `workout_posts` row, one
+  `member_of_week` row, one `admin_actions` row via `log_admin_action`, so a
+  failed log fails the whole publish. Same shape `pin_set()` uses.
+
+### admin_actions.action_type gains one label (202609010001)
+
+- `admin_actions_action_type_check` is dropped and re-added with a twelfth
+  value, `'member_of_week_publish'`. Nothing else about the table moves, and
+  `target_type` is **not** widened — `'member'` already exists and is exactly
+  right, since the subject of the action is the member being recognised.
+- Reusing an existing label (`'achievement_edit'`, `'privacy_config'`) was
+  the alternative and was rejected: it would make the audit log describe
+  something that did not happen, which is the one thing an audit log may not
+  do.
+
 ## Edge Functions
 
 ### recap_weekly
@@ -3695,11 +3967,37 @@ What a dependent ticket needs to know changed between the two:
   `coach_engagement_flags` (empty since 202608280011). COMM-304, closing
   COMM-P04. Flips COMM-226's `state.featureFlags.coachEngage` to
   default-on.
-- `member_of_week(...)` table, own-row-free (club-wide select once
+- ~~`member_of_week(...)` table, own-row-free (club-wide select once
   published), no client write grant. `member_of_week_candidates(p_week_start)`
   and `member_of_week_publish(p_week_start, p_user_id, p_reason)`, both
   `security definer`, staff-gated. COMM-315 — flagged as an open question
-  in its own ticket file, category set not spec-grounded.
+  in its own ticket file, category set not spec-grounded.~~ — **SHIPPED in
+  202609010001, COMM-315.** No longer a forward reference: the built
+  contract is **"## Needs from schema, member of the week (COMM-315, Phase
+  3)"** above. Read that, not this. Everything promised here shipped as
+  promised — the table, its club-wide select, its total absence of a client
+  write path, and both staff-gated definer functions with the exact
+  signatures named — with five things this line did not name:
+  - **`member_of_week_category(date)` and `member_of_week_category_label(text)`**,
+    two new immutable helpers. The rotation rule had to live in exactly one
+    place because both entry points consult it, and the index is *weeks since
+    a fixed epoch Monday mod 4*, not the ISO week number, which repeats a
+    category across every 53-week ISO year.
+  - **`member_of_week_candidate_set(text, date, int)`**, internal, no grant
+    to any role, so publish and candidates ask the shortlist question from
+    one copy.
+  - **The category is derived at publish, not passed.** Publishing somebody
+    the week's shortlist did not contain *is* a coach's pick and is recorded
+    as one — which is how the ticket's "staff can fall back to coach's pick"
+    empty state works with the fixed three-parameter signature.
+  - **Two refusals beyond the two the ticket names**: an empty reason on a
+    coach's pick, and a member whose `visible_to_club` is false. Relatedly,
+    every candidate toggle is read from the **raw column** as well as through
+    `can_view_profile_field()`, because that helper short-circuits to true
+    for an admin — publishing is broadcasting, and an admin's rank must not
+    override a member's own choice.
+  - **`admin_actions.action_type` gained `'member_of_week_publish'`**, the
+    first widening of that closed list since 202608280002.
 
 ### Needs from schema, challenges (Phase 3)
 
