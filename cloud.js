@@ -11,6 +11,8 @@
     // COMM-318. { status: "idle"|"processing", error }, drives the avatar
     // control on the account profile form only.
     avatarUpload: { status: "idle", error: "" },
+    // COMM-321. Which module_key (if any) has an in-flight toggle write.
+    clubModuleBusy: null,
     // COMM-120..125 engagement cluster.
     commentDrafts: {}, commentErrors: {}, commentSending: null, commentEdit: null, openReplies: {}, replyTo: {},
     // COMM-124 / COMM-160. One batched, cached user-id -> server role map,
@@ -385,13 +387,56 @@
     MEMBER_RESTRICT: "community.member.restrict",
     CONTENT_PIN: "community.content.pin",
     ANNOUNCEMENT_PUBLISH: "community.announcement.publish",
+    CLUB_MANAGE_MODULES: "community.club.manage_modules",
   };
+  // COMM-321 Club Modules. The six toggles the current app structure
+  // actually exposes as independently gateable surfaces (matching the
+  // schema's own seeded module_key set, 202609010012) - declared here,
+  // ahead of both toggleClubFeature() and renderClubModulesPanel(), since
+  // this is a top-level const evaluated at script load, not inside a
+  // function body where declaration order wouldn't matter.
+  const CLUB_MODULE_TOGGLES = [
+    { key: "announcements", label: "הודעות מועדון" },
+    { key: "events", label: "אירועים" },
+    { key: "challenges", label: "אתגרים" },
+    { key: "achievements", label: "הישגים ועיטורים" },
+    { key: "feed", label: "פיד (כולל תגובות ותגובות חיזוק)" },
+    { key: "leaderboards", label: "טבלאות מובילים" },
+  ];
+  const CLUB_MODULE_KEYS = CLUB_MODULE_TOGGLES.map((m) => m.key);
   function hasPerm(code) { return !!state.permissions && state.permissions.indexOf(code) >= 0; }
   async function loadPermissions() {
     if (!state.user) { state.permissions = []; state.permissionsLoaded = false; return; }
     const { data, error } = await client.rpc("my_permissions");
     state.permissions = error ? [] : (data || []);
     state.permissionsLoaded = !error;
+  }
+  // COMM-321 Club Modules. club_features has select open to authenticated
+  // (no RLS role gate) - every member, not just staff, needs to know which
+  // modules are on, same as permissions itself.
+  async function loadClubFeatures() {
+    if (!state.user) { state.clubFeatures = {}; state.clubFeaturesLoaded = false; return; }
+    const { data, error } = await client.from("club_features").select("module_key,enabled,config");
+    if (error) { state.clubFeatures = {}; state.clubFeaturesLoaded = false; return; }
+    const next = {};
+    for (const row of (data || [])) next[row.module_key] = { enabled: row.enabled, config: row.config || {} };
+    state.clubFeatures = next;
+    state.clubFeaturesLoaded = true;
+  }
+  // Defaults to true while not yet loaded and for any key with no row at
+  // all - deliberately not mirroring notifPrefsLoaded's skeleton-row
+  // pattern: this gates whether content renders at all across many call
+  // sites, not one section's own loading state, and RLS (club_feature_enabled
+  // in every extended policy) is the real backstop regardless of what
+  // renders here during the brief pre-load window. Must never be reached
+  // before isCommunitySignedIn() gates rendering, same as hasPerm().
+  function isModuleEnabled(key, subKey) {
+    if (!state.clubFeaturesLoaded) return true;
+    const row = state.clubFeatures[key];
+    if (!row) return true;
+    if (!row.enabled) return false;
+    if (subKey && row.config && Object.prototype.hasOwnProperty.call(row.config, subKey)) return !!row.config[subKey];
+    return true;
   }
   // A thin convenience over the role model: coach rank or above, mirroring
   // the server's public.is_staff(). Kept for the fixed coach powers
@@ -453,7 +498,7 @@
       // below it writes instead of dropping.
       ensureAnalyticsConfigured();
       await loadRedemption();
-      await Promise.all([loadProfile(), loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadChallenges(), loadEvents(), loadOnboardingProgress()]);
+      await Promise.all([loadProfile(), loadPermissions(), loadClubFeatures(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadChallenges(), loadEvents(), loadOnboardingProgress()]);
       if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers()]);
       if (hasPerm(PERM.COMMENT_MODERATE) || isAdmin()) await loadModQueue();
       // Push pending local edits before pulling the remote copy - without
@@ -2932,6 +2977,27 @@
     if (error) { state.profile[field] = prev; setMessage("לא ניתן לשמור הגדרה זו"); return; }
     setMessage("הגדרת הפרטיות נשמרה");
   }
+  // COMM-321. Optimistic, same shape as savePrivacyField just above - the
+  // write path is admin_set_club_feature(), not a direct table write
+  // (club_features has no write policy at all, only the definer RPC).
+  async function toggleClubFeature(key, enabled) {
+    if (!state.user || CLUB_MODULE_KEYS.indexOf(key) < 0 || state.clubModuleBusy) return;
+    const prevRow = state.clubFeatures[key];
+    const prevEnabled = prevRow ? prevRow.enabled : true;
+    if (prevEnabled === enabled) return;
+    state.clubFeatures[key] = { enabled, config: (prevRow && prevRow.config) || {} };
+    state.clubModuleBusy = key;
+    rerender();
+    const { error } = await client.rpc("admin_set_club_feature", { p_module_key: key, p_enabled: enabled });
+    state.clubModuleBusy = null;
+    if (error) {
+      state.clubFeatures[key] = { enabled: prevEnabled, config: (prevRow && prevRow.config) || {} };
+      setMessage("לא ניתן היה לעדכן את המודול");
+      return rerender();
+    }
+    setMessage("הגדרת המודול נשמרה");
+    rerender();
+  }
   // COMM-230. Returns { error } so a caller that needs to know whether the
   // toggle actually succeeded (the following list's own optimistic
   // remove/rollback) can tell, without a second write path: every follow or
@@ -3387,6 +3453,11 @@
   // resolved server-side. loadStreaks()/state.streaks stay for the coach
   // Welcome surface, which reuses the same number per member.
   function renderConsistencyLeaderboardSection() {
+    // COMM-321. feed_leaderboard() itself raises once this module is off
+    // (a real RLS-equivalent enforcement point, not just a client hide) -
+    // this guard only keeps the section shell/empty-card from flashing an
+    // error-shaped state a member has no way to act on.
+    if (!isModuleEnabled("leaderboards")) return "";
     const b = state.leaderboard;
     const body = renderLeaderboardBody(b, {
       limit: CONSISTENCY_BOARD_LIMIT,
@@ -3926,6 +3997,27 @@
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--purple)", "ניהול חברים", true)}
       <div class="search-box"><input id="adminMemberSearch" placeholder="חיפוש לפי handle, שם, או הדבקת מזהה משתמש" aria-label="חיפוש חברים לניהול" value="${safeText(state.memberSearch)}"/></div>
       ${results.length ? `<div class="log-list">${results.map(rowHtml).join("")}</div>` : state.memberSearch.trim().length >= 2 ? `<div class="empty">לא נמצאו חברים תואמים</div>` : `<div class="empty">חיפוש לפי handle, שם, או מזהה משתמש (UUID)</div>`}
+    </div>`;
+  }
+  // COMM-321 Club Modules. Same gating idiom the other four admin-only
+  // account sections already use (renderModeration, renderMemberManagement,
+  // renderAdminAnalyticsDashboard, renderAuditLog): `if (!allowed) return ""`
+  // at the top, unconditionally appended into accountTab - no dedicated
+  // sub-tab, matching this codebase's own precedent that a single admin
+  // screen never gets one (only "coach", a whole role tier's toolset, does).
+  function renderClubModulesPanel() {
+    if (!(hasPerm(PERM.CLUB_MANAGE_MODULES) || isAdmin())) return "";
+    const rows = CLUB_MODULE_TOGGLES.map((m) => {
+      const row = state.clubFeatures[m.key] || { enabled: true, config: {} };
+      const busy = state.clubModuleBusy === m.key;
+      return `<label class="log-row" style="justify-content:space-between;gap:12px;cursor:pointer;">
+        <span style="font-size:13px;">${safeText(m.label)}${busy ? " (שומר…)" : ""}</span>
+        <input type="checkbox" data-club-feature="${m.key}"${row.enabled ? " checked" : ""}${busy ? " disabled" : ""} aria-label="${safeText(m.label)}"/>
+      </label>`;
+    }).join("");
+    return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מודולים למועדון", true)}
+      <div style="color:var(--steel);font-size:12px;line-height:1.6;margin-bottom:8px;">כיבוי מודול מסתיר אותו לגמרי מכל חברי המועדון - אין טאב, כרטיס, כפתור או התראה - ואוכף בשרת, לא רק בתצוגה.</div>
+      <div class="log-list">${rows}</div>
     </div>`;
   }
   // ==========================================================================
@@ -5628,6 +5720,11 @@
     </article>`;
   }
   function renderChallengesListSection() {
+    // COMM-321. RLS already makes challenges_read return nothing (including
+    // a staff creator's own draft, per the migration's own OR-branch gate)
+    // once this module is off - this keeps the shell/create-button from
+    // showing beside an always-empty list.
+    if (!isModuleEnabled("challenges")) return "";
     const staff = hasPerm(PERM.CHALLENGE_CREATE);
     const active = state.challenges.filter((c) => c.status === "active" || (staff && c.status === "draft"));
     const past = state.challenges.filter((c) => c.status === "completed" || c.status === "archived");
@@ -6376,6 +6473,10 @@
     </article>`;
   }
   function renderEventsListSection() {
+    // COMM-321. Same reasoning as renderChallengesListSection's own guard
+    // just above - events_read already returns nothing for anyone, staff
+    // included, once this module is off.
+    if (!isModuleEnabled("events")) return "";
     const staff = hasPerm(PERM.EVENT_MANAGE);
     const upcoming = state.events.filter((e) => isUpcomingEvent(e) || (staff && e.status === "draft"));
     const past = state.events.filter(isPastEvent).slice().sort((a, b) => (a.start_at < b.start_at ? 1 : -1));
@@ -7788,6 +7889,11 @@
   }
   function renderMyAchievements() {
     if (!state.user || !state.profile) return "";
+    // COMM-321. member_achievements_read already empties this to nothing
+    // queryable once the module is off (including the caller's own past
+    // unlocks, on purpose) - this keeps the section shell/header from
+    // showing beside an always-empty list.
+    if (!isModuleEnabled("achievements")) return "";
     const list = Array.isArray(state.myAchievements) ? state.myAchievements : [];
     const rowsHtml = list.map((r) => {
       const code = achCodeOf(r);
@@ -9021,7 +9127,10 @@
     const liveAnnouncements = state.announcements.filter((a) => !isAnnouncementExpired(a));
     const pinnedToday = liveAnnouncements.find((a) => a.pinned_date === todayIso());
     const pinnedHtml = pinnedToday ? `<div class="chart-card admin-card" style="margin-bottom:12px;${announcementAccentStyle(pinnedToday)}"><div style="font-weight:800;margin-bottom:6px;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">📌 הערת האימון להיום${announcementPriorityBadge(pinnedToday)}</div><div style="font-weight:700;">${safeText(pinnedToday.title)}</div><div style="color:var(--steel);font-size:13px;margin-top:4px;">${safeText(pinnedToday.body)}</div></div>` : "";
-    const announceComposer = staff ? `<form id="communityAnnouncement" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">הודעה חדשה למועדון<span class="admin-tag">ניהול</span></div>${field("communityAnnouncement", "title", "כותרת", `<input class="text-input" name="title" placeholder="כותרת" required/>`)}${field("communityAnnouncement", "body", "תוכן", `<textarea class="text-input" name="body" maxlength="2000" placeholder="תוכן ההודעה" required></textarea>`)}<label class="field"><span class="field-label">רמת חשיבות</span><select class="text-input" name="priority">${ANNOUNCEMENT_PRIORITY_OPTIONS.map((o) => `<option value="${o.value}"${o.value === "normal" ? " selected" : ""}>${o.label}</option>`).join("")}</select></label>${field("communityAnnouncement", "expiresAt", "תפוגה (אופציונלי)", `<input class="text-input" name="expiresAt" type="datetime-local" placeholder="ללא תפוגה"/>`)}<label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="pinToday"/><span style="font-size:12.5px;color:var(--steel);">סמן כהערת האימון להיום</span></label><button class="chip-btn primary" type="submit"${state.announcementSaving ? " disabled" : ""} style="margin-top:10px;">${state.announcementSaving ? "מפרסם…" : "פרסום הודעה"}</button></form>` : "";
+    // COMM-321. announcements_read already empties liveAnnouncements above
+    // once the module is off; the composer form has no data of its own to
+    // fall silent through, so it needs its own explicit gate.
+    const announceComposer = staff ? (!isModuleEnabled("announcements") ? "" : `<form id="communityAnnouncement" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">הודעה חדשה למועדון<span class="admin-tag">ניהול</span></div>${field("communityAnnouncement", "title", "כותרת", `<input class="text-input" name="title" placeholder="כותרת" required/>`)}${field("communityAnnouncement", "body", "תוכן", `<textarea class="text-input" name="body" maxlength="2000" placeholder="תוכן ההודעה" required></textarea>`)}<label class="field"><span class="field-label">רמת חשיבות</span><select class="text-input" name="priority">${ANNOUNCEMENT_PRIORITY_OPTIONS.map((o) => `<option value="${o.value}"${o.value === "normal" ? " selected" : ""}>${o.label}</option>`).join("")}</select></label>${field("communityAnnouncement", "expiresAt", "תפוגה (אופציונלי)", `<input class="text-input" name="expiresAt" type="datetime-local" placeholder="ללא תפוגה"/>`)}<label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="pinToday"/><span style="font-size:12.5px;color:var(--steel);">סמן כהערת האימון להיום</span></label><button class="chip-btn primary" type="submit"${state.announcementSaving ? " disabled" : ""} style="margin-top:10px;">${state.announcementSaving ? "מפרסם…" : "פרסום הודעה"}</button></form>`) : "";
     const otherAnnouncements = liveAnnouncements.filter((a) => a !== pinnedToday);
     // COMM-155. A staff holder of community.content.pin gets a pin toggle on
     // each announcement. Post, challenge and event pin affordances live on
@@ -9190,7 +9299,7 @@
     const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "חברים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין חברים חדשים לאחרונה</div>`}</div>` : "";
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
-    const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderAdminAnalyticsDashboard() + renderRetentionCorrelations() + renderCommunityHealthScore() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
+    const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderClubModulesPanel() + renderAdminAnalyticsDashboard() + renderRetentionCorrelations() + renderCommunityHealthScore() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
 
@@ -9512,6 +9621,11 @@
     // COMM-018. Each privacy toggle persists on change, no save button.
     document.querySelectorAll("[data-privacy-field]").forEach((el) => {
       el.addEventListener("change", () => savePrivacyField(el.dataset.privacyField, el.checked));
+    });
+    // COMM-321. Same per-element wiring shape as the privacy toggles just
+    // above - persists on change, no save button.
+    document.querySelectorAll("[data-club-feature]").forEach((el) => {
+      el.addEventListener("change", () => toggleClubFeature(el.dataset.clubFeature, el.checked));
     });
     // COMM-113/114. Both observers are rebuilt here because rerender()
     // replaces every card element, so the previous ones point at nodes that
@@ -9855,7 +9969,7 @@
         // first track(). Idempotent, so whichever path arrives first wins.
         ensureAnalyticsConfigured();
         loadRedemption()
-          .then(() => Promise.all([loadProfile(), loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadEvents(), loadOnboardingProgress(), flushOutbox()]))
+          .then(() => Promise.all([loadProfile(), loadPermissions(), loadClubFeatures(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadEvents(), loadOnboardingProgress(), flushOutbox()]))
           .then(() => (isStaff() ? Promise.all([loadInactiveMembers(), loadNewMembers()]) : null))
           .then(() => (isAdmin() || hasPerm(PERM.COMMENT_MODERATE) ? loadModQueue() : null))
           .then(pullPrivateRecords)
@@ -9894,7 +10008,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.avatarUpload = { status: "idle", error: "" }; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.notifPushSub = null; state.notifPushChecked = false; state.permissions = []; state.permissionsLoaded = false; state.clubFeatures = {}; state.clubFeaturesLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false, profiles: {}, reachedOut: {}, busy: null }; state.coachMemberOfWeek = { loading: false, loaded: false, error: false, envelope: null, publishedProfile: null, previousProfile: null, pickHandle: "", pickReason: "", busy: null, publishErr: "" }; state.coachMonthlyRecap = { loading: false, loaded: false, error: false, row: null, busy: null, publishErr: "" }; state.monthlyRecap = { loading: false, loaded: false, error: false, row: null }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} }; state.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false }; state.classmatesToday = { items: [], loading: false, loaded: false, error: false }; classmatesCardViewLogged = false; /* COMM-307: the next member to sign in on this device gets a fresh card and a fresh classmates_card_viewed, never the previous session's rows or its already-counted view. */ state.onboardingAttendance = { count: 0, loading: false, loaded: false, error: false }; /* COMM-316: same reset reasoning as classmatesToday just above - the next member on this device gets a fresh count, never the previous member's. */
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.avatarUpload = { status: "idle", error: "" }; state.clubModuleBusy = null; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.notifPushSub = null; state.notifPushChecked = false; state.permissions = []; state.permissionsLoaded = false; state.clubFeatures = {}; state.clubFeaturesLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false, profiles: {}, reachedOut: {}, busy: null }; state.coachMemberOfWeek = { loading: false, loaded: false, error: false, envelope: null, publishedProfile: null, previousProfile: null, pickHandle: "", pickReason: "", busy: null, publishErr: "" }; state.coachMonthlyRecap = { loading: false, loaded: false, error: false, row: null, busy: null, publishErr: "" }; state.monthlyRecap = { loading: false, loaded: false, error: false, row: null }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} }; state.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false }; state.classmatesToday = { items: [], loading: false, loaded: false, error: false }; classmatesCardViewLogged = false; /* COMM-307: the next member to sign in on this device gets a fresh card and a fresh classmates_card_viewed, never the previous session's rows or its already-counted view. */ state.onboardingAttendance = { count: 0, loading: false, loaded: false, error: false }; /* COMM-316: same reset reasoning as classmatesToday just above - the next member on this device gets a fresh count, never the previous member's. */
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();
