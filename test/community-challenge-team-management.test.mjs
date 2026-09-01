@@ -95,7 +95,7 @@ test("a team challenge with no teams shows COMM-204's empty state, with a 'צו�
   await openBoards(memberWindow);
   await waitFor(() => !!memberWindow.document.querySelector('[data-challenge-id="c1"]'), 3000);
   openChallengeCard(memberWindow, "c1");
-  await waitFor(() => memberWindow.document.querySelector('[data-cloud-dialog="challengeView"]').textContent.includes("המאמנת עדיין לא הגדירה קבוצות"), 3000);
+  await waitFor(() => memberWindow.document.querySelector('[data-cloud-dialog="challengeView"]').textContent.includes("המאמן/ת עדיין לא הגדיר/ה קבוצות"), 3000);
   assert.equal(memberWindow.document.querySelector('[data-challenge-team-create-name]'), null, "a plain member gets no create-team control");
 
   const mock = seeded({ challenges: [teamChallenge()] }, true);
@@ -103,7 +103,7 @@ test("a team challenge with no teams shows COMM-204's empty state, with a 'צו�
   await openBoards(staffWindow);
   await waitFor(() => !!staffWindow.document.querySelector('[data-challenge-id="c1"]'), 3000);
   openChallengeCard(staffWindow, "c1");
-  await waitFor(() => staffWindow.document.querySelector('[data-cloud-dialog="challengeView"]').textContent.includes("המאמנת עדיין לא הגדירה קבוצות"), 3000);
+  await waitFor(() => staffWindow.document.querySelector('[data-cloud-dialog="challengeView"]').textContent.includes("המאמן/ת עדיין לא הגדיר/ה קבוצות"), 3000);
   const createInput = staffWindow.document.querySelector('[data-challenge-team-create-name]');
   assert.ok(createInput, "a holder gets a create-team control on the empty state");
   createInput.value = "קבוצת צהריים";

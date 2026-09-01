@@ -3994,7 +3994,7 @@
     const cross = e.table_cross_check || {};
     return adminAnalyticsCard("מעורבות לפוסט",
       adminAnalyticsRow("פוסטים בתקופה", adminAnalyticsCount(period.posts))
-      + adminAnalyticsRow("לייקים", adminAnalyticsCount(period.reactions))
+      + adminAnalyticsRow("עידודים", adminAnalyticsCount(period.reactions))
       + adminAnalyticsRow("תגובות", adminAnalyticsCount(period.comments))
       + adminAnalyticsRow("מעורבות לפוסט (מהאירועים)", adminAnalyticsRatioText(period.engagement_per_post))
       + adminAnalyticsRow("מעורבות לפוסט (בקרת הצלבה מהטבלאות)", adminAnalyticsRatioText(cross.engagement_per_post)));
@@ -4106,7 +4106,7 @@
   function renderAdminAnalyticsCoachReach(add) {
     const c = add.coach_reach || {};
     const cong = c.congratulations || {};
-    return adminAnalyticsCard("היקף פניית מאמנים",
+    return adminAnalyticsCard("היקף פניות מאמנים",
       adminAnalyticsRow("ברכות שנשלחו", adminAnalyticsCount(cong.total))
       + adminAnalyticsRow("פריטים זכאים לברכה (סף עליון, לא שידור מדויק)", adminAnalyticsCount(c.celebrate_items_eligible))
       + adminAnalyticsRow("כיסוי (סף תחתון)", adminAnalyticsRatioText(c.coverage, true)));
@@ -5865,7 +5865,7 @@
       // A coach previewing a draft, per the asymmetry above - named rather
       // than simply omitted, so a coach understands why there is no button
       // rather than wondering if the draft is broken.
-      control = `<div class="footer-note" style="margin-top:8px;">רק בעל/ת הרשאת אנליטיקה או מנהל/ת יכולים לפרסם.</div>`;
+      control = `<div class="footer-note" style="margin-top:8px;">רק בעל/ת הרשאת אנליטיקה או מנהל/ת יכול/ה לפרסם.</div>`;
     }
     return `<div class="ach-section" style="margin-top:18px;">${head}<div class="chart-card"><div class="field-label" style="margin-bottom:6px;">${safeText(r.month_start)}${r.published_at ? "" : " · טיוטה"}</div>${renderMonthlyRecapFigures(r)}${control}</div></div>`;
   }
@@ -6068,7 +6068,7 @@
           <button class="chip-btn" data-community-action="challenge-team-rename" data-id="${safeText(t.id)}"${renameBusy ? " disabled" : ""}>${renameBusy ? "שומר…" : "שמירה"}</button>
           <button class="chip-btn" data-community-action="challenge-team-delete" data-id="${safeText(t.id)}"${(deleteBusy || memberCount > 0) ? " disabled" : ""}${memberCount > 0 ? ` title="יש לפנות את הקבוצה מחברים לפני מחיקתה"` : ""}>${deleteBusy ? "מוחק…" : "מחיקה"}</button>
         </div>
-        <div style="font-size:12px;color:var(--steel);">${memberCount} משתתפים · ${safeText(total)} סה"כ${captainName ? ` · 👑 ${safeText(captainName)}` : ""}</div>
+        <div style="font-size:12px;color:var(--steel);">${memberCount} משתתפים · ${safeText(total)} סה״כ${captainName ? ` · 👑 ${safeText(captainName)}` : ""}</div>
         <div class="flex gap-6" style="align-items:center;">
           <select class="text-input" data-challenge-team-captain-select="${safeText(t.id)}" style="flex:1;"${(captainBusy || !teamMembers.length) ? " disabled" : ""} aria-label="קפטן/ית הקבוצה">${captainOptions}</select>
         </div>
@@ -6105,7 +6105,7 @@
     const c = v.challenge, p = v.progress || {};
     const teams = Array.isArray(p.team_totals) ? p.team_totals : [];
     const staff = hasPerm(PERM.CHALLENGE_CREATE);
-    if (!teams.length) return `<div class="empty">המאמנת עדיין לא הגדירה קבוצות.</div>${staff ? renderTeamManagementPanel(v) : ""}`;
+    if (!teams.length) return `<div class="empty">המאמן/ת עדיין לא הגדיר/ה קבוצות.</div>${staff ? renderTeamManagementPanel(v) : ""}`;
     const myTeamId = v.myParticipant && v.myParticipant.team_id;
     const canPick = v.myParticipant && !myTeamId;
     const cols = teams.map((t) => `<div class="chart-card" style="flex:1;min-width:130px;${t.team_id === myTeamId ? "border-color:var(--energy);" : ""}">

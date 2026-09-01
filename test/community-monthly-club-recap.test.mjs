@@ -116,7 +116,7 @@ test("a coach (is_staff, no community.analytics.view) can preview a draft but se
   await waitFor(() => window.document.body.textContent.includes("סיכום חודשי למועדון"), 3000);
   await waitFor(() => window.document.body.textContent.includes("42"), 3000);
   assert.equal(window.document.querySelector('[data-community-action="coach-monthly-recap-publish"]'), null, "no publish control for a coach who lacks community.analytics.view");
-  assert.match(window.document.body.textContent, /רק בעל\/ת הרשאת אנליטיקה או מנהל\/ת יכולים לפרסם\./);
+  assert.match(window.document.body.textContent, /רק בעל\/ת הרשאת אנליטיקה או מנהל\/ת יכול\/ה לפרסם\./);
 });
 
 test("an admin sees the publish control on a draft and publishing it re-fetches the row read-only", async () => {
