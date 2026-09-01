@@ -9,7 +9,7 @@
 //   TARGET_URL=<url> node boot-smoke.mjs # a deployed site
 import { chromium } from "playwright";
 import { resolveTarget } from "./lib/target.mjs";
-import { consoleErrorCollector, dismissWelcomeModal } from "./lib/actions.mjs";
+import { switchTab, consoleErrorCollector, dismissWelcomeModal } from "./lib/actions.mjs";
 
 let failed = false;
 function check(label, ok, detail = "") {
@@ -49,7 +49,7 @@ check("no unexpected page reload in the first 4s", navCount === 1, `navCount=${n
 
 await dismissWelcomeModal(page);
 for (const id of ["tabHistoryBtn", "tabCalendarBtn", "tabWodBtn", "tabCommunityBtn", "tabAddBtn"]) {
-  await page.click(`#${id}`);
+  await switchTab(page, id);
   await page.waitForTimeout(150);
 }
 const contentNotEmpty = await page.evaluate(() => document.getElementById("content").children.length > 0);

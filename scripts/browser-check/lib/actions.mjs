@@ -49,6 +49,19 @@ export async function dismissCelebrationIfOpen(page) {
   return open;
 }
 
+// The top tabbar was replaced by a hamburger + full-page nav menu; the 5
+// row buttons kept their old #tabAddBtn/#tabHistoryBtn/#tabCalendarBtn/
+// #tabWodBtn/#tabCommunityBtn ids specifically so existing automation like
+// this suite didn't need a rewrite, just this one indirection: open the
+// menu if it isn't already, click the row, wait for the menu to close
+// again (switch-tab's handler closes it automatically).
+export async function switchTab(page, tabId) {
+  const open = await page.evaluate(() => document.getElementById("navMenuOverlay")?.classList.contains("open"));
+  if (!open) await page.click("[data-action='open-nav-menu']");
+  await page.click(`#${tabId}`);
+  await page.waitForFunction(() => !document.getElementById("navMenuOverlay")?.classList.contains("open"), { timeout: 5000 });
+}
+
 export async function consoleErrorCollector(page) {
   const errors = [];
   page.on("console", (msg) => {

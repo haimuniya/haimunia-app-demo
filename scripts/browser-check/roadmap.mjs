@@ -13,7 +13,7 @@ import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { resolveTarget } from "./lib/target.mjs";
-import { selectMovement, dismissCelebrationIfOpen, consoleErrorCollector } from "./lib/actions.mjs";
+import { switchTab, selectMovement, dismissCelebrationIfOpen, consoleErrorCollector } from "./lib/actions.mjs";
 
 // Screenshots are a debugging aid, not an artifact this repo commits — the
 // OS temp dir keeps this script working on any machine, not just the one
@@ -91,7 +91,7 @@ check("recent-history strip shows up after a second logged set", recentText.incl
 await page.screenshot({ path: `${outDir}/roadmap-04-recent-history.png` });
 
 // --- Session note on the Calendar tab ---
-await page.click("#tabCalendarBtn");
+await switchTab(page, "tabCalendarBtn");
 await page.waitForTimeout(250);
 await page.fill("#sessionNoteInput", "בדיקת הערה אוטומטית");
 await page.click("[data-action='save-session-note']");

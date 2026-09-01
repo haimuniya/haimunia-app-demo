@@ -9,7 +9,7 @@
 //   TARGET_URL=<url> node superset.mjs # a deployed site
 import { chromium } from "playwright";
 import { resolveTarget } from "./lib/target.mjs";
-import { dismissWelcomeModal, selectMovement, dismissCelebrationIfOpen, consoleErrorCollector } from "./lib/actions.mjs";
+import { switchTab, dismissWelcomeModal, selectMovement, dismissCelebrationIfOpen, consoleErrorCollector } from "./lib/actions.mjs";
 
 let failed = false;
 function check(label, ok, detail = "") {
@@ -90,7 +90,7 @@ check("all 3 alternating rounds saved with the superset staying active", stillOn
 await page.click("[data-action='toggle-ladder-mode']"); // finish
 await page.waitForTimeout(200);
 
-await page.click("#tabCalendarBtn");
+await switchTab(page, "tabCalendarBtn");
 await page.waitForTimeout(200);
 const dayCardText = await page.evaluate(() => document.querySelector("#calDetail .log-row")?.textContent.replace(/\s+/g, " ").trim() || "");
 check("calendar folds the superset into one card spanning both exercise names", dayCardText.includes("Strict Press") && dayCardText.includes("Bench") && dayCardText.includes("סופרסט") && dayCardText.includes("בלוק B"), dayCardText);

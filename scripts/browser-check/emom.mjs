@@ -10,7 +10,7 @@
 //   TARGET_URL=<url> node emom.mjs # a deployed site
 import { chromium } from "playwright";
 import { resolveTarget } from "./lib/target.mjs";
-import { dismissWelcomeModal, consoleErrorCollector } from "./lib/actions.mjs";
+import { switchTab, dismissWelcomeModal, consoleErrorCollector } from "./lib/actions.mjs";
 
 let failed = false;
 function check(label, ok, detail = "") {
@@ -29,7 +29,7 @@ await page.goto(target.url, { waitUntil: "networkidle" });
 await page.waitForSelector("#app", { state: "visible" });
 await dismissWelcomeModal(page);
 
-await page.click("#tabWodBtn");
+await switchTab(page, "tabWodBtn");
 await page.waitForTimeout(200);
 await page.click("[data-action='open-wod-picker']");
 await page.waitForTimeout(200);
@@ -86,7 +86,7 @@ await page.waitForTimeout(300);
 const noPrFlash = await page.evaluate(() => document.getElementById("wodFlashBox")?.style.display !== "flex");
 check("saving an EMOM attempt never flashes a PR (no cross-attempt scoring)", noPrFlash);
 
-await page.click("#tabCalendarBtn");
+await switchTab(page, "tabCalendarBtn");
 await page.waitForTimeout(200);
 const calText = (await page.evaluate(() => document.getElementById("calDetail")?.textContent || "")).replace(/\s+/g, " ").trim();
 check("calendar day view shows per-movement reps (15 · 7), not a generic score", calText.includes("15 · 7"), calText);

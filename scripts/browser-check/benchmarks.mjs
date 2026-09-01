@@ -8,7 +8,7 @@
 //   TARGET_URL=<url> node benchmarks.mjs # a deployed site
 import { chromium } from "playwright";
 import { resolveTarget } from "./lib/target.mjs";
-import { dismissWelcomeModal, consoleErrorCollector } from "./lib/actions.mjs";
+import { switchTab, dismissWelcomeModal, consoleErrorCollector } from "./lib/actions.mjs";
 
 let failed = false;
 function check(label, ok, detail = "") {
@@ -27,7 +27,7 @@ await page.goto(target.url, { waitUntil: "networkidle" });
 await page.waitForSelector("#app", { state: "visible" });
 await dismissWelcomeModal(page);
 
-await page.click("#tabWodBtn");
+await switchTab(page, "tabWodBtn");
 await page.waitForTimeout(200);
 
 // A fresh load pre-selects WOD_LIBRARY[0] (selectedWodId's module-level

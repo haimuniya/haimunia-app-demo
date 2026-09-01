@@ -10,7 +10,7 @@
 //   TARGET_URL=<url> node ladder.mjs # a deployed site
 import { chromium } from "playwright";
 import { resolveTarget } from "./lib/target.mjs";
-import { dismissWelcomeModal, selectMovement, dismissCelebrationIfOpen, consoleErrorCollector } from "./lib/actions.mjs";
+import { switchTab, dismissWelcomeModal, selectMovement, dismissCelebrationIfOpen, consoleErrorCollector } from "./lib/actions.mjs";
 
 let failed = false;
 function check(label, ok, detail = "") {
@@ -54,7 +54,7 @@ for (let i = 0; i < rungs.length; i++) {
 check("all 5 rungs saved with ladder mode staying on throughout", !failed);
 check("PR celebration stayed suppressed for all 5 rungs", celebrations === 0, `fired ${celebrations}/5`);
 
-await page.click("#tabCalendarBtn");
+await switchTab(page, "tabCalendarBtn");
 await page.waitForTimeout(200);
 const dayRows = await page.evaluate(() =>
   [...document.querySelectorAll("#calDetail .log-row")].map((r) => r.textContent.replace(/\s+/g, " ").trim())
@@ -65,14 +65,14 @@ check("all 5 weight/rep pairs present in order", dayRows[0]?.includes("6×60") &
 const editButtons = page.locator("#calDetail button[data-action='edit-entry']");
 await editButtons.nth(2).click();
 await page.waitForTimeout(150);
-await page.click("#tabAddBtn");
+await switchTab(page, "tabAddBtn");
 await page.waitForTimeout(150);
 await page.fill("[data-field='weight'].stepper-val", "82.5");
 await page.dispatchEvent("[data-field='weight'].stepper-val", "change");
 await page.click("[data-action='save-set']");
 await page.waitForTimeout(250);
 await dismissCelebrationIfOpen(page);
-await page.click("#tabCalendarBtn");
+await switchTab(page, "tabCalendarBtn");
 await page.waitForTimeout(200);
 const afterEdit = await page.evaluate(() => document.querySelector("#calDetail .log-row")?.textContent || "");
 check("editing one round updates it in place, still grouped", afterEdit.includes("4×82.5") && afterEdit.includes("5 סטים"));
@@ -83,7 +83,7 @@ await page.waitForTimeout(200);
 const delAfter = await page.locator("#calDetail button[data-action='delete-entry']").count();
 check("deleting one round removes exactly one", delBefore === 5 && delAfter === 4, `${delBefore} -> ${delAfter}`);
 
-await page.click("#tabAddBtn");
+await switchTab(page, "tabAddBtn");
 await page.waitForTimeout(150);
 await page.click("[data-action='toggle-ladder-mode']"); // finish, without switching tabs afterward
 await page.waitForTimeout(150);

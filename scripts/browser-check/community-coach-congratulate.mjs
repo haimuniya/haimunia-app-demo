@@ -12,7 +12,7 @@
 // report rather than fabricated here.
 import { chromium } from "playwright";
 import { resolveLocalOnlyTarget } from "./lib/target.mjs";
-import { consoleErrorCollector, dismissWelcomeModal } from "./lib/actions.mjs";
+import { switchTab, consoleErrorCollector, dismissWelcomeModal } from "./lib/actions.mjs";
 import { installMockCloud } from "./lib/mockCloud.mjs";
 
 let failed = false;
@@ -65,7 +65,7 @@ await page.evaluate(() => {
 
 await dismissWelcomeModal(page);
 
-await page.click("#tabCommunityBtn");
+await switchTab(page, "tabCommunityBtn");
 await page.waitForSelector(".subtabbar", { timeout: 5000 });
 await page.click('[data-community-action="set-tab"][data-tab="coach"]');
 await page.waitForSelector('[data-community-action="coach-congratulate"]', { timeout: 5000 });

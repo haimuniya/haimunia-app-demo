@@ -64,6 +64,68 @@ let entries = [];
 const VALID_TABS = ["add", "history", "calendar", "wod", "community"];
 const urlTab = new URLSearchParams(location.search).get("tab");
 let tab = VALID_TABS.includes(urlTab) ? urlTab : "add";
+
+// Single source of truth for the app's primary navigation, consumed by
+// renderNavMenuList() below (the mobile nav-menu overlay) and, later, a
+// desktop sidebar - nothing about which tabs exist or what they're called
+// is hardcoded a second time anywhere else. A function, not a top-level
+// const array, for the same reason fieldMax() below is one: it references
+// ICONS, which isn't defined until much later in this file - a function
+// body doesn't run until called, well after the whole script has loaded,
+// so the forward reference is safe the same way fieldMax's is.
+function getNavItems() {
+  return [
+    { id: "add", tab: "add", rowId: "tabAddBtn", label: "רישום", tint: "energy", icon: ICONS.logIcon },
+    { id: "history", tab: "history", rowId: "tabHistoryBtn", label: "התקדמות", tint: "blue", icon: ICONS.chartIcon },
+    { id: "calendar", tab: "calendar", rowId: "tabCalendarBtn", label: "לוח שנה", tint: "yellow", icon: ICONS.calendarIcon },
+    { id: "wod", tab: "wod", rowId: "tabWodBtn", label: "אימונים", tint: "purple", icon: ICONS.stopwatchIcon },
+    { id: "community", tab: "community", rowId: "tabCommunityBtn", label: "קהילה", tint: "teal", icon: ICONS.communityIcon },
+  ];
+}
+// Renders the nav menu's user-info card + the 5 primary rows (+ Community's
+// own sub-tab preview, when signed in). Called unconditionally from
+// render() on every render, the same "always regenerated, just glued into
+// a normally-hidden container" treatment renderFooter() already relies on
+// - so the tabAddBtn/tabHistoryBtn/etc. ids these rows carry stay resolvable
+// at all times, exactly like the old static tabbar's buttons always were.
+function renderNavMenuList() {
+  const initial = userName ? userName.trim().charAt(0) : "";
+  const streak = computeCurrentStreak();
+  const whoHtml = `
+    <div class="who">
+      <div class="who-avatar">${esc(initial)}</div>
+      <div>
+        <div class="who-name">${userName ? esc(userName) : "אורח/ת"}</div>
+        <div class="who-sub">${streak > 0 ? `${streak} ימים ברצף` : "בואו נתחיל להתאמן"}</div>
+      </div>
+    </div>`;
+  const communitySignedIn = typeof window.isCommunitySignedIn === "function" && window.isCommunitySignedIn();
+  const rowsHtml = getNavItems().map((item) => {
+    const isActive = tab === item.tab;
+    let sub = "";
+    if (item.id === "community" && communitySignedIn && typeof window.getCommunityNavPreview === "function") {
+      const subItems = window.getCommunityNavPreview();
+      sub = `<div class="subnav">${subItems.map((s) => `
+        <button class="subitem" data-action="switch-tab-community-sub" data-subtab="${esc(s.id)}">
+          <span>${esc(s.label)}</span>
+          ${s.badge ? `<span class="nav-badge">${s.badge}</span>` : ""}
+        </button>`).join("")}</div>`;
+    }
+    // The "tabbtn" class here is load-bearing, not styling (its visual
+    // rules are neutralized for .navrow.tabbtn in index.html's CSS):
+    // cloud.js has its own capture-phase click listener that detects
+    // "left the Community tab" by e.target.closest(".tabbtn") - not by
+    // id or data-action - to know when to reset the club_tab_viewed
+    // dedupe. Drop this class and re-entering Community stops counting
+    // as a new view.
+    return `
+      <button class="navrow tabbtn${isActive ? " active" : ""}" id="${item.rowId}" data-action="switch-tab" data-tab="${item.tab}" role="tab" aria-selected="${isActive}">
+        <span class="icon-chip icon-chip-${item.tint}">${item.icon}</span>
+        <span class="nav-label">${esc(item.label)}</span>
+      </button>${sub}`;
+  }).join("");
+  return whoHtml + rowsHtml;
+}
 // COMM-229. sw.js's notificationclick handler opens a fresh window at
 // ?notif=<deep link> when no app window was already open to focus (see
 // sw.js). Captured once here at boot, the same way ?tab= already is, and
@@ -1940,6 +2002,8 @@ const ICONS = {
   calendarIcon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>',
   chartIcon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V12M12 20V4M20 20v-7"/></svg>',
   stopwatchIcon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2M9 2h6M12 2v3"/></svg>',
+  logIcon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6M7 7v10M17 7v10M20 9v6M7 12h10"/></svg>',
+  communityIcon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M2 20c0-3.5 3-6 7-6s7 2.5 7 6"/><circle cx="17" cy="9" r="2.3"/><path d="M16.3 14c2.6.2 4.5 2.1 5 5"/></svg>',
 };
 
 // ---------- Rendering ----------
@@ -2893,11 +2957,17 @@ function render() {
       <div style="color:var(--steel); font-size:12px;">${esc((err && err.message) ? err.message : String(err))}</div>
     </div>`;
   }
-  [["tabAddBtn", "add"], ["tabHistoryBtn", "history"], ["tabCalendarBtn", "calendar"], ["tabWodBtn", "wod"], ["tabCommunityBtn", "community"]].forEach(([id, t]) => {
-    const btn = document.getElementById(id);
-    btn.className = "tabbtn" + (tab === t ? " active" : "");
-    btn.setAttribute("aria-selected", String(tab === t));
-  });
+  const navMenuListEl = document.getElementById("navMenuList");
+  if (navMenuListEl) {
+    // Own try/catch, same reasoning as the tab-content one above: a
+    // problem building the nav menu (e.g. cloud.js's community-preview
+    // export mid-transition) must never take down the rest of render() -
+    // in particular the content write and the post-render Community
+    // hook below it, which is exactly the failure this guarded against
+    // during development.
+    try { navMenuListEl.innerHTML = renderNavMenuList(); }
+    catch (err) { console.error("nav menu render error:", err); }
+  }
   document.getElementById("bottomBar").style.display = (tab === "add" || (tab === "wod" && wodSubTab === "log" && wodById(selectedWodId))) ? "flex" : "none";
   updateStreakLabel();
   // Rendered after every tab's own content, not just Community's, so a
@@ -3246,6 +3316,65 @@ function closePicker() {
   document.body.style.overflow = "";
   document.getElementById("pickerOverlay").classList.remove("open");
 }
+
+// ---- Shared Escape + Tab-trap for app.js's own full-page overlays ----
+// None of app.js's existing dialogs (picker, WOD picker/builder,
+// celebration, achievements, notifications, onboarding) have ever had
+// Escape-to-close or focus trapping - only a hand-copied backdrop-click
+// guard each. cloud.js has a real contract for its own dialogs (COMM-190)
+// but it's private to cloud.js's closure with no hook for app.js to
+// register into. The nav menu is the single highest-traffic surface in
+// the app - it replaces primary navigation and is tapped on every tab
+// switch - so it gets a real one; the existing dialogs are left as they
+// are for now rather than migrated in the same change.
+const APP_DIALOGS = {};
+function registerAppDialog(key, def) { APP_DIALOGS[key] = def; }
+function currentAppDialog() {
+  for (const key in APP_DIALOGS) { if (APP_DIALOGS[key].isOpen()) return APP_DIALOGS[key]; }
+  return null;
+}
+function appDialogFocusables(overlayId) {
+  const el = document.getElementById(overlayId);
+  if (!el) return [];
+  return Array.from(el.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+    .filter((n) => !n.disabled && n.getClientRects().length > 0);
+}
+function focusFirstAppDialogEl(overlayId) {
+  const f = appDialogFocusables(overlayId);
+  if (f.length) f[0].focus();
+}
+document.addEventListener("keydown", (e) => {
+  const dlg = currentAppDialog();
+  if (!dlg) return;
+  if (e.key === "Escape") { e.preventDefault(); dlg.close(); return; }
+  if (e.key !== "Tab") return;
+  const focusables = appDialogFocusables(dlg.overlayId);
+  if (!focusables.length) return;
+  const first = focusables[0], last = focusables[focusables.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
+
+let navMenuOpen = false;
+let navMenuOpenerEl = null;
+function openNavMenu() {
+  navMenuOpen = true;
+  navMenuOpenerEl = document.activeElement;
+  document.body.style.overflow = "hidden";
+  document.getElementById("navMenuOverlay").classList.add("open");
+  setTimeout(() => focusFirstAppDialogEl("navMenuOverlay"), 50);
+}
+function closeNavMenu() {
+  if (!navMenuOpen) return;
+  navMenuOpen = false;
+  document.body.style.overflow = "";
+  const overlay = document.getElementById("navMenuOverlay");
+  if (overlay) overlay.classList.remove("open");
+  if (navMenuOpenerEl && typeof navMenuOpenerEl.focus === "function") navMenuOpenerEl.focus();
+  navMenuOpenerEl = null;
+}
+registerAppDialog("navMenu", { overlayId: "navMenuOverlay", isOpen: () => navMenuOpen, close: closeNavMenu });
+
 function renderPickerList(query) {
   const q = query.toLowerCase();
   const filtered = allMovements().filter((m) => m.name.toLowerCase().includes(q));
@@ -3442,7 +3571,18 @@ document.addEventListener("click", (e) => {
   if (action === "reload-app") { applyUpdate(); }
   else if (action === "install-app") { installApp(); }
   else if (action === "dismiss-install-hint") { dismissInstallBanner(); }
-  else if (action === "switch-tab") { tab = el.dataset.tab; render(); }
+  else if (action === "switch-tab") { tab = el.dataset.tab; closeNavMenu(); render(); }
+  else if (action === "switch-tab-community-sub") {
+    tab = "community";
+    closeNavMenu();
+    if (typeof window.setCommunityTab === "function") window.setCommunityTab(el.dataset.subtab);
+    else render();
+  }
+  else if (action === "open-nav-menu") { openNavMenu(); }
+  else if (action === "close-nav-menu") {
+    if (el.id === "navMenuOverlay" && e.target !== el) return;
+    closeNavMenu();
+  }
   else if (action === "view-today-calendar") {
     tab = "calendar";
     const t = new Date();

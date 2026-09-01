@@ -6,7 +6,7 @@
 // is the client surface reading the row it produces.
 import { chromium } from "playwright";
 import { resolveLocalOnlyTarget } from "./lib/target.mjs";
-import { consoleErrorCollector, dismissWelcomeModal } from "./lib/actions.mjs";
+import { switchTab, consoleErrorCollector, dismissWelcomeModal } from "./lib/actions.mjs";
 import { installMockCloud } from "./lib/mockCloud.mjs";
 
 let failed = false;
@@ -51,7 +51,7 @@ await page.evaluate(() => {
   window.__mock.onRpc("post_create", (args) => { window.__postCreateCall = args; return { data: "post-1", error: null }; });
 });
 
-await page.click("#tabCommunityBtn");
+await switchTab(page, "tabCommunityBtn");
 await page.waitForSelector(".subtabbar", { timeout: 5000 });
 await page.click('[data-community-action="set-tab"][data-tab="account"]');
 await page.waitForFunction(() => document.body.textContent.includes("הסיכום השבועי שלי"), { timeout: 5000 });

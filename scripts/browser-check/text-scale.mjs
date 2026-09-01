@@ -14,7 +14,7 @@
 //   TARGET_URL=<url> node text-scale.mjs # a deployed site
 import { chromium } from "playwright";
 import { resolveTarget } from "./lib/target.mjs";
-import { dismissWelcomeModal, consoleErrorCollector } from "./lib/actions.mjs";
+import { switchTab, dismissWelcomeModal, consoleErrorCollector } from "./lib/actions.mjs";
 
 let failed = false;
 function check(label, ok, detail = "") {
@@ -76,7 +76,7 @@ check("preference persists across a reload", attrAfterReload === "large", attrAf
 // The real risk case: a position:fixed modal at the larger text size.
 // inset:0 must still cover the true viewport (not get scaled away), while
 // the content inside it still visibly scales with the rest of the page.
-await page.click("#tabWodBtn");
+await switchTab(page, "tabWodBtn");
 await page.waitForTimeout(150);
 // A WOD is always pre-selected (selectedWodId's module-level default) —
 // reaching the builder now goes through the WOD picker overlay (tap the

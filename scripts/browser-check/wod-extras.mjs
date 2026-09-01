@@ -7,7 +7,7 @@
 //   TARGET_URL=<url> node wod-extras.mjs # a deployed site
 import { chromium } from "playwright";
 import { resolveTarget } from "./lib/target.mjs";
-import { dismissWelcomeModal, dismissCelebrationIfOpen, consoleErrorCollector } from "./lib/actions.mjs";
+import { switchTab, dismissWelcomeModal, dismissCelebrationIfOpen, consoleErrorCollector } from "./lib/actions.mjs";
 
 let failed = false;
 function check(label, ok, detail = "") {
@@ -26,7 +26,7 @@ await page.goto(target.url, { waitUntil: "networkidle" });
 await page.waitForSelector("#app", { state: "visible" });
 await dismissWelcomeModal(page);
 
-await page.click("#tabWodBtn");
+await switchTab(page, "tabWodBtn");
 await page.waitForTimeout(200);
 await page.click("[data-action='open-wod-picker']");
 await page.waitForTimeout(200);
@@ -54,7 +54,7 @@ await page.click("[data-action='save-wod']");
 await page.waitForTimeout(300);
 await dismissCelebrationIfOpen(page);
 
-await page.click("#tabCalendarBtn");
+await switchTab(page, "tabCalendarBtn");
 await page.waitForTimeout(200);
 const calText = (await page.evaluate(() => document.getElementById("calDetail")?.textContent || "")).replace(/\s+/g, " ").trim();
 check("calendar day view shows the partner tag next to Rx/Scaled", calText.includes("עם דנה"), calText);

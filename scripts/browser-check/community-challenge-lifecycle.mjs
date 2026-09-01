@@ -7,7 +7,7 @@
 // resolveLocalOnlyTarget()'s own comment.
 import { chromium } from "playwright";
 import { resolveLocalOnlyTarget } from "./lib/target.mjs";
-import { consoleErrorCollector, dismissWelcomeModal } from "./lib/actions.mjs";
+import { switchTab, consoleErrorCollector, dismissWelcomeModal } from "./lib/actions.mjs";
 import { installMockCloud } from "./lib/mockCloud.mjs";
 
 let failed = false;
@@ -51,7 +51,7 @@ await page.goto(target.url, { waitUntil: "networkidle" });
 await page.waitForSelector("#app", { state: "visible", timeout: 10000 });
 await dismissWelcomeModal(page);
 
-await page.click("#tabCommunityBtn");
+await switchTab(page, "tabCommunityBtn");
 await page.waitForSelector(".subtabbar", { timeout: 5000 });
 await page.click('[data-community-action="set-tab"][data-tab="boards"]');
 await page.waitForFunction(() => document.body.textContent.includes("אתגרי המועדון"), { timeout: 5000 });

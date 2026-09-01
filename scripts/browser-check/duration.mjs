@@ -11,7 +11,7 @@
 //   TARGET_URL=<url> node duration.mjs # a deployed site
 import { chromium } from "playwright";
 import { resolveTarget } from "./lib/target.mjs";
-import { dismissWelcomeModal, selectMovement, dismissCelebrationIfOpen, consoleErrorCollector } from "./lib/actions.mjs";
+import { switchTab, dismissWelcomeModal, selectMovement, dismissCelebrationIfOpen, consoleErrorCollector } from "./lib/actions.mjs";
 
 let failed = false;
 function check(label, ok, detail = "") {
@@ -77,7 +77,7 @@ const celebratedOnShorterHold = await dismissCelebrationIfOpen(page);
 check("a shorter hold than the existing best does not celebrate a PR", !celebratedOnShorterHold);
 
 // History tab: duration-mode chart renders (an SVG, not the reps rep-table).
-await page.click("#tabHistoryBtn");
+await switchTab(page, "tabHistoryBtn");
 await page.waitForTimeout(200);
 await page.click(`.exercise-row[data-action='select-history']:has-text("Weighted Plank")`);
 await page.waitForTimeout(200);
@@ -87,7 +87,7 @@ check("History tab renders a chart for the duration exercise", historyHasSvg);
 check("History tab shows a best-hold stat instead of the rep-record grid", historyHasBestHold);
 
 // Calendar day view: both rounds show with duration formatting, not "0×0".
-await page.click("#tabCalendarBtn");
+await switchTab(page, "tabCalendarBtn");
 await page.waitForTimeout(200);
 const calText = await page.evaluate(() => document.getElementById("calDetail")?.textContent || "");
 check('calendar day view formats the hold entries as seconds (25") not reps', calText.includes('25"'), calText.replace(/\s+/g, " ").trim());
