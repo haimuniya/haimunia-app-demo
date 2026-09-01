@@ -6154,7 +6154,7 @@
         ${field("communityChallengeForm", "rulesText", "חוקי האתגר", `<textarea class="text-input" name="rulesText" maxlength="1000" required>${safeText(f.rulesText)}</textarea>`)}
         ${field("communityChallengeForm", "metricLabel", "יחידת מדידה (לתצוגה)", `<input class="text-input" name="metricLabel" value="${safeText(f.metricLabel)}" placeholder="למשל בורפיז"/>`)}`
       : f.challengeType === "consistency" ? `
-        <div class="flex gap-10 field">
+        <div class="flex gap-16 field">
           ${field("communityChallengeForm", "timesPerWeek", "אימונים בשבוע", `<input class="text-input" name="timesPerWeek" type="number" min="1" value="${safeText(f.timesPerWeek)}" required/>`)}
           ${field("communityChallengeForm", "weeks", "מספר שבועות", `<input class="text-input" name="weeks" type="number" min="1" value="${safeText(f.weeks)}" required/>`)}
         </div>`
@@ -6170,7 +6170,7 @@
       ${field("communityChallengeForm", "description", "תיאור", `<textarea class="text-input" name="description" maxlength="2000">${safeText(f.description)}</textarea>`)}
       ${field("communityChallengeForm", "metricType", "מדד", `<input class="text-input" name="metricType" value="${safeText(f.metricType)}" placeholder="למשל session_count" required/>`)}
       ${showTarget ? field("communityChallengeForm", "targetValue", "יעד", `<input class="text-input" name="targetValue" type="number" step="any" value="${safeText(f.targetValue)}"/>`) : ""}
-      <div class="flex gap-10 field">
+      <div class="flex gap-16 field">
         ${field("communityChallengeForm", "startAt", "תאריך התחלה", `<input class="text-input" name="startAt" type="date" value="${safeText(f.startAt)}" required/>`)}
         ${field("communityChallengeForm", "endAt", "תאריך סיום", `<input class="text-input" name="endAt" type="date" value="${safeText(f.endAt)}" required/>`)}
       </div>
@@ -6979,11 +6979,11 @@
       ${field("communityEventForm", "imageUrl", "קישור לתמונה", `<input class="text-input" name="imageUrl" value="${safeText(f.imageUrl)}" maxlength="500" placeholder="https://..."/>`)}
       ${field("communityEventForm", "location", "מיקום", `<input class="text-input" name="location" value="${safeText(f.location)}" maxlength="240"/>`)}
       ${field("communityEventForm", "mapLink", "קישור למפה", `<input class="text-input" name="mapLink" value="${safeText(f.mapLink)}" maxlength="500" placeholder="https://..."/>`)}
-      <div class="flex gap-10 field">
+      <div class="flex gap-16 field">
         ${field("communityEventForm", "startAt", "התחלה", `<input class="text-input" name="startAt" type="datetime-local" value="${safeText(f.startAt)}" required/>`)}
         ${field("communityEventForm", "endAt", "סיום", `<input class="text-input" name="endAt" type="datetime-local" value="${safeText(f.endAt)}"/>`)}
       </div>
-      <div class="flex gap-10 field">
+      <div class="flex gap-16 field">
         ${field("communityEventForm", "capacity", "מקומות (ריק = ללא הגבלה)", `<input class="text-input" name="capacity" type="number" min="1" value="${safeText(f.capacity)}"/>`)}
         ${field("communityEventForm", "registrationDeadline", "מועד אחרון להרשמה", `<input class="text-input" name="registrationDeadline" type="datetime-local" value="${safeText(f.registrationDeadline)}"/>`)}
       </div>
@@ -9347,7 +9347,7 @@
     const feedTab = renderPinnedStrip() + renderOnboardingStep() + clubTopHtml + announcementsHtml + feedHtml;
 
     // ---- Boards tab: weekly challenge + streaks, top-3-plus-your-rank ----
-    const challengeSetter = staff ? `<form id="communityWeeklyChallenge" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">קביעת אתגר שבועי<span class="admin-tag">ניהול</span></div>${field("communityWeeklyChallenge", "title", "שם האתגר", `<input class="text-input" name="title" placeholder="שם האתגר" required/>`)}${field("communityWeeklyChallenge", "comparisonKey", "מפתח השוואה", `<input class="text-input" name="comparisonKey" dir="ltr" placeholder="movement:back-squat:est1rm" required/>`)}<div style="color:var(--steel);font-size:11px;margin:-6px 0 10px;">חייב להתחיל ב-movement: (תרגיל) או wod: (אימון) — בדיוק כמו שהוא נשמר בשיתופים, למשל movement:back-squat:est1rm או wod:fran:time:rx</div><div class="flex gap-10 field">${field("communityWeeklyChallenge", "startsOn", "תאריך התחלה", `<input class="text-input" name="startsOn" type="date" required/>`)}${field("communityWeeklyChallenge", "endsOn", "תאריך סיום", `<input class="text-input" name="endsOn" type="date" required/>`)}</div><button class="chip-btn primary" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
+    const challengeSetter = staff ? `<form id="communityWeeklyChallenge" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">קביעת אתגר שבועי<span class="admin-tag">ניהול</span></div>${field("communityWeeklyChallenge", "title", "שם האתגר", `<input class="text-input" name="title" placeholder="שם האתגר" required/>`)}${field("communityWeeklyChallenge", "comparisonKey", "מפתח השוואה", `<input class="text-input" name="comparisonKey" dir="ltr" placeholder="movement:back-squat:est1rm" required/>`)}<div style="color:var(--steel);font-size:11px;margin:-6px 0 10px;">חייב להתחיל ב-movement: (תרגיל) או wod: (אימון) — בדיוק כמו שהוא נשמר בשיתופים, למשל movement:back-squat:est1rm או wod:fran:time:rx</div><div class="flex gap-16 field">${field("communityWeeklyChallenge", "startsOn", "תאריך התחלה", `<input class="text-input" name="startsOn" type="date" required/>`)}${field("communityWeeklyChallenge", "endsOn", "תאריך סיום", `<input class="text-input" name="endsOn" type="date" required/>`)}</div><button class="chip-btn primary" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
     const weeklyLeaderboardList = state.weeklyChallenge ? renderRankedList(state.weeklyLeaderboard, (it) => it.author_id, (it) => safeText(it.result_text)) : `<div class="empty">אין אתגר פעיל כרגע</div>`;
     // COMM-018. A quick "hide my result" affordance right on the board.
     // It flips in_leaderboards, the same column the Privacy panel toggles;
