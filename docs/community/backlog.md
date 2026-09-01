@@ -1144,12 +1144,203 @@ SHIPPED" entry for why.
 
 ### qa
 
-| ID | Title | Agent | Attendance-blocked |
-|---|---|---|---|
-| COMM-317 | Phase 3 QA sweep | qa | no |
+| ID | Title | Agent | Attendance-blocked | Status |
+|---|---|---|---|---|
+| COMM-317 | Phase 3 QA sweep | qa | no | done — see summary below |
 
 Last, the phase's merge gate, same role COMM-234 played for Phase 2.
 Depends on every other Phase 3 ticket.
+
+**COMM-317, the Phase 3 QA sweep and merge gate, DONE.** Cross-referenced
+every Phase 3 ticket's (COMM-300 through COMM-316) acceptance criteria
+against the existing suite, closed the real gaps found, and re-verified all
+three CI jobs independently from a genuinely fresh state (a local Docker
+Supabase stack, `supabase db reset --local` then `supabase test db`, and a
+clean `npm test`) rather than trusting any earlier agent's own report — the
+same discipline COMM-234 held for Phase 2.
+
+**A real bug found and fixed, not just flagged.**
+`renderConsistencyLeaderboardSection()`'s own footer note on the "טבלת
+עקביות" board — `"רצף שבועות רצופים עם אימון מתועד. נתוני נוכחות מאומתים
+יתווספו בהמשך"` ("...verified attendance data will be added later") — dated
+back to COMM-210 (Phase 2), when the board still ranked
+`workout_posts`-derived streaks and the line was an honest "coming later"
+promise. COMM-306 (Phase 3) replaced `consistency_week_streaks()`'s body
+with `attendance_log` without anyone updating this copy, so the shipped
+client told every member the exact feature already running under their feet
+was still pending — the one place this sweep found the shipped copy
+actually contradicting COMM-300's own "verified means self-reported, not
+physically verified" framing (see below), rather than merely under- or
+over-stating it. Corrected in `cloud.js` to `"הרצף מבוסס על אימונים שתועדו
+ביומן האימונים האישי, לא על פרסום בפיד"` ("...based on sessions logged in
+the personal training log, not on a feed post"), and pinned against
+regression in `test/community-leaderboards-and-suggestions.test.mjs`.
+
+**COMM-300's "self-reported, not physically verified" framing**, the one
+item this phase's tickets flagged as still open at build time: confirmed
+accurate everywhere else it appears. The migration's own "Note on what
+'verified' means here" (202608310001) states it in exactly those terms, the
+`attendance_log` pgTAP file proves at runtime that a member's own device is
+the only path a row is ever written through (see below), and every later
+ticket's client-facing copy this sweep audited (the classmates card, the
+recap classmates line, the achievement unlock copy) describes a training
+log entry, never a physical check-in or staff confirmation. The one
+contradiction found is the stale consistency-board footer note above, now
+fixed.
+
+**`attendance_log`'s "only path" boundary (COMM-300), now proven twice at
+runtime, not only read off `pg_catalog`.**
+`supabase/tests/0037_attendance_log_test.sql` already had a member and an
+admin attempt a direct insert and get refused (`throws_ok`, genuinely
+executed) — that half was already real. Added: the same for the writer
+function itself. As `authenticated` (a member, then an admin), calling
+`public.attendance_log_from_record()` directly — not merely inserting into
+`attendance_log` — is refused at runtime with a real permission error,
+before Postgres even asks whether this is a trigger context. And as the
+bootstrap superuser, who bypasses every grant this file's fixtures rely on
+to build with RLS out of the way, the call is *still* refused — genuinely
+executed and caught — because the function is declared `returns trigger`
+and Postgres itself will not run one outside trigger context. So the
+boundary holds twice over: nobody is granted execute, and even a grant
+would not be enough. Three new pgTAP assertions.
+
+**Re-verified rather than assumed, against real producer output, not empty-
+table shape or planted rows:**
+- `coach_engagement_flags`'s "the flagged member can never read their own
+  row, even as staff or admin" — `supabase/tests/0044_coach_engagement_
+  decline_test.sql` runs `coach_detect_engagement_decline()` for real, nine
+  times, flags a real coach and a real admin, and then re-asserts both
+  cannot read their own row through the table's own RLS. Already real
+  before this sweep touched it; confirmed rather than re-added.
+- The four `ATTENDANCE_RECORDED` achievements are not reachable through
+  `ach_claim` now that they are `enabled` — `supabase/tests/0043_attendance_
+  achievements_test.sql` has a real caller who has genuinely earned all four
+  crossings attempt to claim them through `ach_claim(array[...])` and get
+  refused on `trigger_type`, with a textual pin that the refusal line itself
+  is untouched by COMM-305.
+- `consistency_week_streaks()` and `community_profile`'s inline copy still
+  agree — `supabase/tests/0040_consistency_on_attendance_test.sql` re-runs
+  the "two copies cannot drift" pattern `0034` established, now against the
+  attendance-based body and widened from one fixture member to every member
+  on the board at once, with a non-vacuous check that the board is not all
+  zeros.
+- Every function crossing a privacy toggle this phase — `show_attendance` in
+  `feed_page`'s classmate component, `people_suggestions`'s classmate signal
+  (COMM-302), `attendance_classmates_today()` (COMM-307), the consistency
+  board (COMM-306), the weekly recap classmates line (COMM-316); and
+  `in_leaderboards`/`show_prs` in `member_of_week_candidates()` (COMM-315) —
+  already has a real allow/deny pair per function, each with a positive
+  control (the same data, toggle flipped, now included) and a block-edge
+  case in both directions. Audited across `0039`, `0040`, `0041`, `0045` and
+  `0047`; no gap found.
+
+**Five new `scripts/browser-check` scenarios**, real Chromium against the
+same in-page mocked backend (`lib/mockCloud.mjs`) COMM-234's sweep built,
+never the real production Supabase project:
+`community-classmates-card.mjs` (COMM-307 — drives the real
+`window.queueSyncRecord()`/`flushOutbox()` client path to prove the
+`ATTENDANCE_RECORDED` bus emit and its analytics row are real, then the
+card, its Follow control and its `classmates_card_viewed` event off
+`attendance_log` rows standing in for what the Postgres trigger this repo
+has no local server to run would have produced);
+`community-recap-classmates.mjs` (COMM-316 — the recap dialog's classmates
+line, real names not a count, real profile links, the quiet-week empty
+line, and that it survives `recap-older`/`recap-newer` navigation);
+`community-coach-engage.mjs` (COMM-304 — the Engage section with two real
+flagged members for the first time, the one-tap reach-out through a real
+`post_create` + `POST_COACH` update, review, and dismiss); `community-
+monthly-recap-publish.mjs` (COMM-309 — two-part: a coach previewing a
+draft gets no publish control at all, matching the ticket's own explicit
+"the preview boundary is WIDER than the publish boundary" warning, then an
+admin publishing it for real, plus the server-side "already published"
+refusal on a second call); and `community-member-of-week-publish.mjs`
+(COMM-315 — the week's real rotation category and its computed candidate,
+translated detail text, and a real one-click publish). 24 browser-check
+scripts total (19 -> 24), all green.
+
+**Scheduled-job gaps, consolidated in one place, matching how COMM-234
+consolidated the notification-batch-flusher gap:** every "infra not built
+here" note this phase's tickets and migrations logged individually, in one
+list rather than scattered across five files:
+
+| Function | Ticket | What runs it today |
+|---|---|---|
+| `recompute_feed_weights(p_limit)` | COMM-303 | Nothing. Ships as a granted, service-role-only, no-op stub returning 0 — deliberately not built (202608310006). `member_feed_weights` stays empty, so every member reads the fixed default weights. |
+| `coach_detect_engagement_decline()` | COMM-304 | Nothing. Service-role-only, no `auth.uid()` check by design (202608310008) — the grant is the gate, same as the others here. |
+| `recap_monthly_generate(p_month_start)` | COMM-309 | Nothing. Shipped as a service-role-only **Postgres function**, not a `supabase/functions/recap_monthly` Edge Function (a deliberate implementation-note deviation from the ticket's own outline, recorded in the migration header and contracts.md) — either shape still needs a caller. |
+| `community_health_generate(p_week_start)` | COMM-312 | Nothing. Found this session, not named in COMM-312's own ticket text: its migration's own comment (202609010009) already lists itself alongside the other four in this table as sharing the same open item. |
+| `purge_abandoned_profiles` Edge Function | COMM-314 | Nothing scheduled; runnable by hand (curl with a real service-role key, or `select public.purge_abandoned_profiles();` directly) — see `docs/community/abandoned-profile-purge-runbook.md`, which already documents this gap in its own "Nothing schedules this yet" section. |
+
+All five carry the same shape every prior scheduler gap in this repo
+already does (`recap_weekly`, `notif_batch_flush_due()`,
+`chal_notify_ending_soon()`): a real function, service-role-only, no
+`auth.uid()` check by design, waiting on a `pg_cron` entry or an external
+scheduler this repo's CI does not provision. None of the five block Phase 3
+being done — every one of them ships correctly with an empty/stub result
+until a scheduler exists, which is the explicit, stated scope of every
+ticket that logged one.
+
+**Full WCAM (Weekly Community Active Members) re-review, playing COMM-233's
+role for Phase 2.** Every event Phase 3 adds, checked against
+`ACTIVE_MEMBER_EVENTS` explicitly:
+- `attendance_recorded` (COMM-300) — **counts.** "Attending" is named
+  outright in the WCAM definition (metrics.md section 78), and it is the
+  one qualifying activity that can be true for a member who never opened
+  the Community tab at all.
+- `classmates_card_viewed` (COMM-307) — **does not count**, on the same
+  reasoning `leaderboard_viewed` already uses: viewing a card is not
+  participation, and the training that produced the card is already counted
+  once, as `attendance_recorded`. Double-counting it would also make a
+  member active off another member's session.
+- COMM-304, COMM-309 and COMM-315 add **no new tracked events** — none of
+  their own acceptance criteria call for one (COMM-307 and COMM-300 are the
+  only two Phase 3 tickets that do), and independently checking `cloud.js`
+  confirms no `analyticsTrack`/`track(A....)` call site exists for the
+  Engage section, the monthly recap surfaces, or the member-of-week
+  surfaces. Nothing to include or exclude because nothing was added — not
+  defaulted, checked.
+
+Both reasoning calls above are already written out in `src/analytics.js`'s
+own comments (not merely asserted here), and independently re-derived
+rather than trusted: `ACTIVE_MEMBER_EVENTS` (client, `src/analytics.js`),
+`analytics_wcam_events()` (server, COMM-310's `202609010006`) and
+`docs/community/metrics.md`'s own published SQL all carry the **identical
+15-name list, in the identical order** — verified byte-for-byte by hand
+this sweep, not just by trusting `0050`'s own pgTAP assertion that already
+compares the first two. **No drift found; nothing to fix.**
+
+**Every open question this phase's tickets flagged, checked against what
+actually shipped, not trusted from the ticket text alone:** COMM-311's six
+buckets (`new`/`declining`/`highly_active`/`steady`/`occasional`/`dormant`,
+in that precedence) and COMM-312's four weights (0.40/0.25/0.25/0.10,
+independently re-read from `202609010009`'s own constants) both match their
+tickets' "Resolved 2026-08-31" sections exactly. COMM-315's rotation
+(`member_of_week_category()`, `202609010001`) is `consistency_streak`,
+`most_prs`, `challenge_completion`, `coachs_pick` in that order, exactly as
+proposed. COMM-314's retention window is 30 days in both the SQL function's
+default and the Edge Function's own `RETENTION_DAYS` constant
+(`supabase/functions/purge_abandoned_profiles/index.ts`), matching the
+runbook. No silent narrowing or widening found anywhere in this set.
+
+**Final counts, from a genuinely fresh state:** `npm test` 907 -> 914 (913
+pass, 1 skip, 0 fail — this sweep's own contribution is +1 test, pinning the
+stale-copy fix above; the remaining +6 is a concurrent, out-of-scope commit
+observed landing on this branch mid-sweep, see note below). `supabase test
+db` (a local Docker Supabase stack, `supabase db reset --local` then
+`supabase test db`, all 54 migrations applying clean): 1955 -> 1958
+assertions across the same 54 files (this sweep's own +3, the
+`attendance_log_from_record()` runtime boundary above; no new pgTAP file
+needed since no schema gap was found). `scripts/browser-check`: 19 -> 24
+scripts, all green.
+
+**A note on scope, not a finding about this ticket:** a second, concurrent
+commit (`96157a8`, "Member avatar photo, storage half (COMM-318)") landed on
+this branch while this sweep was in progress, from what the session's own
+memory record names as the queued next-phase work. COMM-318 is not one of
+COMM-300 through COMM-316 and this sweep did not review it — flagged here
+only so the `npm test`/pgTAP deltas above are not misread as this sweep's
+own regression. `test/community-avatar-photo.test.mjs` (6 tests) is that
+commit's own addition, not this one's.
 
 ## Parked, attendance-blocked
 

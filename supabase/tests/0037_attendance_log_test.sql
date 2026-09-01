@@ -324,5 +324,43 @@ select results_eq(
   $$ values (true) $$,
   'and it is security definer - the deliberate crossing of the no-client-write boundary, and the only reason it needs elevation');
 
+-- =====================================================================
+-- COMM-317 (Phase 3 QA sweep): the "only path" boundary, at RUNTIME, not
+-- only read off pg_catalog. Two layers, both actually executed rather than
+-- merely inspected:
+--   1. as authenticated (a member or an admin, since the revoke names no
+--      exceptions), a direct call is refused by the grant itself;
+--   2. even as the bootstrap superuser - a role no revoke touches, and the
+--      role every other statement in this file uses to build fixtures with
+--      RLS out of the way - the call is still refused, because the
+--      function is declared `returns trigger` and Postgres itself will not
+--      run a trigger function outside trigger context. So the boundary
+--      holds twice over: nobody is granted execute, and even a grant would
+--      not be enough. The whole rest of this file already demonstrates the
+--      other half of "only path" at runtime, over and over: every row that
+--      ever lands in attendance_log above got there because a
+--      private_records insert or update fired the trigger, never because
+--      this function was called directly.
+-- =====================================================================
+select tests.set_auth(tests.uid('m1'));
+select throws_ok(
+  $$ select public.attendance_log_from_record() $$,
+  '42501',
+  null,
+  'a member calling the trigger function directly, not merely inserting into attendance_log, is refused at runtime - permission denied, before Postgres even gets to ask whether this is a trigger context');
+select tests.set_auth(tests.uid('admin'));
+select throws_ok(
+  $$ select public.attendance_log_from_record() $$,
+  '42501',
+  null,
+  'and an admin gets the identical runtime refusal - the revoke names no exception for staff or admin either');
+
+select tests.clear_auth();
+select throws_ok(
+  $$ select public.attendance_log_from_record() $$,
+  '0A000',
+  'trigger functions can only be called as triggers',
+  'and even the bootstrap superuser, who bypasses every grant check in this file, cannot call it directly: it is declared `returns trigger`, so Postgres itself refuses to run it outside trigger context. The private_records trigger is not just the only path a row is granted to appear through, it is the only path the engine will let this function run at all');
+
 select * from finish();
 rollback;

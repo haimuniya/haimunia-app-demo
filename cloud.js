@@ -3370,7 +3370,20 @@
       ${leaderboardScopeSwitchHtml("leaderboard-scope", b.scope)}
       ${body}
       ${leaderboardHideToggleHtml()}
-      <div class="footer-note" style="margin-top:8px;">רצף שבועות רצופים עם אימון מתועד. נתוני נוכחות מאומתים יתווספו בהמשך.</div>
+      <!-- COMM-317 (Phase 3 QA sweep): this footer note dated back to
+      COMM-210 (Phase 2), when the board was still ranking
+      workout_posts-derived streaks and this line was an accurate
+      "coming later" promise. COMM-306 (Phase 3) already replaced
+      consistency_week_streaks()'s body with attendance_log - the board has
+      been ranking real, trigger-derived training-log attendance since that
+      ticket shipped, and the old copy was left unchanged, so it told every
+      member the exact feature already under their feet was still pending.
+      Corrected to describe what the board actually measures now, using
+      COMM-300's own "verified means self-reported, not physically
+      verified" framing: derived from the member's own private training
+      log, not from a public feed post - never a claim of a physical
+      check-in. -->
+      <div class="footer-note" style="margin-top:8px;">הרצף מבוסס על אימונים שתועדו ביומן האימונים האישי, לא על פרסום בפיד.</div>
     </div>`;
   }
 

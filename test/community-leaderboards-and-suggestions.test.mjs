@@ -111,6 +111,24 @@ test("COMM-210: the Boards tab asks feed_leaderboard for the club consistency bo
   });
 });
 
+test("COMM-317 (Phase 3 QA sweep): the board's own footer note describes real attendance-log-derived streaks, not the stale COMM-210 'coming later' promise COMM-306 already fulfilled", async () => {
+  // renderConsistencyLeaderboardSection()'s footer note was written in
+  // Phase 2 (COMM-210), when the board still ranked workout_posts-derived
+  // streaks, and said verified attendance data "will be added later".
+  // COMM-306 (Phase 3) replaced consistency_week_streaks()'s body with
+  // attendance_log without anyone updating this line, so the shipped copy
+  // told every member the exact feature already under their feet was still
+  // pending - a real drift this sweep found and fixed. Pinned here so a
+  // future ticket cannot silently regress the note back to a false promise.
+  const mock = seeded({ community_streaks: [{ user_id: "u2", current_streak: 5 }, { user_id: "u1", current_streak: 3 }] });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openBoards(window);
+  await waitFor(() => boardRows(window).length === 3, 4000);
+  const noteText = board(window).textContent;
+  assert.match(noteText, /יומן האימונים האישי/, "describes the real source (the personal training log), matching COMM-300's own self-reported framing");
+  assert.doesNotMatch(noteText, /יתווספו בהמשך/, "no longer promises verified attendance as a future feature - it already is the feature");
+});
+
 test("COMM-210: rows render in the order returned, print the server's rank rather than an array index, and mark the caller's row", async () => {
   const mock = seeded();
   // A crafted payload: the caller is rank 4 of a board whose top block is
