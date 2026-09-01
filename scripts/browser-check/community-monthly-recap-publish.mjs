@@ -89,7 +89,7 @@ async function registerPublishRpc(page) {
   check("a coach previewing the draft sees the real figures (is_staff() is enough for the read policy)", true);
   const publishBtn = await page.$('[data-community-action="coach-monthly-recap-publish"]');
   check("a coach gets no publish control at all — is_staff() is not the gate recap_monthly_publish() checks", !publishBtn);
-  check("and is told why, rather than left to wonder if the draft is broken", (await page.textContent("body")).includes("רק בעל/ת הרשאת אנליטיקה או מנהל/ת יכולים לפרסם"));
+  check("and is told why, rather than left to wonder if the draft is broken", (await page.textContent("body")).includes("רק בעל/ת הרשאת אנליטיקה או מנהל/ת יכול/ה לפרסם"));
   check("no console errors (coach preview)", errors.length === 0, errors.join(" | "));
   await browser.close();
   await target.close();
