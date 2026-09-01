@@ -75,6 +75,35 @@ const browser = await chromium.launch();
   await page.click("button[data-action='close-settings']");
   await page.waitForTimeout(150);
 
+  // A real regression: overflow-x:hidden on html/body forced overflow-y's
+  // used value to auto on one of them per the CSS overflow spec (non-visible
+  // overflow-x + unset overflow-y => overflow-y computes to auto), which
+  // made it the "scroll container" .desktop-sidebar's position:sticky
+  // resolved against instead of the real viewport - and since neither html
+  // nor body ever actually scrolls itself (nothing caps body's height, so
+  // it just grows to fit its content), the sidebar tracked page scroll in
+  // exact 1:1 lockstep, indistinguishable from static/relative. Fixed by
+  // removing overflow-x:hidden from html,body (index.html) rather than
+  // adding it to .app-shell, which is .desktop-sidebar's own direct parent
+  // and would have reintroduced the identical bug one level down. A
+  // synthetic spacer proves the mechanism itself rather than depending on
+  // whichever tab happens to be tall enough right now.
+  await page.evaluate(() => {
+    const spacer = document.createElement("div");
+    spacer.id = "__stickyTestSpacer";
+    spacer.style.height = "3000px";
+    document.getElementById("app").appendChild(spacer);
+  });
+  const topBeforeScroll = (await page.locator("#desktopSidebar").boundingBox()).y;
+  await page.evaluate(() => window.scrollTo(0, 2000));
+  await page.waitForTimeout(150);
+  const topAfterScroll = (await page.locator("#desktopSidebar").boundingBox()).y;
+  const scrolledY = await page.evaluate(() => window.scrollY);
+  check("the sidebar actually sticks on scroll, not just visually near the top of an unscrolled page",
+    scrolledY > 1000 && Math.abs(topAfterScroll - topBeforeScroll) < 5,
+    `top ${topBeforeScroll} -> ${topAfterScroll} after scrolling to y=${scrolledY}`);
+  await page.evaluate(() => document.getElementById("__stickyTestSpacer").remove());
+
   check("no console errors at wide width", errors.length === 0, errors.join(" | "));
   await page.close();
 }

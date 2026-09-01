@@ -117,7 +117,26 @@
     --shadow-card: 0 1px 0 rgba(255,255,255,.04) inset, 0 14px 28px -18px rgba(0,0,0,.65);
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html,body{ margin:0; padding:0; background:var(--bg); color:var(--chalk); font-family:'Rubik',sans-serif; overscroll-behavior-y:contain; touch-action:pan-y; overflow-x:hidden; width:100%; }
+  /* No overflow-x:hidden here (removed post-e421b48) - per the CSS overflow
+     spec, a non-visible overflow-x with overflow-y left unset forces
+     overflow-y's used value to auto on the SAME element, and since html and
+     body sit directly in .desktop-sidebar's ancestor chain, that silently
+     turned one of them into a "scroll container" position:sticky resolves
+     against instead of the real viewport - body never actually scrolls
+     itself (nothing caps its height), so the sidebar just tracked scrollY
+     in lockstep like static/relative positioning, confirmed live via
+     scrollTo() + getBoundingClientRect(). #app already clips its own
+     content (below) and is a sibling of .desktop-sidebar, not an ancestor,
+     so it was never part of this bug and needs no change; .app-shell must
+     NOT get its own overflow-x:hidden either for the same reason #app is
+     safe and html/body were not - .app-shell is .desktop-sidebar's direct
+     parent, so hiding overflow there would reintroduce the identical bug
+     one level down. scripts/browser-check/desktop-layout.mjs now asserts
+     the sidebar's top stays fixed across a real scroll, and
+     text-scale.mjs's existing "no horizontal overflow" check (unaffected
+     by this removal) still guards against anything actually bleeding past
+     the viewport. */
+  html,body{ margin:0; padding:0; background:var(--bg); color:var(--chalk); font-family:'Rubik',sans-serif; overscroll-behavior-y:contain; touch-action:pan-y; width:100%; }
   body{ min-height:100dvh; }
   button, input, textarea { font-family:inherit; }
   button{ background:none; border:none; color:inherit; cursor:pointer; padding:0; }
