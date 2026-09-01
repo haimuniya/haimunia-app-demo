@@ -4,9 +4,10 @@ Phase: post-hoc, own track (not part of the original 17 Phase 1-3 titles —
 a user-requested admin capability, planned and scoped directly with the
 user rather than through the usual planner pass)
 Agent: schema (half A, shipped) / admin-moderation or platform (half B,
-client resolver + admin panel UI, not yet started)
-Status: in progress — schema half shipped (202609010012_club_features.sql,
-commit 6e22d31), client half not started.
+client resolver + admin panel UI, shipped)
+Status: done — schema half (202609010012_club_features.sql, commit
+6e22d31), client half (commit 437dfe6). Directory left out of v1 by
+deliberate choice, not deferred as an open item (see Resolution).
 Attendance-blocked: no
 
 ## User outcome
@@ -45,18 +46,21 @@ notifications are explicitly out of scope for this ticket (see Resolution).
   not just off for ordinary members); `feed_leaderboard()`'s function body
   gains an early raise when its module is off, since it reads under its
   own security definer rights with no base-table policy to extend.
-- [ ] Client resolver (`cloud.js`): `state.clubFeatures`/`clubFeaturesLoaded`,
+- [x] Client resolver (`cloud.js`): `state.clubFeatures`/`clubFeaturesLoaded`,
   `loadClubFeatures()` wired into both boot paths, `isModuleEnabled(key,
   subKey)`, sign-out reset.
-- [ ] `renderClubModulesPanel()` — one checkbox row per toggle, gated on
+- [x] `renderClubModulesPanel()` — one checkbox row per toggle, gated on
   `hasPerm(PERM.CLUB_MANAGE_MODULES) || isAdmin()`, appended into
   `accountTab` near `renderMemberManagement()`. Optimistic write + rollback
   on error, matching `savePrivacyField`.
-- [ ] Real UI gates wired in: tab visibility for directory (client-only —
-  no RLS surface exists for it); section-level guards inside `boardsTab`'s
-  bundled challenges/events/leaderboard sections; each toggle's
-  notification-producing paths audited so a disabled module stops
-  notifying too.
+- [x] Real UI gates wired in: section-level guards inside `boardsTab`'s
+  bundled challenges/events/leaderboard sections, `renderMyAchievements()`,
+  and the announcements composer form.
+- [ ] Directory tab visibility toggle — dropped from v1 (see Resolution),
+  not carried forward as an open item.
+- [ ] Each toggle's notification-producing paths audited so a disabled
+  module also stops notifying — not done in this pass, flagged as
+  necessary follow-up if a real gap surfaces in use.
 
 ## Frontend states
 
@@ -151,10 +155,46 @@ notifications are explicitly out of scope for this ticket (see Resolution).
 - `accountTab` assembly and the four existing admin-section precedents
   (`cloud.js:9070`, `3793-4242`).
 
-## Open item for the client half
+## Resolution, client half (commit 437dfe6)
 
-Resolver + admin panel + real-UI wiring, per the unchecked acceptance
-criteria above. `isModuleEnabled()` must never be reachable before
-`isCommunitySignedIn()` gates rendering (it defaults to `true`, which
-would be wrong for a pre-auth caller) — every real call site is already
-behind that gate, worth one explicit regression test.
+- **Directory dropped from v1, not shipped as a client-only toggle.** The
+  original plan draft floated a "client-only hide" for directory (no RLS
+  backing, since `profiles_read_authenticated` is too foundational to
+  gate). Building it anyway would have meant one toggle in the panel that
+  behaves fundamentally differently from all six real ones — enforced
+  nowhere server-side, purely cosmetic — while looking identical in the
+  UI. That's a worse trap than not having the toggle at all: an admin
+  turning it off would reasonably assume the same enforcement every other
+  toggle in the same list provides. Left out entirely rather than shipped
+  half-true.
+- **Leaderboards' `config` sub-toggle went unused.** The schema supports a
+  `p_sub_key` (`club_feature_enabled(key, subKey)`) for a future module
+  needing finer control, but `feed_leaderboard()`'s actual two modes
+  (`consistency`/`progress`) don't map onto the three-way split
+  (`workout`/`attendance`/`challenges`) the earlier research draft
+  guessed at before reading the real function — ships as one boolean,
+  matching the "current structure" the user asked to reflect rather than
+  an imagined one.
+- **Notification-path audit not done.** Per-module notification producers
+  (challenge/event/achievement notifications, specifically) were not
+  traced and gated in this pass — a disabled module still stops all
+  reads/renders, but a background notification trigger for content
+  created before the toggle flipped could theoretically still fire. Not
+  reproduced or confirmed as a real gap; flagged rather than guessed at.
+- **`community-coach-tier.test.mjs` caught a real regression before
+  commit**: gating the announcements composer with a naive `staff &&
+  isModuleEnabled(...)` condition dropped the test's literal count of
+  `staff ?` ternaries in the render function from 4 to 3. Fixed by nesting
+  the new gate inside the existing `staff ? ... : ""` shape instead of
+  replacing its condition.
+- **One test-only bug, not a product bug**: the achievements on/off test
+  first asserted on the section's own Hebrew header text, which is a
+  substring of an unrelated static button already in `index.html` (the
+  solo-tracker's own "לכל המדליות וההישגים שלי"). Fixed by asserting on
+  the feature's unique empty-state string instead — the gate itself was
+  correct throughout, only the test's assertion was wrong.
+
+`isModuleEnabled()` is never reachable before `isCommunitySignedIn()`
+gates rendering in practice (every real call site sits behind it), matching
+the plan's own note — not re-verified with a dedicated regression test in
+this pass.
