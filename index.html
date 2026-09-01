@@ -240,6 +240,12 @@
   .subitem{ width:100%; display:flex; align-items:center; justify-content:space-between; padding:9px 10px; font-size:13px; font-weight:600; color:var(--steel); border-radius:10px; min-height:36px; text-align:right; }
   .nav-badge{ display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:18px; padding:0 5px; border-radius:999px; background:var(--energy); color:#fff; font-size:10px; font-weight:800; flex-shrink:0; }
   .divider-label{ color:var(--steel); font-size:10.5px; font-weight:700; letter-spacing:.5px; padding:16px 10px 6px; }
+  /* Phase 6: each of the 4 solo tabs gets a small page-title at the top of
+     its own content, additive above what was already there (the calendar's
+     own prev/next-month row, for example, is untouched below this) - the
+     only page identity before this was the one global header shared by
+     every tab. */
+  .page-title{ font-family:'Anton',sans-serif; font-weight:400; letter-spacing:.3px; font-size:22px; color:var(--chalk); margin-bottom:14px; }
   /* Desktop / wide-viewport layout. Everything here lives inside the media
      query on purpose - below 900px .app-shell/.desktop-sidebar have no
      rules at all, so the mobile layout (#app centered, max-width:480px,
