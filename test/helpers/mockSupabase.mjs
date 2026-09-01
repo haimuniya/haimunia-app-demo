@@ -104,6 +104,23 @@ export function createMockSupabase(seedTables = {}) {
     }
   }
 
+  // COMM-308. Mirrors challenge_teams_release_captain (schema half): a
+  // captain who is no longer an active (not withdrawn) participant on the
+  // team they captain stops being its captain. Covers every path that can
+  // change challenge_participants' team_id/status for a real client
+  // session - leave (delete), pickChallengeTeam/autoAssignChallengeTeam
+  // (update), coach entry status flips, and chal_reassign_team below - not
+  // only the one function this ticket adds, the same "one rule, three
+  // paths, one trigger" shape the schema comment describes.
+  function releaseInvalidCaptains(challengeId) {
+    if (!challengeId) return;
+    for (const t of rows("challenge_teams").filter((x) => x.challenge_id === challengeId)) {
+      if (!t.captain_id) continue;
+      const stillActive = rows("challenge_participants").some((p) => p.challenge_id === challengeId && p.user_id === t.captain_id && p.team_id === t.id && p.status !== "withdrawn");
+      if (!stillActive) t.captain_id = null;
+    }
+  }
+
   function chain(table) {
     let filters = [];
     let mode = "select";
@@ -174,6 +191,11 @@ export function createMockSupabase(seedTables = {}) {
         if (mode === "update") {
           const matched = rows(table).filter((r) => filters.every((f) => f(r)));
           for (const r of matched) Object.assign(r, pendingPayload);
+          // COMM-308. See releaseInvalidCaptains() above.
+          if (table === "challenge_participants") {
+            const cids = new Set(matched.map((r) => r.challenge_id));
+            for (const cid of cids) releaseInvalidCaptains(cid);
+          }
           return { error: null, data: matched };
         }
         if (mode === "upsert") {
@@ -186,7 +208,16 @@ export function createMockSupabase(seedTables = {}) {
           return { error: null };
         }
         if (mode === "delete") {
+          const matched = rows(table).filter((r) => filters.every((f) => f(r)));
           db[table] = rows(table).filter((r) => !filters.every((f) => f(r)));
+          // COMM-308. See releaseInvalidCaptains() above - a captain who
+          // leaves the challenge (challenge_participants_leave_self) stops
+          // captaining their old team, same as a reassignment or a
+          // withdrawal.
+          if (table === "challenge_participants") {
+            const cids = new Set(matched.map((r) => r.challenge_id));
+            for (const cid of cids) releaseInvalidCaptains(cid);
+          }
           return { error: null };
         }
         let matched = rows(table).filter((r) => filters.every((f) => f(r)));
@@ -811,6 +842,63 @@ export function createMockSupabase(seedTables = {}) {
           rows("challenge_progress").push(row);
           applyChallengeProgressInserts([row]);
           return Promise.resolve({ data: id, error: null });
+        }
+        // COMM-308. chal_reassign_team(p_challenge_id, p_user_id, p_team_id)
+        // - the coach moves a member between teams (202609010005). Mirrors
+        // the real function's checks in the same order (auth, required
+        // args, challenge exists, challenge_type = 'team', target is an
+        // active participant, target team belongs to this challenge) and
+        // its one side effect: challenge_participants.team_id changes and
+        // nothing else - no challenge_progress row is touched, so a
+        // member's historical team_totals contribution stays with their old
+        // team exactly as chal_progress already sums it. p_team_id null
+        // clears the participant's team. releaseInvalidCaptains() then
+        // mirrors challenge_teams_release_captain firing in the same
+        // transaction.
+        if (name === "chal_reassign_team") {
+          const uid = currentUser && currentUser.id;
+          if (!uid) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          if (!permHas(uid, "community.challenge.create")) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          const cid = args && args.p_challenge_id;
+          const targetUser = args && args.p_user_id;
+          if (!cid || !targetUser) return Promise.resolve({ data: null, error: { message: "challenge and target participant are required" } });
+          const challenge = rows("challenges").find((c) => c.id === cid);
+          if (!challenge) return Promise.resolve({ data: null, error: { message: "challenge not found" } });
+          if (challenge.challenge_type !== "team") return Promise.resolve({ data: null, error: { message: "not a team challenge" } });
+          const participant = rows("challenge_participants").find((p) => p.challenge_id === cid && p.user_id === targetUser);
+          if (!participant || participant.status === "withdrawn") return Promise.resolve({ data: null, error: { message: "not an active participant" } });
+          const teamId = (args && args.p_team_id) || null;
+          if (teamId != null && !rows("challenge_teams").some((t) => t.id === teamId && t.challenge_id === cid)) {
+            return Promise.resolve({ data: null, error: { message: "team does not belong to this challenge" } });
+          }
+          const before = participant.team_id;
+          participant.team_id = teamId;
+          rows("admin_actions").push(auditRow(uid, "challenge_edit", "challenge_participant", targetUser, { challenge_id: cid, team_id: before }, { challenge_id: cid, team_id: teamId }));
+          releaseInvalidCaptains(cid);
+          return Promise.resolve({ data: null, error: null });
+        }
+        // COMM-308. chal_set_captain(p_team_id, p_user_id) - names or clears
+        // a team's captain (202609010005). Mirrors the real function's
+        // checks in order (auth, team required, team exists, and - for a
+        // non-null p_user_id - the target must be an active participant on
+        // this exact team). p_user_id null always clears the captain.
+        if (name === "chal_set_captain") {
+          const uid = currentUser && currentUser.id;
+          if (!uid) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          if (!permHas(uid, "community.challenge.create")) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          const teamId = args && args.p_team_id;
+          if (!teamId) return Promise.resolve({ data: null, error: { message: "team is required" } });
+          const team = rows("challenge_teams").find((t) => t.id === teamId);
+          if (!team) return Promise.resolve({ data: null, error: { message: "team not found" } });
+          const userId = (args && args.p_user_id) || null;
+          if (userId != null) {
+            const active = rows("challenge_participants").some((p) => p.challenge_id === team.challenge_id && p.user_id === userId && p.team_id === teamId && p.status !== "withdrawn");
+            if (!active) return Promise.resolve({ data: null, error: { message: "captain must be an active participant on this team" } });
+          }
+          const before = team.captain_id;
+          team.captain_id = userId;
+          rows("admin_actions").push(auditRow(uid, "challenge_edit", "challenge_team", teamId, { challenge_id: team.challenge_id, captain_id: before }, { challenge_id: team.challenge_id, captain_id: userId }));
+          return Promise.resolve({ data: null, error: null });
         }
         // COMM-228. community_search(p_query, p_limit) - the grouped search
         // the UI calls once per keystroke (202608290008). Mirrors the real

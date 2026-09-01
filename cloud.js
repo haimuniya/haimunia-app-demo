@@ -2768,6 +2768,7 @@
     else if (c.action === "composer-discard") closeComposer();
     else if (c.action === "leave-challenge") leaveChallenge(c.payload.challengeId);
     else if (c.action === "challenge-delete-draft") deleteChallengeDraft(c.payload.challengeId);
+    else if (c.action === "challenge-team-delete-confirm") deleteChallengeTeam(c.payload.teamId);
     else if (c.action === "event-cancel") cancelEvent(c.payload.eventId);
     else rerender();
   }
@@ -3975,6 +3976,17 @@
       // Starts `loading` so the first paint is the skeleton, not an empty
       // state we have not asked the server about yet.
       board: { scope: "club", limit: CHALLENGE_BOARD_LIMIT, rows: [], loading: true, loaded: false, error: false },
+      // COMM-308. A community.challenge.create holder's team management
+      // block inside the `team` panel - create/rename/delete challenge_teams
+      // rows, move a participant (chal_reassign_team) and set/clear a
+      // captain (chal_set_captain). `loading` is this block's own skeleton
+      // flag, set only around a refetch this block itself triggers (a
+      // mutation here can change team_totals, participants and captains all
+      // at once, so the whole detail is re-read rather than patched by
+      // hand) - separate from the dialog-level `loading` above, which only
+      // ever covers the very first open. Untouched by anything a plain
+      // member does; nothing here is ever visible to one.
+      teamMgmt: { createName: "", createBusy: false, createError: "", renameDrafts: {}, renameBusy: {}, deleteBusy: {}, captainBusy: {}, reassignBusy: {}, loading: false, error: "" },
     };
     rerender();
     await refreshChallengeView(id);
@@ -4078,6 +4090,125 @@
     if (state.challengeView && state.challengeView.id === challengeId) await refreshChallengeView(challengeId);
     rerender();
   }
+
+  // ---- Team management (COMM-308) ------------------------------------------
+  // A community.challenge.create holder only, layered onto the `team` panel
+  // COMM-204 already shipped. Team creation/rename/delete stay the same
+  // direct-RLS write COMM-006/COMM-204 always used (challenge_teams'
+  // policies are unchanged by the schema half); moving a participant and
+  // naming a captain are the two new security-definer RPCs
+  // (chal_reassign_team, chal_set_captain), the same coach-past-RLS shape
+  // chal_record_progress already established. Every mutation here re-reads
+  // the whole detail through refreshChallengeView rather than patching state
+  // by hand, because a single reassignment can move a team_totals number, a
+  // participant's team_id AND (via challenge_teams_release_captain, schema
+  // half) a captain_id all in one server transaction - the client should
+  // show what the server actually did, not what it assumes happened.
+  //
+  // The nine real Postgres errors chal_reassign_team/chal_set_captain raise
+  // (verbatim, schema half), mapped to short Hebrew - the same
+  // setMessage()-surfaced pattern memberOfWeekErrorText/monthlyRecapErrorText
+  // already use for a failed staff action. Any other error (network, a
+  // failed direct challenge_teams write) falls back to the ticket's own
+  // generic copy, "הפעולה נכשלה. נסו שוב.".
+  const CHALLENGE_TEAM_MGMT_ERROR_LABELS = {
+    "not authorized": "אין הרשאה לבצע פעולה זו.",
+    "challenge and target participant are required": "חסרים פרטים לביצוע ההעברה.",
+    "challenge not found": "האתגר לא נמצא.",
+    "not a team challenge": "האתגר הזה אינו אתגר קבוצתי.",
+    "not an active participant": "המשתתפ/ת אינו/ה פעיל/ה באתגר.",
+    "team does not belong to this challenge": "הקבוצה אינה שייכת לאתגר הזה.",
+    "team is required": "יש לבחור קבוצה.",
+    "team not found": "הקבוצה לא נמצאה.",
+    "captain must be an active participant on this team": "הקפטן/ית חייב/ת להיות משתתפ/ת פעיל/ה בקבוצה.",
+    "team not empty": "יש לפנות את הקבוצה מחברים לפני מחיקתה.",
+  };
+  function challengeTeamMgmtErrorText(error) {
+    const msg = error && error.message;
+    return (msg && CHALLENGE_TEAM_MGMT_ERROR_LABELS[msg]) || "הפעולה נכשלה. נסו שוב.";
+  }
+  // Re-reads the whole detail after a team-management write, with its own
+  // skeleton flag around just that (state.challengeView.teamMgmt.loading),
+  // not the dialog-level one refreshChallengeView() itself never sets after
+  // the first open - see the state comment in openChallenge().
+  async function refreshAfterTeamMgmt(id) {
+    const v = state.challengeView;
+    if (!v || v.id !== id) return;
+    v.teamMgmt.loading = true;
+    rerender();
+    await refreshChallengeView(id);
+    const after = state.challengeView;
+    if (after && after.id === id) { after.teamMgmt.loading = false; rerender(); }
+  }
+  async function createChallengeTeam() {
+    const v = state.challengeView;
+    if (!v || !v.challenge || v.teamMgmt.createBusy) return;
+    const name = String(v.teamMgmt.createName || "").trim();
+    if (!name || name.length > 80) { v.teamMgmt.createError = "יש להזין שם קבוצה, עד 80 תווים"; return rerender(); }
+    v.teamMgmt.createBusy = true; v.teamMgmt.createError = ""; rerender();
+    const { error } = await client.from("challenge_teams").insert({ id: newFeedId(), challenge_id: v.id, name });
+    v.teamMgmt.createBusy = false;
+    if (error) { v.teamMgmt.createError = "הפעולה נכשלה. נסו שוב."; return rerender(); }
+    v.teamMgmt.createName = "";
+    setMessage("הקבוצה נוצרה");
+    await refreshAfterTeamMgmt(v.id);
+  }
+  async function renameChallengeTeam(teamId) {
+    const v = state.challengeView;
+    if (!v || !v.challenge || v.teamMgmt.renameBusy[teamId]) return;
+    const existing = (v.teams || []).find((t) => t.id === teamId);
+    const draft = v.teamMgmt.renameDrafts[teamId];
+    const name = String(draft != null ? draft : (existing ? existing.name : "")).trim();
+    if (!name || name.length > 80) { v.teamMgmt.error = "יש להזין שם קבוצה, עד 80 תווים"; return rerender(); }
+    v.teamMgmt.renameBusy[teamId] = true; v.teamMgmt.error = ""; rerender();
+    const { error } = await client.from("challenge_teams").update({ name }).eq("id", teamId);
+    v.teamMgmt.renameBusy[teamId] = false;
+    if (error) { v.teamMgmt.error = challengeTeamMgmtErrorText(error); return rerender(); }
+    delete v.teamMgmt.renameDrafts[teamId];
+    setMessage("שם הקבוצה עודכן");
+    await refreshAfterTeamMgmt(v.id);
+  }
+  // COMM-308's own rule: a team with an active (non-withdrawn) participant
+  // refuses deletion server-side ('team not empty'). The delete control is
+  // disabled client-side whenever this client already knows the team has a
+  // member (renderTeamManagementPanel), so this call only ever reaches the
+  // server for a genuinely empty team from this client's own point of view -
+  // the error mapping stays as a defensive fallback for the race a second
+  // coach's tab can create, not the primary guard.
+  function confirmDeleteChallengeTeam(teamId) {
+    askConfirm({ title: "מחיקת קבוצה", message: "למחוק את הקבוצה? הפעולה אינה ניתנת לביטול.", confirmLabel: "מחיקה", destructive: true, action: "challenge-team-delete-confirm", payload: { teamId } });
+  }
+  async function deleteChallengeTeam(teamId) {
+    const v = state.challengeView;
+    if (!v || !v.challenge || v.teamMgmt.deleteBusy[teamId]) return;
+    v.teamMgmt.deleteBusy[teamId] = true; v.teamMgmt.error = ""; rerender();
+    const { error } = await client.from("challenge_teams").delete().eq("id", teamId);
+    v.teamMgmt.deleteBusy[teamId] = false;
+    if (error) { v.teamMgmt.error = challengeTeamMgmtErrorText(error); return rerender(); }
+    setMessage("הקבוצה נמחקה");
+    await refreshAfterTeamMgmt(v.id);
+  }
+  async function reassignChallengeParticipant(challengeId, userId, teamId) {
+    const v = state.challengeView;
+    if (!v || v.teamMgmt.reassignBusy[userId]) return;
+    v.teamMgmt.reassignBusy[userId] = true; v.teamMgmt.error = ""; rerender();
+    const { error } = await client.rpc("chal_reassign_team", { p_challenge_id: challengeId, p_user_id: userId, p_team_id: teamId || null });
+    v.teamMgmt.reassignBusy[userId] = false;
+    if (error) { v.teamMgmt.error = challengeTeamMgmtErrorText(error); return rerender(); }
+    setMessage("המשתתפ/ת הועבר/ה לקבוצה");
+    await refreshAfterTeamMgmt(v.id);
+  }
+  async function setChallengeTeamCaptain(teamId, userId) {
+    const v = state.challengeView;
+    if (!v || v.teamMgmt.captainBusy[teamId]) return;
+    v.teamMgmt.captainBusy[teamId] = true; v.teamMgmt.error = ""; rerender();
+    const { error } = await client.rpc("chal_set_captain", { p_team_id: teamId, p_user_id: userId || null });
+    v.teamMgmt.captainBusy[teamId] = false;
+    if (error) { v.teamMgmt.error = challengeTeamMgmtErrorText(error); return rerender(); }
+    setMessage(userId ? "הקפטן/ית עודכנ/ה" : "הקפטן/ית הוסר/ה");
+    await refreshAfterTeamMgmt(v.id);
+  }
+
   function confirmLeaveChallenge(id) {
     askConfirm({ title: "עזיבת אתגר", message: "לעזוב את האתגר? ההתקדמות שכבר נרשמה תישאר בסטטיסטיקות המועדון.", confirmLabel: "עזיבה", destructive: true, action: "leave-challenge", payload: { challengeId: id } });
   }
@@ -4858,10 +4989,93 @@
       ${contributorsHtml}
     </div>${v.myParticipant ? renderChallengeLogForm(v) : ""}`;
   }
+  // COMM-308. Loading skeleton for just the team-management block - not the
+  // whole dialog, which already has its own ("טוען את האתגר…") for the very
+  // first open. Shown only while refreshAfterTeamMgmt() is re-reading the
+  // detail after a mutation this block itself made.
+  function challengeTeamMgmtSkeletonHtml() {
+    const row = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:60%;background:var(--border);border-radius:6px;display:inline-block;"></span><span style="height:12px;width:20%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
+    return `<div class="chart-card" style="margin-bottom:10px;" data-team-mgmt="1">
+      <div class="field-label" style="margin-bottom:6px;">ניהול קבוצות</div>
+      <div class="log-list" aria-busy="true" data-team-mgmt-skeleton="1">${row.repeat(3)}</div>
+    </div>`;
+  }
+  // COMM-308. A community.challenge.create holder's team-management block:
+  // rename/delete each existing team, create a new one, set/clear a captain
+  // per team, and reassign any active participant to another team (or to no
+  // team at all). Entirely separate markup from the member-visible columns
+  // renderTeamPanel already builds above - so a plain member's view (the
+  // ONLY thing COMM-204 shipped) is untouched byte-for-byte, exactly what
+  // this ticket's "a plain member's view is unchanged from COMM-204" line
+  // asks for. Never called for a non-holder (renderTeamPanel gates the call).
+  function renderTeamManagementPanel(v) {
+    const tm = v.teamMgmt;
+    if (tm.loading) return challengeTeamMgmtSkeletonHtml();
+    const rawTeams = v.teams || [];
+    const totalsByTeam = {};
+    (Array.isArray(v.progress && v.progress.team_totals) ? v.progress.team_totals : []).forEach((t) => { totalsByTeam[t.team_id] = t.total; });
+    const activeParticipants = (v.participants || []).filter((p) => p.status !== "withdrawn");
+    const countByTeam = {};
+    for (const p of activeParticipants) if (p.team_id) countByTeam[p.team_id] = (countByTeam[p.team_id] || 0) + 1;
+
+    const teamRows = rawTeams.map((t) => {
+      const memberCount = countByTeam[t.id] || 0;
+      const total = totalsByTeam[t.id] != null ? totalsByTeam[t.id] : 0;
+      const teamMembers = activeParticipants.filter((p) => p.team_id === t.id);
+      const captain = t.captain_id ? teamMembers.find((p) => p.user_id === t.captain_id) : null;
+      const captainProf = captain ? (captain.profiles || {}) : null;
+      const captainName = captainProf ? (captainProf.display_name || (captainProf.handle ? "@" + captainProf.handle : "חבר/ה")) : null;
+      const captainOptions = `<option value="">ללא קפטן/ית</option>` + teamMembers.map((p) => {
+        const prof = p.profiles || {};
+        const name = prof.display_name || (prof.handle ? "@" + prof.handle : "חבר/ה");
+        return `<option value="${safeText(p.user_id)}"${t.captain_id === p.user_id ? " selected" : ""}>${safeText(name)}</option>`;
+      }).join("");
+      const renameBusy = !!tm.renameBusy[t.id], deleteBusy = !!tm.deleteBusy[t.id], captainBusy = !!tm.captainBusy[t.id];
+      const nameValue = tm.renameDrafts[t.id] != null ? tm.renameDrafts[t.id] : t.name;
+      return `<div class="log-row" style="flex-direction:column;align-items:stretch;gap:6px;" data-team-mgmt-row="${safeText(t.id)}">
+        <div class="flex gap-6" style="align-items:center;">
+          <input class="text-input" type="text" data-challenge-team-rename-name="${safeText(t.id)}" value="${safeText(nameValue)}" maxlength="80" style="flex:1;" aria-label="שם הקבוצה"/>
+          <button class="chip-btn" data-community-action="challenge-team-rename" data-id="${safeText(t.id)}"${renameBusy ? " disabled" : ""}>${renameBusy ? "שומר…" : "שמירה"}</button>
+          <button class="chip-btn" data-community-action="challenge-team-delete" data-id="${safeText(t.id)}"${(deleteBusy || memberCount > 0) ? " disabled" : ""}${memberCount > 0 ? ` title="יש לפנות את הקבוצה מחברים לפני מחיקתה"` : ""}>${deleteBusy ? "מוחק…" : "מחיקה"}</button>
+        </div>
+        <div style="font-size:12px;color:var(--steel);">${memberCount} משתתפים · ${safeText(total)} סה"כ${captainName ? ` · 👑 ${safeText(captainName)}` : ""}</div>
+        <div class="flex gap-6" style="align-items:center;">
+          <select class="text-input" data-challenge-team-captain-select="${safeText(t.id)}" style="flex:1;"${(captainBusy || !teamMembers.length) ? " disabled" : ""} aria-label="קפטן/ית הקבוצה">${captainOptions}</select>
+        </div>
+      </div>`;
+    }).join("");
+
+    const reassignHtml = rawTeams.length ? `<div style="margin-top:10px;">
+      <div class="field-label" style="margin-bottom:6px;">העברת משתתפים בין קבוצות</div>
+      <div class="log-list">${activeParticipants.map((p) => {
+        const prof = p.profiles || {};
+        const name = prof.display_name || (prof.handle ? "@" + prof.handle : "חבר/ה");
+        const busy = !!tm.reassignBusy[p.user_id];
+        const options = `<option value="">ללא קבוצה</option>` + rawTeams.map((t) => `<option value="${safeText(t.id)}"${p.team_id === t.id ? " selected" : ""}>${safeText(t.name)}</option>`).join("");
+        return `<div class="log-row" style="justify-content:space-between;gap:8px;">
+          <span>${safeText(name)}</span>
+          <select class="text-input" data-challenge-team-reassign-select="${safeText(p.user_id)}"${busy ? " disabled" : ""} style="max-width:160px;" aria-label="קבוצה של ${safeText(name)}">${options}</select>
+        </div>`;
+      }).join("")}</div>
+    </div>` : "";
+
+    return `<div class="chart-card" style="margin-bottom:10px;" data-team-mgmt="1">
+      <div class="field-label" style="margin-bottom:6px;">ניהול קבוצות<span class="admin-tag">ניהול</span></div>
+      ${teamRows ? `<div class="log-list">${teamRows}</div>` : ""}
+      <div class="flex gap-6" style="align-items:flex-end;margin-top:8px;">
+        <label class="field" style="flex:1;margin-bottom:0;"><span class="field-label">קבוצה חדשה</span><input class="text-input" type="text" data-challenge-team-create-name value="${safeText(tm.createName)}" maxlength="80"/></label>
+        <button class="chip-btn primary" data-community-action="challenge-team-create"${tm.createBusy ? " disabled" : ""}>${tm.createBusy ? "יוצר…" : "צור קבוצה"}</button>
+      </div>
+      ${tm.createError ? `<div class="field-error" role="alert" style="margin-top:6px;">${safeText(tm.createError)}</div>` : ""}
+      ${tm.error ? `<div class="field-error" role="alert" style="margin-top:6px;">${safeText(tm.error)}</div>` : ""}
+      ${reassignHtml}
+    </div>`;
+  }
   function renderTeamPanel(v) {
     const c = v.challenge, p = v.progress || {};
     const teams = Array.isArray(p.team_totals) ? p.team_totals : [];
-    if (!teams.length) return `<div class="empty">המאמנת עדיין לא הגדירה קבוצות.</div>`;
+    const staff = hasPerm(PERM.CHALLENGE_CREATE);
+    if (!teams.length) return `<div class="empty">המאמנת עדיין לא הגדירה קבוצות.</div>${staff ? renderTeamManagementPanel(v) : ""}`;
     const myTeamId = v.myParticipant && v.myParticipant.team_id;
     const canPick = v.myParticipant && !myTeamId;
     const cols = teams.map((t) => `<div class="chart-card" style="flex:1;min-width:130px;${t.team_id === myTeamId ? "border-color:var(--energy);" : ""}">
@@ -4869,7 +5083,7 @@
         <div class="mono" style="color:var(--brass);font-size:16px;margin-top:4px;">${safeText(t.total)}</div>
         ${canPick ? `<button class="chip-btn" data-community-action="challenge-pick-team" data-id="${safeText(c.id)}" data-team="${safeText(t.team_id)}"${v.teamJoining === t.team_id ? " disabled" : ""} style="margin-top:6px;">${v.teamJoining === t.team_id ? "מצטרפ/ת…" : "הצטרפות לקבוצה"}</button>` : ""}
       </div>`).join("");
-    return `<div class="flex gap-10" style="flex-wrap:wrap;margin-bottom:10px;">${cols}</div>${(v.myParticipant && myTeamId) ? renderChallengeLogForm(v) : ""}`;
+    return `<div class="flex gap-10" style="flex-wrap:wrap;margin-bottom:10px;">${cols}</div>${staff ? renderTeamManagementPanel(v) : ""}${(v.myParticipant && myTeamId) ? renderChallengeLogForm(v) : ""}`;
   }
   function renderConsistencyPanel(v) {
     const c = v.challenge, part = v.myParticipant;
@@ -8325,6 +8539,16 @@
     else if (action === "join-challenge") joinChallenge(el.dataset.id, "boards");
     else if (action === "leave-challenge") confirmLeaveChallenge(el.dataset.id);
     else if (action === "challenge-pick-team") pickChallengeTeam(el.dataset.id, el.dataset.team);
+    // COMM-308. Team management: create/rename/delete direct-RLS on
+    // challenge_teams (renameChallengeTeam/deleteChallengeTeam read the
+    // team id off data-id, the same shape challenge-coach-submit already
+    // uses to pick one row out of a roster). Reassign and set-captain are
+    // wired off the "change" listener below (their controls are <select>s,
+    // not buttons), the same immediate-on-change shape composerVisibility
+    // already uses for its own <select>.
+    else if (action === "challenge-team-create") createChallengeTeam();
+    else if (action === "challenge-team-rename") renameChallengeTeam(el.dataset.id);
+    else if (action === "challenge-team-delete") confirmDeleteChallengeTeam(el.dataset.id);
     else if (action === "challenge-log-submit") submitChallengeLog();
     else if (action === "challenge-log-week-hit") logConsistencyWeekHit();
     else if (action === "challenge-coach-submit") submitCoachEntry(el.dataset.id);
@@ -8521,6 +8745,16 @@
       const d = state.challengeView.coachEntry.drafts[uid] || (state.challengeView.coachEntry.drafts[uid] = { delta: "", note: "" });
       d.note = t.value;
     }
+    // COMM-308. The team-rename text input's own draft, same shape as
+    // challengeLogDelta/challengeCoachDelta above - kept in state so a
+    // sibling row's own save (which re-renders the whole management block)
+    // never drops what was already typed here.
+    else if ("challengeTeamRenameName" in t.dataset && state.challengeView) {
+      state.challengeView.teamMgmt.renameDrafts[t.dataset.challengeTeamRenameName] = t.value;
+    }
+    else if ("challengeTeamCreateName" in t.dataset && state.challengeView) {
+      state.challengeView.teamMgmt.createName = t.value;
+    }
   });
   document.addEventListener("change", (e) => {
     const t = e.target;
@@ -8531,6 +8765,14 @@
     else if ("prFile" in t.dataset) { const f = t.files && t.files[0]; if (f) prPromptAddPhoto(f); }
     // COMM-151. The report reason radio.
     else if ("reportReason" in t.dataset && t.checked) setReportReason(t.dataset.reportReason);
+    // COMM-308. The captain and reassign <select>s act immediately on
+    // change, the same shape composerVisibility already uses above - no
+    // extra "save" button, since a <select> only fires change when its
+    // value actually moved.
+    else if ("challengeTeamCaptainSelect" in t.dataset) setChallengeTeamCaptain(t.dataset.challengeTeamCaptainSelect, t.value || null);
+    else if ("challengeTeamReassignSelect" in t.dataset && state.challengeView && state.challengeView.challenge) {
+      reassignChallengeParticipant(state.challengeView.challenge.id, t.dataset.challengeTeamReassignSelect, t.value || null);
+    }
   });
   document.addEventListener("keydown", (e) => {
     // COMM-123. Mention picker keyboard navigation while a comment input has
