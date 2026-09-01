@@ -4252,7 +4252,7 @@
       + adminAnalyticsRow("עוקבים חדשים (ממוצע לשבוע)", adminAnalyticsRatioText(mf.per_week))
       + adminAnalyticsRow("צפיות בפרופיל של חבר/ה אחר/ת", adminAnalyticsCount(po.other))
       + adminAnalyticsRow("צפיות בפרופיל העצמי", adminAnalyticsCount(po.self))
-      + adminAnalyticsRow("שיעור המרה לצפייה→מעקב", adminAnalyticsRatioText(s.follow_conversion, true)));
+      + adminAnalyticsRow("שיעור המרה לצפייה←מעקב", adminAnalyticsRatioText(s.follow_conversion, true)));
   }
   function renderAdminAnalyticsChallengePull(add) {
     const c = add.challenge_leaderboard_pull || {};

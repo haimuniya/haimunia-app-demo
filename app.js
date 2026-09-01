@@ -2572,7 +2572,7 @@ function renderCalDetail() {
               <button data-action="delete-wod-entry" data-id="${esc(e.id)}" aria-label="מחיקת אימון" style="color:var(--steel); padding:4px;">${ICONS.trash}</button>
             </div>
           </div>
-          ${e.notes ? `<div style="color:var(--steel); font-size:12px; padding-left:23px;">${esc(e.notes)}</div>` : ""}
+          ${e.notes ? `<div style="color:var(--steel); font-size:12px; padding-inline-start:23px;">${esc(e.notes)}</div>` : ""}
         </div>`;
       }).join("")}
     </div>`}
@@ -3307,11 +3307,17 @@ function renderWodHistorySection() {
   `;
 }
 
+// The drill-in marker below is U+203A ">", not U+2039 "<": both are
+// Bidi_Mirrored, so inside this RTL page the engine draws each one flipped.
+// Authoring ">" is what actually paints the left-pointing chevron every
+// other drill-in row in the app shows (ICONS.chevronsLeft, and the settings
+// navrow's scaleX(-1) chevron) - "forward" is leftward here, same rule the
+// calendar's cal-next arrow follows.
 function renderWodBenchmarksSection() {
   return `<div class="section-label">Benchmarks</div>
     ${WOD_LIBRARY.map((w) => `<button class="movement-btn" data-action="select-benchmark" data-id="${esc(w.id)}">
       <div><span style="font-weight:700;">${esc(w.name)}</span>${w.desc ? `<div class="wod-desc">${esc(w.desc)}</div>` : ""}</div>
-      <span aria-hidden="true">‹</span>
+      <span aria-hidden="true">›</span>
     </button>`).join("")}`;
 }
 
