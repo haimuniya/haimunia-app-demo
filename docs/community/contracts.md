@@ -1345,9 +1345,233 @@ challenge is `club_total = null`).
   a client-side celebration, never a notification about their own
   completion.
 
+## Challenge team management (COMM-308)
+
+Landed by schema in 202609010005. Everything in this section is Phase 3 and
+sits on top of the COMM-006/COMM-204 tables unchanged: the four
+`challenge_teams` policies still say exactly what they said in 202608280009,
+so a `community.challenge.create` holder still creates, renames, and deletes
+teams by direct RLS write and needs no function for any of it. What is new is
+one column, two functions, and four triggers that constrain what those writes
+may contain.
+
+### challenge_teams.captain_id uuid references profiles(id) on delete set null
+
+- Nullable, no default, not backfilled: null is the normal state and most
+  teams never name a captain.
+- A DISPLAY LABEL ONLY. Nothing in the schema reads this column to decide
+  whether a write is allowed, and COMM-308 says so explicitly - the captain
+  is not a delegated coach role.
+- Two rules hold on every write path, both by trigger (see
+  `challenge_teams_guard_captain` below), because neither is expressible as a
+  constraint or a policy: the column is written only by `chal_set_captain`,
+  and a non-null value is always a participant of that challenge whose
+  `team_id` is that team and whose `status` is not `withdrawn`.
+- "Active participant" throughout COMM-308 means `status <> 'withdrawn'`, not
+  `status = 'active'`. A participant who COMPLETED the challenge finished it,
+  they did not leave it: they still occupy a slot in the team column, still
+  block that column's deletion, and are still a legitimate captain. The same
+  predicate is used by all three rules here, which is what guarantees that a
+  member who blocks a team's deletion can always be reassigned out of it.
+
+### chal_reassign_team(p_challenge_id uuid, p_user_id uuid, p_team_id uuid) returns void
+
+- Shipped in 202609010005.
+- Purpose: the coach-only path for moving a participant between teams.
+  `challenge_participants_update_self` only ever matches the member's own row
+  (and after this migration, only their first team pick), so a staff write to
+  someone else's participant row is a security definer function - the same
+  reasoning and the same auth shape as `chal_record_progress`.
+- Auth: security definer. Raises `not authorized` for a null caller or one
+  without `community.challenge.create`.
+- Refuses, all P0001: `challenge and target participant are required` (null
+  id), `challenge not found`, `not a team challenge` for any `challenge_type`
+  other than `team`, `not an active participant` when the target has no
+  `challenge_participants` row on that challenge or is withdrawn (read `for
+  update`), `team does not belong to this challenge` when `p_team_id` is a
+  team of some other challenge.
+- `p_team_id` null is allowed and means "out of every team" - how a column is
+  emptied before it is deleted when the member should not land anywhere else.
+- Side effects, one transaction: sets `challenge_participants.team_id`, and
+  writes one `admin_actions` row (`action_type 'challenge_edit'`,
+  `target_type 'challenge_participant'`, `target_id` the member -
+  `challenge_participants` has a composite primary key and so no single row
+  id; the challenge is in `before_data`/`after_data` alongside the old and
+  new team). If the member captained the team they just left,
+  `challenge_teams_release_captain` clears that `captain_id` in the same
+  transaction.
+- **IT NEVER TOUCHES `challenge_progress`.** This is COMM-308's central
+  acceptance criterion and it is satisfied by the function's shape: one
+  UPDATE, one column, one row. Every `challenge_progress.team_id` already
+  stamped by `challenge_progress_stamp_team` (202608290003) keeps its value,
+  so the deltas the member contributed while on their old team keep counting
+  for that team in `chal_progress`'s `team_totals`, and only deltas logged
+  after the call are stamped with the new team. A reassignment is just
+  another way to depart a team, and "a departed member's earlier
+  contributions keep counting for their old team" is the rule COMM-204 and
+  `chal_progress` already state.
+- Reassigning a member to the team they are already on is not special-cased:
+  it writes the same value and still logs, so `before_data` and `after_data`
+  are identical. That is an honest record of a coach action, not a bug.
+- Revoked from public and anon, execute granted to authenticated - the
+  permission check inside is the boundary.
+
+### chal_set_captain(p_team_id uuid, p_user_id uuid) returns void
+
+- Shipped in 202609010005.
+- Purpose: the ONLY write path for `challenge_teams.captain_id`.
+- Auth: security definer. Raises `not authorized` for a null caller or one
+  without `community.challenge.create`.
+- Refuses, all P0001: `team is required` (null `p_team_id`), `team not found`
+  (read `for update`), and `captain must be an active participant on this
+  team` when `p_user_id` has no `challenge_participants` row on that
+  challenge whose `team_id` is this team and whose status is not
+  `withdrawn`. `p_user_id` null clears the captain and is always allowed,
+  per COMM-308's validation rules - the same "null means unassign, no second
+  function" shape `coach_assign_coach` uses.
+- Side effects: sets `captain_id` behind the transaction-local
+  `app.allow_captain_set` pin, and writes one `admin_actions` row
+  (`action_type 'challenge_edit'`, `target_type 'challenge_team'`,
+  `target_id` the team, before/after carrying the old and new captain).
+- Revoked from public and anon, execute granted to authenticated.
+
+### challenge_teams_guard_captain (BEFORE INSERT OR UPDATE OF captain_id on challenge_teams)
+
+- Shipped in 202609010005. Two rules, one trigger.
+- THE PIN: raises `captain is set through chal_set_captain` for any session
+  where `auth.role()` is `authenticated` and the transaction-local
+  `app.allow_captain_set` GUC is not `on`. `challenge_teams_update_perm`
+  grants a holder a whole-row UPDATE, so without this a coach could set
+  `captain_id` straight from the client and the audit row COMM-308 asks for
+  would never exist. The permission half of the ticket's rule is already true
+  by that policy; what a policy cannot say is "through this one function, so
+  it is audited". Same GUC escape hatch `protect_is_admin` uses for
+  `recovery_verified_at` and `assigned_coach_id`, and for the same reason:
+  `auth.role()` still reads `authenticated` inside a definer function, so
+  definer rights alone would not survive the trigger. Only
+  `chal_set_captain` and `challenge_teams_release_captain` ever set the pin.
+- It RAISES rather than silently reverting the way `protect_is_admin` does:
+  that one guards a column on a row a member updates every day, where a hard
+  error on an unrelated save would be hostile; here the only sessions that
+  ever touch `captain_id` are staff ones doing it on purpose, and a silent
+  no-op would leave a coach staring at a badge that never appears.
+- THE INVARIANT, checked on every write path including the function and the
+  service role: a non-null `captain_id` must be an active (not withdrawn)
+  participant on this team, else `captain must be an active participant on
+  this team`. `chal_set_captain` checks the same thing first so the client
+  gets the function's message; both stand, the same way
+  `recap_monthly_publish` and `monthly_club_recaps_freeze` both refuse a
+  double publish.
+- A write that leaves `captain_id` at the value it already had is never
+  touched, so renaming a team - with or without a captain, with or without
+  `captain_id` re-sent in the same statement - is unaffected.
+- On INSERT the pin fires first, so a team is always created and captained in
+  two steps. That is the only order that can ever be true anyway: nobody can
+  be a participant on a team that did not exist a moment ago.
+
+### challenge_teams_block_delete (BEFORE DELETE on challenge_teams)
+
+- Shipped in 202609010005. Raises `team not empty` when any
+  `challenge_participants` row still points at the team with `status <>
+  'withdrawn'`. The column is emptied by `chal_reassign_team` first.
+- COMM-308 left this open ("is refused (or the client blocks the action)").
+  It is enforced in the database because `challenge_participants.team_id` is
+  `on delete set null`: a client-only rule means one missed check silently
+  empties a team column and its members just quietly stop having a team.
+- CASCADE ESCAPE HATCH, load-bearing: the trigger returns early, allowing the
+  delete, when the parent `challenges` row is already gone. `challenge_teams.
+  challenge_id` is `on delete cascade`, and by the time an RI cascade fires
+  the parent row has already left the deleting statement's snapshot - so
+  "the challenge no longer exists" reliably means "this is a cascade, not a
+  coach deleting one team". Without it, any team challenge with members would
+  have become undeletable and `challenges_delete_perm` would have been broken
+  by this ticket.
+- A withdrawn participant does not block the delete. Their historical
+  `challenge_progress` rows are a separate matter: `challenge_progress.
+  team_id` is also `on delete set null` (202608290003), so deleting a team
+  DOES null the snapshots on contributions made for it. That is pre-existing
+  and outside COMM-308's scope - and it is exactly why the workflow is
+  "empty the column by reassignment first" rather than "delete it and let it
+  sort itself out". Reassignment never nulls a snapshot; deletion does.
+
+### challenge_participants_guard_team (BEFORE UPDATE OF team_id on challenge_participants)
+
+- Shipped in 202609010005. Raises `team already chosen` when an
+  authenticated session without `community.challenge.create` changes a
+  `team_id` that is already set - including clearing it to null, which would
+  otherwise be the same move in two steps.
+- **CORRECTION TO A STATED PREMISE.** COMM-308 (and COMM-204 before it)
+  describes `challenge_participants_update_self` as already not permitting a
+  member to set `team_id` to a value they did not pick at join. Read the
+  policy: it is `using (user_id = auth.uid() or has_perm(...))` with the same
+  WITH CHECK and NO column restriction at all, so as shipped a member could
+  move themselves between teams as often as they liked, including onto
+  whichever team was winning on the last day. The premise was not true. This
+  trigger is what makes it true, and it is the reason `chal_reassign_team`
+  has to exist at all.
+- It has to be a trigger, not a policy: a policy's USING sees the old row and
+  its WITH CHECK sees the new one, and neither can see both, so "this column
+  may not change" has nowhere to live in RLS.
+- The rule is "a member may set `team_id` once, from null", not "a member may
+  never set `team_id`", because the shipped COMM-204 client depends on the
+  first: `joinChallenge` inserts the participant row with no team, then
+  either `autoAssignChallengeTeam` (join_mode `auto`) or `pickChallengeTeam`
+  (the "הצטרפות לקבוצה" button) sets it. That button is already rendered only
+  when the member has no team (`canPick = myParticipant && !myTeamId`), so
+  the client has always treated the choice as one-time; the server now
+  agrees. Nothing in the shipped client is refused by this.
+- This only narrows `challenge_participants_update_self`, and only for
+  `team_id`. The rest of that policy is untouched: a member still edits their
+  own `status` and `progress_value` directly, which is what COMM-205's
+  consistency "mark complete" tap does. Whether THAT should stay open is a
+  separate, pre-existing question this ticket did not touch.
+- Skipped entirely when `auth.role()` is not `authenticated`, the same
+  scoping `protect_is_admin` uses, so the service role, a dashboard fix and a
+  future backfill are unaffected. A `community.challenge.create` holder
+  passes it, which is how `chal_reassign_team`'s own UPDATE gets through.
+
+### challenge_teams_release_captain (AFTER DELETE OR UPDATE OF team_id, status on challenge_participants)
+
+- Shipped in 202609010005. Clears `challenge_teams.captain_id` when the
+  member named there is no longer an active (not withdrawn) participant on
+  that team.
+- It lives on `challenge_participants` rather than inside
+  `chal_reassign_team` because leave (`challenge_participants_leave_self`
+  deletes the row) and withdraw are plain client writes that never go near
+  that function, and a rule enforced in one of three paths is not enforced.
+- Sets the `app.allow_captain_set` pin around its one UPDATE - it runs inside
+  the leaving member's own authenticated session, where
+  `challenge_teams_guard_captain` would otherwise refuse the write and a
+  member would be unable to leave a challenge they captained. This is the
+  only other place that pin is ever set. Widening the pin instead ("clearing
+  to null is always allowed") was the alternative and is worse: it would let
+  a coach null a captain by direct client UPDATE with no audit row, which is
+  the hole the pin exists to close.
+- Writes no `admin_actions` row: this is a consequence of a member's own
+  action, not a staff decision, and where a staff action caused it
+  (`chal_reassign_team`) that action is already logged.
+
+### admin_actions target_type, twelfth and thirteenth values (202609010005)
+
+- `'challenge_participant'`, named by COMM-308 in as many words, and
+  `'challenge_team'`, this migration's own choice for `chal_set_captain`.
+  Neither fits an existing value: the subject of a reassignment is one
+  member's membership of one challenge (not the `challenge`, whose row is
+  untouched, and not the `member`, since nothing about the profile changes
+  and a `member` target in this log has always meant a moderation action
+  against a person), and the subject of a captain change is one
+  `challenge_teams` row.
+- `action_type` is NOT widened, unlike 202609010001 and 202609010002 which
+  each described a genuinely new kind of staff act. Both functions here are
+  an edit to a challenge's setup by a `community.challenge.create` holder,
+  which is what the existing `'challenge_edit'` label already means; a new
+  label would split one concept across two filters in `admin_actions_page`
+  for no reader's benefit.
+
 ## Needs from schema, challenges
 
-Closed. See "## Challenges" above.
+Closed. See "## Challenges" and "## Challenge team management (COMM-308)"
+above.
 
 ## Events
 
@@ -4509,11 +4733,34 @@ What a dependent ticket needs to know changed between the two:
 
 ### Needs from schema, challenges (Phase 3)
 
-- `challenge_teams` gains `captain_id uuid references profiles(id) on
-  delete set null`.
-- `chal_reassign_team(p_challenge_id, p_user_id, p_team_id)` and
+- ~~`challenge_teams` gains `captain_id uuid references profiles(id) on
+  delete set null`.~~
+- ~~`chal_reassign_team(p_challenge_id, p_user_id, p_team_id)` and
   `chal_set_captain(p_team_id, p_user_id)`, both `security definer`,
-  `community.challenge.create` gated, both writing `admin_actions`. COMM-308.
+  `community.challenge.create` gated, both writing `admin_actions`.
+  COMM-308.~~ — **SHIPPED in 202609010005, COMM-308.** No longer a forward
+  reference: the built contract is **"## Challenge team management
+  (COMM-308)"** above, under "## Challenges". Read that, not this. The
+  column, both signatures, both gates and both audit rows shipped exactly as
+  promised, with four things this line did not anticipate:
+  - **`challenge_participants_update_self` did not already restrict
+    `team_id`.** COMM-308's second acceptance criterion asserts it did. It
+    does not: the policy has no column restriction, so a member could switch
+    teams at will, including onto the winning team on the last day. A new
+    `challenge_participants_guard_team` trigger makes the premise true - a
+    member may set `team_id` once, from null (which is exactly what the
+    shipped COMM-204 client does), and every later move is the coach's.
+  - **`captain_id` is pinned to `chal_set_captain`**, not merely permission
+    gated. `challenge_teams_update_perm` already grants a holder a whole-row
+    UPDATE, so without the pin the audit row would be optional in practice.
+    Same transaction-local GUC hatch `protect_is_admin` uses.
+  - **"Team not empty" is a BEFORE DELETE trigger**, the ticket's
+    server-enforced option rather than its client-blocked one - with a
+    cascade escape hatch, without which deleting a whole team challenge
+    would have become impossible.
+  - **No `action_type` was added**, only two `target_type` values. Both
+    functions are a challenge edit by a challenge manager, which
+    `'challenge_edit'` already means.
 
 ### Needs from schema, recaps (Phase 3)
 
