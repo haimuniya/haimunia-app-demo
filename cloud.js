@@ -275,7 +275,34 @@
     // member opened stays open across a period change, the same way
     // COMM-310's own period selector does not collapse anything else on
     // screen).
-    memberSegments: { loading: false, loaded: false, error: false, errorText: "", data: null, asOf: null, expanded: {} } };
+    memberSegments: { loading: false, loaded: false, error: false, errorText: "", data: null, asOf: null, expanded: {} },
+    // COMM-313 retention correlation views, client half. Gated STRICTLY on
+    // real is_admin() - not the hasPerm(PERM.ANALYTICS_VIEW) || isAdmin()
+    // pair every other section in this cluster (COMM-310/311) uses - per
+    // that ticket's own "gated by real is_admin, matching COMM-312's
+    // narrower bar" acceptance criterion. Because the gate is narrower than
+    // COMM-310's shell gate, this section is rendered as its OWN top-level
+    // ach-section (renderRetentionCorrelations(), wired in next to
+    // renderAdminAnalyticsDashboard() in the account tab, not appended
+    // inside it) - see that function's own comment for the full reasoning.
+    // Three independent RPC results, all fetched together on one lazy load
+    // (retention_cohorts/retention_onboarding_correlation/
+    // retention_welcome_correlation take no shared period from COMM-310's
+    // own selector - the two correlations do not even accept a parameter -
+    // so there is no period selector to reuse here). cohorts/onboarding/
+    // welcome are each the RAW array the matching RPC returned, never
+    // reshaped here (grouped into series only at render time, the same
+    // "server is the one definition" posture COMM-310/311 already follow).
+    // onboardingStep is which of the five onboarding_progress columns the
+    // onboarding overlay currently shows (one step at a time - all five at
+    // once would be five pairs of curves on screen together). showOnboarding
+    // / showWelcome are the two independent overlay toggles the ticket's own
+    // "Populated" frontend state calls for.
+    retention: {
+      loading: false, loaded: false, error: false, errorText: "",
+      cohorts: [], onboarding: [], welcome: [],
+      onboardingStep: "welcomed_at", showOnboarding: false, showWelcome: false,
+    } };
   const photoUrlCache = {};
 
   // COMM-141. The notification badge refreshes on a realtime own-row
@@ -1750,6 +1777,76 @@
   function toggleMemberSegment(segment) {
     const ms = state.memberSegments;
     ms.expanded[segment] = !ms.expanded[segment];
+    rerender();
+  }
+  // ---- Retention correlation views (COMM-313) --------------------------
+  // Three security-definer functions (202609010008), all gated on real
+  // is_admin() ALONE - see state.retention's own comment for why that is
+  // deliberately narrower than every other section in this cluster.
+  // retention_cohorts(p_cohort_months) returns the cohort retention curve
+  // itself; retention_onboarding_correlation() and
+  // retention_welcome_correlation() take NO parameter at all (both use a
+  // fixed 6-month window server-side, named constants the client cannot
+  // move) and each return a two-group comparison. p_cohort_months is passed
+  // explicitly as 6 here - the same window the two parameter-less
+  // correlations are hardcoded to - so all three curves this section can
+  // ever show share one x-axis's worth of members, rather than leaving the
+  // cohort curve's own window to drift from the two correlations' fixed one
+  // by relying on the RPC's own default matching it by coincidence.
+  const RETENTION_COHORT_MONTHS = 6;
+  // The one real Postgres error all three functions raise (identical
+  // message, since the gate is identical) - same error.message === "..."
+  // pattern ADMIN_ANALYTICS_ERROR_LABELS/MEMBER_SEGMENTS_ERROR_LABELS use.
+  // Anything else (network, a permission revoked mid-session) falls back to
+  // COMM-313's own frontend-states copy for the Error state, verbatim:
+  // "לא ניתן היה לטעון את נתוני השימור."
+  const RETENTION_ERROR_LABELS = {
+    "not authorized": "אין לך הרשאה לצפות בנתוני השימור.",
+  };
+  function retentionErrorText(error) {
+    const msg = error && error.message;
+    return (msg && RETENTION_ERROR_LABELS[msg]) || "לא ניתן היה לטעון את נתוני השימור.";
+  }
+  // All three RPCs fire together on one lazy load, not staggered behind a
+  // toggle click - COMM-311's own loadMemberSegments() precedent piggybacks
+  // on COMM-310's load instead, but this section has no shared parent load
+  // to piggyback on (its gate is narrower, so it cannot live inside
+  // loadAdminAnalyticsDashboard() without also loosening that gate), so it
+  // is its own lazy load wired into the account tab directly, same shape as
+  // loadAdminAnalyticsDashboard() itself. The two overlays fetch eagerly
+  // alongside the main curve rather than on first toggle: both are cheap,
+  // pooled, parameter-less queries, and fetching them only on toggle would
+  // mean a second loading state this ticket's own frontend-states list does
+  // not name.
+  async function loadRetentionCorrelations() {
+    if (!state.user || !isAdmin()) { state.retention.cohorts = []; state.retention.onboarding = []; state.retention.welcome = []; return; }
+    const r = state.retention;
+    r.loading = true; r.error = false; r.errorText = "";
+    rerender();
+    const [cohortsRes, onboardingRes, welcomeRes] = await Promise.all([
+      client.rpc("retention_cohorts", { p_cohort_months: RETENTION_COHORT_MONTHS }),
+      client.rpc("retention_onboarding_correlation"),
+      client.rpc("retention_welcome_correlation"),
+    ]);
+    r.loading = false; r.loaded = true;
+    // The cohort curve is this section's primary content - if it fails, the
+    // whole section shows COMM-313's own Error state, matching how COMM-310
+    // treats its own primary RPC. A correlation cut failing on its own
+    // (while the main curve loaded fine) does not blank the section; it just
+    // leaves that one overlay with nothing to show, same as an overlay
+    // nobody has been stamped with yet - see renderRetentionOnboardingOverlay.
+    if (cohortsRes.error) { r.error = true; r.errorText = retentionErrorText(cohortsRes.error); rerender(); return; }
+    r.cohorts = Array.isArray(cohortsRes.data) ? cohortsRes.data : [];
+    r.onboarding = (!onboardingRes.error && Array.isArray(onboardingRes.data)) ? onboardingRes.data : [];
+    r.welcome = (!welcomeRes.error && Array.isArray(welcomeRes.data)) ? welcomeRes.data : [];
+    rerender();
+  }
+  function toggleRetentionOnboardingOverlay() { state.retention.showOnboarding = !state.retention.showOnboarding; rerender(); }
+  function toggleRetentionWelcomeOverlay() { state.retention.showWelcome = !state.retention.showWelcome; rerender(); }
+  function setRetentionOnboardingStep(step) {
+    if (!RETENTION_ONBOARDING_STEPS.some((s) => s.id === step)) return;
+    if (state.retention.onboardingStep === step) return;
+    state.retention.onboardingStep = step;
     rerender();
   }
   // ---- Admin audit view (COMM-154) -----------------------------------
@@ -4096,6 +4193,176 @@
       body = renderAdminAnalyticsCoreGroup(a.data) + renderAdminAnalyticsAdditionalGroup(a.data) + renderMemberSegments();
     }
     return `<div class="ach-section" style="margin-top:18px;" data-admin-analytics-dashboard="1">${sectionHead("var(--energy)", "לוח בקרה: אנליטיקת קהילה", true)}${renderAdminAnalyticsPeriodSelector()}${body}</div>`;
+  }
+  // ---- Retention correlation views (COMM-313) --------------------------
+  //
+  // WHY A SEPARATE TOP-LEVEL SECTION, NOT APPENDED INSIDE
+  // renderAdminAnalyticsDashboard() THE WAY COMM-311's renderMemberSegments()
+  // WAS.
+  //
+  // COMM-310's own shell is gated on `hasPerm(PERM.ANALYTICS_VIEW) ||
+  // isAdmin()`, and every section appended inside it so far (COMM-311's
+  // segments) shares exactly that gate - there was never a reason to check
+  // again. COMM-313 is the first ticket in this cluster whose own gate is a
+  // STRICT SUBSET of the shell's: real is_admin() alone, no
+  // community.analytics.view alternative (the migration's own "THE GATE IS
+  // is_admin() ALONE" header, and the ticket's own acceptance criterion,
+  // "matching COMM-312's narrower bar"). A community.analytics.view holder
+  // who is not an admin is meant to see the dashboard and the segments and
+  // NOT this - the one negative case COMM-313 calls out as genuinely
+  // different from COMM-310/311.
+  //
+  // Nesting this section inside renderAdminAnalyticsDashboard()'s own
+  // populated branch and re-gating just this call would still be CORRECT
+  // (the inner isAdmin()-only check below would still hide it from that
+  // permission holder), but it would bury a narrower permission boundary
+  // inside a container whose own header and period selector belong to a
+  // broader one - a reviewer skimming renderAdminAnalyticsDashboard() would
+  // reasonably assume everything inside it shares its gate, and the next
+  // person to add a section there could copy that assumption straight into
+  // a real bug. Keeping it as its own ach-section, with its own isAdmin()
+  // check at the very top (the same standalone `if (!isAdmin()) return "";`
+  // shape renderMemberManagement() already uses, not the OR-with-permission
+  // shape), makes the boundary visible at the call site instead of implicit
+  // inside a shared container. It still lives in the same admin-moderation
+  // cluster, right next to the dashboard in the account tab, and it reuses
+  // every rendering building block (adminAnalyticsCard/Row/RatioText,
+  // sectionHead, the aria-busy skeleton shape) COMM-310 already built - nothing
+  // here is a new visual language, only a new permission boundary.
+  //
+  // RENDERING APPROACH: reuses COMM-310's own "weeks" pattern
+  // (renderAdminAnalyticsWcam/Posting: a log-list of one row per week,
+  // adminAnalyticsRow(label, value)) rather than inventing a chart. Each
+  // series (a cohort month, or one side of a correlation cut) is its own
+  // adminAnalyticsCard with a log-list of "שבוע N: share% (מתוך n חברים)"
+  // rows - a "standard retention curve" read top-to-bottom instead of drawn,
+  // which is what COMM-310's own precedent already does for a single series
+  // and this section does once per series. Correctness over visual polish,
+  // per the ticket's own instruction for an internal admin tool.
+  const RETENTION_ONBOARDING_STEPS = [
+    { id: "welcomed_at", label: "ברכת פתיחה" },
+    { id: "first_week_shown_at", label: "סיכום שבוע ראשון" },
+    { id: "first_month_shown_at", label: "סיכום חודש ראשון" },
+    { id: "first_class_shown_at", label: "שיעור ראשון" },
+    { id: "third_class_shown_at", label: "שיעור שלישי" },
+  ];
+  // The correlation-not-causation caveat, stated once and shown PERSISTENTLY
+  // next to the two overlay toggles (not in a tooltip) - the ticket's own
+  // wording. Carries no "effect"/"impact"/"lift"/"uplift" word, the same
+  // restraint 202609010008's own field naming keeps (see that migration's
+  // "CORRELATION, NOT CAUSATION" header): a stamped onboarding step or a
+  // coach Welcome both partly just measure whether the member came back or
+  // was around to be reached at all, so the gap between the two curves is a
+  // ceiling on anything causal, never proof of one.
+  const RETENTION_CORRELATION_NOTE = "זהו מתאם, לא סיבתיות. שלב הכוונה מסומן רק כשהחבר/ה פותח/ת את האפליקציה ורואה אותו, ופנייה של מאמן/ת נוטה להגיע דווקא למי שממילא נמצא/ת בסביבה - כך שחלק ניכר מהפער בין שתי העקומות פשוט משקף מי חזר/ה להיות פעיל/ה בכלל, לא רק את הצעד עצמו. הפער בין העקומות הוא לכל היותר תקרה עליונה למשהו סיבתי, לא הוכחה לו.";
+  // One row per week, sorted, for a single series (a cohort month, or one
+  // side of a correlation cut). A suppressed tail (this section's rows never
+  // gap - see 202609010008's own "TRUNCATES A LINE, NEVER PUNCHES A HOLE"
+  // note) simply means the log-list stops short; nothing here bridges it or
+  // draws a placeholder for a week that was never emitted.
+  function retentionWeekRows(rows) {
+    const sorted = (rows || []).slice().sort((x, y) => Number(x.week_number) - Number(y.week_number));
+    if (!sorted.length) return `<div class="empty" style="padding:4px 0;">אין מספיק חברים לתצוגה יציבה</div>`;
+    return `<div class="log-list">${sorted.map((r) => adminAnalyticsRow(`שבוע ${safeText(r.week_number)}`, `${adminAnalyticsRatioText(r.retained_share, true)} (מתוך ${adminAnalyticsCount(r.member_count)})`)).join("")}</div>`;
+  }
+  // cohort_month is 'YYYY-MM' or the literal 'other' (202609010008's own
+  // rule - a real month key can never collide with that string); 'other'
+  // sorts last, named months sort chronologically, exactly the order the
+  // RPC itself already returns them in - this re-sort is defensive, not a
+  // correction of the server's own ordering.
+  function retentionCohortSortKey(a, b) {
+    if (a === "other" && b !== "other") return 1;
+    if (b === "other" && a !== "other") return -1;
+    return a < b ? -1 : a > b ? 1 : 0;
+  }
+  function renderRetentionCohortCurves(cohortRows) {
+    const byMonth = new Map();
+    for (const row of cohortRows || []) {
+      const key = row && row.cohort_month;
+      if (key == null) continue;
+      if (!byMonth.has(key)) byMonth.set(key, []);
+      byMonth.get(key).push(row);
+    }
+    const months = Array.from(byMonth.keys()).sort(retentionCohortSortKey);
+    if (!months.length) return `<div class="empty">אין עדיין נתוני שימור לתצוגה.</div>`;
+    return months.map((m) => adminAnalyticsCard(
+      `קבוצת הצטרפות: ${m === "other" ? "קבוצות קטנות (מאוחדות)" : safeText(m)}`,
+      retentionWeekRows(byMonth.get(m)),
+    )).join("");
+  }
+  function renderRetentionOverlayToggles() {
+    const r = state.retention;
+    return `<div class="chip-row" style="margin:10px 0;" data-retention-overlay-toggles="1">
+      <button class="chip-btn${r.showOnboarding ? " primary" : ""}" data-community-action="retention-toggle-onboarding" aria-pressed="${r.showOnboarding ? "true" : "false"}">שכבת-על: שלבי הכוונה</button>
+      <button class="chip-btn${r.showWelcome ? " primary" : ""}" data-community-action="retention-toggle-welcome" aria-pressed="${r.showWelcome ? "true" : "false"}">שכבת-על: פניית מאמן/ת ראשונית</button>
+    </div>`;
+  }
+  // stamped=true is rendered first (matching the RPC's own `order by ...
+  // stamped desc`), stamped=false second - "did the member ever see this
+  // step" vs. "never did", for whichever step the chip row currently
+  // selects. A step nobody has ever been stamped with (both COMM-316 columns
+  // right after deploy, since 202609010003 does not backfill them) returns
+  // only the false side from the server; the true side then falls through to
+  // retentionWeekRows()'s own empty state rather than a missing card, so a
+  // reviewer sees "not enough members yet" instead of a card that silently
+  // vanished.
+  function renderRetentionOnboardingOverlay() {
+    const r = state.retention;
+    if (!r.showOnboarding) return "";
+    const stepChips = RETENTION_ONBOARDING_STEPS.map((s) => `<button class="chip-btn${r.onboardingStep === s.id ? " primary" : ""}" data-community-action="retention-onboarding-step" data-step="${s.id}">${safeText(s.label)}</button>`).join("");
+    const stepRows = (r.onboarding || []).filter((row) => row && row.step === r.onboardingStep);
+    const stamped = stepRows.filter((row) => row.stamped === true);
+    const notStamped = stepRows.filter((row) => row.stamped === false);
+    return `<div style="margin-top:6px;" data-retention-onboarding-overlay="1">
+      <div class="chip-row" style="margin:0 0 8px;">${stepChips}</div>
+      ${adminAnalyticsCard("השלב סומן (stamped)", retentionWeekRows(stamped))}
+      ${adminAnalyticsCard("השלב לא סומן", retentionWeekRows(notStamped))}
+    </div>`;
+  }
+  // contacted=true first (matching the RPC's own `order by contacted desc`),
+  // false second. No step selector here - retention_welcome_correlation()
+  // has only the one cut.
+  function renderRetentionWelcomeOverlay() {
+    const r = state.retention;
+    if (!r.showWelcome) return "";
+    const contacted = (r.welcome || []).filter((row) => row && row.contacted === true);
+    const notContacted = (r.welcome || []).filter((row) => row && row.contacted === false);
+    return `<div style="margin-top:6px;" data-retention-welcome-overlay="1">
+      ${adminAnalyticsCard("פנייה מאמן/ת ב-14 הימים הראשונים", retentionWeekRows(contacted))}
+      ${adminAnalyticsCard("ללא פנייה כזו", retentionWeekRows(notContacted))}
+    </div>`;
+  }
+  // Frontend states, COMM-313's own list: loading is a skeleton
+  // (data-retention-skeleton); error is the ticket's own copy unless the
+  // server named the one real refusal ('not authorized'), in which case that
+  // refusal's own short Hebrew shows instead; a cohort folded into 'other'
+  // for being under the 5-member floor is not a separate branch - it is just
+  // one more card in the populated branch, labelled as pooled rather than
+  // omitted (renderRetentionCohortCurves' own 'other' handling); populated is
+  // the cohort curves plus the two toggle-able overlays, with the
+  // correlation-not-causation note shown persistently above the toggles
+  // (not hidden inside either overlay, since it applies to both, and not a
+  // tooltip).
+  function renderRetentionCorrelations() {
+    if (!isAdmin()) return "";
+    const r = state.retention;
+    let body;
+    if (r.loading && !r.loaded) {
+      const skRow = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:55%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
+      const skCard = `<div class="chart-card" style="margin-bottom:10px;"><div class="log-list">${skRow.repeat(3)}</div></div>`;
+      body = `<div aria-busy="true" data-retention-skeleton="1">${skCard.repeat(3)}</div>`;
+    } else if (r.error) {
+      body = `<div class="empty">${safeText(r.errorText || "לא ניתן היה לטעון את נתוני השימור.")}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="retention-retry">ניסיון חוזר</button></div></div>`;
+    } else if (!r.loaded) {
+      body = `<div class="empty">אין עדיין נתונים לתצוגה.</div>`;
+    } else {
+      body = renderRetentionCohortCurves(r.cohorts)
+        + `<div class="footer-note" data-retention-correlation-note="1" style="margin:12px 0 0;">${safeText(RETENTION_CORRELATION_NOTE)}</div>`
+        + renderRetentionOverlayToggles()
+        + renderRetentionOnboardingOverlay()
+        + renderRetentionWelcomeOverlay();
+    }
+    return `<div class="ach-section" style="margin-top:18px;" data-retention-correlations="1">${sectionHead("var(--purple)", "מתאמי שימור (מנהלים בלבד)", true)}${body}</div>`;
   }
   // COMM-155. The pinned strip at the very top of the Club home, above the
   // club top card. Up to three chips; staff with community.content.pin get
@@ -8611,7 +8878,7 @@
     const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מתאמנים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין מתאמנים חדשים לאחרונה</div>`}</div>` : "";
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
-    const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderAdminAnalyticsDashboard() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
+    const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderAdminAnalyticsDashboard() + renderRetentionCorrelations() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
 
@@ -8823,6 +9090,12 @@
     // dashboard's default period (this ISO week) is fetched the first time
     // an analytics holder or real admin lands on the Account tab.
     if (state.communityTab === "account" && (hasPerm(PERM.ANALYTICS_VIEW) || isAdmin()) && !state.adminAnalytics.loaded && !state.adminAnalytics.loading) loadAdminAnalyticsDashboard();
+    // COMM-313. Same lazy pattern, its OWN gate: real is_admin() alone, not
+    // the ANALYTICS_VIEW-or-admin pair the two lazy loads just above use -
+    // so a community.analytics.view holder who is not an admin never even
+    // triggers the three retention RPCs, matching that this section must not
+    // render for them at all.
+    if (state.communityTab === "account" && isAdmin() && !state.retention.loaded && !state.retention.loading) loadRetentionCorrelations();
     // COMM-309. The monthly club recap's member-facing card: fetched the
     // first time a member lands on the Account tab, same lazy pattern as
     // the audit view just above (and every other tab-scoped load in this
@@ -9034,6 +9307,11 @@
     // COMM-311 member engagement segmentation.
     else if (action === "member-segments-toggle") toggleMemberSegment(el.dataset.segment);
     else if (action === "member-segments-retry") loadMemberSegments();
+    // COMM-313 retention correlation views.
+    else if (action === "retention-retry") loadRetentionCorrelations();
+    else if (action === "retention-toggle-onboarding") toggleRetentionOnboardingOverlay();
+    else if (action === "retention-toggle-welcome") toggleRetentionWelcomeOverlay();
+    else if (action === "retention-onboarding-step") setRetentionOnboardingStep(el.dataset.step);
     // COMM-155 pins.
     else if (action === "unpin") unpinTarget(el.dataset.type, el.dataset.id);
     else if (action === "pin") pinTarget(el.dataset.type, el.dataset.id, el.dataset.note || "");
