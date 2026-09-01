@@ -3209,9 +3209,14 @@
   //    free; splitLeaderboardRows() below is what tells the two apart.
   // 3. "Hide my result" is a render choice on top of that row - never a
   //    parameter, never a privacy setting. See state.hideMyLeaderboardResult.
+  // Post-Phase-3 Hebrew copy fix: "עוקבים" (followed), not "חברים" (club
+  // members) - the app uses חברים everywhere else to mean club membership,
+  // and labeling "people you follow" the same word was a real homonym
+  // collision. visibilityLabel() below already uses עוקבים correctly for
+  // the identical concept on posts; this scope now matches it.
   const LEADERBOARD_SCOPES = [
     { id: "club", label: "כל המועדון" },
-    { id: "friends", label: "חברים" },
+    { id: "friends", label: "עוקבים" },
   ];
   // COMM-210 asks for 50, COMM-211's in-panel board for 20 with a full board
   // at 50. The server clamps to 1..100 regardless; these are what we request.
@@ -3640,8 +3645,11 @@
       ${rowsHtml ? `<div class="log-list">${rowsHtml}</div>` : `<div class="empty" style="padding:6px 0;">אין תוצאות</div>`}
     </div>`;
   }
+  // Post-Phase-3 Hebrew copy fix: "חברים" (members), matching the term used
+  // everywhere else in the app (200+ instances) - "מתאמנים" (trainees) was
+  // a one-off outlier only in this search grouping.
   function searchGroupTitle(key) {
-    return { members: "מתאמנים", events: "אירועים", challenges: "אתגרים" }[key] || key;
+    return { members: "חברים", events: "אירועים", challenges: "אתגרים" }[key] || key;
   }
   function searchMemberRowHtml(person) {
     return `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32, person.avatar_url)}<div><div style="font-weight:700;">${safeText(person.display_name || "@" + person.handle)}${isCoachRole(memberRole(person.id)) ? " " + coachBadgeHtml(memberRole(person.id)) : ""}</div><div style="color:var(--steel);font-size:12px;">@${safeText(person.handle)} ${safeText(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="view-profile" data-id="${safeText(person.id)}">פרופיל</button>${person.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${safeText(person.id)}">מעקב</button>`}<button class="chip-btn" data-community-action="block" data-id="${safeText(person.id)}">חסימה</button></div></div>`;
@@ -3659,7 +3667,7 @@
     return `<div class="log-row" data-search-challenge-id="${safeText(c.id)}"><div><div style="font-weight:700;">${safeText(challengeTypeDef(c.challenge_type).icon)} ${safeText(c.title || "אתגר")}</div><div style="color:var(--steel);font-size:12px;">${meta.map(safeText).join(" · ")}</div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="open-challenge" data-id="${safeText(c.id)}" data-source="search">פרטים</button></div></div>`;
   }
   function renderCommunitySearch() {
-    const box = `<div class="search-box"><input id="communityPeopleSearch" placeholder="חיפוש מתאמנים, אירועים ואתגרים" aria-label="חיפוש בקהילה" value="${safeText(state.searchQuery || "")}"/></div>`;
+    const box = `<div class="search-box"><input id="communityPeopleSearch" placeholder="חיפוש חברים, אירועים ואתגרים" aria-label="חיפוש בקהילה" value="${safeText(state.searchQuery || "")}"/></div>`;
     let body;
     if (sanitizeSearchQuery(state.searchQuery).length < SEARCH_MIN_CHARS) {
       // Under the threshold there is nothing to show and nothing was asked
@@ -4608,9 +4616,14 @@
   // The five visibility labels the schema keeps (contracts.md "Phase 0 schema
   // notes"). club / friends / only_me is the model going forward; public and
   // followers are legacy read aliases the current client still writes.
+  // Post-Phase-3 Hebrew copy fix: "עוקבים" (followed), matching
+  // visibilityLabel()'s own "followers" -> עוקבים mapping two lines below -
+  // "חברים" was the same homonym collision LEADERBOARD_SCOPES had (this app
+  // uses חברים everywhere else to mean club membership, not "who follows
+  // me").
   const POST_VISIBILITY_OPTIONS = [
     { value: "club", label: "כל המועדון" },
-    { value: "friends", label: "חברים" },
+    { value: "friends", label: "עוקבים" },
     { value: "only_me", label: "רק אני" },
   ];
   function normalizeVisibility(v) { return v === "public" ? "club" : v === "followers" ? "friends" : (v || "club"); }
@@ -9171,7 +9184,10 @@
     // COMM-228. One box, three labeled groups (members, events, challenges).
     const people = renderCommunitySearch();
 
-    const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מתאמנים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין מתאמנים חדשים לאחרונה</div>`}</div>` : "";
+    // Post-Phase-3 Hebrew copy fix: "חברים חדשים" - the exact phrase COMM-107's
+    // welcome post and the coach-tools "Welcome" section already use for the
+    // same concept (מתאמנים was this list's own one-off).
+    const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "חברים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין חברים חדשים לאחרונה</div>`}</div>` : "";
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
     const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderAdminAnalyticsDashboard() + renderRetentionCorrelations() + renderCommunityHealthScore() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
