@@ -238,7 +238,26 @@
     // currentOnboardingStep() as "not due yet", never as "due" - see that
     // function for why an undetermined answer must never flash a step on
     // and then off.
-    onboardingAttendance: { count: 0, loading: false, loaded: false, error: false } };
+    onboardingAttendance: { count: 0, loading: false, loaded: false, error: false },
+    // COMM-310 admin community analytics dashboard, client half. THE
+    // FOUNDATIONAL SHELL later Phase 3 admin tickets extend - COMM-311
+    // (member segments), COMM-312 (health scores) and COMM-313 (retention
+    // cohorts) each say "reusing COMM-310's dashboard shell" in their own
+    // tickets. mode is "week" or "month", the two cadences metrics.md's own
+    // 18 metric definitions are written in ("per week", "in a week"); start/
+    // end are the resolved ISO dates for whichever period is currently
+    // anchored, both inclusive - matching analytics_dashboard()'s own
+    // p_period_start/p_period_end contract exactly, so they can be sent
+    // straight back as RPC args with no reshaping. data is the raw jsonb
+    // analytics_dashboard() returned, rendered as-is and never reshaped
+    // here, the same "server is the one definition" posture COMM-309's
+    // monthly recap figures already follow. A later ticket's own section
+    // (a Segments card, a Health score card, a Retention card) reads
+    // state.adminAnalytics.start/end the same way and appends its render
+    // call inside renderAdminAnalyticsDashboard() after the two
+    // metrics.md-defined groups, rather than opening a second nav
+    // destination or a second period selector.
+    adminAnalytics: { mode: "week", start: null, end: null, loading: false, loaded: false, error: false, errorText: "", data: null } };
   const photoUrlCache = {};
 
   // COMM-141. The notification badge refreshes on a realtime own-row
@@ -1556,6 +1575,97 @@
     if (error) { state.pinError = "לא ניתן היה לעדכן את ההצמדות."; return rerender(); }
     await loadPins();
     setMessage("ההצמדה בוטלה");
+  }
+  // ---- Admin community analytics dashboard (COMM-310) ------------------
+  // One RPC, analytics_dashboard(p_period_start, p_period_end)
+  // (202609010006), answers all 18 metrics in docs/community/metrics.md's
+  // Core (5) and Additional (13) sections in one call - see that
+  // migration's own header comment for the full jsonb shape, mirrored
+  // key-for-key by the render functions below. Gated on
+  // community.analytics.view or real is_admin(), the same asymmetry
+  // recap_monthly_publish() and this file's own canPublish already encode:
+  // NARROWER than isStaff(), so a plain coach (isStaff() true) is refused
+  // server-side and the nav entry is gated on the permission, never on
+  // staffness, to match.
+  //
+  // Monday-based UTC weeks/months only, matching analytics_week_buckets()'s
+  // own TIMEZONE note - this client makes the same "UTC ISO week, not the
+  // club's local week" choice the schema half already recorded, not a
+  // different one.
+  function adminAnalyticsMondayUtc(d) {
+    const dt = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+    const day = dt.getUTCDay();
+    dt.setUTCDate(dt.getUTCDate() + (day === 0 ? -6 : 1 - day));
+    return dt;
+  }
+  function adminAnalyticsIsoDate(d) { return d.toISOString().slice(0, 10); }
+  // The resolved {start, end} (both inclusive, matching the RPC's own
+  // contract) for whichever week or month contains anchorIso (default:
+  // today). Pure - never reads or mutates state - so both the mode switch
+  // and the prev/next paging below can share it.
+  function adminAnalyticsDefaultPeriod(mode, anchorIso) {
+    const anchor = anchorIso ? new Date(anchorIso + "T00:00:00.000Z") : new Date();
+    if (mode === "month") {
+      const y = anchor.getUTCFullYear(), m = anchor.getUTCMonth();
+      const start = new Date(Date.UTC(y, m, 1));
+      const end = new Date(Date.UTC(y, m + 1, 0));
+      return { start: adminAnalyticsIsoDate(start), end: adminAnalyticsIsoDate(end) };
+    }
+    const start = adminAnalyticsMondayUtc(anchor);
+    const end = new Date(start);
+    end.setUTCDate(end.getUTCDate() + 6);
+    return { start: adminAnalyticsIsoDate(start), end: adminAnalyticsIsoDate(end) };
+  }
+  // The four real Postgres errors analytics_dashboard() raises (the
+  // migration's own comment on that function, verbatim), mapped to short
+  // Hebrew - the same error.message === "..." pattern
+  // MONTHLY_RECAP_ERROR_LABELS above already uses. Any other error
+  // (network, a permission revoked mid-session) falls back to COMM-310's
+  // own frontend-states copy for the Error state, "לא ניתן היה לטעון את
+  // הנתונים." - not a generic retry line invented for this surface.
+  const ADMIN_ANALYTICS_ERROR_LABELS = {
+    "not authorized": "אין לך הרשאה לצפות בנתונים אלו.",
+    "period required": "יש לבחור טווח תאריכים.",
+    "period end before start": "תאריך הסיום קודם לתאריך ההתחלה.",
+    "period exceeds 366 days": "טווח התאריכים ארוך מדי (מקסימום 366 ימים).",
+  };
+  function adminAnalyticsErrorText(error) {
+    const msg = error && error.message;
+    return (msg && ADMIN_ANALYTICS_ERROR_LABELS[msg]) || "לא ניתן היה לטעון את הנתונים.";
+  }
+  async function loadAdminAnalyticsDashboard() {
+    if (!state.user || !(hasPerm(PERM.ANALYTICS_VIEW) || isAdmin())) { state.adminAnalytics.data = null; return; }
+    const a = state.adminAnalytics;
+    if (!a.start || !a.end) Object.assign(a, adminAnalyticsDefaultPeriod(a.mode));
+    a.loading = true; a.error = false; a.errorText = "";
+    rerender();
+    const { data, error } = await client.rpc("analytics_dashboard", { p_period_start: a.start, p_period_end: a.end });
+    a.loading = false; a.loaded = true;
+    if (error) { a.error = true; a.errorText = adminAnalyticsErrorText(error); rerender(); return; }
+    a.data = data || null;
+    rerender();
+  }
+  function setAdminAnalyticsMode(mode) {
+    if (mode !== "week" && mode !== "month") return;
+    const a = state.adminAnalytics;
+    if (a.mode === mode) return;
+    a.mode = mode;
+    Object.assign(a, adminAnalyticsDefaultPeriod(mode, a.start));
+    loadAdminAnalyticsDashboard();
+  }
+  // dir < 0 is the previous period, dir > 0 the next one - one week or one
+  // calendar month at a time, per the current mode. Anchored off a.start
+  // (always day 1 of the month in month mode, always a Monday in week
+  // mode), so paging never drifts off that anchor the way adding/
+  // subtracting a flat 30 days would.
+  function shiftAdminAnalyticsPeriod(dir) {
+    const a = state.adminAnalytics;
+    if (!a.start) return;
+    const anchor = new Date(a.start + "T00:00:00.000Z");
+    if (a.mode === "month") anchor.setUTCMonth(anchor.getUTCMonth() + (dir < 0 ? -1 : 1));
+    else anchor.setUTCDate(anchor.getUTCDate() + (dir < 0 ? -7 : 7));
+    Object.assign(a, adminAnalyticsDefaultPeriod(a.mode, adminAnalyticsIsoDate(anchor)));
+    loadAdminAnalyticsDashboard();
   }
   // ---- Admin audit view (COMM-154) -----------------------------------
   // Read-only, gated on community.analytics.view. admin_actions_page checks
@@ -3535,6 +3645,270 @@
       <div class="search-box"><input id="adminMemberSearch" placeholder="חיפוש לפי handle, שם, או הדבקת מזהה משתמש" aria-label="חיפוש חברים לניהול" value="${safeText(state.memberSearch)}"/></div>
       ${results.length ? `<div class="log-list">${results.map(rowHtml).join("")}</div>` : state.memberSearch.trim().length >= 2 ? `<div class="empty">לא נמצאו חברים תואמים</div>` : `<div class="empty">חיפוש לפי handle, שם, או מזהה משתמש (UUID)</div>`}
     </div>`;
+  }
+  // ==========================================================================
+  // COMM-310. Admin community analytics dashboard - render half.
+  //
+  // Small shared building blocks first (period selector, value formatters,
+  // a plain metric-card wrapper), then one render function per metric - 5
+  // for "core", 13 for "additional", named and grouped exactly the way
+  // analytics_dashboard()'s own response and docs/community/metrics.md's
+  // own section headers are, so a reviewer can match a render function to
+  // its metrics.md bullet without re-deriving the mapping. THE SHELL a
+  // later ticket (COMM-311/312/313) extends is renderAdminAnalyticsDashboard()
+  // itself: append a call to a new section-render function after the two
+  // metrics.md groups, inside the same populated branch, reusing the same
+  // state.adminAnalytics.start/end and the same period selector - not a
+  // second nav entry, not a second RPC-driven load cycle.
+  // ==========================================================================
+  function renderAdminAnalyticsPeriodSelector() {
+    const a = state.adminAnalytics;
+    const modeBtn = (id, label) => `<button class="chip-btn${a.mode === id ? " primary" : ""}" data-community-action="admin-analytics-mode" data-mode="${id}">${label}</button>`;
+    return `<div class="chip-row" style="margin:0 0 10px;align-items:center;">
+      ${modeBtn("week", "שבוע")}${modeBtn("month", "חודש")}
+      <button class="chip-btn" data-community-action="admin-analytics-shift" data-dir="-1" aria-label="התקופה הקודמת">‹ קודם</button>
+      <span style="color:var(--steel);font-size:12px;white-space:nowrap;">${safeText(a.start || "")} — ${safeText(a.end || "")}</span>
+      <button class="chip-btn" data-community-action="admin-analytics-shift" data-dir="1" aria-label="התקופה הבאה">הבא ›</button>
+    </div>`;
+  }
+  // null/undefined (the RPC's own "ratio over a zero denominator" convention,
+  // analytics_ratio() in 202609010006) renders as an em dash, never a false
+  // "0" or "0%" - COMM-310's own rule, quoted in the migration's comments.
+  function adminAnalyticsRatioText(v, asPercent) {
+    if (v === null || v === undefined) return "—";
+    const n = Number(v);
+    if (!isFinite(n)) return "—";
+    return asPercent ? (Math.round(n * 1000) / 10) + "%" : String(n);
+  }
+  function adminAnalyticsCount(v) { return (v === null || v === undefined) ? "—" : safeText(v); }
+  function adminAnalyticsRow(label, value) {
+    return `<div class="log-row"><span>${safeText(label)}</span><span class="mono" style="color:var(--brass);">${value}</span></div>`;
+  }
+  // A jsonb {key: count} breakdown - ten of the eighteen metrics carry one,
+  // per analytics_breakdown()'s own "count by one prop" shape - rendered
+  // largest-first. The keys are enum-shaped values a member's own client
+  // wrote (scope, source, tab, reason...), rendered verbatim rather than
+  // translated: a raw string here is more honest than a label table this
+  // file would have to keep in sync with every producer's own prop values.
+  function adminAnalyticsBreakdownList(obj) {
+    const entries = Object.entries(obj || {}).sort((x, y) => Number(y[1]) - Number(x[1]));
+    if (!entries.length) return `<div class="empty" style="padding:4px 0;">אין נתונים בתקופה זו</div>`;
+    return `<div class="log-list">${entries.map(([k, v]) => adminAnalyticsRow(k, adminAnalyticsCount(v))).join("")}</div>`;
+  }
+  function adminAnalyticsCard(title, bodyHtml) {
+    return `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:6px;">${safeText(title)}</div>${bodyHtml}</div>`;
+  }
+  // ---- Core metrics (metrics.md "## Core metrics", 5) --------------------
+  function renderAdminAnalyticsWcam(core) {
+    const w = core.wcam || {};
+    const share = core.wcam_share || {};
+    const weeks = Array.isArray(w.weeks) ? w.weeks : [];
+    const weeksHtml = weeks.length
+      ? `<div class="log-list">${weeks.map((wk) => adminAnalyticsRow(`${safeText(wk.week_start)}${wk.partial ? " (חלקי)" : ""}`, adminAnalyticsCount(wk.active_members))).join("")}</div>`
+      : `<div class="empty" style="padding:4px 0;">אין נתונים בתקופה זו</div>`;
+    return adminAnalyticsCard("חברים פעילים שבועית (WCAM)",
+      weeksHtml
+      + adminAnalyticsRow("ממוצע שבועי", adminAnalyticsCount(w.average_weekly))
+      + adminAnalyticsRow("שיא שבועי", adminAnalyticsCount(w.peak_weekly))
+      + adminAnalyticsRow("נתח מהחברים (ממוצע שבועי, לא WCAM עצמו)", adminAnalyticsRatioText(share.average_share, true))
+      + adminAnalyticsRow("סה״כ פעילים בתקופה כולה (לא WCAM)", adminAnalyticsCount(w.period_active_members)));
+  }
+  function renderAdminAnalyticsPosting(core) {
+    const p = core.posting_members || {};
+    const weeks = Array.isArray(p.weeks) ? p.weeks : [];
+    const weeksHtml = weeks.length
+      ? `<div class="log-list">${weeks.map((wk) => adminAnalyticsRow(`${safeText(wk.week_start)}${wk.partial ? " (חלקי)" : ""}`, adminAnalyticsCount(wk.posting_members))).join("")}</div>`
+      : `<div class="empty" style="padding:4px 0;">אין נתונים בתקופה זו</div>`;
+    return adminAnalyticsCard("חברים שפרסמו, לפי שבוע",
+      weeksHtml
+      + adminAnalyticsRow("ממוצע שבועי", adminAnalyticsCount(p.average_weekly))
+      + adminAnalyticsRow("סה״כ מפרסמים בתקופה כולה", adminAnalyticsCount(p.period_posting_members)));
+  }
+  function renderAdminAnalyticsEngagement(core) {
+    const e = core.engagement_per_post || {};
+    const period = e.period || {};
+    const cross = e.table_cross_check || {};
+    return adminAnalyticsCard("מעורבות לפוסט",
+      adminAnalyticsRow("פוסטים בתקופה", adminAnalyticsCount(period.posts))
+      + adminAnalyticsRow("לייקים", adminAnalyticsCount(period.reactions))
+      + adminAnalyticsRow("תגובות", adminAnalyticsCount(period.comments))
+      + adminAnalyticsRow("מעורבות לפוסט (מהאירועים)", adminAnalyticsRatioText(period.engagement_per_post))
+      + adminAnalyticsRow("מעורבות לפוסט (בקרת הצלבה מהטבלאות)", adminAnalyticsRatioText(cross.engagement_per_post)));
+  }
+  function renderAdminAnalyticsFeedReach(core) {
+    const f = core.feed_reach || {};
+    return adminAnalyticsCard("חשיפה בפיד",
+      adminAnalyticsRow("פוסטים שפורסמו", adminAnalyticsCount(f.posts_published))
+      + adminAnalyticsRow("פוסטים שקיבלו חשיפה", adminAnalyticsCount(f.posts_with_impressions))
+      + adminAnalyticsRow("נתח פוסטים שנחשפו", adminAnalyticsRatioText(f.reach_share, true))
+      + adminAnalyticsRow("סה״כ הופעות בפיד", adminAnalyticsCount(f.impressions_total))
+      + adminAnalyticsRow("הופעות לפוסט שנחשף", adminAnalyticsRatioText(f.impressions_per_reached_post)));
+  }
+  function renderAdminAnalyticsCoreGroup(data) {
+    const core = data.core || {};
+    return `<div class="field-label" style="margin:4px 0 8px;">מדדי ליבה</div>`
+      + renderAdminAnalyticsWcam(core)
+      + renderAdminAnalyticsPosting(core)
+      + renderAdminAnalyticsEngagement(core)
+      + renderAdminAnalyticsFeedReach(core);
+  }
+  // ---- Additional metrics (metrics.md "## Additional metrics", 13) -------
+  function renderAdminAnalyticsOpenRate(add) {
+    const obj = add.open_rate || {};
+    const keys = Object.keys(obj);
+    const body = keys.length
+      ? `<div class="log-list">${keys.map((k) => adminAnalyticsRow(k, `${adminAnalyticsCount(obj[k].opens)}/${adminAnalyticsCount(obj[k].impressions)} · ${adminAnalyticsRatioText(obj[k].open_rate, true)}`)).join("")}</div>`
+      : `<div class="empty" style="padding:4px 0;">אין נתונים בתקופה זו</div>`;
+    return adminAnalyticsCard("אחוז פתיחה לפי סוג פוסט", body);
+  }
+  function renderAdminAnalyticsFilterUse(add) {
+    const fu = add.filter_use || {};
+    const sessions = fu.sessions || {};
+    return adminAnalyticsCard("שימוש בסינון הפיד",
+      `<div class="field-label" style="margin:6px 0 4px;font-size:11px;">לפי scope</div>${adminAnalyticsBreakdownList(fu.by_scope)}`
+      + `<div class="field-label" style="margin:8px 0 4px;font-size:11px;">לפי מקור</div>${adminAnalyticsBreakdownList(fu.by_source)}`
+      + adminAnalyticsRow("שיעור שינוי סינון (בבסיס חבר/יום, ראו הערה)", adminAnalyticsRatioText(sessions.scope_change_share, true))
+      + `<div class="footer-note" style="margin-top:4px;">הבסיס הוא זוג (חבר/ה, יום קלנדרי) ולא סשן ממשי - ראו תיעוד המדד.</div>`);
+  }
+  function renderAdminAnalyticsSubTab(add) {
+    const s = add.sub_tab_split || {};
+    return adminAnalyticsCard("פילוח תת-לשוניות (Club Tab)",
+      adminAnalyticsRow("סה״כ צפיות", adminAnalyticsCount(s.total)) + adminAnalyticsBreakdownList(s.by_tab));
+  }
+  function renderAdminAnalyticsNotifEff(add) {
+    const obj = add.notification_effectiveness || {};
+    const keys = Object.keys(obj);
+    const body = keys.length
+      ? `<div class="log-list">${keys.map((k) => adminAnalyticsRow(k, `${adminAnalyticsCount(obj[k].opened_unread)}/${adminAnalyticsCount(obj[k].delivered)} · ${adminAnalyticsRatioText(obj[k].open_rate, true)}`)).join("")}</div>`
+      : `<div class="empty" style="padding:4px 0;">אין נתונים בתקופה זו</div>`;
+    return adminAnalyticsCard("אפקטיביות התראות (פתיחה שלא-חוזרת / נמסרו)", body);
+  }
+  function renderAdminAnalyticsSocial(add) {
+    const s = add.social_graph_growth || {};
+    const mf = s.member_followed || {};
+    const po = s.profile_opened || {};
+    return adminAnalyticsCard("צמיחת הגרף החברתי",
+      adminAnalyticsRow("עוקבים חדשים (סה״כ בתקופה)", adminAnalyticsCount(mf.total))
+      + adminAnalyticsRow("עוקבים חדשים (ממוצע לשבוע)", adminAnalyticsRatioText(mf.per_week))
+      + adminAnalyticsRow("צפיות בפרופיל של חבר/ה אחר/ת", adminAnalyticsCount(po.other))
+      + adminAnalyticsRow("צפיות בפרופיל העצמי", adminAnalyticsCount(po.self))
+      + adminAnalyticsRow("שיעור המרה לצפייה→מעקב", adminAnalyticsRatioText(s.follow_conversion, true)));
+  }
+  function renderAdminAnalyticsChallengePull(add) {
+    const c = add.challenge_leaderboard_pull || {};
+    const cv = c.challenge_viewed || {}, lv = c.leaderboard_viewed || {}, cj = c.challenge_joined || {};
+    return adminAnalyticsCard("משיכת אתגרים ולוחות מובילים",
+      adminAnalyticsRow("צפיות באתגר", adminAnalyticsCount(cv.total))
+      + adminAnalyticsRow("צפיות בלוח מובילים", adminAnalyticsCount(lv.total))
+      + adminAnalyticsRow("הצטרפויות לאתגר", adminAnalyticsCount(cj.total))
+      + adminAnalyticsRow("שיעור המרה: צפייה←הצטרפות", adminAnalyticsRatioText(c.join_rate, true)));
+  }
+  function renderAdminAnalyticsModerationLoad(add) {
+    const m = add.moderation_load || {};
+    const rs = m.reports_submitted || {};
+    const q = m.queue || {};
+    return adminAnalyticsCard("עומס מודרציה",
+      adminAnalyticsRow("דיווחים שנשלחו (אירועים)", adminAnalyticsCount(rs.total))
+      + adminAnalyticsRow("שורות שנוצרו בתור בתקופה", adminAnalyticsCount(q.rows_created_in_period))
+      + adminAnalyticsRow("פתוחים בתור כרגע (לא מוגבל לתקופה)", adminAnalyticsCount(q.open_now)));
+  }
+  function renderAdminAnalyticsShareIntent(add) {
+    const s = add.share_intent_split || {};
+    const ws = s.workout_shared || {}, ach = s.achievement_shared || {};
+    return adminAnalyticsCard("כוונת שיתוף",
+      adminAnalyticsRow("שיתופי אימון", adminAnalyticsCount(ws.total))
+      + adminAnalyticsRow("שיתופי הישג", adminAnalyticsCount(ach.total)));
+  }
+  function renderAdminAnalyticsRecap(add) {
+    const r = add.recap_pull_through || {};
+    const opened = r.opened || {}, shared = r.shared || {};
+    return adminAnalyticsCard("חדירת התקציר השבועי",
+      adminAnalyticsRow("פתיחות תקציר", adminAnalyticsCount(opened.total))
+      + adminAnalyticsRow("התראות תקציר שנשלחו", adminAnalyticsCount(r.notifications_sent))
+      + adminAnalyticsRow("שיעור פתיחה (יכול לעבור 100%, ראו הערה)", adminAnalyticsRatioText(r.open_rate, true))
+      + adminAnalyticsRow("שיתופי תקציר", adminAnalyticsCount(shared.total))
+      + adminAnalyticsRow("שיעור שיתוף", adminAnalyticsRatioText(r.share_rate, true)));
+  }
+  function renderAdminAnalyticsDiscovery(add) {
+    const d = add.discovery_split || {};
+    const sp = d.search_performed || {}, dir = d.directory_opened || {};
+    return adminAnalyticsCard("פילוח גילוי (חיפוש מול מדריך חברים)",
+      adminAnalyticsRow("חיפושים", adminAnalyticsCount(sp.total))
+      + adminAnalyticsRow("חיפושים ללא תוצאות", adminAnalyticsCount(sp.zero_member_result))
+      + adminAnalyticsRow("שיעור אפס תוצאות", adminAnalyticsRatioText(sp.zero_member_rate, true))
+      + adminAnalyticsRow("פתיחות מדריך חברים", adminAnalyticsCount(dir.total))
+      + adminAnalyticsRow("חיפוש מול מדריך (יחס)", adminAnalyticsRatioText(d.search_vs_directory)));
+  }
+  function renderAdminAnalyticsCoachReach(add) {
+    const c = add.coach_reach || {};
+    const cong = c.congratulations || {};
+    return adminAnalyticsCard("היקף פניית מאמנים",
+      adminAnalyticsRow("ברכות שנשלחו", adminAnalyticsCount(cong.total))
+      + adminAnalyticsRow("פריטים זכאים לברכה (סף עליון, לא שידור מדויק)", adminAnalyticsCount(c.celebrate_items_eligible))
+      + adminAnalyticsRow("כיסוי (סף תחתון)", adminAnalyticsRatioText(c.coverage, true)));
+  }
+  function renderAdminAnalyticsPush(add) {
+    const p = add.push_adoption || {};
+    const oi = p.opt_in_events || {}, subs = p.subscriptions || {};
+    return adminAnalyticsCard("אימוץ התראות Push",
+      adminAnalyticsRow("הצטרפויות ל-push (אירועים בתקופה)", adminAnalyticsCount(oi.total))
+      + adminAnalyticsRow("מנויים פעילים כרגע (לא מוגבל לתקופה)", adminAnalyticsCount(subs.active_now))
+      + adminAnalyticsRow("מנויים שבוטלו", adminAnalyticsCount(subs.revoked_now))
+      + adminAnalyticsRow("חברים ברי-הגעה כרגע", adminAnalyticsCount(subs.members_reachable_now)));
+  }
+  function renderAdminAnalyticsClassmates(add) {
+    const c = add.trained_with_you_reach || {};
+    const cv = c.card_views || {};
+    return adminAnalyticsCard("חשיפת ״התאמנו איתך״",
+      adminAnalyticsRow("צפיות בכרטיס", adminAnalyticsCount(cv.total))
+      + adminAnalyticsRow("סה״כ חברי אימון שהוצגו", adminAnalyticsCount(c.classmates_shown_total))
+      + adminAnalyticsRow("ממוצע חברי אימון לכרטיס", adminAnalyticsRatioText(c.classmates_per_card))
+      + adminAnalyticsRow("שיעור הופעת כרטיס מתוך אימונים שנרשמו", adminAnalyticsRatioText(c.card_rate, true))
+      + `<div class="footer-note" style="margin-top:4px;">${safeText(c.note || "")}</div>`);
+  }
+  function renderAdminAnalyticsAdditionalGroup(data) {
+    const add = data.additional || {};
+    return `<div class="field-label" style="margin:14px 0 8px;">מדדים נוספים</div>`
+      + renderAdminAnalyticsOpenRate(add)
+      + renderAdminAnalyticsFilterUse(add)
+      + renderAdminAnalyticsSubTab(add)
+      + renderAdminAnalyticsNotifEff(add)
+      + renderAdminAnalyticsSocial(add)
+      + renderAdminAnalyticsChallengePull(add)
+      + renderAdminAnalyticsModerationLoad(add)
+      + renderAdminAnalyticsShareIntent(add)
+      + renderAdminAnalyticsRecap(add)
+      + renderAdminAnalyticsDiscovery(add)
+      + renderAdminAnalyticsCoachReach(add)
+      + renderAdminAnalyticsPush(add)
+      + renderAdminAnalyticsClassmates(add);
+  }
+  // ---- The shell itself ---------------------------------------------------
+  // Frontend states (COMM-310's own "Frontend states" list): loading is a
+  // skeleton (data-admin-analytics-skeleton, the same aria-busy skeleton
+  // shape every other lazy admin panel in this cluster uses); error is the
+  // ticket's own copy unless the server named one of the four real refusals,
+  // in which case that refusal's own short Hebrew shows instead; empty (a
+  // genuinely quiet period) is not a separate branch at all - it is the
+  // populated branch, rendering honest zeros and em-dashes, because
+  // analytics_dashboard() always returns the same 18 keys whether the
+  // period was busy or quiet.
+  function renderAdminAnalyticsDashboard() {
+    if (!(hasPerm(PERM.ANALYTICS_VIEW) || isAdmin())) return "";
+    const a = state.adminAnalytics;
+    let body;
+    if (a.loading && !a.data) {
+      const skRow = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:55%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
+      const skCard = `<div class="chart-card" style="margin-bottom:10px;"><div class="log-list">${skRow.repeat(3)}</div></div>`;
+      body = `<div aria-busy="true" data-admin-analytics-skeleton="1">${skCard.repeat(3)}</div>`;
+    } else if (a.error) {
+      body = `<div class="empty">${safeText(a.errorText || "לא ניתן היה לטעון את הנתונים.")}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="admin-analytics-retry">ניסיון חוזר</button></div></div>`;
+    } else if (!a.data) {
+      body = `<div class="empty">אין עדיין נתונים לתצוגה.</div>`;
+    } else {
+      body = renderAdminAnalyticsCoreGroup(a.data) + renderAdminAnalyticsAdditionalGroup(a.data);
+    }
+    return `<div class="ach-section" style="margin-top:18px;" data-admin-analytics-dashboard="1">${sectionHead("var(--energy)", "לוח בקרה: אנליטיקת קהילה", true)}${renderAdminAnalyticsPeriodSelector()}${body}</div>`;
   }
   // COMM-155. The pinned strip at the very top of the Club home, above the
   // club top card. Up to three chips; staff with community.content.pin get
@@ -8050,7 +8424,7 @@
     const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מתאמנים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין מתאמנים חדשים לאחרונה</div>`}</div>` : "";
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
-    const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
+    const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderAdminAnalyticsDashboard() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
 
@@ -8258,6 +8632,10 @@
     // COMM-154. The audit view is lazy: fetched the first time an analytics
     // holder lands on the Account tab, not on every session.
     if (state.communityTab === "account" && hasPerm(PERM.ANALYTICS_VIEW) && !state.auditLoaded && !state.auditLoading) loadAuditLog(true);
+    // COMM-310. Same lazy pattern as the audit view just above: the
+    // dashboard's default period (this ISO week) is fetched the first time
+    // an analytics holder or real admin lands on the Account tab.
+    if (state.communityTab === "account" && (hasPerm(PERM.ANALYTICS_VIEW) || isAdmin()) && !state.adminAnalytics.loaded && !state.adminAnalytics.loading) loadAdminAnalyticsDashboard();
     // COMM-309. The monthly club recap's member-facing card: fetched the
     // first time a member lands on the Account tab, same lazy pattern as
     // the audit view just above (and every other tab-scoped load in this
@@ -8462,6 +8840,10 @@
     else if (action === "audit-filter") setAuditFilter("action_type", el.dataset.type || "");
     else if (action === "audit-more") loadAuditLog(false);
     else if (action === "audit-retry") loadAuditLog(true);
+    // COMM-310 admin community analytics dashboard.
+    else if (action === "admin-analytics-mode") setAdminAnalyticsMode(el.dataset.mode);
+    else if (action === "admin-analytics-shift") shiftAdminAnalyticsPeriod(Number(el.dataset.dir) || 1);
+    else if (action === "admin-analytics-retry") loadAdminAnalyticsDashboard();
     // COMM-155 pins.
     else if (action === "unpin") unpinTarget(el.dataset.type, el.dataset.id);
     else if (action === "pin") pinTarget(el.dataset.type, el.dataset.id, el.dataset.note || "");
