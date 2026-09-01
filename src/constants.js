@@ -22,6 +22,7 @@ const MOVEMENTS = [
   { id: "pause-squat", name: "Pause Squat", category: "Squat" },
   { id: "zercher-squat", name: "Zercher Squat", category: "Squat" },
   { id: "bulgarian-split-squat", name: "Bulgarian Split Squat", category: "Squat" },
+  { id: "squat-clusters", name: "Squat Clusters", category: "Squat" },
   { id: "deadlift", name: "Deadlift", category: "Deadlift" },
   { id: "sumo-deadlift", name: "Sumo Deadlift", category: "Deadlift" },
   { id: "deficit-deadlift", name: "Deficit Deadlift", category: "Deadlift" },
