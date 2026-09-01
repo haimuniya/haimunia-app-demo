@@ -173,11 +173,17 @@ export function createMockSupabase(seedTables = {}) {
         const matched = rows(table).filter((r) => filters.every((f) => f(r)));
         return Promise.resolve({ data: matched[0] || null, error: null });
       },
-      // A real Supabase query builder is a real thenable/Promise (code
-      // in the app calls .catch()/.finally() on it, e.g. pingActivity's
-      // upsert(...).catch(() => {})) - delegating to an actual Promise
-      // here instead of hand-rolling `then` gives every Promise method
-      // for free, rather than re-discovering each one a caller needs.
+      // The real @supabase/postgrest-js builder is only a thenable - it
+      // defines .then() and nothing else, so app code must never chain
+      // .catch()/.finally() directly on one (wrap it in Promise.resolve()
+      // first, as feed_record_impressions/feed_record_interaction do).
+      // This mock's own catch()/finally() below are a convenience for
+      // test code, delegating to a real Promise so every Promise method
+      // works - but that convenience is exactly what let pingActivity()
+      // and dismissOnboardingStep() ship with a direct .catch() that threw
+      // "is not a function" against the real client while every test here
+      // passed. Don't take this mock's shape as a spec for what the real
+      // builder supports.
       _resolve() {
         if (mode === "insert") {
           const list = Array.isArray(pendingPayload) ? pendingPayload : [pendingPayload];
