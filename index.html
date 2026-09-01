@@ -439,15 +439,27 @@
      the update banner's fixed-top slot and visual weight, distinguished by
      the brand stripe instead of the solid energy color, and steps aside if
      an update banner is showing (see showUpdateBanner in app.js). -->
-<div id="installBanner" role="status" style="display:none; position:fixed; top:0; left:0; right:0; z-index:59; background-image:var(--stripe); padding:calc(max(env(safe-area-inset-top,0px), 28px) + 14px) 16px 14px; width:100%; box-shadow:0 4px 16px rgba(0,0,0,.25);">
-  <div class="flex items-center justify-between" style="max-width:448px; margin:0 auto; gap:12px;">
-    <div style="color:#fff; text-shadow:0 1px 3px rgba(0,0,0,.5);">
-      <div style="font-weight:800; font-size:14px;">התקינו את האימוניה</div>
-      <div style="font-weight:600; font-size:12px; opacity:.9;">גישה מהירה ישירות ממסך הבית</div>
+<!-- Bottom-sheet presentation (was a fixed-top colored strip). Same id and
+     the same two data-action hooks on the same two buttons - all of
+     showInstallBanner()/dismissInstallBanner()/installApp() (app.js) and
+     the beforeinstallprompt/appinstalled listeners are untouched; they
+     only ever read/write banner.style.display, which still means
+     "block" = shown here exactly as before. -->
+<div id="installBanner" role="status" style="display:none; position:fixed; left:0; right:0; bottom:0; z-index:59; width:100%;">
+  <div style="max-width:448px; margin:0 auto; background:var(--surface); border:1px solid var(--border); border-top-left-radius:22px; border-top-right-radius:22px; padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 18px); box-shadow:0 -16px 40px rgba(0,0,0,.3);">
+    <div class="flex items-center gap-10" style="margin-bottom:14px;">
+      <div style="width:52px; height:52px; border-radius:16px; background:var(--surface2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; flex-shrink:0; overflow:hidden; box-shadow:var(--shadow-card);">
+        <img src="./assets/mark.png" alt="" style="width:30px; height:auto;" />
+      </div>
+      <div>
+        <div style="font-weight:800; font-size:14px; color:var(--chalk);">התקינו את האימוניה</div>
+        <div style="font-weight:600; font-size:12px; color:var(--steel);">גישה מהירה ישירות ממסך הבית</div>
+      </div>
     </div>
-    <div class="flex items-center gap-8" style="flex-shrink:0;">
-      <button data-action="install-app" style="background:#fff; color:var(--energy); font-weight:800; font-size:13px; padding:8px 14px; border-radius:10px; white-space:nowrap;">התקנה</button>
-      <button data-action="dismiss-install-hint" aria-label="סגירה" style="color:#fff; padding:4px;">
+    <div class="brand-stripe" style="height:4px; margin-bottom:14px;"></div>
+    <div class="flex items-center gap-10">
+      <button data-action="install-app" class="save-btn" style="flex:1; max-width:none; font-family:inherit; font-weight:800; font-size:14px; padding:12px 0; box-shadow:none;">התקנה</button>
+      <button data-action="dismiss-install-hint" aria-label="סגירה" style="color:var(--steel); padding:10px; flex-shrink:0;">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
       </button>
     </div>
