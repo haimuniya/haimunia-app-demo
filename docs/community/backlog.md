@@ -654,7 +654,8 @@ last since it builds on 301/302), achievements (COMM-305), coach-tools
 (COMM-304, then COMM-315), recaps (COMM-309, then COMM-316), challenges
 (COMM-308, unblocked from the start, no ordering constraint), admin-moderation
 (COMM-310 through COMM-313, in that order — each later one in that cluster
-reads the one before it), identity-privacy (COMM-314, unblocked from the
+reads the one before it; **corrected while building: the 312/313 pair is the
+other way round, see the admin-moderation section below**), identity-privacy (COMM-314, unblocked from the
 start), qa (COMM-317, last, the phase's merge gate, same role COMM-234 played
 for Phase 2).
 
@@ -1063,6 +1064,47 @@ its whole scope, no new metric invented. COMM-311, COMM-312, and COMM-313
 have no forward reference anywhere in this repo's docs — each ticket file
 flags this explicitly and proposes a conservative, best-effort shape rather
 than inventing spec text this planner never had.
+
+**Ordering correction, made while building COMM-313.** The cluster does not
+run strictly 310 → 311 → 312 → 313. COMM-310 → COMM-311 → COMM-313 does hold
+(each reads `analytics_wcam_events()` from 310, and 313 is the more aggregate
+sibling of 311), but **COMM-313 does not read COMM-312 at all** — its
+acceptance criteria and client contracts never mention
+`community_health_scores` or any COMM-312 function, and the only thing it
+borrows from that ticket is the *wording* of the permission gate. **COMM-312
+does read COMM-313**: its score names "a retention signal (COMM-313, once it
+exists)" as one of four weighted inputs. So the real order is **310 → 311 →
+313 → 312**, which is the order taken. COMM-313's schema half shipped in
+`202609010008` (`retention_cohorts`, `retention_onboarding_correlation`,
+`retention_welcome_correlation`, plus a private `retention_member_weeks()`
+granted to no role and a `retention_min_cohort_size()` constant) with pgTAP
+`0052`; its client half is still open. COMM-312 now has its retention input
+available and should call one of those rather than re-derive a curve.
+
+**COMM-312's schema half then shipped in `202609010009`** with pgTAP `0053`
+(101 assertions; the suite went 1854 → 1955): the `community_health_scores`
+table with a single `is_admin()` select policy and no client write grant at
+all, `community_health_generate(p_week_start)` (service-role only, idempotent
+per week, no scheduler — the same open infra item five other functions carry),
+`community_health_history(p_weeks)` and a private
+`community_health_component()`. Its client half is still open. It **did** read
+COMM-313, as predicted — its retention component is the pooled week-4 retained
+share out of the private `retention_member_weeks(6)`, which is the only one of
+that migration's functions a service-role job can call, since the other three
+raise on a null `auth.uid()`. That same `auth.uid()` fact is why nothing in
+COMM-312 calls `analytics_dashboard()` either; WCAM share and engagement per
+post are recomputed from `analytics_wcam_events()` and COMM-310's own
+denominator. **One new open item came out of it, against COMM-313 rather than
+COMM-312**: `retention_member_weeks()` is anchored on `now()` and takes no
+as-of parameter, so a health score's retention component is measured as of the
+run and not as of the scored week — harmless on a weekly schedule, misleading
+in a backfill. Full reasoning, including the weight split and the two
+normalisation constants, is in `docs/community/contracts.md` under "Needs from
+schema, community health score (COMM-312, Phase 3)".
+
+**With that, all four admin-moderation schema halves are shipped** (COMM-310
+`202609010006`, COMM-311 `202609010007`, COMM-313 `202609010008`, COMM-312
+`202609010009`). Four client halves remain open in this cluster.
 
 ### identity-privacy
 

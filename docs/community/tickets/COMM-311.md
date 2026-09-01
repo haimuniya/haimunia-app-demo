@@ -2,7 +2,9 @@
 
 Phase: 3
 Agent: admin-moderation
-Status: todo
+Status: in progress — schema half shipped (202609010007 + pgTAP 0051); client
+half (the segment cards, the period selector and the drill-down list) still
+open
 Attendance-blocked: no
 
 No forward reference for this ticket exists anywhere in
@@ -73,9 +75,29 @@ target a segment rather than guessing.
 
 - COMM-013, COMM-170, COMM-233, COMM-304, COMM-310.
 
-## Open question
+## Open question — RESOLVED 2026-08-31
 
-This ticket's segment set, thresholds, and drill-down behaviour are not
-grounded in any spec text available to this planning session. Confirm
-against the actual product spec before a feature agent builds against the
-acceptance criteria above.
+Confirmed with the user: build against the proposed shape as-is. The schema
+half did, and shipped in `202609010007`. Two gaps in the proposed shape had
+to be closed by judgment while building; both are written out in full in
+`docs/community/contracts.md` under "## Needs from schema, member engagement
+segmentation (COMM-311, Phase 3)" and both are one-line reversible.
+
+- **The five named buckets are not exhaustive**, and the first acceptance
+  criterion requires that they be. A member WCAM-qualifying in 1, 2 or 3 of
+  the last 8 weeks, with no open flag and more than 30 days of tenure, is
+  not `new`, not `highly_active` (needs 4 of the last 4), not `steady`
+  (needs 4 of 8), not `declining`, and **not `dormant` either** — `dormant`
+  is defined as *no* qualifying activity. A sixth bucket, `occasional`, was
+  added rather than stretching `dormant` over people who were in the app
+  three weeks out of eight.
+- **No precedence is stated** between buckets a member can match at once.
+  Resolved as `new` > `declining` > `highly_active` > `steady` >
+  `occasional` > `dormant`. `declining` above `highly_active` is the one
+  departure from the order the acceptance criteria list the buckets in, and
+  is argued in the migration header and the contract: the flag is verified
+  attendance decline and WCAM is app engagement, so a member who stopped
+  training but still opens notifications must not be hidden.
+
+Neither reshapes the output; `segment` is one text value either way, which is
+the later-tuning latitude this ticket's first criterion already grants.

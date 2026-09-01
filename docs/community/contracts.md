@@ -4366,6 +4366,964 @@ is there. Same open infra item `notif_batch_flush_due()`,
   recap row. It is not an `'announcement'` (that table is untouched), not a
   `'post'` (no `workout_posts` row is written), and not the `'club'`.
 
+## Needs from schema, admin analytics dashboard (COMM-310, Phase 3)
+
+Shipped in `202609010006`. **No new table.** Nothing is materialised: every
+figure is computed live from `analytics_events` plus the community tables
+`docs/community/metrics.md` already names as the cross-check side. A rollup
+table would be a second place for WCAM to be defined, and the point of the
+WCAM section in `metrics.md` is that there is exactly one definition.
+
+**The metric set is closed.** It is exactly `metrics.md`'s two lists — 5
+"Core metrics" + 13 "Additional metrics" = 18 keys — and no more. That file's
+own closing note records that its list was reconciled against the shipped
+event schema rather than the other way round, so a metric outside those two
+lists has no event behind it. `0050` pins both key sets exactly: adding a
+metric without adding a line to `metrics.md` fails the suite, and so does
+dropping one.
+
+### analytics_wcam_events() returns text[] (202609010006)
+
+- **Purpose.** The 15 `analytics_events.event_name` values that make a member
+  ACTIVE for a week under the WCAM definition in `metrics.md` (spec section
+  78). **The single server-side copy of that list.**
+- Params: none. Returns: `text[]`, the names in `metrics.md`'s own order.
+- Auth: `security invoker`, `immutable`. `revoke all from public, anon`;
+  **`grant execute to authenticated`** — the one helper here that is
+  client-reachable, because the same list already ships to every browser
+  inside `src/analytics.js` as `ACTIVE_MEMBER_EVENTS`.
+- Side effects: none; reads no data at all.
+- **`IMMUTABLE` is load-bearing, not decoration.** It is what lets the planner
+  fold `event_name = any(analytics_wcam_events())` to a constant array and
+  keep using `analytics_events_name_idx (event_name, created_at desc)`.
+  Verified by `explain`; `0050` pins the volatility.
+- **Every later WCAM consumer must call this rather than repeat the array.**
+  COMM-311 (`member_segments`), COMM-312 (`community_health_scores`) and
+  COMM-313 (`retention_cohorts`) are all already specified in terms of
+  "WCAM-qualifying activity". There were two copies of this list before this
+  migration (`src/analytics.js` and the worked SQL in `metrics.md`) and no
+  server-side one; this is now the third and last place it may appear.
+- Deliberately absent, and asserted absent by `0050`: the ten passive views
+  (`club_tab_viewed`, `feed_viewed`, `post_impression`, `leaderboard_viewed`,
+  `challenge_viewed`, `event_viewed`, `weekly_recap_opened`,
+  `search_performed`, `directory_opened`, `classmates_card_viewed`),
+  `report_submitted`, and `push_opt_in`.
+
+### The four internal helpers (202609010006)
+
+All four are **granted to no role at all** — `revoke all from public, anon,
+authenticated`. They are not part of any client contract and are recorded
+here only so a later ticket reuses them instead of rewriting them.
+
+- `analytics_week_buckets(p_start date, p_end date) returns table (week_start
+  date, week_end date, is_partial boolean)` — `immutable`. Every Monday-based
+  ISO week touched by the **inclusive** range, `week_end` exclusive.
+  `is_partial` is true when the period does not cover the whole week; such
+  weeks are returned and flagged, never dropped, so a month's series is as
+  long as the month.
+- `analytics_ratio(p_num numeric, p_den numeric) returns numeric` —
+  `immutable`. `p_num / p_den` rounded to 4 places, **or NULL when the
+  denominator is zero or null.** Every rate in the dashboard goes through it.
+- `analytics_event_uuid(p_props jsonb, p_key text) returns uuid` —
+  `immutable`. A uuid out of a props blob, or null for anything missing,
+  non-string or not uuid-shaped. `analytics_events` takes a direct client
+  insert and its props are only size-checked, so a bare `::uuid` cast in a
+  dashboard query is one malformed row away from failing the whole call.
+- `analytics_breakdown(p_event text, p_prop text, p_from timestamptz, p_to
+  timestamptz) returns jsonb` — `stable security definer`. `{prop value:
+  count}` for one event name over `[p_from, p_to)`. **Keys truncated to 64
+  chars and capped at 25** (largest by count, remainder folded into
+  `'(other)'`), because the group key is client-written and otherwise
+  unbounded. A missing or empty prop groups under `'(none)'`. Returns `'{}'`
+  for no rows, never null. Definer because it reads `analytics_events` past
+  RLS **and it takes the event name as a parameter**, so a client-callable
+  version would be an unpermissioned reader of the whole analytics stream —
+  the grant is the gate, and `auth.uid()` plus the permission are checked one
+  level up in `analytics_dashboard()`.
+
+### analytics_dashboard(p_period_start date, p_period_end date) returns jsonb (202609010006)
+
+- **Purpose.** COMM-310's whole dashboard in **one call**, matching
+  `coach_celebrate_feed()`'s "one call for the whole list" shape rather than
+  one RPC per metric card.
+- **Auth.** `security definer`. `auth.uid()` checked first, then
+  `has_perm('community.analytics.view') or is_admin()`. Same pair, same
+  order, as `recap_monthly_publish()`.
+  **This is NOT `is_staff()`, and the difference is the one thing the client
+  half must get right.** A coach holds `is_staff()` and does not hold
+  `community.analytics.view` (202608280001 seeds it to `admin` and `owner`
+  only), so **a coach is refused**. The same coach may preview a monthly
+  recap draft and may call `coach_celebrate_feed`. **Gate the nav item on the
+  permission, not on staffness**, or a coach is shown a screen the database
+  refuses. `0050` asserts exactly that on one session.
+- **Why definer, precisely.** *Not* to widen `analytics_events`: that table's
+  own select policy already restricts reads to a `community.analytics.view`
+  holder (202608280012) and this ticket does not widen it by one row. The
+  boundary actually crossed is the cross-check tables — `notifications` and
+  `push_subscriptions` are own-row only, `reports` is reporter-or-moderator,
+  `attendance_log` is own-row plus staff, and `workout_posts`,
+  `post_comments`, `reactions` and `follows` are viewer-relative. Counting any
+  of them club-wide from an admin's own session would return that admin's
+  slice and label it the club's number.
+- **Errors**, all `P0001`: `'not authorized'`, `'period required'` (either
+  bound null), `'period end before start'`, `'period exceeds 366 days'`.
+- **The period is validated, never clamped**, which is the opposite of
+  `coach_celebrate_feed`'s `p_days`. A silently shortened range would put a
+  number on screen labelled with a period it was not computed over.
+- **`p_period_end` is INCLUSIVE of its day.** `(Mon, Sun)` is that week;
+  `(Sep 1, Sep 30)` is September. The resolved half-open bound comes back as
+  `period.end_exclusive` so a caller never has to guess.
+- **Max lookback 366 days** (inclusive span), per COMM-310's "bounded so a
+  pathological range cannot force a full-table scan". 366 rather than 365 so a
+  leap year and a this-day-last-year-to-today range both fit.
+- Side effects: none. `stable`, reads only.
+- **Aggregate only, everywhere.** Every value is a count, a sum or a ratio;
+  the only grouping keys are ISO week starts, surface names and enum-shaped
+  props. `analytics_breakdown()` is never called with an id-bearing prop
+  (`post_id`, `user_id`, `notification_id`, `challenge_id`, `event_id`,
+  `member_achievement_id`). `0050` asserts the entire serialised response
+  mentions no member id, handle or display name **and contains no uuid of any
+  kind in any position** — the jsonb equivalent of the column-list proof
+  `monthly_club_recaps` gets for free.
+
+**Response shape.** Four top-level keys, `core`/`additional` grouped to match
+`metrics.md`'s own split, which is also the section split the screen renders:
+
+```
+{ period: { start, end, end_exclusive, days, weeks },
+  generated_at,
+  core: { wcam, wcam_share, posting_members, engagement_per_post, feed_reach },
+  additional: { open_rate, filter_use, sub_tab_split,
+                notification_effectiveness, social_graph_growth,
+                challenge_leaderboard_pull, moderation_load,
+                share_intent_split, recap_pull_through, discovery_split,
+                coach_reach, push_adoption, trained_with_you_reach } }
+```
+
+- `core.wcam` / `wcam_share` / `posting_members` / `engagement_per_post` each
+  carry a **`weeks` array**, one entry per ISO week, because those four are
+  defined *by the week* in `metrics.md`. Each entry carries `partial`.
+- `core.wcam.period_active_members` is **not WCAM** and is named so it cannot
+  be read as WCAM: distinct actives over the whole period. For a month it is
+  larger than any of that month's weeks and is not comparable to one.
+- `wcam_share`'s denominator is **membership as of the end of that week** —
+  an `invite_redemptions` row redeemed before the week ended on a profile not
+  soft-deleted before it ended — not a bare `count(profiles)` today. Carries
+  the same known limitation `recap_monthly_generate()` records:
+  `grant_coach_role()` updates `redeemed_at`, so promoting a member re-dates
+  their join.
+- `engagement_per_post` returns the metric from the **event stream** and a
+  separate `table_cross_check` from `workout_posts`/`reactions`/
+  `post_comments`. The two are *expected* to differ; `metrics.md`'s standing
+  rule is "the tables are the cross-check, not the source".
+- The thirteen Additional metrics return the **period total** plus a
+  `per_week` average where `metrics.md` says "per week". Selecting one week —
+  which is how COMM-310 says the screen is driven — makes the two equal.
+- Ratios are `null`, not `0`, over a zero denominator. **A count of zero is an
+  honest zero; a rate over a zero denominator is not.** Render an em dash.
+  Breakdowns are `{}`, never null, and an empty period returns the same 18
+  keys as a busy one, so a skeleton card never disappears.
+
+**Four judgment calls made where `metrics.md` under-specifies. Read these
+before building a UI label for the number.**
+
+1. **`filter_use.sessions` is a member-day, not a session.** `feed_viewed`
+   carries no session id (`post_impression` has `feed_session_id`,
+   `feed_viewed` does not), so "the share of sessions that ever change scope"
+   is not directly answerable. A "session" is approximated by a `(member,
+   calendar day)` pair, and the payload declares this in
+   `sessions.basis = "member_day"`. **The number is a floor on the true
+   per-session rate, not an estimate of it.** Adding `feed_session_id` to
+   `feed_viewed` would answer it exactly and is an additive client prop, not
+   a schema change.
+2. **`open_rate` types both sides from `workout_posts`, not from the event.**
+   `post_impression` has no `post_type` prop, so the denominator must come
+   from the post. `post_opened`'s own `post_type` prop is therefore *not*
+   used — one source for the grouping key means numerator and denominator
+   cannot be typed differently for the same post.
+3. **`coach_reach.celebrate_items_eligible` is an upper bound, not a replay.**
+   `coach_celebrate_feed()` is viewer-relative (each branch gated by
+   `can_view_profile_field()` against the calling coach), clamps to 30 days
+   and caps at 100 rows, so what a coach was actually shown cannot be
+   recomputed for a past period. This counts what the feed's three *sources*
+   produced — PR posts, tenure anniversaries, challenge completions — with the
+   same non-privacy filters and without the per-viewer gates. `coverage` is
+   therefore a **lower** bound on the share acted on.
+4. **`recap_pull_through.open_rate` can legitimately exceed 1.**
+   `weekly_recap_opened` also fires with `source = 'account'`, which is a
+   member opening the recap with no notification behind it.
+
+**Two behaviours that are deliberately NOT period-bounded**, because they are
+facts about *now* and an admin reading a past period still needs them:
+`moderation_load.queue.open_now` and
+`push_adoption.subscriptions.active_now` / `revoked_now` /
+`members_reachable_now`. `0050` asserts the queue depth is non-zero for a
+period in which nothing happened, so this cannot be "fixed" into a period
+filter by accident.
+
+**Week boundaries are UTC ISO weeks (Monday-based), resolved at the calling
+session's TimeZone — UTC for PostgREST.** `metrics.md`'s WCAM section says
+"week boundaries follow the club's local week, not UTC". **That is not
+implemented here, and it is not implemented anywhere else in this module
+either**: `recap_weekly` computes UTC ISO weeks and `recap_monthly_generate()`
+recorded the same open question. Pinning a zone in this one function would
+make it the only function in the module with an opinion about the club's local
+time. **Open item for the planner, module-wide.**
+
+**No new index was added, and there is evidence for that rather than a
+shrug.** Every `analytics_events` read in this function filters on
+`event_name` first, and `explain` confirms
+`analytics_events_name_idx (event_name, created_at desc)` is used for the
+15-name WCAM predicate as a single index scan. The cross-check tables are a
+different story and are flagged rather than fixed: `notifications`, `reports`,
+`follows` and `workout_posts` are each range-scanned on `created_at` with no
+index that covers it (`notifications_user_idx` leads with `user_id`,
+`workout_posts_feed_idx` is on `published_at`). `recap_monthly_generate()`
+already does exactly the same scan on `workout_posts` and shipped without an
+index, so this ticket follows that precedent instead of setting a new one.
+**If the dashboard gets slow, that is where to look first.**
+
+## Needs from schema, member engagement segmentation (COMM-311, Phase 3)
+
+Shipped in `202609010007`. **No new table, no new policy, no policy edited,
+no grant changed on any existing table.** The segmentation is computed live
+from three sources that already exist: `analytics_events` (WCAM, always
+through `analytics_wcam_events()`), `invite_redemptions` (tenure) and
+`coach_engagement_flags` (the `declining` signal).
+
+**There is no second copy of the WCAM event list in this migration.** That is
+the reason `analytics_wcam_events()` exists, and `0051` asserts it
+structurally: the function body contains the string `analytics_wcam_events`
+and does not contain any of the fifteen event names.
+
+### member_segments(p_as_of date default current_date) returns setof jsonb (202609010007)
+
+- **Purpose.** COMM-311's segmentation: one row per club member,
+  `{user_id, display_name, handle, segment}`. Exactly the signature and shape
+  the ticket's "Client calls and contracts" names.
+- **Auth.** `security definer`. `auth.uid()` checked first, then
+  `has_perm('community.analytics.view') or is_admin()` — the same pair, in the
+  same order, as `analytics_dashboard()`. **Not `is_staff()`: a coach is
+  refused.** Gate the nav item on the permission, not on staffness.
+- **This is how COMM-311's "never expose a `declining` label to the member it
+  describes" is enforced — end to end, not in the UI.** There is **no
+  member-facing version of this function at all**, and a plain member holds
+  neither the permission nor `is_admin()`, so a member cannot learn their own
+  segment by calling it. `0051` proves that on a member who really does carry
+  an open flag, and separately proves the same member reads `declining` when
+  staff ask.
+- **Errors**, both `P0001`: `'not authorized'`, `'as-of date is in the
+  future'`. A future date is refused, never clamped, for the same reason
+  `analytics_dashboard()` refuses a bad period. A **null `p_as_of` means
+  `current_date`** — unlike that function's two bounds, this parameter has a
+  sensible default in its own signature.
+- Side effects: none. `stable`, reads only. No lookback cap is needed: the
+  window is a fixed 8 weeks wherever `p_as_of` points.
+- `revoke all from public, anon`; `grant execute to authenticated`.
+
+**The six segments, in strict precedence order.** A member matches the first
+branch that is true and appears in exactly one row.
+
+| segment | test |
+| --- | --- |
+| `new` | redeemed within 30 days of `p_as_of` (join day is day 1, day 30 is the last new day) |
+| `declining` | an **open** `coach_engagement_flags` row raised on or before `p_as_of` |
+| `highly_active` | WCAM-qualifying in **each** of the last 4 complete ISO weeks |
+| `steady` | WCAM-qualifying in at least 4 of the last 8 complete ISO weeks |
+| `occasional` | WCAM-qualifying in 1 to 3 of the last 8 |
+| `dormant` | WCAM-qualifying in none of the last 8 |
+
+**Two decisions COMM-311 does not make, made here. Read both before building
+a UI label.**
+
+1. **`occasional` is a SIXTH bucket this implementation added.** The ticket's
+   five are **not exhaustive** — a member active in 1, 2 or 3 of the last 8
+   weeks with no flag and more than 30 days of tenure is not `new`, not
+   `highly_active`, not `steady`, not `declining`, and *not `dormant` either*,
+   because `dormant` is defined as **no** qualifying activity. The first
+   acceptance criterion requires every member to land somewhere, so the
+   residual is named rather than folded into `dormant`, which would make that
+   word false about a member who was in the app three weeks out of eight. The
+   output shape is unchanged (`segment` is still one text value), which is the
+   "tuned later without a reshaped output" the ticket allows. **To reverse:
+   delete one `case` line and `occasional` members fall into `dormant`.**
+2. **`declining` outranks `highly_active` and `steady`**, which departs from
+   the order the acceptance criteria happen to *list* the buckets in (that
+   list is an enumeration of definitions; the ticket states no precedence).
+   The flag is **verified attendance decline** computed from `attendance_log`;
+   WCAM is **app engagement** and can be earned by opening four notifications
+   in four weeks. A member who stopped training but still opens the app is
+   exactly who this segmentation exists to surface and must not be hidden
+   behind `highly_active`. It also keeps the `declining` count equal to the
+   open-flag count, so the segment card and COMM-304's Engage section cannot
+   show two different numbers for the same thing. **The accepted cost:** a
+   flag nobody triages keeps a member in `declining` even after their
+   attendance recovers, because `coach_detect_engagement_decline()` does not
+   auto-close on recovery. The exit is the dismiss button COMM-304 already
+   shipped the write path for.
+
+`new` is above everything, including `declining` — a member in their first 30
+days has no baseline to have declined from, and calling a five-day-old member
+`dormant` (which their zero activity literally satisfies) is the worst false
+positive this function could produce.
+
+**The window is the last 8 COMPLETE Monday-based ISO weeks before `p_as_of`'s
+own week. The week in progress is never counted.** Judging a member on a week
+that has not finished would make `highly_active` unreachable for six days out
+of seven. Same UTC ISO week and the same unresolved "club's local week" gap
+`analytics_dashboard()` records.
+
+**Membership is COMM-310's denominator, term for term:** an
+`invite_redemptions` row redeemed before the end of `p_as_of`, on a profile
+not soft-deleted before the end of `p_as_of`. A profile with no redemption is
+not a member and never appears. `invite_redemptions.user_id` is that table's
+primary key, so the join cannot duplicate anybody — "exactly one segment per
+member" is structural here, not defensive. Carries the same
+`grant_coach_role()` re-dates-`redeemed_at` limitation the recap functions
+record: promoting a member to coach can put them back into `new` for 30 days.
+
+**`visible_to_club` on the drill-down.** A member with `visible_to_club =
+false` is **returned, with their segment, and with `user_id`, `display_name`
+and `handle` all null.** Both halves matter:
+
+- the row is present, so the **segment counts are the whole club** and a
+  hidden member is not silently deducted from the denominator;
+- the row carries no id, no handle and no name, so the drill-down list
+  **cannot attribute it to anybody**. All three fields are nulled *together* —
+  a bare uuid is still an identifier a staff screen could join against. The
+  keys are present-and-null, never absent, so the client renders one row shape.
+
+**This reads the raw `profiles.visible_to_club` column and deliberately does
+NOT call `can_view_profile_field()`**, matching
+`member_of_week_candidate_set()`'s half of that precedent rather than
+`coach_celebrate_feed()`'s. Two reasons specific to this function's gate:
+(a) `can_view_profile_field()` returns true for any caller passing
+`is_admin()` before it reads the target's toggle, and this function's gate is
+`community.analytics.view or is_admin()` — seeded to admin and owner only — so
+the helper would be a **no-op** for essentially every legitimate caller;
+(b) it returns false across a block edge in either direction, so an admin who
+had blocked one member would get a club-wide statistic with that member
+missing and every count one short. The redaction here is a fact about the
+**member**, applied uniformly, not about who is asking.
+
+**The one viewer-relative thing in the output: `coach_engagement_flags`'
+`user_id <> auth.uid()` rule is re-applied by hand**, because definer rights
+have already stepped past the policy that carries it. **The caller never reads
+their own `declining` label**, including an admin or the owner —
+`202608280011` is explicit that the rule covers them. Their row is **not
+dropped**: it is still there, under whatever their activity says, so the club
+count never differs by one between two staff sessions. `0051` asserts the
+mirror pair — the admin and the owner each carry an open flag, each reads the
+other as `declining` and themselves as `dormant`, and both runs return the
+same 21 members.
+
+A flag must have been **raised** on or before `p_as_of`, but its
+**open-ness is a fact about now** — `coach_engagement_flags` has no status
+history to reconstruct — the same asymmetry
+`analytics_dashboard()`'s `moderation_load.queue.open_now` records.
+
+**Thresholds (30 days, 4 weeks, 8 weeks, 4-of-8) are named constants** at the
+top of the function body, not client parameters, in COMM-304's tuning-constants
+style. `p_as_of` is the only input and it moves the window, never a bar.
+
+**No new index.** Every `analytics_events` read filters on `event_name`
+through `analytics_wcam_events()` and so keeps using
+`analytics_events_name_idx`; `coach_engagement_flags` is read through
+`coach_engagement_flags_open_idx (status, flagged_at desc)`.
+
+## Needs from schema, retention correlation views (COMM-313, Phase 3)
+
+Shipped in `202609010008`. **No new table, no new policy, no policy edited, no
+grant changed on any existing table.** All three answers are computed live from
+four sources that already exist: `invite_redemptions` (the join month),
+`analytics_events` (WCAM, always through `analytics_wcam_events()`),
+`onboarding_progress` (the five step stamps) and `member_contact_log` (the
+coach Welcome).
+
+**There is no second copy of the WCAM event list in this migration.** `0052`
+asserts it structurally across all five functions in the file.
+
+**Build order: this shipped BEFORE COMM-312, which its own "Dependencies" line
+names.** That is deliberate. COMM-313 reads nothing COMM-312 produces — its
+acceptance criteria and its client contracts never mention
+`community_health_scores` or any COMM-312 function, and the only thing it takes
+from that ticket is the *wording of the permission gate*. COMM-312, by
+contrast, genuinely reads COMM-313: its score names "a retention signal
+(COMM-313, once it exists)" as one of four weighted inputs. So the dependency
+runs the other way and this is the only order in which either ticket can be
+built. The backlog's "COMM-310 through COMM-313, in that order — each later one
+reads the one before it" holds for 310 → 311 → 313 and is **wrong for the
+312/313 pair**; corrected in `backlog.md` too.
+
+### The gate is `is_admin()` ALONE, and it is narrower than COMM-310's and COMM-311's
+
+All three public functions check `auth.uid()` first, then `is_admin()`, with
+**no `has_perm('community.analytics.view')` alternative.** This is not a
+copy-paste slip from the two tickets above: COMM-313 says it twice, in its
+fifth acceptance criterion ("gated by real `is_admin`, matching COMM-312's
+narrower bar rather than the broader `community.analytics.view` bar COMM-310
+and COMM-311 use") and again in its client contracts.
+
+Today the two gates select nearly the same people — `202608280001` seeds that
+permission to `admin` and `owner` only, and both clear `is_admin()`'s rank bar
+of 50. **The difference bites the moment anybody grants that permission one
+rank lower**: a `head_coach` or `staff` role holding `community.analytics.view`
+reads the dashboard and the segments and is still refused a retention curve.
+`0052` asserts exactly that member — it lets them into `member_segments()` on
+one line and watches all three functions here refuse them on the next.
+
+**Gate the nav item on `is_admin()`, not on the analytics permission**, or a
+head_coach is shown a screen the database refuses.
+
+### retention_cohorts(p_cohort_months integer default 6) returns setof jsonb (202609010008)
+
+- **Purpose.** COMM-313's cohort retention curve. One row per
+  `(cohort_month, week_number)`: `{cohort_month, week_number, retained_share,
+  member_count}` — exactly the four keys the ticket's contract names.
+- **Auth.** `security definer`; `auth.uid()` then `is_admin()` alone. Raises
+  `'not authorized'` (`P0001`). `revoke all from public, anon`;
+  `grant execute to authenticated`.
+- **`p_cohort_months` is CLAMPED to 1..24, not refused** — the opposite of
+  `analytics_dashboard()` and `member_segments()`, which both refuse an
+  out-of-range period. The ticket says clamp, and it is safe here in a way it
+  is not there: **every row names its own `cohort_month`**, so a caller who
+  asked for 99 months can see exactly which months answered. A **null means
+  6**.
+- `cohort_month` is **text**: either `'YYYY-MM'` or the literal `'other'`. A
+  real month key can never be the string `other`.
+- Side effects: none. `stable`, reads only.
+
+### retention_onboarding_correlation() returns setof jsonb (202609010008)
+
+- One row per `(step, stamped, week_number)`: `{step, stamped, week_number,
+  retained_share, member_count}`.
+- `step` is the **literal `onboarding_progress` column name** — `welcomed_at`,
+  `first_week_shown_at`, `first_month_shown_at` (COMM-222),
+  `first_class_shown_at`, `third_class_shown_at` (COMM-316) — so a reader can
+  go straight to the column comment that defines when it is stamped.
+- `stamped` is `true`/`false`: **was that column ever set**, at any time. It is
+  a fact about the row, not a claim about the member; it is deliberately not
+  called `saw`, `completed` or `onboarded`.
+- **No parameter**, per the ticket's contract, so the 6-month window is a named
+  constant a client cannot move. Same auth, same errors, same grants as above.
+- **Pooled across cohort months**, not split by month. Splitting would give 5
+  steps × 2 groups × 12 weeks × 6 months of cells over the same members, nearly
+  all under the floor and therefore suppressed — a real signal turned into an
+  empty grid. The cut the ticket asks for is a question about the window.
+
+### retention_welcome_correlation() returns setof jsonb (202609010008)
+
+- One row per `(contacted, week_number)`: `{contacted, week_number,
+  retained_share, member_count}`. Same auth, same errors, same grants.
+- `contacted` = the member has at least one `member_contact_log` row in the
+  **half-open window `[redeemed_at, redeemed_at + 14 days)`**. A contact at the
+  join instant counts; one at exactly fourteen days does not.
+- **KNOWN PROXY, read this before writing the label.** `member_contact_log`
+  (`202608290013`) has **no kind/type/template column** — it is
+  `{user_id, contacted_by, contacted_at, note}`, one row per coach outreach of
+  any sort. There is no way in this schema to tell a Welcome from any other
+  contact, so the fourteen-day window is doing all the work and **a coach who
+  logs a scheduling note on day three is counted as a Welcome**. If this ever
+  needs to be exact, the fix is a `kind` column on that table, not a heuristic
+  on the note text.
+- **The exposure window overlaps membership weeks 1 and 2** of the curve it is
+  cut against. The curve is left whole rather than starting at week 3 so all
+  three surfaces share one x-axis; the caveat belongs in the copy.
+
+### retention_member_weeks(p_months integer) — PRIVATE, granted to no role
+
+The single definition of a membership week, shared by all three public
+functions. Returns `{user_id, redeemed_at, cohort_month, week_number, elapsed,
+retained}`, **twelve rows per cohort member always**.
+
+**Granted to no role at all — not even `authenticated`.** The grant is the
+gate, as it is for `analytics_breakdown()`. It is the only function in the
+migration whose result carries a `user_id`, and a client-callable version would
+be a per-member retained/churned feed, which is precisely what COMM-313's
+fourth acceptance criterion forbids. It carries no auth check of its own; its
+three callers check `auth.uid()` and `is_admin()` before calling it. **Do not
+grant this to anybody.**
+
+### Four rules that shape every number these three functions return
+
+**1. A membership week is 7×24h from the join instant — NOT an ISO week.** This
+is the one place this cluster departs from the ISO grid `analytics_dashboard()`,
+`member_segments()` and the recaps all use, and the ticket's own wording forces
+it: "the share still WCAM-qualifying in each of *their first 12 weeks of
+membership*". A cohort is a calendar month, so its members join on different
+days; on an ISO grid a Sunday joiner gets a one-day "week 1" and reads as a
+week-1 dropout for a reason that is purely an artefact of the day they signed
+up. **Which events count is unchanged** — `analytics_wcam_events()` and nothing
+else — only the window boundary moves. Consequence worth knowing: a member
+counted active in "membership week 3" here may straddle two ISO weeks in the
+dashboard's own WCAM figure. **The two numbers answer different questions and
+are not expected to reconcile row for row.** Arithmetic is in seconds so a DST
+change cannot resize a week.
+
+**2. A week counts for a member only once it has fully elapsed.** A member who
+joined three weeks ago is in no denominator for weeks 4–12. Without this the
+chart would measure how long ago people joined, not whether they stayed: a
+young cohort gives a **short line**, never a false one, and a cohort whose
+members have not finished week 1 returns **nothing at all** rather than twelve
+zeroes. `member_count` therefore varies along a line and is monotonically
+non-increasing.
+
+**3. The floor is `retention_min_cohort_size()` = 5, and it is applied TWICE.**
+
+- *The ticket's rule:* a cohort month with fewer than 5 members is relabelled
+  `'other'` and pooled with every other small month — never drawn as its own
+  unstable line, never dropped. The count it is tested against is **how many
+  people joined that month**, not how many have lived through week 1, which is
+  why the private helper returns non-elapsed weeks too.
+- *This implementation's extension:* **a `(group, week)` cell whose denominator
+  is below 5 is not emitted at all**, in all three functions. The ticket writes
+  only the first rule, but its stated reason — "to avoid a curve built from 1-2
+  people" — is just as true of the twelfth point on a line as of the whole
+  line, and without it the rule is trivially escapable. **It always truncates
+  the tail of a line, never punches a hole in one**, because the denominator
+  can only fall as the week number rises. *The cost:* a cohort or a group can
+  return no rows at all and the client must render that. **To reverse:** delete
+  one `where r.member_count >= v_min` line per function.
+
+`retention_min_cohort_size()` is `immutable`, granted to `authenticated`, so
+the client can write its "cohorts under N members are grouped together" caption
+without a second copy of the number.
+
+**4. Soft-deleted members STAY in their cohort.** This is a deliberate
+departure from COMM-310's denominator, which everything else in this cluster
+reuses term for term. That denominator and COMM-311's member universe are both
+**snapshots of who the club is**; a cohort is a fixed group fixed at join time,
+and **the most churned member of all is the one who deleted their account**.
+Dropping them would compute every curve over survivors only and bias every line
+upward, worst exactly where staff would most want the truth. A **redemption
+with no profile row is excluded** (somebody who redeemed and abandoned the
+flow) — every member figure in this module is profile + redemption.
+`purge_abandoned_profiles()` cannot remove a cohort member either way: it only
+deletes accounts with *no* `invite_redemptions` row. Carries the same
+`grant_coach_role()` re-dates-`redeemed_at` limitation the recap functions
+record — promoting a member to coach moves them into a later cohort.
+
+### No member is named, anywhere, in any of the three
+
+COMM-313's fourth acceptance criterion is the strictest privacy rule in the
+Phase 3 cluster and it is **one step more aggregate than COMM-311**:
+`member_segments()` names individuals on purpose (acting on a segment means
+knowing who is in it), and these three name nobody at all — **no `user_id`, no
+`handle`, no `display_name`, in any output**. "Did this member churn" is a far
+more sensitive framing than "which bucket are they in today", and it is not a
+question these functions can be asked: the smallest thing they will answer is a
+group of five. There is no `visible_to_club` handling here because there is
+nothing to hide behind it. `0052` sweeps the entire serialised output of all
+three against every profile in the database.
+
+### Correlation, not causation — and what the schema half did about it
+
+The ticket asks that the two cuts be "explicitly not presented as causation
+anywhere in the surface's own copy". The copy is the client half's job. What
+this half does is refuse to make an honest label hard to write: **there is no
+`effect`, `impact`, `lift` or `uplift` key anywhere**, and each cut returns
+**two independent curves with no difference computed between them** — a reader
+who wants a gap subtracts it themselves, which is the point at which they own
+the claim. `0052` asserts the absence of causal key names.
+
+**The substantive caveat, for whoever writes the copy.** An onboarding step is
+stamped only when the client **renders** it (`202608290011`: "shown, not merely
+scheduled"), which requires the member to open the app. So "was `welcomed_at`
+ever stamped" is partly a restatement of "did this member come back at all" —
+**the exposure is downstream of the very engagement the curve measures**, and a
+gap between the two curves is an upper bound on anything causal, quite possibly
+all selection. This is the same point the forward-reference note in "Needs from
+schema, admin-moderation (Phase 3)" makes about COMM-316's columns: they record
+when a step was *shown*, not when the member's first or third class happened, so
+this cut measures **onboarding reach**, not attendance. The Welcome cut has the
+same problem in a weaker form: coaches contact the members who are around to be
+noticed.
+
+### Two states the client must handle
+
+- **A step nobody has ever been stamped with returns only its `stamped: false`
+  group.** Not an empty pair, not a zero row. This is the exact state of both
+  COMM-316 columns on the day they deploy — `202609010003` deliberately does not
+  backfill them — and **a missing `stamped: true` group must not be rendered as
+  "this step is bad for retention"**.
+- **A group of four returns nothing at all**, per the floor. Suppression is per
+  cell, so one side of a cut can be absent while the other is present.
+
+**No new index, and one honest note about that.** The `analytics_events` read
+filters on `event_name` through `analytics_wcam_events()` and so keeps using
+`analytics_events_name_idx`; `member_contact_log` is read through
+`member_contact_log_user_idx (user_id, contacted_at desc)`;
+`onboarding_progress` is read on its primary key. **`invite_redemptions` has no
+index on `redeemed_at`** — it has no secondary index at all — so the cohort
+window is a sequential scan of that table. That table holds exactly one row per
+member, and `member_segments()` and `analytics_dashboard()` already scan it the
+same way, so no index is added here for a single-club deployment; it is the
+first thing to add if a cohort call ever gets slow.
+
+**Timezone.** `date_trunc('month', ...)` and `to_char()` both resolve at the
+calling session's TimeZone — UTC for PostgREST — so a member who joined within
+hours of a month boundary can fall in a different cohort than the club's local
+calendar would say. The same unresolved "boundaries follow the club's local
+week, not UTC" gap `202609010006` and `202609010007` both flag, in its monthly
+form.
+
+## Needs from schema, community health score (COMM-312, Phase 3)
+
+Shipped in `202609010009`. **One new table, one policy on it, no policy edited
+and no grant changed on any existing table.** Three functions:
+`community_health_component()` (private), `community_health_generate()`
+(`service_role` only) and `community_health_history()` (`is_admin()` only).
+pgTAP `0053`.
+
+**Built AFTER COMM-313, on purpose.** COMM-312's score names "a retention
+signal (COMM-313, once it exists)" as one of four weighted inputs, and
+COMM-313 reads nothing COMM-312 produces. The ordering correction is recorded
+in the COMM-313 section above, in `backlog.md`, and in `202609010008`'s own
+header.
+
+### This is the one Phase 3 analytics ticket that STORES its answer
+
+`analytics_dashboard()`, `member_segments()` and the three retention functions
+all compute live and materialise nothing, deliberately. COMM-312's third
+acceptance criterion asks for the opposite — "the score and its component
+breakdown are **stored per computed week**, so a trend line is possible without
+recomputing history" — so this one has a table. Two consequences a reader of
+that table has to know:
+
+- **A stored score is a snapshot of a judgement, not of the data.** The weights
+  are "a reasonable starting split … expected to move" (the ticket's own
+  words). When they move, every row already stored was computed under the old
+  split. That is why **the weights travel inside `components`** on every row —
+  a trend line spanning a weight change can then be seen for what it is instead
+  of read as a change in the club. It is also why the client needs no second
+  copy of the numbers to label a bar.
+- **A recompute of an old week does not reproduce its original score.** See
+  "The retention component is as-of-now" below.
+
+### community_health_scores (table)
+
+`{id uuid pk, club_id uuid not null default default_club_id() references
+clubs(id), week_start date not null unique, score numeric not null, components
+jsonb not null default '{}', computed_at timestamptz not null default now()}` —
+the ticket's migration outline exactly, plus **two CHECKs it does not name**:
+
+- `check (extract(isodow from week_start) = 1)`. The same load-bearing
+  constraint `weekly_recaps.week_start`, `member_of_week.week_start` and
+  `monthly_club_recaps.month_start` all carry. Without it `week_start unique`
+  is unique per *date*, not per *week*, and a run keying Monday plus a run
+  keying Wednesday both insert with no constraint violation.
+- `check (score >= 0 and score <= 100)` and
+  `check (jsonb_typeof(components) = 'object')`. Backstops against a writer
+  that is not computing a score.
+
+**RLS: exactly one policy**, `community_health_scores_admin_select`, `for
+select to authenticated using (public.is_admin())`. **`grant select` to
+`authenticated` and nothing else** — no insert, update or delete grant for any
+client role and no write policy of any kind, the same shape `pins`,
+`attendance_log`, `member_of_week` and `monthly_club_recaps` use. `0053` proves
+it three ways: at the grant, at the policy count, and as a refused `insert` /
+`update` / `delete` issued by a real **admin** and a real **owner**.
+
+**No second index.** `community_health_history()` reads `order by week_start
+desc limit n`, which the unique constraint's own btree serves by scanning
+backwards, and the table gains 52 rows a year.
+
+### The gate is `is_admin()` ALONE — narrower than COMM-310 and COMM-311
+
+Same asymmetry COMM-313 built, for the same stated reason. COMM-312: "real
+`is_admin` (not merely any `community.analytics.view` holder) is the read gate,
+narrower than every other admin dashboard ticket in this phase, since this
+figure is interpretive and easy to misread out of context."
+
+`0053` asserts it with the same interesting negative caller `0052` uses: a
+`staff`-rank member who really holds `community.analytics.view`, is really let
+into `member_segments()` on one line, and on the next reads **zero rows from
+the table** and is **refused `community_health_history()`**.
+
+**Gate the nav item on `is_admin()`, not on the analytics permission**, or a
+head_coach is shown a screen the database refuses.
+
+### "Internal only" is four structural facts, not four rules
+
+COMM-312's fourth criterion — no score is ever shown to a member, to a coach
+without admin rank, or surfaced in any notification, recap or post — holds
+because:
+
+1. One policy, `is_admin()`. Not `is_staff()` (so unlike `monthly_club_recaps`,
+   a coach cannot even preview), not the analytics permission.
+2. No client write grant at all, so no client write path exists to close.
+3. **No trigger on the table**, and none of the three functions mentions
+   `notif_create`, `workout_posts`, `weekly_recaps`, `monthly_club_recaps` or
+   `notifications`. `0053` asserts both.
+4. **Not added to the `supabase_realtime` publication**, so `postgres_changes`
+   cannot stream a score to a subscriber.
+
+### community_health_generate(p_week_start date default null) returns uuid (202609010009)
+
+- **Purpose.** The "scheduled service-role job" the table's RLS comment refers
+  to. Computes and stores **one** ISO week.
+- **Auth.** `service_role` only: `revoke all from public, anon, authenticated`,
+  `grant execute to service_role`. **No `auth.uid()` check** — the documented
+  exception a scheduled job carries in this schema, because there is no session
+  to check. The grant *is* the gate, same as `recap_monthly_generate()`,
+  `purge_abandoned_profiles()` and `recap_weekly_classmates()`. `0053` proves an
+  **admin** calling it directly gets `42501`.
+- **`security definer`** for three real crossings: `analytics_events`
+  (`community.analytics.view` only), `invite_redemptions` (self-select only),
+  and `retention_member_weeks()` (**granted to no role**, so only a definer
+  function can call it at all).
+- `p_week_start` null means the **most recently completed** ISO week; any other
+  date is normalised to the Monday of its own week.
+- **A week that has not fully elapsed RAISES `'week has not finished'`
+  (`P0001`)**, it is not clamped and not scored partially. Every component is a
+  whole-week figure, and because the row is permanent nobody downstream would
+  see that a mid-week run's number was partial. `analytics_dashboard()`'s
+  validate-and-raise posture, not `retention_cohorts()`' clamp.
+- **Returns the row id, or `NULL` when the club had zero members at the end of
+  that week** — no row is written. A week before the club existed has no
+  community health to measure (WCAM share and the moderation rate are both
+  divisions by zero), and storing a zero would put a real-looking low point at
+  the left end of every trend line. It is also what makes a backfill loop safe
+  to run further back than the club has existed.
+- **Idempotent per week: `on conflict (week_start) do update`.** The ticket does
+  not use COMM-309's and COMM-314's idempotency wording, but `week_start …
+  unique` forces the decision: a plain insert raises `23505` on the second run,
+  and a scheduled job that throws on a retry pages somebody every retry. A
+  rerun **updates in place, keeps the row's id**, refreshes `computed_at`, and
+  over unchanged data reproduces the same score. Unlike `monthly_club_recaps`
+  there is **no freeze** — there is no publish step, no member ever sees the
+  number, and a recompute is a legitimate act rather than a rewrite of history.
+- **No scheduler is built.** The same open infra item
+  `recap_monthly_generate()`, `purge_abandoned_profiles()`,
+  `coach_detect_engagement_decline()`, `chal_notify_ending_soon()`,
+  `notif_batch_flush_due()` and `recap_weekly` all carry.
+- Side effects: writes `community_health_scores` and nothing else.
+
+### The four components, and exactly where each number comes from
+
+**WCAM is not redefined.** The event list is `analytics_wcam_events()`
+(`202609010006`) and there is no array of event names in the file; `0053`
+asserts that structurally. (`post_created`, `reaction_added` and
+`comment_created` *do* appear — they are metrics.md's own definition of
+engagement per post, named the same way `analytics_dashboard()` names them for
+the same metric. The assertion checks the nine WCAM-*only* names.)
+
+**Why nothing calls into COMM-310 or COMM-313's public functions.** Not a
+performance choice — it is *not possible*. `analytics_dashboard()`,
+`member_segments()`, `retention_cohorts()` and both correlations all begin
+`v_uid := auth.uid(); if v_uid is null then raise …`. The generator runs from a
+scheduler as `service_role`, with no session and no JWT, so every one of them
+raises before reading a row. Every public function in this cluster is written
+for a logged-in admin, and a cron job is not one.
+
+| Component | Weight | Source | `value` → `sub_score` |
+|---|---|---|---|
+| `wcam_share` | **0.40** | recomputed here from `analytics_wcam_events()` + COMM-310's membership denominator | the share itself, clamped into 0..1 |
+| `engagement_per_post` | **0.25** | recomputed here from the event stream, metrics.md's definition | `value / 3.0`, clamped at 1 |
+| `retention` | **0.25** | **`retention_member_weeks(6)`**, COMM-313's private helper | the share itself |
+| `moderation_load` | **0.10** | the `reports` **table** | `1 − value / 10.0`, floored at 0 — **inverse** |
+
+- **WCAM share** — numerator `count(distinct user_id)` over
+  `analytics_wcam_events()` inside the week with `user_id is not null`;
+  denominator **club membership as of the end of the week** (a redemption
+  before the week ended on a profile not soft-deleted before the week ended).
+  That is COMM-310's `actives` and `members` CTEs for a single bucket, term for
+  term. Note it is **not** COMM-313's cohort denominator, which deliberately
+  keeps soft-deleted members — a weekly share is a snapshot of who the club
+  *is*. Clamped at 1 because the numerator can include someone who was active
+  on Tuesday and deleted on Thursday.
+- **Engagement per post** — `(reaction_added + comment_created) / post_created`
+  inside the week, events on both sides, exactly as metrics.md writes it.
+  COMM-310's `workout_posts`/`reactions`/`post_comments` cross-check is a
+  data-quality tool for a human reading a dashboard, not a second definition,
+  and is deliberately **not** folded into the score.
+- **Moderation load** — the **`reports` table**, not the `report_submitted`
+  event, taking the other side of COMM-310's own distinction ("the event side
+  is what members *did*; the reports side is what the club has to act on").
+  Load is what the club has to act on, and the table is authoritative: an
+  analytics event can be dropped by an ad blocker, and *a safety signal that
+  quietly improves when telemetry breaks* is the worst failure mode available.
+  Rows **created in** the week, not "open during" it — `reports` has no status
+  history, the same asymmetry `analytics_dashboard()`'s `queue.open_now`
+  records.
+- **Retention** — see below.
+
+**The two normalisation constants are as much a judgement as the weights** and
+are named in the same place, and both are carried into the stored row:
+
+- **3.0 interactions per post** for full engagement marks. metrics.md defines
+  the metric and sets no target. Three reactions-plus-comments on a typical
+  post is the difference between a feed where posting gets you a response and
+  one where it does not; one is a courtesy, ten is a different kind of club.
+- **10.0 reports per 100 members per week** scores zero on moderation. A
+  **rate**, not a raw count, so a club that doubles in size is not penalised for
+  the reports that come with it. Ten per hundred is one report per ten members
+  in a single week — a week the club would already know about.
+
+### The weights, and why this split
+
+Named constants at the top of `community_health_generate()`'s body, per the
+ticket's validation rules. **`0053` asserts they sum to 1.00 from the stored
+row**, not from the source, so an edit that changes one and forgets another
+cannot pass quietly.
+
+- **WCAM share 0.40**, the largest single weight: metrics.md's first core
+  metric and the one figure that most directly answers "is the community layer
+  being used at all". Everything else is a quality or safety signal on top of
+  it.
+- **Engagement 0.25 + retention 0.25 = 0.50**, deliberately *more* than WCAM on
+  its own. A week where lots of members opened a feed and nothing they posted
+  got a response, or where activity is high because new members keep arriving
+  and leaving, is not a healthy week, and a split that let raw reach carry the
+  score would call it one.
+- **Moderation 0.10**, the smallest and deliberately not zero. It is a penalty
+  signal with a tiny natural range — a healthy club sits at the top of it
+  permanently — so a larger weight would be ten free points most weeks, while
+  0.10 still lets a real moderation crisis take a visible ten points off.
+
+**This is a starting split and it is expected to move.** Nothing in this repo
+grounds a different one; it is a judgement recorded, not a measurement.
+
+### The retention signal: which COMM-313 output, and its one sharp limitation
+
+**`retention_member_weeks(6)`, the private helper** — the only one of
+`202609010008`'s functions a service-role job can call, since the other three
+raise on a null `auth.uid()`. Its contract entry already says a definer
+function is the only thing that can call it and that its callers must gate
+first; this is that caller, and its gate is the `service_role` grant.
+
+**The scalar: the pooled week-4 retained share** — `count(retained) / count(*)`
+over rows where `week_number = 4 and elapsed`, across every cohort in the
+6-month window.
+
+- **Week 4**, because week 1 is close to a restatement of "did they open the
+  app the week they signed up" and week 12 exists only for members who joined
+  84+ days ago, which would exclude the two most recent cohort months and lag
+  the score by a quarter.
+- **Pooled, not per-cohort.** This number lands in a *weekly* series, and a
+  five-person cohort denominator moves in 20-point steps for reasons that have
+  nothing to do with the week being scored. Pooling gives the largest
+  denominator COMM-313's own default window supports. Pooling includes months
+  COMM-313 would have folded into `'other'` — folding only matters when months
+  are drawn as separate lines.
+- **The floor is `retention_min_cohort_size()` = 5**, COMM-313's constant
+  reused rather than a second minimum invented, applied to the **pooled**
+  denominator. Below it the component is **unavailable, not zero**.
+
+**THE RETENTION COMPONENT IS MEASURED AS OF THE RUN, NOT AS OF THE SCORED
+WEEK.** `retention_member_weeks()` is anchored on `now()` — its cohort window
+ends with the month in progress and its `elapsed` flag is relative to the
+current instant — and it takes no as-of parameter. Consequences:
+
+- For the intended use (the scheduler runs once, days after a week ends) the
+  two instants are close enough that the distinction is academic.
+- **For a backfill it is not.** Generating twelve weeks in one run gives all
+  twelve rows the *same* retention component, today's. The chart then shows
+  three components moving and one flat, which is an artefact of the backfill
+  and not a fact about the club. `0053` asserts exactly this: two different
+  weeks generated in the same run carry an identical retention value.
+- **A recompute of an old week does not reproduce its original score**, even
+  with no new data for that week. `computed_at` is refreshed on every write and
+  `components.retention.detail.as_of` / `.as_of_basis`
+  (`'run_time_not_week_end'`) record it inside the breakdown.
+
+**Not fixed here, and the fix is not small.** An as-of-correct signal means a
+second copy of COMM-313's membership-week arithmetic parameterised on a date —
+exactly the duplication `202609010008` was written to prevent. The right fix is
+an **as-of parameter on `retention_member_weeks()` itself**, in COMM-313's
+file. Open item.
+
+### A component with no data drops out, and the rest are RENORMALISED
+
+`engagement_per_post` is **null**, not zero, in a week with no posts. That is
+`analytics_ratio()`'s rule applied to a component ("a count of zero is an
+honest zero, a *rate* over a zero denominator is not"): with nothing posted
+there is nothing to measure, and scoring it 0 would double-penalise a quiet
+week the WCAM component has already scored as quiet.
+
+The score is a **weighted mean over the available components**, not a weighted
+sum over all four: an unavailable component contributes to neither the
+numerator nor the denominator, so its weight is redistributed proportionally
+and the score stays on the same 0..100 scale.
+
+**The cost, stated:** a week scored on two components does not announce that on
+its face. It announces it *in the row* — every component carries
+`weight_applied`, which is `0` for the ones that dropped out, and
+`components.weight_total_applied` is the surviving total. **A client showing a
+score whose `weight_applied` values do not cover all four should say so.**
+
+`moderation_load` is available whenever the club has a member, which the
+zero-member early return guarantees, so the score is always computable.
+
+### community_health_history(p_weeks integer default 12) returns setof jsonb (202609010009)
+
+- **Purpose.** COMM-312's client contract, signature for signature. One row per
+  stored week: `{week_start, score, components}` — **exactly three keys**. The
+  row's `id`, `club_id` and `computed_at` are in the table and deliberately not
+  in the contract.
+- **Auth.** `security definer`; `auth.uid()` first, then **`is_admin()` alone**.
+  Raises `'not authorized'` (`P0001`). `revoke all from public, anon`;
+  `grant execute to authenticated`.
+- **`p_weeks` CLAMPS to 1..52** (null means 12), not refused — the ticket's
+  validation rules say clamp, and it is safe for `retention_cohorts()`' reason:
+  every row names its own `week_start`, so a clamped answer cannot be mistaken
+  for the one asked for.
+- **Returns the NEWEST `p_weeks` weeks, ordered OLDEST FIRST** so a trend line
+  draws left to right. The limit is applied to a descending subquery before the
+  ascending sort; `order by week_start limit 12` would have returned the twelve
+  *oldest* weeks.
+- **Returns 0 or 1 rows happily.** COMM-312's empty state is "fewer than 2
+  computed weeks shows the latest score with no trend line rather than a broken
+  chart" — nothing is fabricated to fill a chart, and the decision is the
+  client's.
+- **The `definer` bit crosses nothing today**, and that is stated rather than
+  dressed up: the table's only policy is the same `is_admin()` test the
+  function performs. It is `definer` because the ticket specifies it and
+  because it makes this gate independent of the table's rather than derived
+  from it. `0053` asserts both halves separately so they cannot drift apart.
+- Side effects: none. `stable`, reads only. **This is the only read path** —
+  there is no member-facing and no general-staff surface for this figure
+  anywhere.
+
+### community_health_component(...) — PRIVATE, granted to no role
+
+`community_health_component(p_value numeric, p_sub_score numeric, p_weight
+numeric, p_weight_total numeric, p_detail jsonb) returns jsonb`. `immutable`,
+pure, reads nothing. Builds one component as `{value, sub_score, weight,
+weight_applied, detail}` so all four carry an identical key set and cannot
+drift apart, and so the renormalisation rule (`weight / weight_total`, or `0`
+when `sub_score` is null) lives in one place. **Granted to no role at all** —
+it is an implementation detail of the generator, and a client-callable version
+would be a second way to mint something that looks like a stored component.
+
+### The `components` blob names no member
+
+`components` is free-form `jsonb`, so unlike `monthly_club_recaps` the *table
+shape* cannot enforce aggregate-only. The rule is enforced by what the
+generator puts there: **every leaf is a count, a ratio or a named constant**,
+and there is no `user_id`, handle, `display_name`, `post_id` or `report_id`
+anywhere. `0053` walks every leaf of every stored row *and* of every
+`community_health_history()` row and sweeps it against every profile in the
+database — the same sweep `0046`, `0050` and `0052` make — plus a separate
+check that no *key* is even shaped like an identifier.
+
+**Do not add a `top_poster`, a `worst_offender` or a `members_who_churned` key
+here.** One naming consequence worth knowing: the retention breakdown's
+denominator is called **`cohort_size`, not `member_count`**, because the string
+`member_count` contains the `rls_helpers` handle `member_c` as a substring and
+`0052` already lost time to exactly that.
+
+**Blob shape**, pinned by `0053`: nine top-level keys — `version`,
+`week_start`, `week_end_exclusive`, `club_members`, `weight_total_applied`, and
+the four components — each component five keys, and **nothing nested deeper
+than three levels** (top → component → detail), which is what makes the leaf
+walk complete rather than merely convenient.
+
+**Timezone.** `date_trunc('week', …)` is Monday-based and resolves at the
+calling session's TimeZone — UTC for the scheduler. The same unresolved "week
+boundaries follow the club's local week, not UTC" gap `202609010006`,
+`202609010007` and `202609010008` all flag.
+
 ## Edge Functions
 
 ### recap_weekly
@@ -4819,29 +5777,109 @@ What a dependent ticket needs to know changed between the two:
 
 ### Needs from schema, admin-moderation (Phase 3)
 
-- `analytics_dashboard(p_period_start date, p_period_end date) returns
-  jsonb` — `security definer`, `community.analytics.view`/`is_admin`
-  gated, one call for every metric in `docs/community/metrics.md`'s "Core
-  metrics" and "Additional metrics" sections. COMM-310.
-- `member_segments(p_as_of date default current_date) returns setof jsonb`
+- ~~`analytics_dashboard(p_period_start date, p_period_end date) returns
+  jsonb`~~ — **SHIPPED in 202609010006, COMM-310.** No longer a forward
+  reference: the built contract is **"## Needs from schema, admin analytics
+  dashboard (COMM-310, Phase 3)"** above. Read that, not this. It shipped as
+  promised — same signature, `security definer`,
+  `community.analytics.view`/`is_admin` gated, one call for all 18 metrics —
+  with five additions a dependent ticket must know about:
+  `analytics_wcam_events()`, **the single server-side WCAM definition, which
+  COMM-311, COMM-312 and COMM-313 must call rather than repeat**, plus four
+  internal helpers granted to no role. `p_period_end` is INCLUSIVE and the
+  span is capped at 366 days. Four places where `metrics.md` under-specifies
+  were resolved by judgment and are written out in that section; read them
+  before reusing a number from it.
+- ~~`member_segments(p_as_of date default current_date) returns setof jsonb`
   — `security definer`, same gate. COMM-311. Open question: segment set and
-  thresholds not spec-grounded, see the ticket file.
-- `community_health_scores(...)` table plus
+  thresholds not spec-grounded, see the ticket file.~~ — **SHIPPED in
+  202609010007, COMM-311.** No longer a forward reference: the built contract
+  is **"## Needs from schema, member engagement segmentation (COMM-311, Phase
+  3)"** above. Read that, not this. It shipped as promised — same signature,
+  `security definer`, `community.analytics.view`/`is_admin` gated, WCAM taken
+  from `analytics_wcam_events()` with no second copy of the list. The open
+  question was resolved by the user on 2026-08-31 ("build against the ticket's
+  proposed shape as-is"), and building it surfaced **two gaps the ticket's
+  proposed shape did not cover, both closed by judgment and both written out
+  in that section**: the five named buckets are **not exhaustive** (a sixth,
+  `occasional`, was added for members active in 1–3 of the last 8 weeks), and
+  the ticket states **no precedence** between overlapping buckets (resolved as
+  `new` > `declining` > `highly_active` > `steady` > `occasional` >
+  `dormant`, with `declining` deliberately above `highly_active`). Also note
+  the drill-down's `visible_to_club` handling: a hidden member is **counted
+  but not named**, and the raw column is read rather than
+  `can_view_profile_field()`, which would be a no-op for this function's
+  admin callers.
+- ~~`community_health_scores(...)` table plus
   `community_health_history(p_weeks int default 12) returns setof jsonb` —
   real `is_admin` only, narrower than the other three tickets in this
-  cluster. COMM-312. Open question: weighting formula not spec-grounded.
-- `retention_cohorts(p_cohort_months int default 6)`,
+  cluster. COMM-312. Open question: weighting formula not spec-grounded.~~ —
+  **SHIPPED in 202609010009, COMM-312.** No longer a forward reference: the
+  built contract is **"## Needs from schema, community health score (COMM-312,
+  Phase 3)"** above. Read that, not this. The table and
+  `community_health_history()` shipped exactly as named, with the `is_admin`-
+  only gate. **It shipped AFTER COMM-313**, which is the ordering correction
+  recorded in that ticket's section and in `backlog.md`. The open question was
+  resolved by the user on 2026-08-31 ("build against the ticket's proposed
+  shape as-is"), and building it needed six decisions the shape does not make,
+  all written out in that section:
+  - **The weights are 0.40 / 0.25 / 0.25 / 0.10** (WCAM share, engagement per
+    post, retention, moderation load), plus **two normalisation constants**
+    the ticket does not mention at all — 3.0 interactions per post for full
+    engagement marks, and 10.0 reports per 100 members per week for a zero on
+    moderation. All six are a **starting split, expected to move**, and they
+    travel inside every stored row so a trend line spanning a change is
+    readable.
+  - **The retention signal is the pooled week-4 retained share from
+    `retention_member_weeks(6)`**, COMM-313's *private* helper — the only one
+    of that migration's functions a service-role job can call, because the
+    other three raise on a null `auth.uid()`. **That component is measured as
+    of the run, not as of the scored week**, which is the sharpest limitation
+    in the file; the fix is an as-of parameter on `retention_member_weeks()`
+    itself and is an open item against COMM-313.
+  - **Nothing calls `analytics_dashboard()`.** Not a performance choice: it
+    raises on a null `auth.uid()`, so a scheduler cannot reach it. WCAM share
+    and engagement per post are recomputed from the same sources, with
+    `analytics_wcam_events()` as the only WCAM definition.
+  - **A component with no data drops out and the remaining weights are
+    renormalised**, rather than being scored zero. `weight_applied` records
+    which ones did.
+  - **The scheduled writer shipped as
+    `community_health_generate(p_week_start date default null) returns uuid`,
+    service-role only**, which the outline implies ("only a scheduled
+    service-role job writes it") but does not name. It is **idempotent per
+    week** via `on conflict (week_start) do update`, and it **refuses a week
+    that has not finished**.
+  - **Two CHECKs the outline does not name**: the `isodow` Monday constraint
+    that makes `week_start unique` mean "per week" rather than "per date", and
+    the 0..100 range on `score`.
+- ~~`retention_cohorts(p_cohort_months int default 6)`,
   `retention_onboarding_correlation()`, `retention_welcome_correlation()` —
   real `is_admin` only. COMM-313. Open question: cohort window and which
-  correlations, not spec-grounded. Depended on COMM-316's two new
-  `onboarding_progress` columns — **unblocked**: `first_class_shown_at` and
-  `third_class_shown_at` shipped in 202609010003. Note for whoever builds
-  it: those columns record when a step was *shown*, not when the member's
-  first or third class happened. The class dates themselves are
-  `attendance_log.occurred_on`, and a member who has not opened the app
-  since their third class has a null stamp and three attendance days at the
-  same time — so a correlation keyed on the stamp is measuring onboarding
-  reach, not attendance.
+  correlations, not spec-grounded.~~ — **SHIPPED in 202609010008, COMM-313.**
+  No longer a forward reference: the built contract is **"## Needs from
+  schema, retention correlation views (COMM-313, Phase 3)"** above. Read that,
+  not this. All three shipped with the promised signatures and the `is_admin`-
+  only gate. **It shipped BEFORE COMM-312 although its own ticket lists that
+  as a dependency** — the dependency is real only in the other direction; see
+  that section. The open question was resolved by the user on 2026-08-31
+  ("build against the ticket's proposed shape as-is"), and building it needed
+  four decisions the shape does not make, all written out in that section: the
+  12-week curve runs on **membership weeks, not ISO weeks**; the minimum
+  cohort size is **5** (the ticket's own example) and is applied to
+  **individual `(group, week)` cells as well as to whole cohorts**; a week
+  counts only once it has **fully elapsed**; and **soft-deleted members stay
+  in their cohort**, which is a deliberate departure from COMM-310's
+  denominator. Depended on COMM-316's two new `onboarding_progress` columns —
+  both are cut on, alongside COMM-222's three. **The note below was written
+  before the build and it held**: those columns record when a step was *shown*,
+  not when the member's first or third class happened. The class dates
+  themselves are `attendance_log.occurred_on`, and a member who has not opened
+  the app since their third class has a null stamp and three attendance days
+  at the same time — so a correlation keyed on the stamp is measuring
+  onboarding reach, not attendance. That is why the returned boolean is called
+  `stamped` and not `saw` or `completed`, and it is one of the reasons the
+  ticket's "correlation, not causation" rule is not merely a copy concern.
 
 ### Needs from schema, identity-privacy (Phase 3) — SHIPPED
 

@@ -2,7 +2,9 @@
 
 Phase: 3
 Agent: admin-moderation
-Status: todo
+Status: in progress — schema half shipped (202609010008 + pgTAP 0052); client
+half (the cohort chart, the two overlay toggles and the Hebrew error copy)
+still open
 Attendance-blocked: no
 
 Same caveat as COMM-311 and COMM-312: no forward reference exists anywhere
@@ -77,9 +79,64 @@ later, instead of assuming they help.
 
 - COMM-013, COMM-170, COMM-233, COMM-222, COMM-224, COMM-312, COMM-316.
 
-## Open question
+### Dependency note — COMM-312 is NOT one, and the order is reversed
 
-The exact cohort window, the minimum-cohort-size floor, and whether a third
-correlation (or a different one entirely) is what the spec actually asks
-for are not grounded in text available to this session. Flagged rather than
-guessed at specifics beyond the shape above.
+Checked while building rather than followed. **COMM-313 reads nothing
+COMM-312 produces**: neither the acceptance criteria above nor the client
+contracts mention `community_health_scores` or any COMM-312 function, and
+the only thing this ticket takes from that one is the *wording of the
+permission gate* ("matching COMM-312's narrower bar"), which is copied by
+writing `is_admin()`, not by depending on code.
+
+**COMM-312 genuinely depends on COMM-313**: its score names "a retention
+signal (COMM-313, once it exists)" as one of its four weighted inputs. So
+the dependency runs the other way and COMM-313 first is the only order in
+which either ticket can be built. That is the order taken — COMM-313
+shipped in `202609010008`, and `retention_cohorts()` plus the private
+`retention_member_weeks()` are available to COMM-312 as its retention input.
+
+`backlog.md`'s "COMM-310 through COMM-313, in that order — each later one in
+that cluster reads the one before it" holds for 310 → 311 → 313 and is
+wrong for the 312/313 pair; corrected there.
+
+## Open question — RESOLVED 2026-08-31
+
+Confirmed with the user: build against the proposed shape as-is. The schema
+half did, and shipped in `202609010008` (three public functions, one private
+helper, one constant function, no new table), with pgTAP coverage in
+`supabase/tests/0052_retention_cohorts_test.sql`. Four things the proposed
+shape does not decide had to be decided by judgment while building. All four
+are written out in full in `docs/community/contracts.md` under "## Needs from
+schema, retention correlation views (COMM-313, Phase 3)"; the two that are
+reversible are one line each.
+
+- **The cohort window is 6 months by default, clamped 1..24**, exactly as the
+  signature above says, and the two correlations use the same 6 as a named
+  constant because their contract gives them no parameter.
+- **The minimum-cohort-size floor is 5**, the ticket's own example; nothing
+  in the repo grounds a different number. What five buys concretely: no
+  figure this feature emits can move more than 20 percentage points when one
+  person changes their mind, and no share can read 0% or 100% off fewer than
+  five people. **It is applied twice** — the ticket's rule (a small cohort
+  month folds into `other`) and an extension of the same reason (a
+  `(group, week)` cell under five members is not emitted at all, which always
+  truncates the tail of a line and never gaps one). The extension is the
+  decision here most worth a second opinion; deleting one `where` clause per
+  function reverses it and ships every cell with its own `member_count`.
+- **A "week" is 7×24h from the member's own join instant, not an ISO week.**
+  Forced by "their first 12 weeks of membership": a cohort is a calendar
+  month, so its members join on different days, and on an ISO grid a Sunday
+  joiner would get a one-day week 1 and read as a week-1 dropout for no
+  reason but the day they signed up. Which events qualify is unchanged —
+  `analytics_wcam_events()`, no second copy of the list.
+- **The third correlation is the one this ticket names**, coach Welcome
+  within two weeks, with one honest gap: `member_contact_log` has no
+  kind/type column, so "a Welcome" is really "any coach contact inside 14
+  days". If that needs to be exact, the fix is a `kind` column on that table,
+  not a heuristic here.
+
+Two consequences a client build must know: **soft-deleted members stay in
+their cohort** (the clearest churn there is — excluding them would compute
+every curve over survivors only), and **a week counts for a member only once
+it has fully elapsed**, so a young cohort returns a short line, or no line at
+all, rather than a row of zeroes.

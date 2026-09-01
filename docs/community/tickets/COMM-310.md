@@ -2,8 +2,19 @@
 
 Phase: 3
 Agent: admin-moderation
-Status: todo
+Status: in progress — schema half shipped (202609010006 + pgTAP 0050); client
+half (the dashboard screen and the period selector) still open
 Attendance-blocked: no
+
+SCHEMA NOTE, decided in 202609010006 and recorded here because the client
+half depends on it: the gate is `community.analytics.view` or real
+`is_admin()`, which is NARROWER than `is_staff()`. A coach is refused.
+Gate the nav entry on the permission, not on staffness. `p_period_end` is
+INCLUSIVE of its day and the span is capped at 366 days. Ratios come back
+as `null` (not `0`) over a zero denominator — render an em dash. The full
+built contract, including four places where `metrics.md` under-specified and
+had to be resolved by judgment, is in `docs/community/contracts.md` under
+"## Needs from schema, admin analytics dashboard (COMM-310, Phase 3)".
 
 ## User outcome
 
