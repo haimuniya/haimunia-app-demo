@@ -14,7 +14,7 @@
 //   TARGET_URL=<url> node text-scale.mjs # a deployed site
 import { chromium } from "playwright";
 import { resolveTarget } from "./lib/target.mjs";
-import { switchTab, dismissWelcomeModal, consoleErrorCollector } from "./lib/actions.mjs";
+import { switchTab, openSettings, dismissWelcomeModal, consoleErrorCollector } from "./lib/actions.mjs";
 
 let failed = false;
 function check(label, ok, detail = "") {
@@ -51,8 +51,12 @@ const measureFooterLabel = () => page.evaluate(() => {
   return el ? el.getBoundingClientRect().height : null;
 });
 
-await page.evaluate(() => document.getElementById("content").scrollIntoView());
-await page.mouse.wheel(0, 4000);
+// Theme/text-scale live in the settings screen now, reached through the
+// nav menu rather than glued under every tab's content — open it before
+// measuring or clicking either control (a hidden overlay's contents
+// report a zero-size rect, and Playwright's .click() requires real
+// visibility, unlike jsdom).
+await openSettings(page);
 await page.waitForTimeout(150);
 const heightBefore = await measureFooterLabel();
 
@@ -68,6 +72,8 @@ const heightAfter = await measureFooterLabel();
 check("the control's own rendered size actually grew (zoom is applying, not just the attribute)", heightAfter > heightBefore * 1.1, `${heightBefore} -> ${heightAfter}`);
 
 check("no horizontal overflow on the main tab at the larger size", await noOverflow());
+await page.click("button[data-action='close-settings']");
+await page.waitForTimeout(150);
 
 await page.reload({ waitUntil: "networkidle" });
 const attrAfterReload = await page.evaluate(() => document.documentElement.getAttribute("data-text-scale"));

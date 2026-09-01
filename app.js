@@ -85,7 +85,7 @@ function getNavItems() {
 // Renders the nav menu's user-info card + the 5 primary rows (+ Community's
 // own sub-tab preview, when signed in). Called unconditionally from
 // render() on every render, the same "always regenerated, just glued into
-// a normally-hidden container" treatment renderFooter() already relies on
+// a normally-hidden container" treatment renderSettingsBody() already relies on
 // - so the tabAddBtn/tabHistoryBtn/etc. ids these rows carry stay resolvable
 // at all times, exactly like the old static tabbar's buttons always were.
 function renderNavMenuList() {
@@ -124,7 +124,14 @@ function renderNavMenuList() {
         <span class="nav-label">${esc(item.label)}</span>
       </button>${sub}`;
   }).join("");
-  return whoHtml + rowsHtml;
+  const settingsHtml = `
+    <div class="divider-label">חשבון</div>
+    <button class="navrow" data-action="open-settings">
+      <span class="icon-chip icon-chip-steel">${ICONS.settingsIcon}</span>
+      <span class="nav-label">הגדרות</span>
+      <span style="transform:scaleX(-1); display:inline-flex; color:var(--steel);" aria-hidden="true">${ICONS.chevron}</span>
+    </button>`;
+  return whoHtml + rowsHtml + settingsHtml;
 }
 // COMM-229. sw.js's notificationclick handler opens a fresh window at
 // ?notif=<deep link> when no app window was already open to focus (see
@@ -2004,6 +2011,7 @@ const ICONS = {
   stopwatchIcon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2M9 2h6M12 2v3"/></svg>',
   logIcon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6M7 7v10M17 7v10M20 9v6M7 12h10"/></svg>',
   communityIcon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M2 20c0-3.5 3-6 7-6s7 2.5 7 6"/><circle cx="17" cy="9" r="2.3"/><path d="M16.3 14c2.6.2 4.5 2.1 5 5"/></svg>',
+  settingsIcon: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
 };
 
 // ---------- Rendering ----------
@@ -2731,31 +2739,51 @@ function renderHistoryTab() {
   `;
 }
 
-function renderFooter() {
+// Was renderFooter() - same elements, same data-actions, same ids, same
+// live-state computation on every call (confirmClear/importMessage/backup
+// staleness), just regrouped into labeled sections for the new settings
+// screen instead of one long stack of links glued under every tab's
+// content. Called unconditionally from render() into #settingsBody, same
+// "always regenerated into a normally-hidden container" treatment as
+// renderNavMenuList().
+function renderSettingsBody() {
+  const hasData = entries.length || wodEntries.length || bodyweightEntries.length || measureTypes.length;
+  const days = daysSinceLastExport();
+  const staleBackupNote = hasData && (days === null || days >= 30)
+    ? `<div class="footer-note" style="color:var(--yellow); margin-bottom:8px;">${esc(days === null ? "עדיין לא ביצעתם גיבוי" : `הגיבוי האחרון לפני ${days} ימים`)} — ייצוא גיבוי למטה</div>`
+    : "";
   return `
-    <div class="footer">
-      <div class="footer-note"${storageOK ? "" : ' style="color:var(--red);" role="alert"'}>${storageOK ? esc(typeof cloudStorageStatusText === "function" ? cloudStorageStatusText() : "נשמר במכשיר הזה בלבד, ללא שרת") : esc(storageErrMsg || "שמירה נכשלה — בדקו את מקום האחסון")}</div>
-      ${(() => {
-        const hasData = entries.length || wodEntries.length || bodyweightEntries.length || measureTypes.length;
-        if (!hasData) return "";
-        const days = daysSinceLastExport();
-        if (days !== null && days < 30) return "";
-        const msg = days === null ? "עדיין לא ביצעתם גיבוי" : `הגיבוי האחרון לפני ${days} ימים`;
-        return `<div class="footer-note" style="color:var(--yellow); margin-bottom:8px;">${esc(msg)} — ייצוא גיבוי למטה</div>`;
-      })()}
-      <div class="flex items-center justify-center gap-10" style="margin-bottom:8px; flex-wrap:wrap;">
+    <div class="footer" style="margin-top:0;">
+      <div class="divider-label" style="padding-top:0;">פרופיל</div>
+      <div class="card" style="margin-bottom:18px;">
         <button class="link-btn" data-action="edit-user-name">עריכת פרופיל</button>
-        <span style="color:var(--border); font-size:11px;">·</span>
-        <button class="link-btn" data-action="export-data">ייצוא גיבוי</button>
-        <span style="color:var(--border); font-size:11px;">·</span>
-        <button class="link-btn" data-action="import-data">ייבוא גיבוי</button>
       </div>
-      ${renderTextScaleRow()}
-      <div class="flex items-center justify-center gap-8" style="margin-bottom:8px;"><a class="link-btn" href="./PRIVACY.md" target="_blank" rel="noopener">פרטיות</a><span aria-hidden="true">·</span><a class="link-btn" href="./TERMS.md" target="_blank" rel="noopener">כללי קהילה</a></div>
-      <div class="footer-note" style="margin-bottom:8px;">קובץ הגיבוי הוא טקסט פשוט (JSON) וכולל שם, היסטוריית משקל גוף ויומן אימונים מלא — שמרו אותו במקום בטוח</div>
-      <div style="color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; margin-bottom:6px;">מראה</div>
-      ${renderThemeRow()}
-      ${importMessage ? `<div class="footer-note" role="status" aria-live="polite" style="color:var(--brass); margin-bottom:8px;">${esc(importMessage)}</div>` : ""}
+
+      <div class="divider-label">מראה</div>
+      <div class="card" style="margin-bottom:18px;">
+        ${renderThemeRow()}
+        ${renderTextScaleRow()}
+      </div>
+
+      <div class="divider-label">נתונים וגיבוי</div>
+      <div class="card" style="margin-bottom:18px;">
+        <div class="footer-note"${storageOK ? "" : ' style="color:var(--red);" role="alert"'}>${storageOK ? esc(typeof cloudStorageStatusText === "function" ? cloudStorageStatusText() : "נשמר במכשיר הזה בלבד, ללא שרת") : esc(storageErrMsg || "שמירה נכשלה — בדקו את מקום האחסון")}</div>
+        ${staleBackupNote}
+        <div class="flex items-center justify-center gap-10" style="margin-bottom:8px; flex-wrap:wrap;">
+          <button class="link-btn" data-action="export-data">ייצוא גיבוי</button>
+          <span style="color:var(--border); font-size:11px;">·</span>
+          <button class="link-btn" data-action="import-data">ייבוא גיבוי</button>
+        </div>
+        ${importMessage ? `<div class="footer-note" role="status" aria-live="polite" style="color:var(--brass); margin-bottom:8px;">${esc(importMessage)}</div>` : ""}
+        <div class="footer-note" style="margin-bottom:0;">קובץ הגיבוי הוא טקסט פשוט (JSON) וכולל שם, היסטוריית משקל גוף ויומן אימונים מלא — שמרו אותו במקום בטוח</div>
+      </div>
+
+      <div class="divider-label">משפטי</div>
+      <div class="card" style="margin-bottom:18px;">
+        <div class="flex items-center justify-center gap-8"><a class="link-btn" href="./PRIVACY.md" target="_blank" rel="noopener">פרטיות</a><span aria-hidden="true">·</span><a class="link-btn" href="./TERMS.md" target="_blank" rel="noopener">כללי קהילה</a></div>
+      </div>
+
+      <div class="divider-label">אזור מסוכן</div>
       ${!confirmClear
         ? `<div style="text-align:center; margin-top:4px;"><button data-action="ask-clear" style="color:var(--red); font-size:11px; font-weight:700; border:1px solid var(--red); border-radius:10px; padding:8px 16px;">מחיקת כל הנתונים</button></div>`
         : `
@@ -2764,7 +2792,7 @@ function renderFooter() {
           <button data-action="do-clear" style="color:#fff; background:var(--red); border:1px solid var(--red); border-radius:10px; padding:6px 14px; font-size:11px; font-weight:700;">כן, מחיקה</button>
           <button data-action="cancel-clear" style="color:var(--steel); font-size:11px;">ביטול</button>
         </div>`}
-      <div class="footer-note" style="margin-top:10px;">© ${new Date().getFullYear()} Shahaf Rachmany · v${APP_VERSION}</div>
+      <div class="footer-note" style="margin-top:18px;">© ${new Date().getFullYear()} Shahaf Rachmany · v${APP_VERSION}</div>
     </div>`;
 }
 
@@ -2968,13 +2996,18 @@ function render() {
     try { navMenuListEl.innerHTML = renderNavMenuList(); }
     catch (err) { console.error("nav menu render error:", err); }
   }
+  const settingsBodyEl = document.getElementById("settingsBody");
+  if (settingsBodyEl) {
+    try { settingsBodyEl.innerHTML = renderSettingsBody(); }
+    catch (err) { console.error("settings render error:", err); }
+  }
   document.getElementById("bottomBar").style.display = (tab === "add" || (tab === "wod" && wodSubTab === "log" && wodById(selectedWodId))) ? "flex" : "none";
   updateStreakLabel();
   // Rendered after every tab's own content, not just Community's, so a
   // share triggered from Calendar/Progress can still show its confirm
   // dialog regardless of which tab is currently active.
   const cloudOverlay = typeof window.renderCloudConfirmDialog === "function" ? window.renderCloudConfirmDialog() : "";
-  document.getElementById("content").innerHTML = content + renderFooter() + cloudOverlay;
+  document.getElementById("content").innerHTML = content + cloudOverlay;
   try {
     if (tab === "add") {
       const dateInput = document.getElementById("logDateInput");
@@ -3375,6 +3408,26 @@ function closeNavMenu() {
 }
 registerAppDialog("navMenu", { overlayId: "navMenuOverlay", isOpen: () => navMenuOpen, close: closeNavMenu });
 
+let settingsOpen = false;
+let settingsOpenerEl = null;
+function openSettings() {
+  settingsOpen = true;
+  settingsOpenerEl = document.activeElement;
+  document.body.style.overflow = "hidden";
+  document.getElementById("settingsOverlay").classList.add("open");
+  setTimeout(() => focusFirstAppDialogEl("settingsOverlay"), 50);
+}
+function closeSettings() {
+  if (!settingsOpen) return;
+  settingsOpen = false;
+  document.body.style.overflow = "";
+  const overlay = document.getElementById("settingsOverlay");
+  if (overlay) overlay.classList.remove("open");
+  if (settingsOpenerEl && typeof settingsOpenerEl.focus === "function") settingsOpenerEl.focus();
+  settingsOpenerEl = null;
+}
+registerAppDialog("settings", { overlayId: "settingsOverlay", isOpen: () => settingsOpen, close: closeSettings });
+
 function renderPickerList(query) {
   const q = query.toLowerCase();
   const filtered = allMovements().filter((m) => m.name.toLowerCase().includes(q));
@@ -3582,6 +3635,11 @@ document.addEventListener("click", (e) => {
   else if (action === "close-nav-menu") {
     if (el.id === "navMenuOverlay" && e.target !== el) return;
     closeNavMenu();
+  }
+  else if (action === "open-settings") { closeNavMenu(); openSettings(); }
+  else if (action === "close-settings") {
+    if (el.id === "settingsOverlay" && e.target !== el) return;
+    closeSettings();
   }
   else if (action === "view-today-calendar") {
     tab = "calendar";

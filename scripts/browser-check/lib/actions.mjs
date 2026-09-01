@@ -62,6 +62,17 @@ export async function switchTab(page, tabId) {
   await page.waitForFunction(() => !document.getElementById("navMenuOverlay")?.classList.contains("open"), { timeout: 5000 });
 }
 
+// Settings (theme, text scale, backup, delete-all-data) moved off the
+// bottom of every tab into their own screen, reached through the nav
+// menu. Opens the menu if needed, taps its settings row, and waits for
+// the settings overlay to actually be open before returning.
+export async function openSettings(page) {
+  const menuOpen = await page.evaluate(() => document.getElementById("navMenuOverlay")?.classList.contains("open"));
+  if (!menuOpen) await page.click("[data-action='open-nav-menu']");
+  await page.click("[data-action='open-settings']");
+  await page.waitForFunction(() => document.getElementById("settingsOverlay")?.classList.contains("open"), { timeout: 5000 });
+}
+
 export async function consoleErrorCollector(page) {
   const errors = [];
   page.on("console", (msg) => {

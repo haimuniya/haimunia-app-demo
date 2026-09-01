@@ -475,7 +475,8 @@
      zero-test-edit way to keep every one of them passing. Content is
      rendered by renderNavMenuList() unconditionally on every render()
      call (see app.js), the same "always regenerated, just glued
-     somewhere else" treatment renderFooter() already relies on. -->
+     somewhere else" treatment renderSettingsBody() (below) relies on
+     too. -->
 <div class="modal-overlay" id="navMenuOverlay" data-action="close-nav-menu" role="dialog" aria-modal="true" aria-labelledby="navMenuTitle" style="align-items:stretch; padding:0;">
   <div class="modal-sheet" id="navMenuSheet" style="max-height:none; height:100%; border-radius:0; border:none;">
     <div class="modal-head">
@@ -485,6 +486,23 @@
       </button>
     </div>
     <div class="modal-list" id="navMenuList"></div>
+  </div>
+</div>
+
+<!-- Settings screen, reachable from the nav menu's settings row. Same
+     full-page pattern as navMenuOverlay above; content comes from
+     renderSettingsBody() (app.js) - a straight regroup of what used to be
+     renderFooter()'s markup (same elements, same data-actions, same ids)
+     into labeled sections instead of one long stack of links. -->
+<div class="modal-overlay" id="settingsOverlay" data-action="close-settings" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" style="align-items:stretch; padding:0;">
+  <div class="modal-sheet" id="settingsSheet" style="max-height:none; height:100%; border-radius:0; border:none;">
+    <div class="modal-head">
+      <span class="modal-title" id="settingsTitle">הגדרות</span>
+      <button data-action="close-settings" aria-label="סגירה" style="color:var(--steel); padding:4px;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-list" id="settingsBody"></div>
   </div>
 </div>
 
