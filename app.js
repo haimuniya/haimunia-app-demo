@@ -4014,6 +4014,16 @@ async function init() {
           if (nw.state === "installed" && navigator.serviceWorker.controller) offerUpdate(nw);
         });
       });
+      // Nothing above ever asks the browser to re-check sw.js for a new
+      // version - updatefound only fires off the browser's OWN automatic
+      // check, which most browsers throttle to about once per 24h. A member
+      // who reopens the installed app daily could go a long time without
+      // ever being offered a real release. Forcing a check on every
+      // foreground regain closes that gap without changing the "never swap
+      // out from under an active session" handshake above at all.
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") reg.update().catch(() => {});
+      });
     }).catch((e) => console.warn("sw registration failed:", e));
 
     let reloading = false;
