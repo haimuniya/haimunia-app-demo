@@ -141,6 +141,28 @@
     // all three actions on one row share it, so a row disables itself
     // entirely rather than only the one control that was tapped.
     coachEngage: { items: [], loading: false, loaded: false, error: false, profiles: {}, reachedOut: {}, busy: null },
+    // COMM-315. Coach Dashboard's own recognition section: Member of the
+    // Week, one rotating category a week (consistency streak -> most PRs ->
+    // challenge completion -> coach's pick, member_of_week_category() -
+    // never re-derived client-side). envelope holds
+    // member_of_week_candidates()'s single jsonb row exactly as returned -
+    // {week_start, category, category_label, rotation_index, free_selection,
+    // published, previous_week_user_id, candidates[]} - never reshaped here.
+    // publishedProfile/previousProfile are two small, separate profiles
+    // reads (the same batched-read shape coachEngage.profiles and
+    // coachWelcome.contactedIds already use) for the two ids the envelope
+    // names but does not itself carry a display name for: the published
+    // member once published is non-null, and last week's member so the
+    // free-selection form can name them in its grey-out note rather than a
+    // coach discovering the rule by hitting it. pickHandle/pickReason are
+    // the free-selection ("coach's pick") form's two inputs, read only at
+    // publish time - no rerender on input, the same no-focus-loss shape
+    // coachWelcome's assignDrafts/contactDrafts already use; the live
+    // character counter under the reason field is DOM-patched directly on
+    // input instead, the same way composerSetBody's own counter is. busy
+    // holds the user_id of whichever candidate publish is in flight, or the
+    // literal "pick" for the free-selection form's own publish.
+    coachMemberOfWeek: { loading: false, loaded: false, error: false, envelope: null, publishedProfile: null, previousProfile: null, pickHandle: "", pickReason: "", busy: null, publishErr: "" },
     // COMM-210/211/212 leaderboard cluster. `leaderboard` is the club-wide
     // consistency board on the Boards sub-tab: rows are feed_leaderboard()
     // output in the exact order the function returned them and are never
@@ -1003,6 +1025,135 @@
     delete state.coachEngage.reachedOut[flagId];
     setMessage(status === "reviewed" ? "סומן כנבדק" : "הפריט נדחה");
     rerender();
+  }
+
+  // ---- Member of the Week (COMM-315) ---------------------------------------
+  // Staff-only fifth section of the Coach Dashboard. Schema shipped in
+  // 202609010001 (see contracts.md, "Needs from schema, member of the week").
+  // member_of_week_candidates() is the whole read: one jsonb envelope, always
+  // exactly one row (data[0], no client-side join or reshape), carrying the
+  // week's rotation category, its (at most 3) computed candidates - or []
+  // for the coachs_pick week, which is that category's definition and not an
+  // empty result - whether the week is already published, and last week's
+  // member so the free-selection form can name them rather than a coach
+  // discovering the once-per-two-weeks rule by hitting it. Never
+  // auto-published: COMM-309's generated-draft/staff-publishes shape, the
+  // same one Celebrate already uses.
+  async function loadCoachMemberOfWeek() {
+    if (!state.user || !isStaff()) return;
+    state.coachMemberOfWeek.loading = true;
+    state.coachMemberOfWeek.error = false;
+    rerender();
+    const { data, error } = await client.rpc("member_of_week_candidates", { p_week_start: null });
+    if (error || !data || !data[0]) {
+      state.coachMemberOfWeek.loading = false;
+      state.coachMemberOfWeek.loaded = true;
+      state.coachMemberOfWeek.error = true;
+      state.coachMemberOfWeek.envelope = null;
+      rerender();
+      return;
+    }
+    const envelope = data[0];
+    state.coachMemberOfWeek.envelope = envelope;
+    // Two small, separate profile reads (the same shape coachEngage.profiles
+    // and coachWelcome.contactedIds already use, rather than an embedded
+    // join) for the two ids the envelope names but does not itself carry a
+    // display name for.
+    const ids = [envelope.published && envelope.published.user_id, envelope.previous_week_user_id].filter(Boolean);
+    const profiles = {};
+    if (ids.length) {
+      const { data: profs } = await client.from("profiles").select("id,handle,display_name,avatar_url").in("id", Array.from(new Set(ids)));
+      for (const p of profs || []) profiles[p.id] = p;
+    }
+    state.coachMemberOfWeek.publishedProfile = envelope.published ? (profiles[envelope.published.user_id] || null) : null;
+    state.coachMemberOfWeek.previousProfile = envelope.previous_week_user_id ? (profiles[envelope.previous_week_user_id] || null) : null;
+    state.coachMemberOfWeek.loading = false;
+    state.coachMemberOfWeek.loaded = true;
+    state.coachMemberOfWeek.error = false;
+    rerender();
+  }
+  // The five real Postgres errors member_of_week_publish() raises (COMM-315's
+  // schema half, verbatim), mapped to short Hebrew - the same
+  // setMessage()-surfaced pattern coachAssignByHandle/coachMarkContacted and
+  // coachEngageResolveFlag already use for a failed staff action, not a new
+  // display mechanism. Any other error (network, a future server message)
+  // falls back to the same generic retry copy the rest of this cluster uses.
+  const MEMBER_OF_WEEK_ERROR_LABELS = {
+    "week already published": "השבוע הזה כבר פורסם.",
+    "member was recognised last week": "לא ניתן לבחור שוב בחבר/ה שנבחר/ה כבר בשבוע שעבר.",
+    "member not found": "לא נמצא/ה חבר/ה כזה/כזאת.",
+    "member is not visible to the club": "לא ניתן לפרסם עבור חבר/ה שאינו/ה גלוי/ה למועדון.",
+    "reason required for a coach's pick": "יש להזין סיבה לבחירת המאמן/ת.",
+  };
+  function memberOfWeekErrorText(error) {
+    const msg = error && error.message;
+    return (msg && MEMBER_OF_WEEK_ERROR_LABELS[msg]) || "הפרסום נכשל. נסו שוב.";
+  }
+  // One publish path for both the computed-candidate "Publish" button and the
+  // free-selection ("coach's pick") form - member_of_week_publish() itself
+  // decides which category the row records (on the shortlist -> the week's
+  // rotation category, off it -> coachs_pick), so the client never sends a
+  // category and never needs two write paths to keep in sync. p_reason is
+  // trimmed and capped at 500 client-side too (the same shape
+  // coachMarkContacted's member_contact_log.note write already applies); the
+  // server re-trims and re-caps regardless, this only keeps what the client
+  // sends honest before it does. On success the whole envelope is re-fetched
+  // rather than patched by hand, since the server - not the client - resolves
+  // which category the row actually records.
+  async function publishMemberOfWeek(userId, reason, busyKey) {
+    if (!userId || state.coachMemberOfWeek.busy) return;
+    state.coachMemberOfWeek.busy = busyKey || userId;
+    state.coachMemberOfWeek.publishErr = "";
+    rerender();
+    const p_reason = String(reason || "").trim().slice(0, 500);
+    const { error } = await client.rpc("member_of_week_publish", { p_week_start: null, p_user_id: userId, p_reason });
+    if (error) {
+      state.coachMemberOfWeek.busy = null;
+      state.coachMemberOfWeek.publishErr = memberOfWeekErrorText(error);
+      setMessage(state.coachMemberOfWeek.publishErr);
+      rerender();
+      return;
+    }
+    state.coachMemberOfWeek.pickHandle = "";
+    state.coachMemberOfWeek.pickReason = "";
+    setMessage("חבר/ת השבוע פורסמ/ה");
+    await loadCoachMemberOfWeek();
+    state.coachMemberOfWeek.busy = null;
+    rerender();
+  }
+  // A computed-candidate publish carries no typed reason - the category
+  // itself is the reason, exactly as the three computed categories' own
+  // shortlist already states it (COMM-315's schema half only requires a
+  // reason when the resolved category is coachs_pick, which a shortlisted
+  // candidate's publish can never resolve to).
+  function memberOfWeekPublishCandidate(userId) { publishMemberOfWeek(userId, ""); }
+  // The free-selection ("coach's pick") form. Resolves a typed handle to an
+  // id the same way coachAssignByHandle already does (there is no
+  // staff-readable directory RPC to build a real member picker from - see
+  // coachAssignByHandle's own comment on that gap), and requires a non-empty
+  // reason client-side before ever calling the server, matching COMM-315's
+  // own definition of a coach's pick ("a free staff selection... with a
+  // short reason staff types") - the server enforces the same rule and is
+  // still the real authority; this only saves a round trip for the obvious
+  // case.
+  async function memberOfWeekPublishPick() {
+    if (state.coachMemberOfWeek.busy) return;
+    const handle = String(state.coachMemberOfWeek.pickHandle || "").trim().toLowerCase().replace(/^@/, "");
+    const reason = String(state.coachMemberOfWeek.pickReason || "").trim();
+    if (!handle) { state.coachMemberOfWeek.publishErr = "יש להזין שם משתמש."; setMessage(state.coachMemberOfWeek.publishErr); rerender(); return; }
+    if (!reason) { state.coachMemberOfWeek.publishErr = "יש להזין סיבה לבחירת המאמן/ת."; setMessage(state.coachMemberOfWeek.publishErr); rerender(); return; }
+    const { data } = await client.from("profiles").select("id").eq("handle", handle).maybeSingle();
+    if (!data || !data.id) {
+      state.coachMemberOfWeek.publishErr = "לא נמצא/ה חבר/ה עם שם המשתמש הזה.";
+      setMessage(state.coachMemberOfWeek.publishErr);
+      rerender();
+      return;
+    }
+    // "pick" rather than data.id: the busy state is set before the resolved
+    // id is known to any renderer, and the whole free-selection form (not
+    // one candidate row) is what should read as busy while this is in
+    // flight - the same literal the state comment above documents.
+    await publishMemberOfWeek(data.id, reason, "pick");
   }
   // ==========================================================================
   // COMM-150..156  admin-moderation cluster.
@@ -4167,6 +4318,105 @@
       : w.members.length ? `<div class="log-list">${w.members.map(renderCoachWelcomeRow).join("")}</div>` : `<div class="empty">אין חברים חדשים בחודש האחרון.</div>`;
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "קבלת פנים")}${body}</div>`;
   }
+  // ---- Member of the Week (COMM-315) ---------------------------------------
+  // Category-shaped detail text, one branch per member_of_week_candidate_set()
+  // shape (contracts.md pins these three: {streak_weeks, rank}, {pr_count},
+  // {completions, titles}) - never a raw JSON dump, the same "translate the
+  // shape, don't print it" rule ENGAGE_LEVEL_LABELS already applies to the
+  // level enum above.
+  function memberOfWeekCandidateDetailText(category, detail) {
+    const d = detail || {};
+    if (category === "consistency_streak") return `רצף של ${Number(d.streak_weeks) || 0} שבועות · דירוג #${d.rank != null ? safeText(d.rank) : "?"}`;
+    if (category === "most_prs") return `${Number(d.pr_count) || 0} שיאים אישיים השבוע`;
+    if (category === "challenge_completion") {
+      const titles = Array.isArray(d.titles) ? d.titles.filter(Boolean).join(", ") : "";
+      return `${Number(d.completions) || 0} השלמות אתגר${titles ? `: ${titles}` : ""}`;
+    }
+    return "";
+  }
+  function renderMemberOfWeekCandidate(c, category) {
+    const busy = state.coachMemberOfWeek.busy === c.user_id;
+    return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:8px;">
+      <div class="flex gap-10" style="align-items:center;">
+        ${avatarHtml(c.display_name || c.handle, 32)}
+        <div>
+          <button class="link-btn" data-community-action="view-profile" data-id="${safeText(c.user_id)}" style="padding:0;font-weight:800;color:inherit;">${safeText(c.display_name || "@" + c.handle)}</button>
+          <div style="color:var(--steel);font-size:12px;">${safeText(memberOfWeekCandidateDetailText(category, c.detail))}</div>
+        </div>
+      </div>
+      <button class="chip-btn primary" data-community-action="coach-mow-publish-candidate" data-id="${safeText(c.user_id)}"${state.coachMemberOfWeek.busy ? " disabled" : ""}>${busy ? "מפרסמ/ת…" : "פרסום"}</button>
+    </div>`;
+  }
+  // The free-selection ("coach's pick") form. Rendered whenever the week is
+  // not yet published - alongside the computed candidates when the category
+  // has any (COMM-315's own "Populated" frontend state names both the
+  // suggestion list and this form together), alongside the empty message
+  // when it does not (the ticket's own "staff can fall back to coach's pick"
+  // empty state), and alone for the coachs_pick week itself (candidates is
+  // always [] there by definition, so there is nothing to show beside it).
+  // previous_week_user_id is named here, not merely disabled, because the
+  // input is a free-text handle rather than a picker with real options to
+  // greyed-out one of - so the greying out COMM-315's schema comments ask
+  // for is expressed as a visible warning naming the ineligible member.
+  function renderMemberOfWeekPickForm(env) {
+    const s = state.coachMemberOfWeek;
+    const busy = s.busy === "pick";
+    const anyBusy = !!s.busy;
+    const prevId = env.previous_week_user_id;
+    const prevProfile = s.previousProfile;
+    const prevName = prevProfile ? (prevProfile.display_name || "@" + prevProfile.handle) : "חבר/ה";
+    const prevNote = prevId ? `<div class="footer-note" style="margin-top:4px;">לא ניתן לבחור שוב ב${safeText(prevName)} — נבחר/ה כבר בשבוע שעבר.</div>` : "";
+    return `<div class="chart-card" style="margin-top:8px;">
+      <div class="field-label" style="margin-bottom:6px;">בחירת מאמן/ת</div>
+      <label class="field"><span class="field-label">שם משתמש</span><input class="text-input" dir="ltr" placeholder="שם משתמש" data-mow-pick-handle value="${safeText(s.pickHandle)}"${anyBusy ? " disabled" : ""}/></label>
+      <label class="field"><span class="field-label">סיבה (חובה)</span><textarea class="text-input" rows="3" maxlength="500" data-mow-pick-reason placeholder="למה החבר/ה הזה/הזאת נבחר/ה השבוע"${anyBusy ? " disabled" : ""}>${safeText(s.pickReason)}</textarea></label>
+      <div data-mow-pick-counter style="text-align:left;font-size:11px;color:var(--steel);min-height:14px;">${s.pickReason.length}/500</div>
+      ${s.publishErr ? `<div class="field-error" role="alert">${safeText(s.publishErr)}</div>` : ""}
+      ${prevNote}
+      <button class="chip-btn primary" data-community-action="coach-mow-publish-pick"${anyBusy ? " disabled" : ""}>${busy ? "מפרסמ/ת…" : "פרסום בחירת המאמן/ת"}</button>
+    </div>`;
+  }
+  // Once published is non-null the publish action is spent for the week -
+  // this replaces the suggestion UI entirely rather than sitting beside it
+  // (COMM-315's own "shows what/who was published instead" instruction).
+  function renderMemberOfWeekPublished(env) {
+    const pub = env.published;
+    const p = state.coachMemberOfWeek.publishedProfile;
+    const name = p ? (p.display_name || "@" + p.handle) : "חבר/ה";
+    return `<div class="chart-card" style="margin-top:8px;">
+      <div class="flex gap-10" style="align-items:center;">
+        ${avatarHtml(p && (p.display_name || p.handle), 36)}
+        <div>
+          <button class="link-btn" data-community-action="view-profile" data-id="${safeText(pub.user_id)}" style="padding:0;font-weight:800;color:inherit;">${safeText(name)}</button>
+          <div style="color:var(--steel);font-size:12px;">${safeText(env.category_label)}</div>
+        </div>
+      </div>
+      ${pub.reason ? `<div style="margin-top:8px;white-space:pre-wrap;">${safeText(pub.reason)}</div>` : ""}
+      <div style="color:var(--steel);font-size:11px;margin-top:6px;">פורסם ${relativeTime(pub.published_at)}</div>
+    </div>`;
+  }
+  function renderCoachMemberOfWeekSection() {
+    const s = state.coachMemberOfWeek;
+    const head = sectionHead("var(--brass)", s.envelope ? `חבר/ת השבוע · ${safeText(s.envelope.category_label)}` : "חבר/ת השבוע");
+    if (s.loading && !s.loaded) {
+      return `<div class="ach-section" style="margin-top:18px;">${head}<div aria-busy="true"><div class="chart-card" style="height:64px;background:var(--border);opacity:.35;"></div></div></div>`;
+    }
+    if (s.error || !s.envelope) {
+      return `<div class="ach-section" style="margin-top:18px;">${head}<div class="empty">לא ניתן היה לטעון את המועמדים.<div class="chip-row" style="justify-content:center;"><button class="chip-btn" data-community-action="coach-mow-retry">ניסיון חוזר</button></div></div></div>`;
+    }
+    const env = s.envelope;
+    let body;
+    if (env.published) {
+      body = renderMemberOfWeekPublished(env);
+    } else if (env.free_selection) {
+      body = renderMemberOfWeekPickForm(env);
+    } else if (env.candidates && env.candidates.length) {
+      body = `<div class="log-list">${env.candidates.map((c) => renderMemberOfWeekCandidate(c, env.category)).join("")}</div>${renderMemberOfWeekPickForm(env)}`;
+    } else {
+      body = `<div class="empty">אין מועמדים השבוע לקטגוריה זו</div>${renderMemberOfWeekPickForm(env)}`;
+    }
+    return `<div class="ach-section" style="margin-top:18px;">${head}${body}</div>`;
+  }
   // COMM-226 built this absent entirely (not merely styled hidden) unless
   // the flag is on; COMM-304 flips that flag default-on and gives it real
   // rows, but the same absent-when-off gate stays exactly as it was, for
@@ -4204,7 +4454,7 @@
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מעקב מעורבות")}${body}</div>`;
   }
   function renderCoachTab() {
-    return renderCoachCelebrateSection() + renderCoachWelcomeSection() + renderChallengesListSection() + renderCoachEngageSection();
+    return renderCoachCelebrateSection() + renderCoachMemberOfWeekSection() + renderCoachWelcomeSection() + renderChallengesListSection() + renderCoachEngageSection();
   }
 
   // ---- Rendering: create/edit form (COMM-201) ------------------------------
@@ -7502,6 +7752,7 @@
     if (state.communityTab === "coach" && isStaff()) {
       if (!state.coachCelebrate.loaded && !state.coachCelebrate.loading) loadCoachCelebrate();
       if (!state.coachWelcome.loaded && !state.coachWelcome.loading) loadCoachWelcome();
+      if (!state.coachMemberOfWeek.loaded && !state.coachMemberOfWeek.loading) loadCoachMemberOfWeek();
       if (state.featureFlags.coachEngage && !state.coachEngage.loaded && !state.coachEngage.loading) loadCoachEngageFlags();
     }
     // COMM-224. The assign-by-handle and mark-contacted note fields are
@@ -7513,6 +7764,22 @@
     });
     document.querySelectorAll("[data-coach-contact-note]").forEach((el) => {
       el.addEventListener("input", () => { state.coachWelcome.contactDrafts[el.dataset.coachContactNote] = el.value; });
+    });
+    // COMM-315. Same no-rerender-on-input shape as the two listeners just
+    // above. The reason field's live 500-char counter is DOM-patched
+    // directly on the same input event, the same way composerSetBody's own
+    // counter is - a full rerender here would cost the textarea its focus
+    // and caret position on every keystroke, exactly what those two
+    // listeners already avoid.
+    document.querySelectorAll("[data-mow-pick-handle]").forEach((el) => {
+      el.addEventListener("input", () => { state.coachMemberOfWeek.pickHandle = el.value; });
+    });
+    document.querySelectorAll("[data-mow-pick-reason]").forEach((el) => {
+      el.addEventListener("input", () => {
+        state.coachMemberOfWeek.pickReason = el.value;
+        const counter = document.querySelector("[data-mow-pick-counter]");
+        if (counter) counter.textContent = `${el.value.length}/500`;
+      });
     });
     // COMM-222. Same lazy pattern: the first-month summary is only worth
     // fetching once that onboarding step is actually due.
@@ -7754,6 +8021,10 @@
     else if (action === "coach-assign-clear") coachAssignCoach(el.dataset.id, null);
     else if (action === "coach-assign-handle") coachAssignByHandle(el.dataset.id);
     else if (action === "coach-mark-contacted") coachMarkContacted(el.dataset.id);
+    // COMM-315 member of the week.
+    else if (action === "coach-mow-retry") loadCoachMemberOfWeek();
+    else if (action === "coach-mow-publish-candidate") memberOfWeekPublishCandidate(el.dataset.id);
+    else if (action === "coach-mow-publish-pick") memberOfWeekPublishPick();
     else if (action === "coach-engage-retry") loadCoachEngageFlags();
     else if (action === "coach-engage-reach-out") coachEngageReachOut(el.dataset.id);
     else if (action === "coach-engage-review") coachEngageResolveFlag(el.dataset.id, "reviewed");
@@ -7846,7 +8117,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.notifPushSub = null; state.notifPushChecked = false; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false, profiles: {}, reachedOut: {}, busy: null }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} }; state.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false }; state.classmatesToday = { items: [], loading: false, loaded: false, error: false }; classmatesCardViewLogged = false; /* COMM-307: the next member to sign in on this device gets a fresh card and a fresh classmates_card_viewed, never the previous session's rows or its already-counted view. */
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.notifPushSub = null; state.notifPushChecked = false; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false, profiles: {}, reachedOut: {}, busy: null }; state.coachMemberOfWeek = { loading: false, loaded: false, error: false, envelope: null, publishedProfile: null, previousProfile: null, pickHandle: "", pickReason: "", busy: null, publishErr: "" }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} }; state.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false }; state.classmatesToday = { items: [], loading: false, loaded: false, error: false }; classmatesCardViewLogged = false; /* COMM-307: the next member to sign in on this device gets a fresh card and a fresh classmates_card_viewed, never the previous session's rows or its already-counted view. */
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();
