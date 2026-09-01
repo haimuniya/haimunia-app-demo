@@ -967,7 +967,7 @@ one-or-the-other.
 | ID | Title | Agent | Attendance-blocked | Status |
 |---|---|---|---|---|
 | COMM-309 | Monthly club recap Edge Function with admin preview | recaps | no | review — both halves in |
-| COMM-316 | Monthly recap classmates and onboarding class steps, attendance | recaps | was — unblocked by COMM-300 |
+| COMM-316 | Monthly recap classmates and onboarding class steps, attendance | recaps | was — unblocked by COMM-300 | review — both halves in |
 
 **COMM-309 is in review — BOTH HALVES.** Not attendance-blocked in the
 gating sense — it could be built any time after COMM-300 exists in the
@@ -986,11 +986,31 @@ Coach Dashboard preview with a publish control gated on
 staff read policy — a coach can preview a draft but not publish it, per
 the schema's own documented asymmetry) and a member-facing card on the
 Account tab beside the existing weekly-recap entry that renders nothing at
-all until a month is actually published. COMM-316 closes both COMM-P06 and COMM-P07 in one
-ticket: `weekly_recaps` gains a named classmates line (an own-row surface,
-so naming individuals is fine, unlike COMM-309's club-wide one) and
-`onboarding_progress` gains the two class-attendance steps COMM-222
-explicitly deferred here by name.
+all until a month is actually published.
+
+**COMM-316 is in review — BOTH HALVES — and closes both COMM-P06 and
+COMM-P07 in one ticket.** `weekly_recaps` gains a named classmates line (an
+own-row surface, so naming individuals is fine, unlike COMM-309's club-wide
+one) via `recap_weekly_classmates(p_user, p_week_start, p_limit)`
+(schema `cdde05c`) and `onboarding_progress` gains the two class-attendance
+steps COMM-222 explicitly deferred here by name. The real find: this
+function runs as service_role with no session, so `can_view_profile_field()`
+— every other Phase 3 reader's privacy resolution point — would resolve its
+viewer from a null `auth.uid()` and return false for every candidate,
+forever, silently. Verified directly against a service-role session before
+writing the fix. The gate is instead written out term-for-term against an
+explicit `p_user` parameter, deliberately omitting the helper's `is_admin()`
+short-circuit — a weekly recap is a persisted, shareable artifact (COMM-221's
+Share Recap), not a live view, so a member's own toggle outranks the
+subject's rank, the same reasoning COMM-315 already established. The
+feature half (`b3747d2`) wires `recap_weekly` (the Edge Function) to call
+the new RPC once per member per week and renders the line in `cloud.js`;
+the two onboarding steps rank after all three existing COMM-222 steps
+rather than between them, a documented judgment call that keeps "these two
+steps don't reorder the existing three" a structural guarantee. Flagged,
+not fixed: `recap_weekly/index.ts` has no executing test coverage
+anywhere in this repo (no Deno/Node harness exists for Edge Functions at
+all) — same position every other helper in that file was already in.
 
 ### challenges
 
@@ -1117,6 +1137,19 @@ with real rows, a review/dismiss write path, and a "reach out" one-tap
 action. Like COMM-307 and unlike COMM-306/COMM-305, this needed both
 halves. The row stays in the table above for the same reason; two remain
 open and unblocked (COMM-P06, COMM-P07).
+
+Updated 2026-09-01, seventh pass: **COMM-P06 and COMM-P07 are both closed**
+by COMM-316 (202609010003 plus the Edge Function and client halves,
+`cdde05c`/`b3747d2`) — the last two rows in this table. `weekly_recaps`
+gains a real classmates line, gated by `recap_weekly_classmates()` written
+against an explicit viewer parameter rather than the module's usual
+`can_view_profile_field()` helper, since that helper cannot answer for a
+service-role caller with no session; and `onboarding_progress` gains the
+first- and third-class steps, ranked after the three COMM-222 steps rather
+than between them. Like COMM-304/COMM-307, this needed both halves. The
+row stays in the table above for the same reason. **All seven rows in the
+parked bucket are now closed** — this table is complete as a historical
+record.
 
 ## Phase 0 schema handoff for qa (COMM-019)
 
