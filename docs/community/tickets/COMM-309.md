@@ -2,7 +2,7 @@
 
 Phase: 3
 Agent: recaps
-Status: schema half shipped (202609010002, pgTAP 0046) — client half open
+Status: review — both halves shipped (202609010002 schema, cloud.js client)
 Attendance-blocked: no
 
 IMPLEMENTATION NOTE, decided in 202609010002 and recorded because this

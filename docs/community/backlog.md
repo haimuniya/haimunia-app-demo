@@ -964,18 +964,29 @@ one-or-the-other.
 
 ### recaps
 
-| ID | Title | Agent | Attendance-blocked |
-|---|---|---|---|
-| COMM-309 | Monthly club recap Edge Function with admin preview | recaps | no |
+| ID | Title | Agent | Attendance-blocked | Status |
+|---|---|---|---|---|
+| COMM-309 | Monthly club recap Edge Function with admin preview | recaps | no | review — both halves in |
 | COMM-316 | Monthly recap classmates and onboarding class steps, attendance | recaps | was — unblocked by COMM-300 |
 
-COMM-309 is not attendance-blocked in the gating sense — it can be built any
-time after COMM-300 exists in the schema (which, per the build order above,
-it already will be) since one of its aggregate figures (`sessions_logged`)
-reads `attendance_log`, but every other figure does not depend on it. It is
-also the first ticket to give aggregate, club-wide attendance figures any
-club visibility, and stays aggregate-only forever, unlike COMM-316's
-per-recap classmates line. COMM-316 closes both COMM-P06 and COMM-P07 in one
+**COMM-309 is in review — BOTH HALVES.** Not attendance-blocked in the
+gating sense — it could be built any time after COMM-300 exists in the
+schema, since one of its aggregate figures (`sessions_logged`) reads
+`attendance_log`, but every other figure does not depend on it. It is also
+the first ticket to give aggregate, club-wide attendance figures any club
+visibility, and stays aggregate-only forever — enforced by the table's own
+shape (no `user_id`, no jsonb, no text column) rather than by convention,
+unlike COMM-316's per-recap classmates line. Generation shipped as a
+service-role-only Postgres function (`recap_monthly_generate`, schema
+`f0482fc`) rather than an Edge Function like `recap_weekly` — no scheduler
+built yet, matching every other periodic job in this module; a draft only
+exists once someone invokes it by hand. The client half (`053ff8f`) adds a
+Coach Dashboard preview with a publish control gated on
+`community.analytics.view` or `is_admin()` (deliberately narrower than the
+staff read policy — a coach can preview a draft but not publish it, per
+the schema's own documented asymmetry) and a member-facing card on the
+Account tab beside the existing weekly-recap entry that renders nothing at
+all until a month is actually published. COMM-316 closes both COMM-P06 and COMM-P07 in one
 ticket: `weekly_recaps` gains a named classmates line (an own-row surface,
 so naming individuals is fine, unlike COMM-309's club-wide one) and
 `onboarding_progress` gains the two class-attendance steps COMM-222
