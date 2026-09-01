@@ -1054,9 +1054,14 @@ Not the same job as the already-shipped `purge_due_accounts()`
 (202608260001, a member's own *explicit* deletion request, purged 30 days
 after they ask). This is a different, new category: an anonymous
 `auth.users` account that never redeemed an invite and never verified
-recovery, sitting abandoned. The exact retention window is flagged as an
-open question in the ticket file rather than guessed at a specific number
-of days.
+recovery, sitting abandoned. COMM-314 shipped: `202609010004`
+(`public.purge_abandoned_profiles(p_retention_days)`, 30-day window
+confirmed 2026-08-31) plus
+`supabase/functions/purge_abandoned_profiles/index.ts` and
+`docs/community/abandoned-profile-purge-runbook.md`. The Edge Function
+calls the Postgres function over RPC rather than reading `auth.users`
+directly — see `docs/community/contracts.md`'s "purge_abandoned_profiles —
+SHIPPED" entry for why.
 
 ### qa
 

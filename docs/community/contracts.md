@@ -4232,17 +4232,57 @@ is there. Same open infra item `notif_batch_flush_due()`,
   there never will be under this ticket. `recap_weekly` remains the only
   Edge Function in the repo.
 
-### purge_abandoned_profiles
+### purge_abandoned_profiles — SHIPPED
 
-- Schedule: daily. Versioned. Idempotent. Phase 3, COMM-314.
+- Schedule: daily (no scheduler wired — see below). Versioned. Idempotent.
+  Phase 3, COMM-314. Shipped as
+  `supabase/functions/purge_abandoned_profiles/index.ts`, calling
+  `public.purge_abandoned_profiles(p_retention_days integer default 30)`
+  in `202609010004`.
 - Purpose: remove abandoned anonymous profiles per the retention rule.
-- Records success and failure counts with no personal content.
+  Retention window confirmed 2026-08-31: **30 days**, matching
+  `purge_due_accounts()`'s own window.
+- Records success and failure counts with no personal content:
+  `{checked, success, failure}`, plus `version`/`retention_days`/`ran_at`
+  added by the Edge Function wrapper.
 - Not the same job as the already-shipped `purge_due_accounts()`
   (202608260001, a member's own explicit deletion request purged 30 days
   after they ask). "Abandoned" here means `auth.users.is_anonymous = true`,
-  no `invite_redemptions` row, no `profiles.recovery_verified_at`, older
-  than a named retention window. See "Needs from schema, identity-privacy
-  (Phase 3)" below — the exact window is an open question, not yet decided.
+  no `invite_redemptions` row, no `profiles.recovery_verified_at` — both
+  genuinely absent, not merely old — older than the retention window.
+- **One deviation from this stub's own wording, recorded here because the
+  stub said "reads `auth.users`, `invite_redemptions`, `profiles`
+  directly [from the Edge Function]" and that is not actually reachable:**
+  `supabase/config.toml`'s `[api] schemas = ["public", "graphql_public"]`
+  is what PostgREST exposes to any caller, service-role key included —
+  the service-role key bypasses RLS on exposed tables, it does not add
+  `auth.users` to the exposed schema list, so there is no
+  `supabase.from("auth.users")` reachable from the Edge Function's JS
+  client. The Edge Function still exists at the path the ticket named and
+  still carries the explicit `Authorization: Bearer <service role key>`
+  check `recap_weekly` established, but its own body does no direct table
+  reads at all — it calls `public.purge_abandoned_profiles()` over RPC,
+  the same shape `recap_weekly` already uses for
+  `recap_weekly_classmates()` for its own server-side-only logic. Full
+  reasoning in the migration's own header comment
+  (`202609010004_purge_abandoned_profiles.sql`).
+- Deletion mechanism matches `purge_due_accounts()` exactly: a raw SQL
+  `delete from auth.users` inside a SECURITY DEFINER function relying on
+  the same `on delete cascade` FK shape, not the Admin API — one
+  difference, it deletes one candidate at a time inside its own exception
+  block (rather than one bulk statement) so "success and failure counts"
+  is a real per-account signal.
+- pgTAP coverage: `supabase/tests/0048_purge_abandoned_profiles_test.sql`.
+  No test coverage exists for the Edge Function wrapper itself — same gap
+  `recap_weekly`'s own `index.ts` already has; see the runbook's "Open
+  questions and gaps".
+- Runbook: `docs/community/abandoned-profile-purge-runbook.md` (not the
+  `attendance-purge-runbook.md` path this stub originally suggested — see
+  that file's own header for why the name changed).
+- **Nothing schedules this yet** — same open infra item `recap_weekly`,
+  `notif_batch_flush_due()`, `chal_notify_ending_soon()`,
+  `coach_detect_engagement_decline()` and `recap_monthly_generate()` all
+  already carry.
 
 ## Phase 3 forward contracts (not yet built)
 
@@ -4556,10 +4596,10 @@ What a dependent ticket needs to know changed between the two:
   same time — so a correlation keyed on the stamp is measuring onboarding
   reach, not attendance.
 
-### Needs from schema, identity-privacy (Phase 3)
+### Needs from schema, identity-privacy (Phase 3) — SHIPPED
 
-- `purge_abandoned_profiles` Edge Function, service-role only, same
-  explicit `Authorization: Bearer <service role key>` check
-  `recap_weekly` already established. No new table — reads `auth.users`,
-  `invite_redemptions`, `profiles` directly. COMM-314. Open question: the
-  retention window (days of inactivity before eligible) is not decided.
+COMM-314 shipped in `202609010004` plus
+`supabase/functions/purge_abandoned_profiles/index.ts`. The built contract,
+with the one mechanism change from what was promised here, is **"###
+purge_abandoned_profiles — SHIPPED"** above. Read that, not this. The
+retention-window open question is resolved: 30 days, confirmed 2026-08-31.
