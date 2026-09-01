@@ -1014,16 +1014,36 @@ all) — same position every other helper in that file was already in.
 
 ### challenges
 
-| ID | Title | Agent | Attendance-blocked |
-|---|---|---|---|
-| COMM-308 | Advanced challenge team management | challenges | no |
+| ID | Title | Agent | Attendance-blocked | Status |
+|---|---|---|---|---|
+| COMM-308 | Advanced challenge team management | challenges | no | review — both halves in |
 
-Not attendance-blocked, no ordering constraint against the rest of the
-phase. Coach-driven team CRUD, member reassignment, and a captain label on
-top of COMM-204's existing team challenge shape — no forward reference
-existed for this one either, but the delta from COMM-204's shipped scope is
-concrete enough that this ticket does not carry the same "open question"
-flag COMM-311/312/313/315 do.
+**COMM-308 is in review — BOTH HALVES.** Not attendance-blocked, no
+ordering constraint against the rest of the phase. Coach-driven team CRUD,
+member reassignment, and a captain label on top of COMM-204's existing team
+challenge shape — no forward reference existed for this one either, but the
+delta from COMM-204's shipped scope is concrete enough that this ticket
+does not carry the same "open question" flag COMM-311/312/313/315 do. The
+real find: the ticket's own acceptance criteria stated as fact that a plain
+member's `challenge_participants_update_self` policy already refuses
+setting `team_id` to a value they didn't pick at join — it doesn't; the
+policy has no column restriction at all. Verified against the shipped
+policy before writing the fix (schema `7e2f908`): a new trigger makes one
+pick from null allowed (the only team write COMM-204's shipped client ever
+makes) and refuses any later change by a non-holder. `captain_id` gets the
+same "policy already allows the write, pin the column to the function
+anyway" treatment `protect_is_admin()` established for
+`recovery_verified_at`/`assigned_coach_id`, so every captain change is
+audited even though the existing team UPDATE policy is technically wide
+enough to set it directly. Team deletion with active members is refused by
+a real trigger, not just client discipline — with a documented cascade
+escape hatch so deleting a whole team challenge still works. The client
+half (`f601dd4`) adds a staff-only management card below COMM-204's
+unchanged member-facing team columns (verified byte-identical for a plain
+member) with rename/delete/create, a captain picker, and a per-member team
+reassignment picker; the captain badge itself is staff-only in this
+ticket's reading of the frontend-states text, flagged as a real ambiguity
+worth a second look if the intent was actually club-wide visibility.
 
 ### admin-moderation
 

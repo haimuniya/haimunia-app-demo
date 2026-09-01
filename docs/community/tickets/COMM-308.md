@@ -2,7 +2,7 @@
 
 Phase: 3
 Agent: challenges
-Status: todo
+Status: review — both halves shipped (202609010005 schema, cloud.js client)
 Attendance-blocked: no
 
 ## User outcome
