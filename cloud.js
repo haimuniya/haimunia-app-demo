@@ -257,7 +257,25 @@
     // call inside renderAdminAnalyticsDashboard() after the two
     // metrics.md-defined groups, rather than opening a second nav
     // destination or a second period selector.
-    adminAnalytics: { mode: "week", start: null, end: null, loading: false, loaded: false, error: false, errorText: "", data: null } };
+    adminAnalytics: { mode: "week", start: null, end: null, loading: false, loaded: false, error: false, errorText: "", data: null },
+    // COMM-311 member engagement segmentation, client half. THE FIRST
+    // ticket to actually extend COMM-310's shell, per that ticket's own
+    // "reusing COMM-310's dashboard shell" instruction. Its own load fires
+    // from inside loadAdminAnalyticsDashboard() itself (see that function),
+    // never from a second period selector or a second lazy-load gate on the
+    // account tab - see cloud.js's own comment there for why. data is the
+    // RAW array member_segments() returned (one {user_id, display_name,
+    // handle, segment} row per club member, already ordered by segment then
+    // name server-side - never re-sorted here), grouped into the six named
+    // buckets only at render time. asOf is the p_as_of this client actually
+    // sent (COMM-310's own selected period end, capped at today - see
+    // memberSegmentsAsOf()), shown so a reviewer can see what date a count
+    // was computed for. expanded is a plain {segment: bool} map of which
+    // segment cards are currently drilled into, reset never (a card a staff
+    // member opened stays open across a period change, the same way
+    // COMM-310's own period selector does not collapse anything else on
+    // screen).
+    memberSegments: { loading: false, loaded: false, error: false, errorText: "", data: null, asOf: null, expanded: {} } };
   const photoUrlCache = {};
 
   // COMM-141. The notification badge refreshes on a realtime own-row
@@ -1644,6 +1662,18 @@
     if (error) { a.error = true; a.errorText = adminAnalyticsErrorText(error); rerender(); return; }
     a.data = data || null;
     rerender();
+    // COMM-311's own section only ever renders inside this same populated
+    // branch (renderAdminAnalyticsDashboard() appends it after the two
+    // metrics.md groups, inside the `else` where a.data is truthy) - so its
+    // own load only ever needs to fire from this one place, the instant
+    // a.data just became truthy, rather than being wired into
+    // setAdminAnalyticsMode()/shiftAdminAnalyticsPeriod() separately or
+    // into the account tab's own lazy-load gate a second time. That is the
+    // "reusing the same period selector and load cycle, not a second nav
+    // destination or a second RPC-driven load cycle" COMM-310's own commit
+    // message asked a later ticket to do. Not awaited: this function's own
+    // render must not wait on an RPC it does not itself depend on.
+    loadMemberSegments();
   }
   function setAdminAnalyticsMode(mode) {
     if (mode !== "week" && mode !== "month") return;
@@ -1666,6 +1696,61 @@
     else anchor.setUTCDate(anchor.getUTCDate() + (dir < 0 ? -7 : 7));
     Object.assign(a, adminAnalyticsDefaultPeriod(a.mode, adminAnalyticsIsoDate(anchor)));
     loadAdminAnalyticsDashboard();
+  }
+  // ---- Member engagement segmentation (COMM-311) ----------------------
+  // member_segments(p_as_of date) (202609010007) takes ONE as-of date, not
+  // a range like analytics_dashboard() - so there is no second period
+  // selector to build. Instead this reuses COMM-310's own selected period,
+  // capped at today: a week or month period's own `end` can be in the
+  // future (the current week/month is not over), and member_segments()
+  // REFUSES a future as-of date outright rather than clamping it
+  // server-side (the migration's own "a clamped date would put a
+  // segmentation on screen labelled with a date it was not computed for"
+  // note). Capping once here, client-side, is simpler than teaching this
+  // section a second period concept only it would use.
+  function memberSegmentsAsOf() {
+    const todayIso = adminAnalyticsIsoDate(new Date());
+    const end = state.adminAnalytics.end;
+    return (end && end < todayIso) ? end : todayIso;
+  }
+  // The two real Postgres errors member_segments() raises (the migration's
+  // own comment on that function, verbatim), mapped to short Hebrew - same
+  // error.message === "..." pattern ADMIN_ANALYTICS_ERROR_LABELS uses right
+  // above. Anything else (network, a permission revoked mid-session) falls
+  // back to COMM-311's own frontend-states copy for the Error state,
+  // exactly as written in that ticket: "לא ניתן היה לטעון את הפילוח."
+  const MEMBER_SEGMENTS_ERROR_LABELS = {
+    "not authorized": "אין לך הרשאה לצפות בפילוח זה.",
+    "as-of date is in the future": "לא ניתן להציג פילוח לתאריך עתידי.",
+  };
+  function memberSegmentsErrorText(error) {
+    const msg = error && error.message;
+    return (msg && MEMBER_SEGMENTS_ERROR_LABELS[msg]) || "לא ניתן היה לטעון את הפילוח.";
+  }
+  async function loadMemberSegments() {
+    if (!state.user || !(hasPerm(PERM.ANALYTICS_VIEW) || isAdmin())) { state.memberSegments.data = null; return; }
+    const ms = state.memberSegments;
+    const asOf = memberSegmentsAsOf();
+    ms.loading = true; ms.error = false; ms.errorText = ""; ms.asOf = asOf;
+    rerender();
+    const { data, error } = await client.rpc("member_segments", { p_as_of: asOf });
+    ms.loading = false; ms.loaded = true;
+    if (error) { ms.error = true; ms.errorText = memberSegmentsErrorText(error); rerender(); return; }
+    // setof jsonb comes back as a plain array from PostgREST; defensive
+    // Array.isArray() guard only, no reshaping - the six-way grouping
+    // happens at render time in groupMemberSegments(), never here, the same
+    // "server is the one definition" posture data itself already follows.
+    ms.data = Array.isArray(data) ? data : [];
+    rerender();
+  }
+  // A segment card's own drill-down toggle - independent of anything
+  // COMM-310's period selector owns, and never reset by a period change (a
+  // card a staff member opened stays open across paging, matching how
+  // nothing else on this screen collapses on a period change either).
+  function toggleMemberSegment(segment) {
+    const ms = state.memberSegments;
+    ms.expanded[segment] = !ms.expanded[segment];
+    rerender();
   }
   // ---- Admin audit view (COMM-154) -----------------------------------
   // Read-only, gated on community.analytics.view. admin_actions_page checks
@@ -3883,6 +3968,101 @@
       + renderAdminAnalyticsPush(add)
       + renderAdminAnalyticsClassmates(add);
   }
+  // ---- Member engagement segmentation (COMM-311) --------------------------
+  // Renders as a new section appended INSIDE renderAdminAnalyticsDashboard()'s
+  // own populated branch (see that function, below), after the two
+  // metrics.md groups - not a second nav destination, not a second period
+  // selector. member_segments()'s six buckets, in the SAME precedence order
+  // the migration's CASE expression uses (new > declining > highly_active >
+  // steady > occasional > dormant) - display order mirrors decision order on
+  // purpose, so a reviewer reading top-to-bottom sees the same priority the
+  // server actually applied. Hebrew labels and one-line descriptions are
+  // written to match those definitions exactly, not loosely.
+  const MEMBER_SEGMENT_ORDER = ["new", "declining", "highly_active", "steady", "occasional", "dormant"];
+  const MEMBER_SEGMENT_LABELS = {
+    new: "חדשים/ות", declining: "בירידה", highly_active: "פעילים/ות מאוד",
+    steady: "יציבים/ות", occasional: "מזדמנים/ות", dormant: "רדומים/ות",
+  };
+  const MEMBER_SEGMENT_DESCRIPTIONS = {
+    new: "בתוך 30 הימים הראשונים לחברות",
+    declining: "יש דגל ירידה בהגעה פתוח (COMM-304)",
+    highly_active: "פעילים בכל אחד מ-4 השבועות המלאים האחרונים",
+    steady: "פעילים בלפחות 4 מתוך 8 השבועות המלאים האחרונים",
+    occasional: "פעילים ב-1 עד 3 מתוך 8 השבועות המלאים האחרונים",
+    dormant: "ללא פעילות ב-8 השבועות המלאים האחרונים",
+  };
+  // One row per club member, grouped by its own `segment` field - never
+  // re-derived or re-sorted client-side, and every one of the six named
+  // buckets is pre-seeded with an empty array so a segment with nobody in it
+  // still renders "0" (COMM-311's own Empty state) rather than being an
+  // omitted card. An unrecognised segment string (a future tuning pass that
+  // added a seventh bucket without a client update) still gets its own
+  // group rather than being silently dropped, so a count can never go
+  // missing from the total.
+  function groupMemberSegments(rows) {
+    const groups = {};
+    for (const key of MEMBER_SEGMENT_ORDER) groups[key] = [];
+    for (const row of rows || []) {
+      const seg = row && row.segment;
+      if (!groups[seg]) groups[seg] = [];
+      groups[seg].push(row);
+    }
+    return groups;
+  }
+  // A member with visible_to_club = false comes back with user_id,
+  // display_name AND handle all null TOGETHER (the migration's own "the
+  // three identifying fields are nulled together, never separately" rule) -
+  // and handle is `not null unique` on profiles, so a real, visible member
+  // row can never carry a null handle. user_id == null is therefore an exact
+  // test for "this row was redacted for privacy", not a heuristic.
+  function memberSegmentIsRedacted(row) { return !row || row.user_id == null; }
+  function memberSegmentName(row) {
+    if (memberSegmentIsRedacted(row)) return "חבר/ה (פרופיל מוסתר)";
+    return row.display_name || (row.handle ? "@" + row.handle : "חבר/ה");
+  }
+  function renderMemberSegmentCard(segmentKey, rows, total, isExpanded) {
+    const count = rows.length;
+    const share = total > 0 ? adminAnalyticsRatioText(count / total, true) : "—";
+    const label = MEMBER_SEGMENT_LABELS[segmentKey] || segmentKey;
+    const desc = MEMBER_SEGMENT_DESCRIPTIONS[segmentKey] || "";
+    const listHtml = !isExpanded ? "" : (count
+      ? `<div class="log-list">${rows.map((r) => `<div class="log-row"><span>${safeText(memberSegmentName(r))}</span></div>`).join("")}</div>`
+      : `<div class="empty" style="padding:4px 0;">אין חברים בפילוח זה</div>`);
+    return `<div class="chart-card" style="margin-bottom:10px;" data-member-segment-card="${safeText(segmentKey)}">
+      <button type="button" class="log-row" style="width:100%;background:none;border:none;cursor:pointer;text-align:inherit;padding:0;" data-community-action="member-segments-toggle" data-segment="${safeText(segmentKey)}" aria-expanded="${isExpanded ? "true" : "false"}">
+        <span>${safeText(label)}</span>
+        <span class="mono" style="color:var(--brass);">${count} · ${share}</span>
+      </button>
+      <div class="footer-note" style="margin:2px 0 0;">${safeText(desc)}</div>
+      ${listHtml}
+    </div>`;
+  }
+  // Frontend states, COMM-311's own list: loading is a skeleton
+  // (data-member-segments-skeleton, six blank rows for the six buckets);
+  // error is the ticket's own copy unless the server named one of the two
+  // real refusals; empty (a segment with nobody in it) is not a separate
+  // branch - every one of the six cards always renders, honest "0" and all,
+  // because groupMemberSegments() pre-seeds every bucket.
+  function renderMemberSegments() {
+    if (!(hasPerm(PERM.ANALYTICS_VIEW) || isAdmin())) return "";
+    const ms = state.memberSegments;
+    let body;
+    if (ms.loading && !ms.data) {
+      const skRow = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:45%;background:var(--border);border-radius:6px;display:inline-block;"></span><span style="height:12px;width:20%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
+      const skCard = `<div class="chart-card" style="margin-bottom:10px;">${skRow}</div>`;
+      body = `<div aria-busy="true" data-member-segments-skeleton="1">${skCard.repeat(6)}</div>`;
+    } else if (ms.error) {
+      body = `<div class="empty">${safeText(ms.errorText || "לא ניתן היה לטעון את הפילוח.")}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="member-segments-retry">ניסיון חוזר</button></div></div>`;
+    } else if (!ms.data) {
+      body = `<div class="empty">אין עדיין נתונים לתצוגה.</div>`;
+    } else {
+      const groups = groupMemberSegments(ms.data);
+      const total = ms.data.length;
+      body = `<div class="footer-note" style="margin:0 0 8px;">סה״כ חברי מועדון: ${total}${ms.asOf ? ` · נכון לתאריך ${safeText(ms.asOf)}` : ""}</div>`
+        + MEMBER_SEGMENT_ORDER.map((key) => renderMemberSegmentCard(key, groups[key] || [], total, !!ms.expanded[key])).join("");
+    }
+    return `<div style="margin-top:14px;" data-member-segments-section="1"><div class="field-label" style="margin:4px 0 8px;">פילוח מעורבות חברים</div>${body}</div>`;
+  }
   // ---- The shell itself ---------------------------------------------------
   // Frontend states (COMM-310's own "Frontend states" list): loading is a
   // skeleton (data-admin-analytics-skeleton, the same aria-busy skeleton
@@ -3906,7 +4086,14 @@
     } else if (!a.data) {
       body = `<div class="empty">אין עדיין נתונים לתצוגה.</div>`;
     } else {
-      body = renderAdminAnalyticsCoreGroup(a.data) + renderAdminAnalyticsAdditionalGroup(a.data);
+      // COMM-311 appends here, inside this same populated branch, per
+      // COMM-310's own commit message: "a later ticket's own section is
+      // meant to be a new render function appended inside the same
+      // populated branch ... not a second nav destination or a second date
+      // picker." renderMemberSegments() carries its own independent
+      // loading/error/populated switch on state.memberSegments, so it is
+      // not itself gated on a.data beyond appearing here.
+      body = renderAdminAnalyticsCoreGroup(a.data) + renderAdminAnalyticsAdditionalGroup(a.data) + renderMemberSegments();
     }
     return `<div class="ach-section" style="margin-top:18px;" data-admin-analytics-dashboard="1">${sectionHead("var(--energy)", "לוח בקרה: אנליטיקת קהילה", true)}${renderAdminAnalyticsPeriodSelector()}${body}</div>`;
   }
@@ -8844,6 +9031,9 @@
     else if (action === "admin-analytics-mode") setAdminAnalyticsMode(el.dataset.mode);
     else if (action === "admin-analytics-shift") shiftAdminAnalyticsPeriod(Number(el.dataset.dir) || 1);
     else if (action === "admin-analytics-retry") loadAdminAnalyticsDashboard();
+    // COMM-311 member engagement segmentation.
+    else if (action === "member-segments-toggle") toggleMemberSegment(el.dataset.segment);
+    else if (action === "member-segments-retry") loadMemberSegments();
     // COMM-155 pins.
     else if (action === "unpin") unpinTarget(el.dataset.type, el.dataset.id);
     else if (action === "pin") pinTarget(el.dataset.type, el.dataset.id, el.dataset.note || "");
