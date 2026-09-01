@@ -607,7 +607,20 @@
   // today, so a missed day just isn't there rather than being backfilled.
   async function pingActivity() {
     if (!client || !state.user) return;
-    await client.from("activity_pings").upsert({ user_id: state.user.id, activity_date: todayIso() }, { onConflict: "user_id,activity_date", ignoreDuplicates: true }).catch(() => {});
+    // Found in the post-Phase-3 front-end review, against a real Supabase
+    // client rather than the mock: .catch() chained directly on a
+    // PostgrestFilterBuilder throws "is not a function" synchronously,
+    // BEFORE the builder's own .then() ever fires the request - so this
+    // upsert has never actually reached the server. Invisible to every
+    // Node test, because mockSupabase.mjs's chain() object happens to
+    // implement .catch() itself, which the real client's builder does not.
+    // Real impact: activity_pings feeds coach_inactive_members(),
+    // coach_new_members() and admin_search_members()'s last-activity
+    // column (202608270005/011) - all three have likely been reading an
+    // empty table since this shipped. try/catch, matching this file's own
+    // established "swallow a non-critical side effect" shape one line
+    // above (window.HaimuniaEvents.emit).
+    try { await client.from("activity_pings").upsert({ user_id: state.user.id, activity_date: todayIso() }, { onConflict: "user_id,activity_date", ignoreDuplicates: true }); } catch (e) {}
   }
   async function loadStreaks() {
     if (!state.user) return;
@@ -713,7 +726,22 @@
     if (!col || !state.onboardingProgress || !state.user || !client) return;
     state.onboardingProgress[col] = new Date().toISOString();
     rerender();
-    client.from("onboarding_progress").update({ [col]: new Date().toISOString() }).eq("user_id", state.user.id).catch(() => {});
+    // Same real bug pingActivity() had, found in the same front-end review
+    // pass: .catch() chained directly on a PostgrestFilterBuilder throws
+    // synchronously against the real client (its builder has no .catch
+    // method, only .then), so this write has never actually reached the
+    // server. Real impact here is worse than a missing ping: the optimistic
+    // local update above always makes the dismiss LOOK like it worked this
+    // session, but the server-side stamp never lands - so on the member's
+    // very next load, onboarding_progress reads the column back as still
+    // null and the exact same step shows again. Fire-and-forget is the
+    // right shape here (the optimistic update above already rerendered;
+    // this must not block on the network) - Promise.resolve() wraps the
+    // builder in a real Promise instance so .catch() is a genuine method
+    // rather than being called on the bare thenable, the same fix
+    // feed_record_impressions/feed_record_interaction already use a few
+    // hundred lines below.
+    Promise.resolve(client.from("onboarding_progress").update({ [col]: new Date().toISOString() }).eq("user_id", state.user.id)).catch(() => {});
   }
   // Lazy, same pattern the audit log already uses (afterRenderCommunity):
   // fetched once, only when the step it feeds is actually due, not on
