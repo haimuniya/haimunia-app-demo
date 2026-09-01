@@ -890,19 +890,33 @@ does not touch that refusal.
 
 ### coach-tools
 
-| ID | Title | Agent | Attendance-blocked |
-|---|---|---|---|
-| COMM-304 | Coach Engage activation and attendance-decline detection | coach-tools | was — unblocked by COMM-300 |
+| ID | Title | Agent | Attendance-blocked | Status |
+|---|---|---|---|---|
+| COMM-304 | Coach Engage activation and attendance-decline detection | coach-tools | was — unblocked by COMM-300 | review — both halves in |
 | COMM-315 | Member of the week rotation across recognition categories | coach-tools | no |
 
-COMM-304 closes COMM-P04. `coach_engagement_flags` has shipped empty since
-Phase 0 (202608280011) with a comment naming this exact ticket; COMM-226
-already built the Engage section as a flag-gated hidden shell reading it —
-this ticket gives the table its first producer (a scheduled
-baseline-vs-recent `attendance_log` comparison) and flips COMM-226's flag to
-default-on. The single most important existing rule, `user_id <>
-auth.uid()` on every policy, is untouched by this ticket and gets extra qa
-scrutiny in COMM-317 now that the table has real rows for the first time.
+**COMM-304 is in review — BOTH HALVES — and it closes the parked COMM-P04.**
+`coach_engagement_flags` has shipped empty since Phase 0 (202608280011) with
+a comment naming this exact ticket; COMM-226 already built the Engage
+section as a flag-gated hidden shell reading it — the schema half
+(`1f8069d`) gives the table its first producer,
+`coach_detect_engagement_decline()`, a service_role-only scheduled job that
+compares an 8-week baseline to a 2-week recent window per member off
+`attendance_log` and buckets into mild/significant/inactive via named
+tuning constants; the client half (`c03eca7`) flips COMM-226's flag to
+default-on and adds a translated level badge (never the raw enum or the
+underlying session figures), review/dismiss (a direct RLS update, no
+migration needed — verified against 202608280011's staff policy), and a
+"reach out" one-tap action modeled on COMM-225's congratulate pattern. The
+single most important existing rule, `user_id <> auth.uid()` on every
+policy, is untouched by this ticket and gets extra qa scrutiny in COMM-317
+now that the table has real rows for the first time. Two real gaps found
+and left open: the ticket's empty-state copy doesn't match what COMM-226
+actually shipped (went with the ticket's literal text), and
+`profiles_read_authenticated` only bypasses `visible_to_club=false` for
+`is_admin()`, not `is_staff()` — a non-admin coach resolving a flagged
+member with a hidden profile gets a generic fallback label rather than a
+name; the client degrades safely, but the policy gap itself is unfixed.
 COMM-315 has no forward reference anywhere in this repo's docs and is
 flagged as an open question in its own ticket file — the category set and
 rotation order proposed there (consistency streak, PRs, challenge
@@ -1043,6 +1057,16 @@ producer since COMM-001. Like COMM-306 and unlike COMM-307, this needed only
 the schema half — the client renderer was already correct and renders real
 data unchanged. The row stays in the table above for the same reason; three
 remain open and unblocked (COMM-P04, COMM-P06, COMM-P07).
+
+Updated 2026-09-01, sixth pass: **COMM-P04 is closed** by COMM-304
+(202608310008 plus the client half in `cloud.js`). `coach_engagement_flags`
+has its first producer — `coach_detect_engagement_decline()`, a scheduled
+baseline-vs-recent comparison off `attendance_log` — and COMM-226's
+previously flag-gated, hidden, empty Engage section is flipped default-on
+with real rows, a review/dismiss write path, and a "reach out" one-tap
+action. Like COMM-307 and unlike COMM-306/COMM-305, this needed both
+halves. The row stays in the table above for the same reason; two remain
+open and unblocked (COMM-P06, COMM-P07).
 
 ## Phase 0 schema handoff for qa (COMM-019)
 
