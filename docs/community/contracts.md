@@ -2964,7 +2964,8 @@ default 0`, `prs jsonb not null default '[]'`, `achievements jsonb not null
 default '[]'`, `challenge_progress jsonb not null default '[]'`,
 `club_challenge_progress jsonb not null default '{}'`, `upcoming_event jsonb`
 (nullable — null means no upcoming event), `generated_at timestamptz not null
-default now()`.
+default now()`, `classmates jsonb not null default '[]'` (202609010003,
+COMM-316).
 
 - Unique `weekly_recaps_user_week_key (user_id, week_start)`. This is what
   makes `recap_weekly` idempotent per user per week: upsert with `on conflict
@@ -2982,8 +2983,26 @@ default now()`.
 - A quiet week is a real row: the defaults give zeros and empty lists rather
   than nulls, so COMM-221 renders the quiet-week state without guessing.
 - `club_challenge_progress` is aggregate club figures only, never a
-  per-member breakdown — a recap naming who else trained would leak the
-  attendance data COMM-316 has not been cleared to expose.
+  per-member breakdown. That rule is unchanged by COMM-316: the classmates
+  line names people, the club challenge figure never does.
+- `classmates` (202609010003, COMM-316, closing COMM-P06) is
+  `[{user_id, display_name, handle, avatar_url}]` — up to a small number of
+  members this row's own member shared an `attendance_log` day with during
+  `week_start`'s ISO week, ordered by shared days then display name. Four
+  keys and no fifth: the shared-day **count** is the ordering key inside
+  `recap_weekly_classmates()` and never leaves it. Empty array means no
+  overlap **or** the member's own `show_attendance` is off; never null,
+  never an error. `recap_weekly` is the only writer, and it gets the value
+  from `recap_weekly_classmates()` rather than building it in TypeScript.
+- **Why naming individuals is allowed here and nowhere else.** A
+  `weekly_recaps` row is a private, own-row surface — `weekly_recaps_self_
+  select` is the only policy and there is no write grant at all — so a
+  classmates line reaches exactly one member, the one who was in the room on
+  the days being named. `monthly_club_recaps` (COMM-309) is the opposite:
+  one row the whole club reads, with no `user_id`, `text` or `jsonb` column
+  a name could be written into, and it stays aggregate-only forever. Same
+  module, two audiences, two rules. Do not copy this column's shape into a
+  club-visible table.
 - `default_club_id()` is now also granted to `service_role`. `weekly_recaps`
   is the first table a service-role caller writes directly rather than
   through a security definer function, so the `club_id` default is evaluated
@@ -2995,7 +3014,9 @@ default now()`.
 
 `user_id uuid primary key` → `auth.users(id)` cascade, `welcomed_at
 timestamptz`, `first_week_shown_at timestamptz`, `first_month_shown_at
-timestamptz`. Null means "not shown yet".
+timestamptz`, `first_class_shown_at timestamptz`, `third_class_shown_at
+timestamptz` (the last two 202609010003, COMM-316). Null means "not shown
+yet".
 
 - Own-row select and update for `authenticated`. The update is the client
   marking a step seen at render time. No insert grant and no delete grant, so
@@ -3010,12 +3031,37 @@ timestamptz`. Null means "not shown yet".
   than raising, so a benign double-write from two tabs, or a retry after a
   failed dismiss-write, is a no-op instead of an error on a new member's
   first day. Clients should treat mark-seen as fire-and-forget.
+  **`onboarding_progress_pin_shown()` names its columns one at a time** —
+  it is deliberately not a generic `to_jsonb(old)`/`to_jsonb(new)` merge,
+  which would also pin any non-timestamp column a later ticket adds and turn
+  "a shown-stamp is one-way" into "this table is append-only". The cost is
+  that **adding a sixth onboarding step requires adding a line to that
+  function**; COMM-316 had to add two, and 0047 asserts the one-way rule as
+  a sweep over every `timestamptz` column so a forgotten line fails a test
+  rather than shipping as a step that silently re-arms itself.
 - There is no `joined_at` column here. The onboarding clock runs from
   `invite_redemptions.redeemed_at`, the module's authoritative
   `MEMBER_JOINED` timestamp, which the member can already read on their own
   row and which `ach_claim` already meters the anniversary achievements off.
-- The two steps tied to first and third class attendance are not columns
-  here; they land with COMM-316.
+- The two steps tied to first and third class attendance landed in
+  202609010003 (COMM-316, closing COMM-P07) as `first_class_shown_at` and
+  `third_class_shown_at`. **Their eligibility is not a column here either**,
+  for the same reason there is no `joined_at`: the clock is
+  `public.attendance_log`, which the member already reads on their own rows
+  under `attendance_log_self_select`. "Do I have at least one row" and "do I
+  have at least three distinct `occurred_on` days" are direct client
+  queries — no RPC, no view, no denormalised counter. (`attendance_log` is
+  unique on `(user_id, occurred_on)`, so three rows are three days.)
+- **The five steps are independent and unordered.** There is no ordering
+  between any of them anywhere in the schema — five nullable stamps, five
+  independent eligibility questions — which is what makes COMM-316's "these
+  two steps do not block or reorder the three already-shipped steps" a
+  structural fact rather than a client convention.
+- **No backfill for the two new columns.** They start null on every existing
+  row, which is the correct state both for a brand-new member and for one
+  who has already logged fifty classes: that member sees the first-class
+  card once, on their next visit. Stamping retroactively would need a rule
+  about which past day counted as "shown", and there is no honest one.
 
 ### seed_onboarding_progress()
 
@@ -3983,6 +4029,109 @@ is there. Same open infra item `notif_batch_flush_due()`,
   Twelve runs a year against one small club; batching a large club remains
   the same later ticket.
 
+### recap_weekly_classmates(p_user uuid, p_week_start date default null, p_limit int default 5) returns jsonb (202609010003)
+
+- Purpose: the data source for `weekly_recaps.classmates`. COMM-316, closing
+  COMM-P06. The `recap_weekly` Edge Function calls it once per member per
+  week and drops the result straight into its upsert.
+- Params:
+  - `p_user` — **the subject, and also the viewer.** Required; a null raises
+    (see Errors). Not optional and not derived from the session, because
+    there is no session. See Auth.
+  - `p_week_start` — normalised to the **Monday of its own ISO week** rather
+    than rejected, the courtesy `member_of_week_candidates()` and
+    `recap_monthly_generate()` both extend. Null means the **most recently
+    completed** ISO week — the same week `recap_weekly`'s `targetWeek()`
+    picks, never the running one.
+  - `p_limit` — clamped 1..20; null means 5. Five is a recap line (a
+    sentence naming people, read once a week) where COMM-307's card is 6 and
+    `people_suggestions`' scrolling strip is 10. The clamp is the server's;
+    the default is a parameter so the recaps agent can revisit the line's
+    length from the Edge Function without a migration.
+- Returns: a jsonb **array**, never null, never a scalar. Elements are
+  `{user_id, display_name, handle, avatar_url}` — **four keys and no
+  fifth.** `shared_days` is computed as the ordering key and stays inside
+  the function: the recap tells the member *who* they trained beside, not on
+  how many of which days. Those four keys are exactly what
+  `community_profile` already returns to any member for any member, so no
+  new field about a classmate becomes reachable. Empty array for every real
+  data state — no profile, deleted profile, opted-out subject, no
+  attendance, no overlap, nobody eligible.
+- What it computes: members other than `p_user` who have an `attendance_log`
+  row on a day `p_user` also has one, **inside one ISO week on both sides of
+  the join**. That whole-week window is the entire reason this is not
+  `classmate_day_counts()` (COMM-302) with a different anchor: that helper's
+  window is trailing 60 days and lower-bounded only, so a day shared the
+  week before the target week would count.
+- Order: shared days descending, then
+  `coalesce(nullif(btrim(display_name), ''), handle)` ascending, then
+  `user_id`. The third key is what makes the order **total**, so the cut at
+  `p_limit` is deterministic and two runs of the same week produce the same
+  line.
+- Auth: `security definer`; **granted to `service_role` only**, revoked from
+  `public`, `anon` and `authenticated`. No `auth.uid()` check — the
+  documented exception every scheduled job in this schema carries
+  (`recap_monthly_generate`, `chal_notify_ending_soon`,
+  `notif_batch_flush_due`, `coach_detect_engagement_decline`): a job has no
+  session, so an `auth.uid()` gate would reject every legitimate call and
+  pass none. **The grant is the gate, and it matters more here than on those
+  four**, because `p_user` is a parameter: a member-callable form of this
+  function would answer "who did member X train with in week W" about
+  anybody in the club. 0047 asserts all four privileges and also calls it
+  from a member and an admin session, both refused `42501`.
+- **PRIVACY — `can_view_profile_field()` CANNOT BE USED HERE, and this is
+  the crux of the function.** That helper resolves its viewer from
+  `auth.uid()` and its first statement is `if v_uid is null then return
+  false`. The caller is an Edge Function running as `service_role` with no
+  user JWT, so `auth.uid()` is null and the helper returns **false for every
+  candidate, always** — the classmates line would be permanently empty with
+  nothing failing loudly to say so. `security definer` does not help: it
+  changes the executing role, not the request's JWT claims, which is why the
+  same helper works inside member-facing definer functions (`auth.uid()` is
+  still the real session there) and cannot work here. Verified empirically
+  under `set role service_role`, not inferred.
+- **So the viewer is passed explicitly as `p_user` and the gate is written
+  out against it**, reproducing `can_view_profile_field` term for term:
+  self excluded (in the join), block edge in either direction, profile
+  present and `deleted_at is null`, `visible_to_club`, `show_attendance`.
+  Note this is precisely the trap `classmate_day_counts()`'s header warns
+  about — "a `p_viewer` parameter would be honoured by the overlap count and
+  silently ignored by the privacy gate" — avoided by not calling the helper
+  at all. **Taking `p_user` *and* calling `can_view_profile_field()` would
+  be the bug that header describes.**
+- **The `is_admin()` short-circuit is deliberately NOT reproduced.** An
+  admin's weekly recap names only classmates who opted in, exactly like
+  every other member's. COMM-315 already drew this line for a club-wide
+  broadcast ("an admin's rank governs what they may see, never what the club
+  may be told"); a recap is one step further along the same reasoning — it
+  is a **persisted artifact**, sitting in the table indefinitely and
+  Shareable to the feed by COMM-221, so a name written into it past a
+  member's own toggle is written past that toggle permanently with no
+  session left to justify it. An admin who wants to know who trained when
+  still has `attendance_log`'s staff read policy, which is the surface that
+  boundary belongs to.
+- **`p_user`'s own `show_attendance` gates the line entirely**, read
+  straight off `profiles` — the same direct-column read
+  `attendance_classmates_today()` and `attendance_milestones_on_log()` both
+  make, and for the same reason: a viewer-relative helper answers true for
+  the subject *before* it consults any toggle and therefore literally cannot
+  express "has this member opted in at all". Off means `'[]'`,
+  indistinguishable from a quiet week, never a raise. It is a reciprocity
+  rule (COMM-307's argument, second surface): every member named on a line
+  has opted into being seen training, so a member who declined that trade
+  does not read the other side of it. `show_attendance` defaults to
+  **false**, so out of the box every classmates line is empty and every name
+  that ever appears on one is there by two deliberate choices.
+  `visible_to_club` is required of candidates but **not** of the subject — a
+  member reading their own recap is not being shown to anybody — matching
+  `attendance_classmates_today`'s subject gate exactly.
+- Errors: `P0001 'recap_weekly_classmates: p_user is required'` for a null
+  `p_user`, and nothing else. That is a caller bug rather than a data state,
+  and silently writing an empty line would bake it into a stored row where
+  nobody would see it; `recap_weekly`'s per-member try/catch turns it into a
+  logged failure.
+- Side effects: none. `stable`, reads only.
+
 ### admin_actions gains one action_type and one target_type label (202609010002)
 
 - `action_type` gains a **thirteenth** value, `'monthly_recap_publish'`
@@ -4027,6 +4176,33 @@ is there. Same open infra item `notif_batch_flush_due()`,
   and how that key reaches the caller without living in a client bundle)
   remains the same open infra item the notification batch flusher already
   has - not built here.
+- **COMM-316, the classmates line — schema side shipped, Edge Function side
+  OPEN.** The file's own header still says "Never builds the classmates line
+  (parked, COMM-316/attendance)"; 202609010003 unparked it by adding
+  `weekly_recaps.classmates` and
+  `public.recap_weekly_classmates(p_user, p_week_start, p_limit)`. The
+  remaining change is **one call and one field**: inside
+  `buildRecapFields()`, `supabase.rpc('recap_weekly_classmates', { p_user:
+  userId, p_week_start: weekStart })` and put the returned array on the
+  upsert as `classmates`. Notes for whoever writes it:
+  - The RPC returns the **array itself**, so `data` goes straight onto the
+    row; there is no `.map()` and no shape to rebuild. A null or errored
+    response should become `[]`, not be dropped — `classmates` is `not
+    null`.
+  - **Do not compute the line in TypeScript.** The privacy gate — block
+    edges both ways, deleted profiles, `visible_to_club`, the candidate's
+    `show_attendance` and the subject's own `show_attendance` — lives in the
+    function precisely so it does not exist in two languages, and the
+    service-role client bypasses RLS, so a hand-rolled query would have no
+    gate at all.
+  - Pass `p_week_start: weekStart` explicitly even though null would resolve
+    to the same week. `targetWeek()` is computed once per run and every
+    other figure is keyed off it; letting the RPC re-derive it would put a
+    second definition of "which week" in the loop.
+  - The notification body is unchanged. Naming a classmate in a push
+    notification is **not** covered by "a recap is an own-row surface" — the
+    argument that permits the line depends entirely on `weekly_recaps`'
+    own-row RLS, and a notification body is a different surface.
 
 ### ~~recap_monthly_club~~ — NOT BUILT AS AN EDGE FUNCTION
 
@@ -4320,11 +4496,26 @@ What a dependent ticket needs to know changed between the two:
     preview a draft (`is_staff()`) but cannot publish
     (`community.analytics.view` or `is_admin()`). The client half must gate
     the publish control on the permission, not on staffness.
-- `weekly_recaps` gains `classmates jsonb not null default '[]'`, written
+- ~~`weekly_recaps` gains `classmates jsonb not null default '[]'`, written
   only by `recap_weekly` (service role). `onboarding_progress` gains
   `first_class_shown_at timestamptz` and `third_class_shown_at
   timestamptz`, both covered by the existing `onboarding_progress_pin`
-  trigger. COMM-316, closing COMM-P06 and COMM-P07.
+  trigger. COMM-316, closing COMM-P06 and COMM-P07.~~ — **SHIPPED in
+  202609010003, COMM-316.** All four columns landed exactly as named. Two
+  things this line did not name, both recorded in full above:
+  - **`recap_weekly_classmates(p_user uuid, p_week_start date default null,
+    p_limit int default 5) returns jsonb`**, service-role only. The line
+    needed a data source and this outline had none; see its own entry under
+    "### recap_weekly_classmates" for the signature and, more importantly,
+    for why it cannot call `can_view_profile_field()`.
+  - **The existing `onboarding_progress_pin` trigger did NOT already cover
+    the two new columns** and had to be extended.
+    `onboarding_progress_pin_shown()` names its columns one at a time, so
+    both new stamps would have been freely clearable and freely re-movable
+    by their owner — the one-way rule holding for three columns out of
+    five, which every test that only exercised the old three would have
+    passed. 0047 asserts the behaviour as a sweep over every `timestamptz`
+    column so a sixth step cannot repeat it.
 
 ### Needs from schema, admin-moderation (Phase 3)
 
@@ -4342,8 +4533,15 @@ What a dependent ticket needs to know changed between the two:
 - `retention_cohorts(p_cohort_months int default 6)`,
   `retention_onboarding_correlation()`, `retention_welcome_correlation()` —
   real `is_admin` only. COMM-313. Open question: cohort window and which
-  correlations, not spec-grounded. Depends on COMM-316's two new
-  `onboarding_progress` columns.
+  correlations, not spec-grounded. Depended on COMM-316's two new
+  `onboarding_progress` columns — **unblocked**: `first_class_shown_at` and
+  `third_class_shown_at` shipped in 202609010003. Note for whoever builds
+  it: those columns record when a step was *shown*, not when the member's
+  first or third class happened. The class dates themselves are
+  `attendance_log.occurred_on`, and a member who has not opened the app
+  since their third class has a null stamp and three attendance days at the
+  same time — so a correlation keyed on the stamp is measuring onboarding
+  reach, not attendance.
 
 ### Needs from schema, identity-privacy (Phase 3)
 
