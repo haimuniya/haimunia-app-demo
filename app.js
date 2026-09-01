@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "3.0.29";
+const APP_VERSION = "4.0.0";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -720,6 +720,15 @@ function closeCelebration() {
 // version bump needs one. Same list backs both the auto-shown "what's new"
 // popup and the bell icon's persistent history — see openNotifications().
 const RELEASE_NOTES = [
+  // Date is a placeholder for whenever this branch actually merges and
+  // deploys - update it to the real ship date at that point, not the date
+  // this entry was written.
+  { version: "4.0.0", date: "2026-09-01", items: [
+    "קהילה חדשה! עקבו אחרי חברים, שתפו אימונים והישגים, הגיבו ותגיבו, הצטרפו לאתגרים ואירועים, ועלו בטבלת המובילים",
+    "אפשר להעלות תמונת פרופיל משלכם",
+    "עיצוב חדש לתפריט הראשי ולהגדרות — נוח יותר גם בנייד וגם במסך רחב",
+    "מסך מותאם למחשב, לא רק לנייד",
+  ] },
   { version: "2.24.0", date: "2026-08-25", items: [
     "אפשר לרשום סופרסט — שני תרגילים לסירוגין תחת אותו סולם, עם תווית בלוק (A/B/C/D) לתוכניות מסודרות",
     "פורמט EMOM חדש באימונים: בונים סבב תרגילים מתחלף ורושמים חזרות לכל תרגיל בנפרד",

@@ -62,7 +62,14 @@ check("bell opens the notifications overlay", notifOpen);
 const notifHasEntry = await page.evaluate(() => document.getElementById("notificationsList").textContent.includes("."));
 check("notifications list actually renders a version entry", notifHasEntry);
 await page.screenshot({ path: `${outDir}/roadmap-02-notifications.png` });
-await page.click("[data-action='close-notifications']");
+// The bare selector matches both the overlay backdrop div and the explicit
+// close button inside it (both carry data-action="close-notifications");
+// Playwright picks the first DOM match, the backdrop div, whose own click
+// guard only closes when the click target is the div itself - a click at
+// its center can land on real dialog content instead once that content
+// grows tall enough, same class of ambiguous-selector bug already fixed
+// once for the settings overlay. Scope to the real button.
+await page.click("#notificationsOverlay button[data-action='close-notifications']");
 await page.waitForTimeout(150);
 
 // --- Streak + recent-history: log a set today, check both ---
