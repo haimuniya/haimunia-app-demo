@@ -69,7 +69,12 @@ export async function switchTab(page, tabId) {
 export async function openSettings(page) {
   const menuOpen = await page.evaluate(() => document.getElementById("navMenuOverlay")?.classList.contains("open"));
   if (!menuOpen) await page.click("[data-action='open-nav-menu']");
-  await page.click("[data-action='open-settings']");
+  // Scoped to the nav-menu overlay specifically: the desktop sidebar (Phase
+  // 4) renders its own "open-settings" row from the same markup, always in
+  // the DOM (just CSS-hidden below the 900px breakpoint) - a bare
+  // [data-action='open-settings'] selector resolves in DOM order and can
+  // silently grab that hidden copy instead of the visible mobile one.
+  await page.click("#navMenuOverlay [data-action='open-settings']");
   await page.waitForFunction(() => document.getElementById("settingsOverlay")?.classList.contains("open"), { timeout: 5000 });
 }
 

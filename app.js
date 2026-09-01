@@ -88,10 +88,10 @@ function getNavItems() {
 // a normally-hidden container" treatment renderSettingsBody() already relies on
 // - so the tabAddBtn/tabHistoryBtn/etc. ids these rows carry stay resolvable
 // at all times, exactly like the old static tabbar's buttons always were.
-function renderNavMenuList() {
+function renderNavWho() {
   const initial = userName ? userName.trim().charAt(0) : "";
   const streak = computeCurrentStreak();
-  const whoHtml = `
+  return `
     <div class="who">
       <div class="who-avatar">${esc(initial)}</div>
       <div>
@@ -99,8 +99,18 @@ function renderNavMenuList() {
         <div class="who-sub">${streak > 0 ? `${streak} ימים ברצף` : "בואו נתחיל להתאמן"}</div>
       </div>
     </div>`;
+}
+// Shared by the mobile nav menu and the desktop sidebar (renderNavMenuList/
+// renderDesktopSidebar below) - one pass over getNavItems(), one place that
+// knows about Community's sub-nav preview. withIds carries the real
+// tabAddBtn/tabHistoryBtn/etc ids (and, riding along with them, the
+// "tabbtn" class cloud.js's Community-tab-left detector needs - see the
+// comment inline below); the desktop copy renders withIds=false so the two
+// surfaces never produce duplicate DOM ids, using data-tab alone for the
+// click delegator, which already reads it independent of id.
+function renderNavRows(withIds) {
   const communitySignedIn = typeof window.isCommunitySignedIn === "function" && window.isCommunitySignedIn();
-  const rowsHtml = getNavItems().map((item) => {
+  return getNavItems().map((item) => {
     const isActive = tab === item.tab;
     let sub = "";
     if (item.id === "community" && communitySignedIn && typeof window.getCommunityNavPreview === "function") {
@@ -117,21 +127,35 @@ function renderNavMenuList() {
     // "left the Community tab" by e.target.closest(".tabbtn") - not by
     // id or data-action - to know when to reset the club_tab_viewed
     // dedupe. Drop this class and re-entering Community stops counting
-    // as a new view.
+    // as a new view. Only the withIds (mobile) copy carries it - only one
+    // of the two copies is ever visible/clickable at a given viewport
+    // width, so there's no ambiguity about which one a real click means.
+    const idAttr = withIds ? ` id="${item.rowId}"` : "";
+    const tabbtnClass = withIds ? " tabbtn" : "";
     return `
-      <button class="navrow tabbtn${isActive ? " active" : ""}" id="${item.rowId}" data-action="switch-tab" data-tab="${item.tab}" role="tab" aria-selected="${isActive}">
+      <button class="navrow${tabbtnClass}${isActive ? " active" : ""}"${idAttr} data-action="switch-tab" data-tab="${item.tab}" role="tab" aria-selected="${isActive}">
         <span class="icon-chip icon-chip-${item.tint}">${item.icon}</span>
         <span class="nav-label">${esc(item.label)}</span>
       </button>${sub}`;
   }).join("");
-  const settingsHtml = `
+}
+function renderNavSettingsRow() {
+  return `
     <div class="divider-label">חשבון</div>
     <button class="navrow" data-action="open-settings">
       <span class="icon-chip icon-chip-steel">${ICONS.settingsIcon}</span>
       <span class="nav-label">הגדרות</span>
       <span style="transform:scaleX(-1); display:inline-flex; color:var(--steel);" aria-hidden="true">${ICONS.chevron}</span>
     </button>`;
-  return whoHtml + rowsHtml + settingsHtml;
+}
+function renderNavMenuList() {
+  return renderNavWho() + renderNavRows(true) + renderNavSettingsRow();
+}
+// Desktop / wide-viewport sidebar (Phase 4) - same registry, same rows,
+// same settings entry, just without the mobile-only ids (see renderNavRows
+// above) and mounted into #desktopSidebar instead of the overlay.
+function renderDesktopSidebar() {
+  return renderNavWho() + renderNavRows(false) + renderNavSettingsRow();
 }
 // COMM-229. sw.js's notificationclick handler opens a fresh window at
 // ?notif=<deep link> when no app window was already open to focus (see
@@ -3000,6 +3024,11 @@ function render() {
   if (settingsBodyEl) {
     try { settingsBodyEl.innerHTML = renderSettingsBody(); }
     catch (err) { console.error("settings render error:", err); }
+  }
+  const desktopSidebarEl = document.getElementById("desktopSidebar");
+  if (desktopSidebarEl) {
+    try { desktopSidebarEl.innerHTML = renderDesktopSidebar(); }
+    catch (err) { console.error("desktop sidebar render error:", err); }
   }
   document.getElementById("bottomBar").style.display = (tab === "add" || (tab === "wod" && wodSubTab === "log" && wodById(selectedWodId))) ? "flex" : "none";
   updateStreakLabel();
