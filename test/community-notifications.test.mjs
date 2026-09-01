@@ -217,8 +217,13 @@ test("mark read is optimistic and rolls back when the server rejects it", async 
 
 test("the 90-day horizon is not walked until 'show older' is used", async () => {
   const fresh = [notif(1), notif(2), notif(3)];
+  // The marker is `body`, not `title`: a row's title comes from the client's
+  // own NOTIF_TYPES label for its type (the server sends a fixed English
+  // string for every type but `announcement`), so a per-row title is not
+  // rendered and cannot identify one row. `body` is per-row server content
+  // and is rendered verbatim.
   const old = [
-    notif(90, { created_at: new Date(BASE - 120 * 86400000).toISOString(), title: "התראה ישנה" }),
+    notif(90, { created_at: new Date(BASE - 120 * 86400000).toISOString(), body: "התראה ישנה" }),
     notif(91, { created_at: new Date(BASE - 130 * 86400000).toISOString() }),
   ];
   const mock = seeded(fresh.concat(old));

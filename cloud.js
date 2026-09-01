@@ -470,7 +470,15 @@
     if (avatarUrl) {
       return `<img alt="" aria-hidden="true" class="avatar-badge" src="${safeText(avatarUrl)}" style="width:${px}px;height:${px}px;object-fit:cover;"/>`;
     }
-    const label = String(name || "?").trim();
+    // Two conventions call this: some sites pass the bare handle
+    // (`display_name || handle`), others the display string
+    // (`display_name || "@" + handle`). For a member with no display name
+    // the second gave every avatar the initial "@" and, because the colour
+    // hash runs over the same label, a DIFFERENT colour from the first - so
+    // one member showed up as a different badge in the directory than in
+    // their own profile header. Dropping a leading "@" here makes both
+    // conventions agree without touching eighteen call sites.
+    const label = String(name || "?").trim().replace(/^@+/, "");
     const initial = label ? label[0].toUpperCase() : "?";
     let hash = 0;
     for (let i = 0; i < label.length; i++) hash = (hash * 31 + label.charCodeAt(i)) >>> 0;
@@ -606,7 +614,14 @@
   // private (activity_pings RLS is self-only); this only ever records
   // today, so a missed day just isn't there rather than being backfilled.
   async function pingActivity() {
-    if (!client || !state.user) return;
+    // state.profile, not just state.user: "start-signup" opens an ANONYMOUS
+    // session before the member has redeemed a code, and activity_pings'
+    // user_id references profiles - so pinging on that session raised a 409
+    // foreign-key violation on every fresh signup. Both callers load the
+    // profile before reaching here, so a real member is never skipped. Same
+    // condition window.isCommunitySignedIn() already uses for "is actually
+    // a member yet".
+    if (!client || !state.user || !state.profile) return;
     // Found in the post-Phase-3 front-end review, against a real Supabase
     // client rather than the mock: .catch() chained directly on a
     // PostgrestFilterBuilder throws "is not a function" synchronously,
@@ -2465,8 +2480,17 @@
   // ---- Comments and replies (COMM-121, COMM-122, COMM-124) --------------
 
   async function loadCommentsFor(postId) {
+    // The embed names its foreign key explicitly. post_comments has TWO
+    // references to profiles - author_id and the deleted_by column added by
+    // 202608280021 - so a bare `profiles(...)` is ambiguous and PostgREST
+    // refuses the whole request with PGRST201 (HTTP 300) rather than
+    // picking one. Comments have therefore never loaded since that
+    // migration shipped: every thread came back as the empty `error ? []`
+    // branch below. Invisible to the Node suite, which does not model
+    // PostgREST embedding at all. The result key stays `profiles`, which is
+    // what the comment renderers read.
     const { data, error } = await client.from("post_comments")
-      .select("id,body,created_at,edited_at,deleted_at,status,author_id,parent_comment_id,profiles(handle,display_name,avatar_url)")
+      .select("id,body,created_at,edited_at,deleted_at,status,author_id,parent_comment_id,profiles!post_comments_author_id_fkey(handle,display_name,avatar_url)")
       .eq("post_id", postId).order("created_at", { ascending: true }).limit(400);
     const rows = error ? [] : (data || []);
     state.comments[postId] = rows;
@@ -3350,7 +3374,12 @@
 
   // ---- Fetch: consistency board (COMM-210), club or friends (COMM-212) -----
   async function loadConsistencyLeaderboard() {
-    if (!client || !state.user) return;
+    // The profiles row is only written when the member saves the
+    // "השלמת פרופיל" step, and feed_leaderboard() gates on my_role_code(),
+    // which is null until it exists - so between redeeming the code and
+    // finishing the profile this raised 'not authorized' on every render,
+    // for a board the profile-completion card is covering anyway.
+    if (!client || !state.user || !state.profile) return;
     const b = state.leaderboard;
     const scope = b.scope;
     b.loading = true; b.error = false;
@@ -3534,7 +3563,9 @@
     event: "אירוע משותף",
   };
   async function loadPeopleSuggestions() {
-    if (!client || !state.user) return;
+    // Same pre-profile guard as loadConsistencyLeaderboard: people_suggestions()
+    // gates on my_role_code() too.
+    if (!client || !state.user || !state.profile) return;
     const s = state.peopleSuggestions;
     s.loading = true; s.error = false;
     rerender();
@@ -3965,9 +3996,27 @@
       member_unrestrict: "ביטול הגבלה", role_change: "שינוי הרשאה", challenge_edit: "עריכת אתגר",
       achievement_edit: "עריכת עיטור", privacy_config: "הגדרת פרטיות", content_pin: "הצמדת תוכן",
       content_unpin: "ביטול הצמדה", report_review: "בדיקת דיווח",
+      // The three action types added after COMM-154. Without these the log
+      // rendered the raw English action_type ("club_feature_toggle · club")
+      // in an otherwise all-Hebrew list, and the filter row had no chip to
+      // narrow by them at all.
+      member_of_week_publish: "פרסום חבר/ת השבוע", monthly_recap_publish: "פרסום סיכום חודשי",
+      club_feature_toggle: "שינוי מודול מועדון",
     }[t] || t;
   }
-  const AUDIT_ACTION_TYPES = ["content_delete", "content_hide", "member_restrict", "member_unrestrict", "role_change", "challenge_edit", "achievement_edit", "privacy_config", "content_pin", "content_unpin", "report_review"];
+  // The other half of an audit row's headline. admin_actions.target_type is
+  // a closed 13-value list (202608280002 and the migrations that widened it);
+  // rendering it raw put English next to the Hebrew action label on every
+  // row. Same shape as pinTargetLabel() further down.
+  function auditTargetLabel(t) {
+    return {
+      post: "פוסט", comment: "תגובה", member: "חבר/ה", role: "הרשאה", challenge: "אתגר",
+      achievement: "עיטור", event: "אירוע", announcement: "הודעה", report: "דיווח",
+      club: "מועדון", monthly_club_recap: "סיכום חודשי",
+      challenge_participant: "משתתף/ת באתגר", challenge_team: "קבוצה באתגר",
+    }[t] || t;
+  }
+  const AUDIT_ACTION_TYPES = ["content_delete", "content_hide", "member_restrict", "member_unrestrict", "role_change", "challenge_edit", "achievement_edit", "privacy_config", "content_pin", "content_unpin", "report_review", "member_of_week_publish", "monthly_recap_publish", "club_feature_toggle"];
   function renderAuditLog() {
     if (!hasPerm(PERM.ANALYTICS_VIEW)) return "";
     const filterChips = `<div class="chip-row" style="margin:0 0 10px;">
@@ -3983,7 +4032,7 @@
       body = `<div class="empty">עדיין לא נרשמו פעולות ניהול.</div>`;
     } else {
       body = `<div class="log-list">${state.auditLog.map((a) => `<div class="log-row" style="flex-direction:column;align-items:flex-start;gap:3px;">
-        <div style="font-weight:700;">${safeText(auditActionLabel(a.action_type))} · ${safeText(a.target_type)}</div>
+        <div style="font-weight:700;">${safeText(auditActionLabel(a.action_type))} · ${safeText(auditTargetLabel(a.target_type))}</div>
         <div style="color:var(--steel);font-size:11px;">מנהל/ת ${safeText(String(a.admin_id || "").slice(0, 8))} · ${relativeTime(a.created_at)}</div>
       </div>`).join("")}</div>${state.auditEnd ? "" : `<div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="audit-more"${state.auditLoading ? " disabled" : ""}>${state.auditLoading ? "טוען…" : "טעינת עוד"}</button></div>`}`;
     }
@@ -4035,12 +4084,21 @@
   // screen never gets one (only "coach", a whole role tier's toolset, does).
   function renderClubModulesPanel() {
     if (!(hasPerm(PERM.CLUB_MANAGE_MODULES) || isAdmin())) return "";
+    // toggleClubFeature() is single-flight (it returns early while
+    // state.clubModuleBusy is set), so EVERY row has to be disabled while a
+    // write is in flight, not just the one being written: leaving the other
+    // five live let a second tap flip a checkbox that the guard then dropped
+    // with no message, and the next rerender silently put it back - which is
+    // exactly "the toggles don't work". Same busy/anyBusy split
+    // renderMemberOfWeekPickForm already uses: `busy` still labels only the
+    // row actually saving.
+    const anyBusy = !!state.clubModuleBusy;
     const rows = CLUB_MODULE_TOGGLES.map((m) => {
       const row = state.clubFeatures[m.key] || { enabled: true, config: {} };
       const busy = state.clubModuleBusy === m.key;
       return `<label class="log-row" style="justify-content:space-between;gap:12px;cursor:pointer;">
         <span style="font-size:13px;">${safeText(m.label)}${busy ? " (שומר…)" : ""}</span>
-        <input type="checkbox" data-club-feature="${m.key}"${row.enabled ? " checked" : ""}${busy ? " disabled" : ""} aria-label="${safeText(m.label)}"/>
+        <input type="checkbox" data-club-feature="${m.key}"${row.enabled ? " checked" : ""}${anyBusy ? " disabled" : ""} aria-label="${safeText(m.label)}"/>
       </label>`;
     }).join("");
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מודולים למועדון", true)}
@@ -4266,7 +4324,11 @@
       + adminAnalyticsRow("סה״כ חברי אימון שהוצגו", adminAnalyticsCount(c.classmates_shown_total))
       + adminAnalyticsRow("ממוצע חברי אימון לכרטיס", adminAnalyticsRatioText(c.classmates_per_card))
       + adminAnalyticsRow("שיעור הופעת כרטיס מתוך אימונים שנרשמו", adminAnalyticsRatioText(c.card_rate, true))
-      + `<div class="footer-note" style="margin-top:4px;">${safeText(c.note || "")}</div>`);
+      // The server ships this caveat as an English `note`; every other
+      // footer-note in this dashboard is client-side Hebrew copy
+      // (renderAdminAnalyticsFilterUse just above does the same), so the
+      // Hebrew is written here rather than echoing the server string.
+      + `<div class="footer-note" style="margin-top:4px;">שיעור ההופעה מוגבל מלכתחילה באימוץ של הגדרת ״נוכחות בשיעורים גלויה״: שני הצדדים בכל זוג חייבים להפעיל אותה, וברירת המחדל היא כבוי. ערך נמוך מעיד על אימוץ, לא על כרטיס תקול.</div>`);
   }
   function renderAdminAnalyticsAdditionalGroup(data) {
     const add = data.additional || {};
@@ -5193,7 +5255,11 @@
     }
     if (challenge.challenge_type === "cooperative") {
       const { data: contrib } = await client.from("challenge_progress")
-        .select("user_id,delta,created_at,profiles(display_name,handle,avatar_url,visible_to_club)")
+        // Names the foreign key for the same reason loadCommentsFor() does:
+        // challenge_progress references profiles twice (user_id and
+        // entered_by), so a bare `profiles(...)` is PGRST201-ambiguous and
+        // the contributor list came back empty every time.
+        .select("user_id,delta,created_at,profiles!challenge_progress_user_id_fkey(display_name,handle,avatar_url,visible_to_club)")
         .eq("challenge_id", id).gt("delta", 0).order("created_at", { ascending: false }).limit(30);
       const seen = new Set();
       const list = [];
@@ -7002,7 +7068,10 @@
   // re-enters the feed), so the next real render counts again.
   let classmatesCardViewLogged = false;
   async function loadClassmatesToday() {
-    if (!client || !state.user) return;
+    // Same anonymous-signup-session guard as pingActivity():
+    // attendance_classmates_today() raises 'not authorized' for a session
+    // with no profile row, which the signup screens were hitting.
+    if (!client || !state.user || !state.profile) return;
     const s = state.classmatesToday;
     s.loading = true; s.error = false;
     classmatesCardViewLogged = false;
@@ -8224,7 +8293,13 @@
   // collapsed group that expands. `pref` is the notification_preferences
   // key its delivery is gated on (COMM-144). `operational: true` means it
   // always lands in-app regardless of that preference. `icon` and `title`
-  // are the client copy; the server fills `body` and `deep_link`. The
+  // are the client copy; the server fills `body` and `deep_link`.
+  // `serverTitle: true` is the one exception: for an announcement the row's
+  // stored title IS the announcement's own headline (notif_announcement_fanout
+  // passes v_row.title), so it has to win over the generic client label.
+  // Every OTHER type gets a hardcoded English string from notif_create -
+  // 'Achievement unlocked', 'New comment on your post', 'Event cancelled' -
+  // which is why the client label is preferred everywhere else. The
   // immediate/batched split here MUST match the server trigger set - see
   // the routing table in contracts.md.
   const NOTIF_TYPES = {
@@ -8240,7 +8315,7 @@
     challenge_ending_soon: { category: "challenges", mode: "immediate", pref: "challenges",          icon: "⏳", title: "אתגר מסתיים בקרוב" },
     challenge_update:      { category: "challenges", mode: "batched",   pref: "challenges",          icon: "🏆", title: "עדכונים באתגר" },
     event_cancelled:       { category: "events",     mode: "immediate", pref: "events",              icon: "🚫", title: "אירוע בוטל" },
-    announcement:          { category: "club",       mode: "immediate", pref: "announcements", operational: true, icon: "📢", title: "הודעה חשובה מהמועדון" },
+    announcement:          { category: "club",       mode: "immediate", pref: "announcements", operational: true, serverTitle: true, icon: "📢", title: "הודעה חשובה מהמועדון" },
     weekly_recap:          { category: "club",       mode: "batched",   pref: "weekly_recap",        icon: "📅", title: "הסיכום השבועי שלך" },
   };
   function notifTypeDef(type) { return NOTIF_TYPES[type] || null; }
@@ -8841,7 +8916,16 @@
   function renderNotifRow(r) {
     const def = notifTypeDef(r.type) || { icon: "🔔", title: r.title || "התראה" };
     const emphasise = !!r._wasUnread;
-    const title = safeText(r.title || def.title || "");
+    // The client label wins over the stored one. notif_create() is called
+    // with a hardcoded ENGLISH title for every immediate type except
+    // announcement ('Achievement unlocked', 'New comment on your post',
+    // 'Event cancelled', ...), so taking r.title first leaked English into
+    // an otherwise all-Hebrew centre. announcement is the one type whose
+    // stored title is real per-row content rather than a type label, and
+    // NOTIF_TYPES marks it serverTitle. r.title remains the last resort for
+    // a future type this client does not know, the same fallback
+    // renderNotifBatchGroup already relies on.
+    const title = safeText((def.serverTitle && r.title) || def.title || r.title || "");
     const bodyHtml = r.body ? `<span style="display:block;color:var(--steel);font-size:12.5px;margin-top:2px;">${safeText(r.body)}</span>` : "";
     return `<button class="log-row" data-community-action="notif-open" data-id="${safeText(r.id)}" data-notif-mode="${safeText(def.mode || "immediate")}" style="width:100%;text-align:right;background:none;border:0;border-inline-start:3px solid ${emphasise ? "var(--energy)" : "transparent"};padding:8px 10px;cursor:pointer;display:flex;gap:10px;align-items:flex-start;">
       <span aria-hidden="true" style="font-size:18px;line-height:1.2;">${safeText(def.icon)}</span>

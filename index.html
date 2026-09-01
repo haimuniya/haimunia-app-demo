@@ -160,6 +160,22 @@
      typical Android status bar; a device that reports a real, larger inset
      (e.g. an iPhone notch) still gets that larger value via max(). */
   #app{ max-width:480px; margin:0 auto; padding: calc(max(env(safe-area-inset-top,0px), 28px) + 20px) 16px calc(env(safe-area-inset-bottom,0px) + 100px); overflow-x:hidden; }
+  /* #app's top padding above only protects the document at scroll offset 0.
+     With viewport-fit=cover and apple-mobile-web-app-status-bar-style
+     black-translucent, an installed PWA paints UNDER a transparent status
+     bar at EVERY scroll offset - so once the page is scrolled, whatever
+     section header happens to sit in that top strip renders behind the
+     clock and battery glyphs. This scrim keeps the strip opaque no matter
+     where the page is scrolled to. Height resolves to 0 in an ordinary
+     browser tab (no inset reported, nothing overlaying), so it only ever
+     costs anything where the overlay is real; the 28px floor is applied
+     only when actually installed, for the same Android WebView case the
+     comment above describes. z-index sits above page content but below
+     .modal-overlay (50) and #updateBanner (60), which cover it on purpose. */
+  body::before{ content:""; position:fixed; top:0; left:0; right:0; height:env(safe-area-inset-top, 0px); background:var(--bg); z-index:40; pointer-events:none; }
+  @media (display-mode: standalone){
+    body::before{ height:max(env(safe-area-inset-top,0px), 28px); }
+  }
   .header{ display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:14px; }
   .header-logo{ height:46px; width:auto; display:block; }
   .brand-stripe{ height:6px; border-radius:4px; background-image:var(--stripe); margin-bottom:18px; }
@@ -412,6 +428,12 @@
   .admin-card{ border-color:var(--energy); }
   .field-label{ font-size:11px; font-weight:700; color:var(--steel); display:block; margin-bottom:4px; }
   .field + .field{ margin-top:10px; }
+  /* ...but only when the fields are actually stacked. The two-up form rows
+     (`<div class="flex gap-10 field">` around two field() labels) make those
+     labels flex-ROW siblings, and adjacent-sibling selectors don't care about
+     layout direction - so the rule above was pushing the second of every
+     side-by-side pair down by 10px and breaking their alignment. */
+  .flex:not(.col) > .field + .field{ margin-top:0; }
   .field-error{ display:block; color:var(--red); font-size:12px; margin-top:5px; }
   .text-input[aria-invalid="true"]{ border-color:var(--red); }
   .ach-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(72px,1fr)); gap:16px 8px; }
