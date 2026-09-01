@@ -2,8 +2,23 @@
 
 Phase: 3
 Agent: recaps
-Status: todo
+Status: schema half shipped (202609010002, pgTAP 0046) — client half open
 Attendance-blocked: no
+
+IMPLEMENTATION NOTE, decided in 202609010002 and recorded because this
+ticket's outline left it open: generation shipped as a service-role-only
+POSTGRES FUNCTION, `public.recap_monthly_generate(p_month_start date
+default null) returns uuid`, NOT as a `supabase/functions/recap_monthly`
+Edge Function. The client never calls or triggers generation. It calls
+`recap_monthly_publish(p_id)` and reads `monthly_club_recaps` under RLS.
+Full reasoning in the migration header and in contracts.md, "## Needs from
+schema, monthly club recap (COMM-309, Phase 3)".
+
+ONE THING THE CLIENT HALF MUST GET RIGHT: the preview boundary is WIDER
+than the publish boundary. A coach can read a draft (`is_staff()`), but
+publishing requires `community.analytics.view` or `is_admin()`, which a
+coach does not hold. Gate the "פרסם" control on the permission, not on
+staffness, or a coach is shown a button the database refuses.
 
 Contracts.md already carries a stub for this ticket's Edge Function
 (`recap_monthly_club`, "Schedule: monthly. Admin preview before publish.

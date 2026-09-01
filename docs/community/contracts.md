@@ -1970,6 +1970,15 @@ The single split, so the trigger set and the client `notifRoute()` agree.
   week, deep link to the recap surface.
 - `feed_activity` (batched): a catch-all, only ever enqueued, never
   immediate, never per-post.
+- `monthly_club_recap` (immediate): COMM-309, shipped in 202609010002.
+  `recap_monthly_publish(p_id)` calls `notif_create(M, 'monthly_club_recap',
+  'club', …)` once per club member at the moment a staff member publishes a
+  monthly recap — never at generation. Immediate rather than batched: it
+  fires at most twelve times a year and is a deliberate human act, so there
+  is nothing to roll up. It has no `notif_pref_key` arm, so the preference
+  key is the type itself; the body is club aggregate figures only, with no
+  member named anywhere. Deep link `/community/recap/monthly?month=<the
+  month's first day>`.
 
 ## Needs from schema, notifications (Phase 2)
 
@@ -3719,6 +3728,271 @@ resolve correctly rather than falling off the `case`.
   something that did not happen, which is the one thing an audit log may not
   do.
 
+## Needs from schema, monthly club recap (COMM-309, Phase 3)
+
+Shipped in `202609010002`. One aggregate row per calendar month, generated
+as a draft nobody can see, published by staff through one action.
+
+### The generation-mechanism decision
+
+COMM-309's own wording and the `recap_monthly_club` Edge Function stub below
+both pointed at `supabase/functions/recap_monthly/index.ts`. **Generation
+shipped as a Postgres function, `recap_monthly_generate(date)`, not as an
+Edge Function.** The client half needs to know this: nothing in a browser
+calls or triggers generation at all. The client calls
+`recap_monthly_publish(p_id)` and reads `monthly_club_recaps` under RLS.
+
+Four reasons, recorded here because the ticket left the choice open:
+
+1. `recap_weekly` is per-member — one query set and five JSON blobs per
+   active member, which needs a real client library. This job produces
+   **one** row from five `count(*)`s over tables in this same database.
+   In TypeScript that is five REST round trips to compute five integers.
+2. **The auth footgun.** Supabase's default `verify_jwt` accepts any valid
+   JWT, including the public anon key that ships in `cloud-config.js`, so an
+   Edge Function that *runs as* service role is not one that only the
+   service role can *call*. `recap_weekly` closes that by comparing the
+   `Authorization` header against the real key by hand. A second Edge
+   Function is a second place to get that right and a second place to forget
+   it. A Postgres function granted to `service_role` and revoked from
+   `public`, `anon` and `authenticated` has no equivalent hole — the grant
+   *is* the gate. 0046 asserts all four of those grants.
+3. **Idempotency is one statement in the database.** `insert … on conflict
+   (month_start) do update … where published_at is null` is atomic under
+   concurrency. Over REST it is a read-then-write with a race in the middle,
+   which is exactly the read-then-write `recap_weekly` has to perform for its
+   own "did this row already exist" check.
+4. It matches the two most recent precedents — `chal_notify_ending_soon()`
+   and `coach_detect_engagement_decline()` — both scheduled jobs expressed
+   as service-role-only Postgres functions with the scheduler deliberately
+   not built.
+
+**Consequence, stated rather than hidden: no scheduler exists, so no draft
+appears on its own.** Until one does, a draft is produced by running
+`select public.recap_monthly_generate();` as the service role. The staff
+preview surface must render an honest empty state rather than assume a row
+is there. Same open infra item `notif_batch_flush_due()`,
+`chal_notify_ending_soon()`, `coach_detect_engagement_decline()` and
+`recap_weekly` all already carry.
+
+### monthly_club_recaps (table, 202609010002)
+
+- `id uuid pk default gen_random_uuid()`, `club_id uuid not null default
+  default_club_id() references clubs(id)`, `month_start date not null unique
+  check (extract(day from month_start) = 1)`, `sessions_logged integer not
+  null default 0 check (>= 0)`, `posts_created`, `new_members`,
+  `challenges_completed`, `events_held` all the same shape, `generated_at
+  timestamptz not null default now()`, `published_at timestamptz`.
+- The five `>= 0` CHECKs are an addition to the ticket's outline, matching
+  `weekly_recaps.sessions_completed`. A count cannot be negative, so they
+  only ever catch a writer that is not counting.
+- **Aggregate-only is enforced by the table SHAPE, not by a comment.** Two
+  uuids, a date, five integers, two timestamps — no `user_id`, no text
+  column, no jsonb, no array. There is nowhere for a member name, handle or
+  individually-attributable figure to be written even by a careless future
+  producer. This is strictly stronger than
+  `weekly_recaps.club_challenge_progress` (202608290011), which states the
+  same rule for a jsonb blob and therefore has to trust `recap_weekly`.
+  **Do not add a `top_members`, `highlights` or `most_improved` column.**
+  0046 pins the entire column list, so such a column fails the suite.
+- `published_at null` means **draft**: invisible to plain members, no
+  notification sent. Deliberately not a `status` enum — there are two states
+  and the timestamp carries both the state and when it changed.
+- Index: `monthly_club_recaps_published_idx (month_start desc) where
+  published_at is not null`. The unique constraint's own index on
+  `month_start` serves the staff preview (scanned backwards for DESC).
+- RLS: enabled. `revoke all from public, anon`; `grant select to
+  authenticated`. **No insert, update or delete grant and no write policy of
+  any kind** — not for a coach, not for an admin, not for the owner. The
+  `pins` / `attendance_log` / `member_of_week` shape.
+- **Two permissive SELECT policies**, which OR together:
+  - `monthly_club_recaps_staff_select` — `using (has_perm(
+    'community.analytics.view') or is_staff())`, copied verbatim from
+    `attendance_log`'s own staff read policy so the two tables answer "who
+    may see unpublished club-wide attendance figures" identically.
+  - `monthly_club_recaps_published_select` — `using (published_at is not
+    null)`.
+- **The deliberate asymmetry the client half must respect:** `is_staff()` is
+  coach rank and above, so a **coach can preview a draft**, but
+  `recap_monthly_publish` requires `community.analytics.view` or
+  `is_admin()`, which a coach does **not** hold (202608280001 seeds that
+  permission to `admin` and `owner` only). Looking at a draft is not an act;
+  publishing a permanent club-wide summary is. **Gate the "פרסם" control on
+  the permission, not on staffness**, or a coach is shown a button the
+  database refuses. 0046 asserts exactly this pair on one session.
+
+### monthly_club_recaps_freeze() (trigger, 202609010002)
+
+- `before update on monthly_club_recaps for each row`. Raises `'a published
+  monthly recap is immutable'` (P0001) whenever `old.published_at is not
+  null`. This is COMM-309's "a published recap cannot be un-published or
+  edited" made a property of the table rather than of the generator's SQL.
+- Aimed at the **service role**, which bypasses RLS — no client role has a
+  write grant at all. 0046 asserts it against the bootstrap superuser.
+- Raises rather than silently pinning, unlike
+  `onboarding_progress_pin_shown()`: every legitimate path already checks
+  `published_at` before it writes, so reaching this trigger means a caller is
+  doing something it did not intend.
+- Never reached by `recap_monthly_generate()`, whose upsert carries `where
+  published_at is null` and therefore executes no UPDATE for a published
+  month — the rerun is a genuine no-op, not a refused write.
+- **DELETE is deliberately not guarded.** No client role can delete; the only
+  deleter is the service role or a future migration, and blocking those would
+  make a deliberate operator act need a trigger drop first.
+
+### recap_monthly_generate(p_month_start date default null) returns uuid (202609010002)
+
+- Purpose: the generation unit. Computes the five club-wide aggregates and
+  upserts one `monthly_club_recaps` row.
+- Params: `p_month_start` null means **the most recently completed calendar
+  month**, never the running one — the same reasoning `recap_weekly`'s
+  `targetWeek()` records for "never the current, still-running week". Any
+  other date is normalised to the first of its own month rather than
+  rejected, the courtesy `member_of_week_candidates()` extends to a mid-week
+  date.
+- Returns: the row id in **every** case — fresh insert, refreshed draft, or
+  untouched published month.
+- Auth: `security definer`; **granted to `service_role` only**, revoked from
+  `public`, `anon` and `authenticated`. The documented exception to this
+  schema's "check `auth.uid()` first" rule, identical to
+  `chal_notify_ending_soon()`, `notif_batch_flush_due()` and
+  `coach_detect_engagement_decline()`: a scheduled job has no session, so an
+  `auth.uid()` gate would reject every legitimate call and pass none. The
+  grant is the gate. Definer for one boundary on purpose — `attendance_log`
+  is own-row plus staff and `invite_redemptions` is own-row only, so counting
+  either club-wide crosses RLS.
+- **The five figures**, each stated with what it excludes:
+  - `sessions_logged` — `count(*)` on `attendance_log` for
+    `occurred_on` in the month. That table is unique on `(user_id,
+    occurred_on)`, so a row count is a count of member-training-days.
+    Includes a member who has since soft-deleted their profile: they did
+    train that month. **The first place an aggregate attendance figure
+    becomes club-visible.**
+  - `posts_created` — `workout_posts` with `created_at` in the month,
+    `deleted_at is null`, `status = 'active'`, `visibility <> 'only_me'` (a
+    post only its author can see was not a contribution), and `author_id is
+    not null` (excludes the club's own authorless `POST_ANNOUNCEMENT` rows,
+    which `member_of_week_publish` writes weekly — "how much did the
+    community post" must not be inflated by posts the club generated).
+    Keyed on `created_at` rather than `published_at`: `created_at` is the
+    row's own insert stamp and every producer leaves it to its default,
+    whereas `published_at` is passed explicitly (`post_create` and
+    `member_of_week_publish` both pass `now()`) and is what 202608280004's
+    backfill copied the legacy rows' `created_at` from. The two agree today;
+    `created_at` stays right the day a producer backdates a publish.
+  - `new_members` — `invite_redemptions.redeemed_at` in the month, this
+    module's authoritative MEMBER_JOINED timestamp. **Known limitation,
+    flagged not hidden:** `grant_coach_role()` and
+    `grant_coach_role_by_handle()` UPDATE that row and move `redeemed_at`,
+    so promoting an existing member to coach re-dates them and counts them
+    as new that month. There is no second join timestamp to fall back on;
+    fixing it properly means giving `invite_redemptions` an immutable
+    `joined_at`, a change to a shipped table out of this ticket's scope.
+  - `challenges_completed` — `challenge_participants.completed_at` in the
+    month, `status <> 'withdrawn'`, on a challenge whose `status <> 'draft'`.
+    The same two filters `member_of_week_candidate_set`'s completion branch
+    applies. **Completions, not distinct challenges**: five members finishing
+    one challenge is five.
+  - `events_held` — `events.start_at` in the month, `status in ('published',
+    'past')`. `draft` never reached the club and `cancelled` did not happen.
+    Both live statuses count because nothing automatically flips a finished
+    event to `past`.
+- **No `club_id` filter anywhere**, consistent with 202608280001's "nothing
+  reads it as a filter today".
+- **Timezone:** `sessions_logged` is exact (`occurred_on` is a bare date).
+  The other four compare against `v_month::timestamptz`, which resolves at
+  the calling session's TimeZone — UTC for the service role, matching
+  `recap_weekly`'s UTC weeks. Pinning a zone was considered and not done: an
+  opinion about the club's local time belongs in one module-wide decision,
+  not in a monthly recap.
+- **Idempotency, in one statement.** `on conflict (month_start) do update …
+  where public.monthly_club_recaps.published_at is null`. A rerun over a
+  draft updates in place with fresh figures and the same id; a rerun over a
+  published month executes **no UPDATE at all**, so not one figure,
+  `generated_at`, or `published_at` moves. `published_at` appears in neither
+  the insert column list nor the update SET list, which is why "no
+  notification fires until staff publish" does not depend on this function
+  remembering. When the `do update` predicate is false `RETURNING` yields no
+  row — that is how the "already published, did nothing" branch is detected,
+  and the id is then re-selected so the caller still gets one.
+- **Cadence: monthly**, on the 1st, after the month it summarises has
+  closed. Expressed in exactly one place, the commented `cron.schedule` line
+  in 202609010002 (`'41 4 1 * *'`), the same discipline 202608310006 uses for
+  `recompute_feed_weights`. Nothing schedules it — `pg_cron` is not
+  guaranteed present in the CI stack. Note this is the **second** periodic
+  rhythm the module has: `recompute_feed_weights`' contract argued for one
+  weekly rhythm rather than three, and a monthly recap cannot be weekly, so
+  this is a deliberate second cadence rather than a drift.
+- Side effects: one `monthly_club_recaps` row inserted or updated. Nothing
+  else. No notification, ever.
+- **Logging:** returns the row id; there is no per-member loop, so there is
+  nothing to count successes and failures of. COMM-309's "records success and
+  failure counts with no personal content" discipline lands on the publish
+  side instead, as `admin_actions.after_data.notified`.
+
+### recap_monthly_publish(p_id uuid) returns void (202609010002)
+
+- Purpose: the only writer of `published_at`, and the moment a draft becomes
+  a thing the club has been told about.
+- Auth: `security definer`; `auth.uid()` checked first, then
+  `has_perm('community.analytics.view') or is_admin()` inline. Both raise
+  `not authorized` (P0001). Executable by `authenticated`; revoked from
+  `public` and `anon`. **Narrower than the table's staff read policy** — see
+  the asymmetry note above. `is_admin()` is the table-driven `role_rank >=
+  50` helper, so it also answers true for the legacy `profiles.is_admin`
+  flag and for the owner (whose `has_perm` short-circuit covers them anyway).
+- **The permission check runs before the row lookup**, so a member probing
+  with a made-up id gets `not authorized` rather than `recap not found`,
+  which would otherwise be an oracle for which recap ids exist.
+- Refusals: `recap not found`; `recap already published` — checked under
+  `select … for update`, so two staff hitting the button at once serialise
+  rather than both fanning out. Both raised before the update, so a rejected
+  publish is never a half-published one.
+- Side effects, all one transaction:
+  1. `published_at = now()`, which is also what makes the row readable by
+     plain members.
+  2. One `notif_create(member, 'monthly_club_recap', 'club', …)` per club
+     member — a non-deleted profile with an `invite_redemptions` row, the
+     same membership set `notif_announcement_fanout` and `recap_weekly` use,
+     which deliberately includes the quiet members a club summary is for
+     rather than WCAM's "did something this week". Title `'סיכום החודש של
+     הקהילה'`; body is **three club totals and nothing else**; `source_type
+     'monthly_club_recap'`, `source_id` the recap id, deep link
+     `/community/recap/monthly?month=<month_start>`.
+  3. One `admin_actions` row via `log_admin_action`, `action_type
+     'monthly_recap_publish'`, `target_type 'monthly_club_recap'`,
+     `after_data` = the five figures plus `month_start`, `published_at` and
+     a `notified` **count**. A recipient *list* would put per-member data
+     into the audit log for a feature whose entire point is that it holds
+     none; the count is also the "success and failure counts with no
+     personal content" record COMM-309 asks for.
+- **Two inherited fan-out behaviours**, stated because they are real and
+  follow from calling `notif_create` with a live staff session rather than
+  from anything decided here. Both are exactly what
+  `notif_announcement_fanout` already does:
+  - **The publisher receives no notification** — `notif_create` suppresses a
+    row whose recipient is the actor for every type but the two
+    self-directed ones.
+  - **A member with a block edge to the publisher receives no notification**
+    — `notif_create` checks `notif_blocked_between(recipient, actor)`. This
+    differs from `recap_weekly`'s `weekly_recap` fan-out, where the actor is
+    null (service role, no session) and the block check is a no-op. It is
+    the conservative direction, and the recap itself is readable by that
+    member the moment it is published, so nothing is withheld but the ping.
+- The whole-club loop is the same fan-out cost 202608280027 already flagged.
+  Twelve runs a year against one small club; batching a large club remains
+  the same later ticket.
+
+### admin_actions gains one action_type and one target_type label (202609010002)
+
+- `action_type` gains a **thirteenth** value, `'monthly_recap_publish'`
+  (202609010001 added the twelfth).
+- `target_type` gains an **eleventh**, `'monthly_club_recap'` — the first
+  widening of that list since 202608280002. COMM-309 names it explicitly and
+  none of the ten existing values fits: the subject of the action is the
+  recap row. It is not an `'announcement'` (that table is untouched), not a
+  `'post'` (no `workout_posts` row is written), and not the `'club'`.
+
 ## Edge Functions
 
 ### recap_weekly
@@ -3754,15 +4028,20 @@ resolve correctly rather than falling off the `case`.
   remains the same open infra item the notification batch flusher already
   has - not built here.
 
-### recap_monthly_club
+### ~~recap_monthly_club~~ — NOT BUILT AS AN EDGE FUNCTION
 
-- Schedule: monthly. Admin preview before publish. Phase 3, COMM-309.
-- Output: aggregate club figures. No member names in public sections.
-- Full shape (added when COMM-309's ticket file was written): writes a draft
-  `monthly_club_recaps` row (unpublished, `published_at null`); a staff
-  `community.analytics.view` or admin holder previews it and calls
-  `recap_monthly_publish(p_id)` to fan out the notification and make it
-  member-readable. See "Needs from schema, recaps (Phase 3)" below.
+- ~~Schedule: monthly. Admin preview before publish. Phase 3, COMM-309.
+  Output: aggregate club figures, no member names in public sections.~~
+- **Superseded by `public.recap_monthly_generate(date)` in 202609010002.**
+  COMM-309 shipped with generation as a service-role-only Postgres function
+  rather than a second Edge Function; the full reasoning is in **"## Needs
+  from schema, monthly club recap (COMM-309, Phase 3)"** above, under "The
+  generation-mechanism decision". Read that, not this. Everything this stub
+  promised shipped — the monthly schedule slot, the draft/preview/publish
+  shape, aggregate-only output — with the mechanism changed and one
+  consequence: there is no `supabase/functions/recap_monthly/` directory and
+  there never will be under this ticket. `recap_weekly` remains the only
+  Edge Function in the repo.
 
 ### purge_abandoned_profiles
 
@@ -4009,7 +4288,7 @@ What a dependent ticket needs to know changed between the two:
 
 ### Needs from schema, recaps (Phase 3)
 
-- `monthly_club_recaps(id uuid pk, club_id uuid not null default
+- ~~`monthly_club_recaps(id uuid pk, club_id uuid not null default
   default_club_id(), month_start date not null unique check
   (extract(day from month_start) = 1), sessions_logged integer not null
   default 0, posts_created integer not null default 0, new_members integer
@@ -4019,7 +4298,28 @@ What a dependent ticket needs to know changed between the two:
   select only `published_at is not null`; no client write grant.
   `recap_monthly_publish(p_id uuid)`, `security definer`,
   `community.analytics.view`/`is_admin` gated, stamps `published_at`, fans
-  out the notification, writes `admin_actions`. COMM-309.
+  out the notification, writes `admin_actions`. COMM-309.~~ — **SHIPPED in
+  202609010002, COMM-309.** No longer a forward reference: the built
+  contract is **"## Needs from schema, monthly club recap (COMM-309, Phase
+  3)"** above. Read that, not this. The table, both policies, the total
+  absence of a client write path and `recap_monthly_publish`'s exact
+  signature and gate all shipped as promised, with four things this line did
+  not name:
+  - **Generation shipped as `recap_monthly_generate(p_month_start date
+    default null) returns uuid`, a service-role-only Postgres function, not
+    an Edge Function.** The `recap_monthly_club` stub under "Edge Functions"
+    is struck through accordingly. Four reasons, recorded above.
+  - **`monthly_club_recaps_freeze()`**, a BEFORE UPDATE trigger that raises
+    on any update of a published row. Without it, "cannot be un-published"
+    would be a property of the generator's SQL, and the service role
+    bypasses RLS.
+  - **`admin_actions.target_type` gained `'monthly_club_recap'`** as well as
+    the `action_type` label — the first widening of the target list since
+    202608280002.
+  - **The read boundary is wider than the publish boundary.** A coach can
+    preview a draft (`is_staff()`) but cannot publish
+    (`community.analytics.view` or `is_admin()`). The client half must gate
+    the publish control on the permission, not on staffness.
 - `weekly_recaps` gains `classmates jsonb not null default '[]'`, written
   only by `recap_weekly` (service role). `onboarding_progress` gains
   `first_class_shown_at timestamptz` and `third_class_shown_at
