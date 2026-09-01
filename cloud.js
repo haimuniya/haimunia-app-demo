@@ -485,6 +485,24 @@
     const color = AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
     return `<span aria-hidden="true" class="avatar-badge" style="width:${px}px;height:${px}px;font-size:${Math.round(px * 0.42)}px;background:${color};">${safeText(initial)}</span>`;
   }
+  // Shared batch profile lookup - the shape loadCoachEngage(), loadCoachMemberOfWeek()
+  // and loadFollowList() each independently hand-rolled. Consolidated after
+  // finding real drift between the copies (a missing avatar_url column in
+  // one, ad-hoc dedup in another): every caller now gets the same base
+  // columns for free, and adding one going forward can't silently miss a
+  // field the way a fourth hand-written copy could. extraCols appends
+  // caller-specific columns (e.g. loadFollowList's allow_follows) - never
+  // subtracts from the shared base.
+  async function loadProfilesById(ids, extraCols) {
+    const uniqueIds = Array.from(new Set((ids || []).filter(Boolean)));
+    const map = {};
+    if (!uniqueIds.length) return { map, error: null };
+    const cols = "id,handle,display_name,avatar_url" + (extraCols ? "," + extraCols : "");
+    const { data, error } = await client.from("profiles").select(cols).in("id", uniqueIds);
+    if (error) return { map, error };
+    for (const p of (data || [])) map[p.id] = p;
+    return { map, error: null };
+  }
   function relativeTime(iso) {
     if (!iso) return "";
     const diffMin = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
@@ -1232,12 +1250,7 @@
       return;
     }
     const items = data || [];
-    const ids = Array.from(new Set(items.map((it) => it.user_id).filter(Boolean)));
-    const profiles = {};
-    if (ids.length) {
-      const { data: profs } = await client.from("profiles").select("id,handle,display_name,avatar_url").in("id", ids);
-      for (const p of profs || []) profiles[p.id] = p;
-    }
+    const { map: profiles } = await loadProfilesById(items.map((it) => it.user_id));
     state.coachEngage.items = items;
     state.coachEngage.profiles = profiles;
     state.coachEngage.loading = false;
@@ -1347,16 +1360,11 @@
     }
     const envelope = data[0];
     state.coachMemberOfWeek.envelope = envelope;
-    // Two small, separate profile reads (the same shape coachEngage.profiles
-    // and coachWelcome.contactedIds already use, rather than an embedded
-    // join) for the two ids the envelope names but does not itself carry a
+    // One small, separate profile read (loadProfilesById - the shared shape
+    // coachEngage/loadFollowList also use, rather than an embedded join)
+    // for the two ids the envelope names but does not itself carry a
     // display name for.
-    const ids = [envelope.published && envelope.published.user_id, envelope.previous_week_user_id].filter(Boolean);
-    const profiles = {};
-    if (ids.length) {
-      const { data: profs } = await client.from("profiles").select("id,handle,display_name,avatar_url").in("id", Array.from(new Set(ids)));
-      for (const p of profs || []) profiles[p.id] = p;
-    }
+    const { map: profiles } = await loadProfilesById([envelope.published && envelope.published.user_id, envelope.previous_week_user_id]);
     state.coachMemberOfWeek.publishedProfile = envelope.published ? (profiles[envelope.published.user_id] || null) : null;
     state.coachMemberOfWeek.previousProfile = envelope.previous_week_user_id ? (profiles[envelope.previous_week_user_id] || null) : null;
     state.coachMemberOfWeek.loading = false;
@@ -8089,11 +8097,9 @@
     if (error) { st.error = true; st.items = []; rerender(); return; }
     const ids = (Array.isArray(data) ? data : []).map((r) => r[idCol]).filter(Boolean);
     if (!ids.length) { st.items = []; st.loaded = true; rerender(); return; }
-    const { data: profs, error: perr } = await client.from("profiles").select("id,handle,display_name,avatar_url,allow_follows").in("id", ids);
+    const { map: byId, error: perr } = await loadProfilesById(ids, "allow_follows");
     if (state.profileView !== pv) return;
     if (perr) { st.error = true; st.items = []; rerender(); return; }
-    const byId = {};
-    (Array.isArray(profs) ? profs : []).forEach((p) => { byId[p.id] = p; });
     // Preserve the follows-table order (most recent edge first); a member
     // hidden from this caller by RLS (blocked, or - not applicable to self,
     // but kept for symmetry - visible_to_club) simply drops out rather than
