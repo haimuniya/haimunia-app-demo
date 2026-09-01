@@ -893,7 +893,7 @@ does not touch that refusal.
 | ID | Title | Agent | Attendance-blocked | Status |
 |---|---|---|---|---|
 | COMM-304 | Coach Engage activation and attendance-decline detection | coach-tools | was — unblocked by COMM-300 | review — both halves in |
-| COMM-315 | Member of the week rotation across recognition categories | coach-tools | no | review — schema half in (202609010001), client half open |
+| COMM-315 | Member of the week rotation across recognition categories | coach-tools | no | review — both halves in |
 
 **COMM-304 is in review — BOTH HALVES — and it closes the parked COMM-P04.**
 `coach_engagement_flags` has shipped empty since Phase 0 (202608280011) with
@@ -922,7 +922,8 @@ flagged as an open question in its own ticket file — the category set and
 rotation order proposed there (consistency streak, PRs, challenge
 completion, coach's pick) was the planner's best-effort reading of the
 title, not settled spec text. **The user confirmed that proposal as-is on
-2026-08-31, and the schema half is now in review as `202609010001`.** The
+2026-08-31, and both halves are now in review** (schema `202609010001`,
+client `79664bf`). The
 rotation index is whole weeks since the epoch Monday 2026-01-05 modulo 4,
 not the ISO week number — an ISO year has 52 or 53 weeks, so the mod-4 form
 of the week number repeats a category two weeks running at every 53-week
@@ -950,7 +951,16 @@ present-day streak; `show_attendance` and `show_prs` both default **false**,
 so in a club where nobody has opted in, two of the four categories will
 legitimately show the empty state most weeks; and nothing notifies the
 member they were chosen, which the ticket does not ask for and which would
-be a `notif_create` fan-out in the client half or a follow-up.
+be a `notif_create` fan-out or a follow-up. The client half builds one
+staff-only Coach Dashboard section (`renderCoachMemberOfWeekSection`) on
+top of both functions: a single publish path serves both a computed
+candidate's one-tap Publish and the free-form coach's-pick (the server, not
+the client, decides which category the row records, so the client never
+sends one and always re-fetches after a successful publish), all five real
+Postgres error messages the schema half raises are mapped to short Hebrew,
+and the frontend states match the ticket literally — candidates and the
+coach's-pick form render together whenever the category has candidates, not
+one-or-the-other.
 
 ### recaps
 

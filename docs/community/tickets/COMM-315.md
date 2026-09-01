@@ -2,7 +2,7 @@
 
 Phase: 3
 Agent: coach-tools
-Status: review — schema half shipped as 202609010001; client half open
+Status: review — both halves shipped (202609010001 schema, cloud.js client)
 Attendance-blocked: no
 
 No forward reference for this ticket exists anywhere in
