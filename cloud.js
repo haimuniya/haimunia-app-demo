@@ -8618,6 +8618,26 @@
   // it can switch cloud.js's own sub-tab without re-deriving any of the
   // teardown/analytics logic setCommunityTab already does internally.
   window.setCommunityTab = setCommunityTab;
+  // Same track, same reason: the four/five sub-tab ids, labels and badge
+  // counts a non-staff/staff caller actually sees, without app.js
+  // re-deriving the staff gate or the moderation-queue badge count itself.
+  // Mirrors the real `tabs` array built inline in renderCommunityApp() -
+  // same ids, same order, same "coach" entry only when isStaff() - but
+  // computed standalone (no render bodies) so it is cheap to call on every
+  // nav-menu open, not just once per Community render.
+  window.getCommunityNavPreview = function () {
+    const staff = isStaff();
+    const pendingReports = (hasPerm(PERM.COMMENT_MODERATE) || isAdmin())
+      ? state.modQueue.filter((r) => r.status === "open").length : 0;
+    const tabs = [
+      { id: "feed", label: "פיד" },
+      { id: "boards", label: "לוחות" },
+      { id: "directory", label: "חברים" },
+      { id: "account", label: "חשבון", badge: pendingReports },
+    ];
+    if (staff) tabs.push({ id: "coach", label: "לוח מאמנים" });
+    return tabs;
+  };
   document.addEventListener("submit", (event) => {
     if (event.target.id === "communityProfile") { event.preventDefault(); saveProfile(event.target); }
     else if (event.target.id === "communityAnnouncement") { event.preventDefault(); postAnnouncement(event.target); }
