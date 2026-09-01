@@ -8,6 +8,9 @@
   const state = { configured, client, user: null, profile: null, feed: [], people: [], comparison: [], comparisonForPostId: null, loading: false, message: "", syncEnabled: localStorage.getItem("haimunia-demo:cloudSyncEnabled") === "1",
     streaks: [], announcements: [], announcementSaving: false, weeklyChallenge: null, weeklyLeaderboard: [], inactiveMembers: [], newMembers: [], redemption: null,
     communityTab: "feed", comments: {}, openComments: {}, fieldErrors: {}, reports: [], confirmDialog: null, signupStarted: false, memberSearch: "", memberResults: [], openShare: {},
+    // COMM-318. { status: "idle"|"processing", error }, drives the avatar
+    // control on the account profile form only.
+    avatarUpload: { status: "idle", error: "" },
     // COMM-120..125 engagement cluster.
     commentDrafts: {}, commentErrors: {}, commentSending: null, commentEdit: null, openReplies: {}, replyTo: {},
     // COMM-124 / COMM-160. One batched, cached user-id -> server role map,
@@ -413,13 +416,20 @@
   // Compact, deterministic per-identity color so the same person always
   // gets the same avatar color across the feed, comments and search.
   const AVATAR_PALETTE = ["var(--energy)", "var(--blue)", "var(--teal)", "var(--purple)", "var(--green)", "var(--brass)"];
-  function avatarHtml(name, size) {
+  // COMM-318. avatarUrl is optional and always the third argument, so every
+  // pre-existing 2-arg call keeps rendering the initials badge unchanged. A
+  // real photo replaces the badge outright rather than sitting behind it -
+  // there is nothing to blend, an avatar is either a photo or initials.
+  function avatarHtml(name, size, avatarUrl) {
+    const px = size || 36;
+    if (avatarUrl) {
+      return `<img alt="" aria-hidden="true" class="avatar-badge" src="${safeText(avatarUrl)}" style="width:${px}px;height:${px}px;object-fit:cover;"/>`;
+    }
     const label = String(name || "?").trim();
     const initial = label ? label[0].toUpperCase() : "?";
     let hash = 0;
     for (let i = 0; i < label.length; i++) hash = (hash * 31 + label.charCodeAt(i)) >>> 0;
     const color = AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
-    const px = size || 36;
     return `<span aria-hidden="true" class="avatar-badge" style="width:${px}px;height:${px}px;font-size:${Math.round(px * 0.42)}px;background:${color};">${safeText(initial)}</span>`;
   }
   function relativeTime(iso) {
@@ -2338,7 +2348,7 @@
     state.reactions[postId] = {
       loaded: true,
       mine: !!(state.user && rows.some((r) => r.user_id === state.user.id)),
-      list: rows.map((r) => ({ id: r.user_id, name: r.profiles ? (r.profiles.display_name || "@" + r.profiles.handle) : "" })),
+      list: rows.map((r) => ({ id: r.user_id, name: r.profiles ? (r.profiles.display_name || "@" + r.profiles.handle) : "", avatar_url: r.profiles ? r.profiles.avatar_url : null })),
       count: rows.length,
     };
     rerender();
@@ -3453,7 +3463,7 @@
     const reason = SUGGESTION_REASONS[item.reason] || "";
     const busy = !!state.peopleSuggestions.busy[item.user_id];
     return `<div class="chart-card" data-suggestion-user="${safeText(item.user_id)}" style="flex:0 0 auto;min-width:148px;max-width:170px;text-align:center;margin:0;">
-      ${avatarHtml(name, 44)}
+      ${avatarHtml(name, 44, item.avatar_url)}
       <div style="font-weight:700;margin-top:6px;font-size:13px;">${safeText(name)}</div>
       ${item.handle ? `<div style="color:var(--steel);font-size:12px;">@${safeText(item.handle)}</div>` : ""}
       ${reason ? `<div style="color:var(--steel);font-size:11px;margin-top:4px;">${safeText(reason)}</div>` : ""}
@@ -3634,7 +3644,7 @@
     return { members: "מתאמנים", events: "אירועים", challenges: "אתגרים" }[key] || key;
   }
   function searchMemberRowHtml(person) {
-    return `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32)}<div><div style="font-weight:700;">${safeText(person.display_name || "@" + person.handle)}${isCoachRole(memberRole(person.id)) ? " " + coachBadgeHtml(memberRole(person.id)) : ""}</div><div style="color:var(--steel);font-size:12px;">@${safeText(person.handle)} ${safeText(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="view-profile" data-id="${safeText(person.id)}">פרופיל</button>${person.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${safeText(person.id)}">מעקב</button>`}<button class="chip-btn" data-community-action="block" data-id="${safeText(person.id)}">חסימה</button></div></div>`;
+    return `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32, person.avatar_url)}<div><div style="font-weight:700;">${safeText(person.display_name || "@" + person.handle)}${isCoachRole(memberRole(person.id)) ? " " + coachBadgeHtml(memberRole(person.id)) : ""}</div><div style="color:var(--steel);font-size:12px;">@${safeText(person.handle)} ${safeText(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="view-profile" data-id="${safeText(person.id)}">פרופיל</button>${person.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${safeText(person.id)}">מעקב</button>`}<button class="chip-btn" data-community-action="block" data-id="${safeText(person.id)}">חסימה</button></div></div>`;
   }
   function searchEventRowHtml(ev) {
     // No event detail surface exists yet (COMM-213 builds it), so the row
@@ -3677,7 +3687,7 @@
     const total = Number(rs.count || 0);
     if (!total && !reactors.length) return "";
     const avatars = reactors.slice(0, REACTOR_AVATARS_SHOWN)
-      .map((r) => `<span style="display:inline-flex;margin-inline-start:-6px;">${avatarHtml(r.name || "?", 22)}</span>`).join("");
+      .map((r) => `<span style="display:inline-flex;margin-inline-start:-6px;">${avatarHtml(r.name || "?", 22, r.avatar_url)}</span>`).join("");
     const label = rs.mine
       ? (total <= 1 ? "הגבתם" : `הגבתם ועוד ${total - 1}`)
       : `${total} הגבות`;
@@ -3724,7 +3734,7 @@
       actions.push(`<button class="link-btn" data-community-action="delete-comment" data-id="${safeText(c.id)}" data-post="${safeText(post.id)}" aria-label="מחיקת תגובה">מחיקה</button>`);
     }
     if (!own) actions.push(`<button class="link-btn" data-community-action="report-comment" data-id="${safeText(c.id)}">דיווח</button>`);
-    return `<div class="comment-row${isCoach ? " comment-coach" : ""}" style="${wrapStyle}">${avatarHtml(name, 24)}<div style="flex:1;min-width:0;">
+    return `<div class="comment-row${isCoach ? " comment-coach" : ""}" style="${wrapStyle}">${avatarHtml(name, 24, c.profiles && c.profiles.avatar_url)}<div style="flex:1;min-width:0;">
       ${bodyHtml}
       <div class="flex gap-10" style="margin-top:2px;align-items:center;flex-wrap:wrap;"><span style="color:var(--steel);font-size:11px;">${safeText(relativeTime(c.created_at))}</span>${edited}${actions.join("")}</div>
     </div></div>`;
@@ -3897,7 +3907,7 @@
       return btns.join("");
     };
     const rowHtml = (m) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:6px;">
-      <div class="flex gap-10" style="align-items:center;">${avatarHtml(m.display_name || m.handle, 32)}<div><div style="font-weight:700;">${safeText(m.display_name || "@" + m.handle)}${isCoachRole(m.role) ? " " + coachBadgeHtml(m.role) : ""}</div><div style="color:var(--steel);font-size:11px;">@${safeText(m.handle)} · ${memberRoleLabel(m)}</div></div></div>
+      <div class="flex gap-10" style="align-items:center;">${avatarHtml(m.display_name || m.handle, 32, m.avatar_url)}<div><div style="font-weight:700;">${safeText(m.display_name || "@" + m.handle)}${isCoachRole(m.role) ? " " + coachBadgeHtml(m.role) : ""}</div><div style="color:var(--steel);font-size:11px;">@${safeText(m.handle)} · ${memberRoleLabel(m)}</div></div></div>
       <div style="color:var(--steel);font-size:11px;">הצטרפ/ה: ${m.redeemed_at ? safeText(String(m.redeemed_at).slice(0, 10)) : "—"} · פעילות אחרונה: ${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</div>
       <div class="footer-note" style="margin:0;font-size:10.5px;">${safeText(m.id)}</div>
       ${m.is_admin ? "" : `<div class="chip-row" style="margin-top:0;">
@@ -4643,7 +4653,7 @@
     opts = opts || {};
     const authorless = !!opts.authorless;
     const name = authorless ? (opts.clubName || "המועדון") : (postAuthorName(post) || "חבר/ה");
-    const avatar = authorless ? CLUB_MARK_HTML : avatarHtml(name);
+    const avatar = authorless ? CLUB_MARK_HTML : avatarHtml(name, 36, post && post.author ? post.author.avatar_url : (post && post.avatar_url));
     const authorId = !authorless && post && post.author_id;
     // COMM-160. Same coach badge the comments carry, on the post author.
     const roleBadge = authorId ? coachBadgeHtml(memberRole(authorId)) : "";
@@ -4877,7 +4887,7 @@
     const joined = m.joined_on || post.occurred_on || postTimestamp(post);
     const inner = `<div class="post-title">👋 ברוך/ה הבא/ה למועדון</div>
       <div class="flex gap-10" style="align-items:center;margin-top:6px;">
-        ${avatarHtml(memberName, 40)}
+        ${/* COMM-318: no avatar_url available here on purpose - post_new_member_on_join's metadata is stamped at redemption time, before the profile row usually even exists, so a photo could never be threaded through without a second live lookup for a rarely-seen card. Initials only, matching the club-logo exception. */ avatarHtml(memberName, 40)}
         <div>
           ${memberId ? `<button class="link-btn" data-community-action="view-profile" data-id="${safeText(memberId)}" style="padding:0;font-weight:800;color:inherit;">${safeText(memberName)}</button>` : `<div style="font-weight:800;">${safeText(memberName)}</div>`}
           ${joined ? `<div style="color:var(--steel);font-size:12px;">${safeText(String(joined).slice(0, 10))}</div>` : ""}
@@ -5641,7 +5651,7 @@
       : "";
     return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:8px;">
       <div class="flex gap-10" style="align-items:center;">
-        ${avatarHtml(item.display_name || item.handle, 32)}
+        ${avatarHtml(item.display_name || item.handle, 32, item.avatar_url)}
         <div>
           <button class="link-btn" data-community-action="view-profile" data-id="${safeText(item.user_id)}" style="padding:0;font-weight:800;color:inherit;">${safeText(item.display_name || "@" + item.handle)}</button>
           <div style="color:var(--steel);font-size:12px;">${safeText(what)} · ${relativeTime(item.occurred_at)}</div>
@@ -5669,7 +5679,7 @@
     const contactDraft = (state.coachWelcome.contactDrafts || {})[m.id] || "";
     return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:8px;">
       <div class="flex gap-10" style="align-items:center;">
-        ${avatarHtml(m.display_name || m.handle, 32)}
+        ${avatarHtml(m.display_name || m.handle, 32, m.avatar_url)}
         <div>
           <div style="font-weight:700;">${safeText(m.display_name || "@" + m.handle)}</div>
           <div style="color:var(--steel);font-size:12px;">${days === 0 ? "הצטרפ/ה היום" : `לפני ${days} ימים`} · רצף נוכחי: ${streakCount} · ${contacted ? "נוצר קשר" : "טרם נוצר קשר"}</div>
@@ -5719,7 +5729,7 @@
     const busy = state.coachMemberOfWeek.busy === c.user_id;
     return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:8px;">
       <div class="flex gap-10" style="align-items:center;">
-        ${avatarHtml(c.display_name || c.handle, 32)}
+        ${avatarHtml(c.display_name || c.handle, 32, c.avatar_url)}
         <div>
           <button class="link-btn" data-community-action="view-profile" data-id="${safeText(c.user_id)}" style="padding:0;font-weight:800;color:inherit;">${safeText(c.display_name || "@" + c.handle)}</button>
           <div style="color:var(--steel);font-size:12px;">${safeText(memberOfWeekCandidateDetailText(category, c.detail))}</div>
@@ -5766,7 +5776,7 @@
     const name = p ? (p.display_name || "@" + p.handle) : "חבר/ה";
     return `<div class="chart-card" style="margin-top:8px;">
       <div class="flex gap-10" style="align-items:center;">
-        ${avatarHtml(p && (p.display_name || p.handle), 36)}
+        ${avatarHtml(p && (p.display_name || p.handle), 36, p && p.avatar_url)}
         <div>
           <button class="link-btn" data-community-action="view-profile" data-id="${safeText(pub.user_id)}" style="padding:0;font-weight:800;color:inherit;">${safeText(name)}</button>
           <div style="color:var(--steel);font-size:12px;">${safeText(env.category_label)}</div>
@@ -5892,9 +5902,10 @@
     const reachBusy = busy && state.coachEngage.busy.action === "reach-out";
     const reached = !!state.coachEngage.reachedOut[it.id];
     const name = engageMemberName(it.user_id);
+    const prof = state.coachEngage.profiles[it.user_id];
     return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:8px;">
       <div class="flex gap-10" style="align-items:center;">
-        ${avatarHtml(state.coachEngage.profiles[it.user_id] && (state.coachEngage.profiles[it.user_id].display_name || state.coachEngage.profiles[it.user_id].handle), 32)}
+        ${avatarHtml(prof && (prof.display_name || prof.handle), 32, prof && prof.avatar_url)}
         <div>
           <button class="link-btn" data-community-action="view-profile" data-id="${safeText(it.user_id)}" style="padding:0;font-weight:800;color:inherit;">${safeText(name)}</button>
           <div style="margin-top:2px;"><span class="admin-tag" style="background:${engageLevelColor(it.level)};">${safeText(engageLevelLabel(it.level))}</span></div>
@@ -6870,11 +6881,6 @@
   }
   function classmateRowHtml(item) {
     const name = item.display_name || (item.handle ? "@" + item.handle : "חבר/ה");
-    // avatar_url rides along in state and is not drawn: avatarHtml() is the
-    // one avatar renderer in this file and it is initials-only for every
-    // member row in the app today. When profile photos land, that helper
-    // changes once and this row follows for free.
-    //
     // THE FOLLOW CONTROL IS ALWAYS RENDERED, and that is the one place this
     // row deliberately differs from memberRowHtml()/followListRowHtml(),
     // which both write `allow_follows === false ? "" : button`. Those two read
@@ -6892,7 +6898,7 @@
     // that would leak another member's setting into the card.
     return `<div class="log-row" data-classmate-user="${safeText(item.user_id)}">
       <button class="link-btn" data-community-action="view-profile" data-id="${safeText(item.user_id)}" style="padding:0;display:flex;gap:10px;align-items:center;color:inherit;text-align:right;">
-        ${avatarHtml(name, 32)}
+        ${avatarHtml(name, 32, item.avatar_url)}
         <span style="min-width:0;"><span style="font-weight:700;display:block;">${safeText(name)}</span>${item.handle ? `<span style="color:var(--steel);font-size:12px;">@${safeText(item.handle)}</span>` : ""}</span>
       </button>
       <div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="follow" data-id="${safeText(item.user_id)}">מעקב</button></div>
@@ -7238,6 +7244,81 @@
     const { error } = await client.storage.from("post-photos").upload(path, prepared.render.blob, { contentType: type, upsert: false });
     return error ? null : path;
   }
+  // COMM-318. Extracts the storage path ({uid}/avatar.{ext}) from a stored,
+  // cache-busted avatar_url so a re-upload can best-effort remove the old
+  // object when the resolved extension changed. Best-effort only: a parse
+  // miss (unfamiliar URL shape, no match) is not an error, it just skips
+  // the cleanup - the new upload has already succeeded either way.
+  function avatarPathFromUrl(url) {
+    const m = /\/avatar-photos\/([^?]+)/.exec(String(url || ""));
+    return m ? m[1] : null;
+  }
+  // Avatar-sized, not the composer's 1600px feed-photo default: maxEdge 320,
+  // no separate thumbnail (thumbEdges:[] - the render itself is already
+  // small), a 60KB target with a 300KB hard cap. Deterministic overwrite
+  // path (upsert:true) rather than post-photos' unique-per-upload pattern -
+  // an avatar is one-per-member by convention, nothing accumulates.
+  async function uploadAvatarPhoto(file) {
+    if (!state.user) return null;
+    const prepared = await window.HaimuniaImage.prepareImage(file, {
+      maxEdge: 320, thumbEdges: [], targetBytes: 60 * 1024, hardCapBytes: 300 * 1024,
+    });
+    if (!prepared || !prepared.render || !prepared.render.blob) return null;
+    const type = prepared.render.type || "image/webp";
+    const ext = type === "image/png" ? "png" : type === "image/jpeg" ? "jpg" : "webp";
+    const prevPath = state.profile ? avatarPathFromUrl(state.profile.avatar_url) : null;
+    const path = `${state.user.id}/avatar.${ext}`;
+    const { error } = await client.storage.from("avatar-photos").upload(path, prepared.render.blob, { contentType: type, upsert: true });
+    if (error) return null;
+    // Best-effort: only reached when the extension actually changed (a
+    // same-extension re-upload already overwrote the object in place via
+    // upsert:true above, there is nothing stale to remove).
+    if (prevPath && prevPath !== path) client.storage.from("avatar-photos").remove([prevPath]).catch(() => {});
+    const { data } = client.storage.from("avatar-photos").getPublicUrl(path);
+    // Cache-busting belongs on the STORED url, not the bare getPublicUrl()
+    // result - overwriting the same storage path means a re-upload could
+    // otherwise silently fail to visibly update anywhere without it.
+    return (data && data.publicUrl) ? `${data.publicUrl}?t=${Date.now()}` : null;
+  }
+  // Fires immediately on upload success or remove, matching
+  // savePrivacyField's immediate-save pattern (a photo change is already a
+  // committed action the moment the bytes are in Storage) rather than
+  // saveProfile's bundled-into-form-submit pattern.
+  async function saveAvatarUrl(url) {
+    if (!state.user || !state.profile) return false;
+    const prev = state.profile.avatar_url;
+    state.profile.avatar_url = url || null;
+    rerender();
+    const { error } = await client.from("profiles").upsert({ id: state.user.id, avatar_url: url || null });
+    if (error) { state.profile.avatar_url = prev; setMessage("שמירת התמונה נכשלה"); rerender(); return false; }
+    return true;
+  }
+  async function avatarPhotoSelected(file) {
+    if (!file || !state.user) return;
+    state.avatarUpload = { status: "processing", error: "" };
+    rerender();
+    let url;
+    try {
+      url = await uploadAvatarPhoto(file);
+    } catch (err) {
+      state.avatarUpload = { status: "idle", error: (err && err.code === "not_an_image") ? "הקובץ אינו תמונה" : "העלאת התמונה נכשלה" };
+      return rerender();
+    }
+    if (!url) { state.avatarUpload = { status: "idle", error: "העלאת התמונה נכשלה" }; return rerender(); }
+    const ok = await saveAvatarUrl(url);
+    state.avatarUpload = { status: "idle", error: ok ? "" : "" };
+    rerender();
+  }
+  async function removeAvatarPhoto() {
+    if (!state.user || !state.profile || !state.profile.avatar_url || state.avatarUpload.status === "processing") return;
+    const path = avatarPathFromUrl(state.profile.avatar_url);
+    state.avatarUpload = { status: "processing", error: "" };
+    rerender();
+    const ok = await saveAvatarUrl(null);
+    if (ok && path) client.storage.from("avatar-photos").remove([path]).catch(() => {});
+    state.avatarUpload = { status: "idle", error: "" };
+    rerender();
+  }
   function composerReadyPhotos() { return state.composer ? state.composer.photos.filter((p) => p.status === "ready") : []; }
   function composerCanPublish() {
     const c = state.composer;
@@ -7298,7 +7379,7 @@
       id: data,
       post_type: media.length && !body ? "POST_PHOTO" : "POST_TEXT",
       author_id: state.user.id,
-      author: { display_name: state.profile && state.profile.display_name, handle: state.profile && state.profile.handle },
+      author: { display_name: state.profile && state.profile.display_name, handle: state.profile && state.profile.handle, avatar_url: state.profile && state.profile.avatar_url },
       body,
       visibility: c.visibility,
       created_at: new Date().toISOString(),
@@ -7860,7 +7941,7 @@
     const actionBtn = side === "following"
       ? `<button class="chip-btn" data-community-action="following-unfollow" data-id="${safeText(m.id)}">הפסקת מעקב</button>`
       : (m.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${safeText(m.id)}">מעקב</button>`);
-    return `<div class="log-row"><button class="link-btn" data-community-action="view-profile" data-id="${safeText(m.id)}" style="padding:0;display:flex;gap:10px;align-items:center;color:inherit;text-align:right;">${avatarHtml(name, 32)}<span style="font-weight:700;">${safeText(name)}${badge}</span></button><div class="chip-row" style="margin-top:0;">${actionBtn}</div></div>`;
+    return `<div class="log-row"><button class="link-btn" data-community-action="view-profile" data-id="${safeText(m.id)}" style="padding:0;display:flex;gap:10px;align-items:center;color:inherit;text-align:right;">${avatarHtml(name, 32, m.avatar_url)}<span style="font-weight:700;">${safeText(name)}${badge}</span></button><div class="chip-row" style="margin-top:0;">${actionBtn}</div></div>`;
   }
   function followListSectionHtml(pv, side, label, count) {
     if (count == null) return "";
@@ -7949,7 +8030,7 @@
         <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
           <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:12px;">
             <div class="flex gap-10" style="align-items:center;min-width:0;">
-              ${avatarHtml(name, 44)}
+              ${avatarHtml(name, 44, d.avatar_url)}
               <div style="min-width:0;">
                 <div id="profileViewTitle" style="font-weight:800;font-size:16px;">${safeText(name)}${isCoachRole(d.role) ? " " + coachBadgeHtml(d.role) : ""}</div>
                 <div style="color:var(--steel);font-size:12px;">${roleLabel ? safeText(roleLabel) : ""}${d.member_since ? ` · חבר/ה מאז ${safeText(String(d.member_since).slice(0, 10))}` : ""}</div>
@@ -8998,7 +9079,7 @@
       : state.feedError && !state.feed.length
       ? `<div class="empty">לא ניתן לטעון את פיד המועדון.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="feed-retry">ניסיון חוזר</button></div></div>`
       : state.feed.length ? `<div class="log-list" id="communityFeedList">${state.feed.map((post) => post && post.post_type ? renderPostCard(post) : `<article class="chart-card post-card">
-      <div class="post-head">${avatarHtml(post.display_name || post.handle)}<div class="post-head-text"><div class="post-author">${safeText(post.display_name || "@" + post.handle)}</div><div class="post-time">${relativeTime(post.published_at)}</div></div></div>
+      <div class="post-head">${avatarHtml(post.display_name || post.handle, 36, (post.author && post.author.avatar_url) || post.avatar_url)}<div class="post-head-text"><div class="post-author">${safeText(post.display_name || "@" + post.handle)}</div><div class="post-time">${relativeTime(post.published_at)}</div></div></div>
       <div class="post-title">${safeText(post.title)}</div>
       <div class="mono post-result">${safeText(post.result_text)}</div>
       ${post.photo_path && photoUrlCache[post.photo_path] ? `<img src="${photoUrlCache[post.photo_path]}" alt="" class="post-photo"/>` : ""}
@@ -9045,7 +9126,20 @@
     const boardsTab = renderChallengesListSection() + renderEventsListSection() + weeklyChallengeHtml + streaksHtml;
 
     // ---- Account tab: profile, member search, admin member management ----
+    // COMM-318. Uploading/failed states mirror the composer photo-attach
+    // flow's own state machine and error copy - not a new pattern.
+    const au = state.avatarUpload;
+    const avatarBusy = au.status === "processing";
+    const avatarControl = `<div class="flex gap-10" style="align-items:center;margin-bottom:14px;">
+      ${avatarHtml(p.display_name || p.handle, 56, p.avatar_url)}
+      <div class="flex gap-6" style="align-items:center;flex-wrap:wrap;">
+        <label class="chip-btn" style="cursor:pointer;display:inline-block;${avatarBusy ? "opacity:.6;pointer-events:none;" : ""}">${avatarBusy ? "מעלה…" : "העלאת תמונה"}<input type="file" accept="image/*" data-avatar-file style="display:none;"${avatarBusy ? " disabled" : ""}/></label>
+        ${p.avatar_url ? `<button class="chip-btn" type="button" data-community-action="avatar-remove"${avatarBusy ? " disabled" : ""}>הסרת תמונה</button>` : ""}
+      </div>
+    </div>
+    ${au.error ? `<div class="field-error" role="alert" style="margin-bottom:10px;">${safeText(au.error)}</div>` : ""}`;
     const account = `<form id="communityProfile" class="chart-card"><div style="font-weight:800;font-size:16px;margin-bottom:12px;">הפרופיל שלי</div>
+      ${avatarControl}
       ${field("communityProfile", "handle", "שם משתמש (handle)", `<input class="text-input" name="handle" dir="auto" value="${safeText(p.handle || "")}" placeholder="למשל דנה_כהן" required/>`)}
       <label class="field"><span class="field-label">שם תצוגה</span><input class="text-input" name="displayName" value="${safeText(p.display_name || "")}" placeholder="שם תצוגה"/></label>
       <label class="field"><span class="field-label">קצת עליי</span><textarea class="text-input" name="bio" maxlength="160" placeholder="כמה מילים עליי">${safeText(p.bio || "")}</textarea></label>
@@ -9441,6 +9535,7 @@
     // the action itself and nothing awaits it.
     trackFeedClick(el);
     if (action === "migrate") askConfirm({ title: "סנכרון היסטוריה", message: "להעלות את היסטוריית האימונים הפרטית לחשבון? שום נתון לא יפורסם בקהילה.", confirmLabel: "העלאה", action: "migrate" });
+    else if (action === "avatar-remove") removeAvatarPhoto();
     else if (action === "cheer") react(el.dataset.id);
     else if (action === "report") report(el.dataset.id);
     else if (action === "publish") {
@@ -9783,7 +9878,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.notifPushSub = null; state.notifPushChecked = false; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false, profiles: {}, reachedOut: {}, busy: null }; state.coachMemberOfWeek = { loading: false, loaded: false, error: false, envelope: null, publishedProfile: null, previousProfile: null, pickHandle: "", pickReason: "", busy: null, publishErr: "" }; state.coachMonthlyRecap = { loading: false, loaded: false, error: false, row: null, busy: null, publishErr: "" }; state.monthlyRecap = { loading: false, loaded: false, error: false, row: null }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} }; state.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false }; state.classmatesToday = { items: [], loading: false, loaded: false, error: false }; classmatesCardViewLogged = false; /* COMM-307: the next member to sign in on this device gets a fresh card and a fresh classmates_card_viewed, never the previous session's rows or its already-counted view. */ state.onboardingAttendance = { count: 0, loading: false, loaded: false, error: false }; /* COMM-316: same reset reasoning as classmatesToday just above - the next member on this device gets a fresh count, never the previous member's. */
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.avatarUpload = { status: "idle", error: "" }; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.notifPushSub = null; state.notifPushChecked = false; state.permissions = []; state.permissionsLoaded = false; state.clubFeatures = {}; state.clubFeaturesLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false, profiles: {}, reachedOut: {}, busy: null }; state.coachMemberOfWeek = { loading: false, loaded: false, error: false, envelope: null, publishedProfile: null, previousProfile: null, pickHandle: "", pickReason: "", busy: null, publishErr: "" }; state.coachMonthlyRecap = { loading: false, loaded: false, error: false, row: null, busy: null, publishErr: "" }; state.monthlyRecap = { loading: false, loaded: false, error: false, row: null }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} }; state.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false }; state.classmatesToday = { items: [], loading: false, loaded: false, error: false }; classmatesCardViewLogged = false; /* COMM-307: the next member to sign in on this device gets a fresh card and a fresh classmates_card_viewed, never the previous session's rows or its already-counted view. */ state.onboardingAttendance = { count: 0, loading: false, loaded: false, error: false }; /* COMM-316: same reset reasoning as classmatesToday just above - the next member on this device gets a fresh count, never the previous member's. */
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();
@@ -9844,6 +9939,7 @@
     const t = e.target;
     if (!t || !t.dataset) return;
     if ("composerFile" in t.dataset) { const f = t.files && t.files[0]; if (f) composerAddPhoto(f); try { t.value = ""; } catch (err) {} }
+    else if ("avatarFile" in t.dataset) { const f = t.files && t.files[0]; if (f) avatarPhotoSelected(f); try { t.value = ""; } catch (err) {} }
     else if ("composerDecorative" in t.dataset) composerToggleDecorative(t.dataset.composerDecorative, t.checked);
     else if ("composerVisibility" in t.dataset) composerSetVisibility(t.value);
     else if ("prFile" in t.dataset) { const f = t.files && t.files[0]; if (f) prPromptAddPhoto(f); }

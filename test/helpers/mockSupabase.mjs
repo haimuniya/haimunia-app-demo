@@ -1161,9 +1161,13 @@ export function createMockSupabase(seedTables = {}) {
         return Promise.resolve({ data: null, error: null });
       },
       storage: {
-        from: () => ({
+        from: (bucket) => ({
           createSignedUrl: () => Promise.resolve({ data: { signedUrl: "https://mock/signed" }, error: null }),
           upload: () => Promise.resolve({ error: null }),
+          // COMM-318. avatar-photos is public - no signed URL, a plain
+          // deterministic public URL the client cache-busts itself.
+          getPublicUrl: (path) => ({ data: { publicUrl: `https://mock/public/${bucket}/${path}` } }),
+          remove: () => Promise.resolve({ error: null }),
         }),
       },
     },
