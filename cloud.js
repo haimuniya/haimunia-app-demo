@@ -8614,6 +8614,10 @@
   };
   window.isCommunitySignedIn = function () { return !!(state.user && state.profile); };
   window.shareAchievementToCommunity = function (achievementId, title, rule) { publishAchievement(achievementId, title, rule); };
+  // Exported for app.js's Community sub-nav (the UI-restructuring track) so
+  // it can switch cloud.js's own sub-tab without re-deriving any of the
+  // teardown/analytics logic setCommunityTab already does internally.
+  window.setCommunityTab = setCommunityTab;
   document.addEventListener("submit", (event) => {
     if (event.target.id === "communityProfile") { event.preventDefault(); saveProfile(event.target); }
     else if (event.target.id === "communityAnnouncement") { event.preventDefault(); postAnnouncement(event.target); }
