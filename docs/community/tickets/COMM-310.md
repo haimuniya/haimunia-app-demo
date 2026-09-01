@@ -2,7 +2,7 @@
 
 Phase: 3
 Agent: admin-moderation
-Status: in progress — schema half shipped (202609010006 + pgTAP 0050); client
+Status: review — both halves shipped (schema + cloud.js client)
 half (the dashboard screen and the period selector) still open
 Attendance-blocked: no
 

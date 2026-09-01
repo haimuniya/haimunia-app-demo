@@ -2,7 +2,7 @@
 
 Phase: 3
 Agent: admin-moderation
-Status: in progress — schema half shipped (202609010009 + pgTAP 0053); client
+Status: review — both halves shipped (schema + cloud.js client)
 half (the score card, the component breakdown and the trend line, with the
 Hebrew error copy) still open
 Attendance-blocked: no

@@ -1048,14 +1048,31 @@ worth a second look if the intent was actually club-wide visibility.
 
 ### admin-moderation
 
-| ID | Title | Agent | Attendance-blocked |
-|---|---|---|---|
-| COMM-310 | Admin community analytics dashboard, full metric set | admin-moderation | no |
-| COMM-311 | Member engagement segmentation | admin-moderation | no |
-| COMM-312 | Community health score, internal only | admin-moderation | no |
-| COMM-313 | Retention correlation views | admin-moderation | no |
+| ID | Title | Agent | Attendance-blocked | Status |
+|---|---|---|---|---|
+| COMM-310 | Admin community analytics dashboard, full metric set | admin-moderation | no | review — both halves in |
+| COMM-311 | Member engagement segmentation | admin-moderation | no | review — both halves in |
+| COMM-312 | Community health score, internal only | admin-moderation | no | review — both halves in |
+| COMM-313 | Retention correlation views | admin-moderation | no | review — both halves in |
 
-None of these four are attendance-blocked, but COMM-313's onboarding-step
+**The whole admin-moderation cluster is in review — all four tickets, both
+halves each.** Built in real dependency order (310 → 311 → 313 → 312, not
+the ticket numbering order — see the ordering-correction note above)
+rather than the numbering order, since COMM-312 genuinely reads COMM-313's
+retention signal and COMM-313 does not read COMM-312 despite the ticket
+text listing it as a dependency. COMM-310 shipped the shared foundation
+every other ticket in the cluster reuses: `analytics_wcam_events()` (the
+one server-side WCAM definition, mirroring `ACTIVE_MEMBER_EVENTS` in
+`src/analytics.js`) and, client-side, the admin analytics dashboard shell
+and period selector. COMM-311's segments and COMM-310's own metrics share
+that one shell, gated on `has_perm('community.analytics.view') or
+is_admin()`; COMM-312 and COMM-313 both instead gate on real `is_admin()`
+alone — narrower on purpose, since a retention curve or an interpretive
+composite score travels worse out of context than a raw count — and both
+render as their own standalone sections rather than nested inside the
+broader-gated shell, so the boundary stays visible at each section's own
+call site instead of being buried inside a container whose header belongs
+to a wider audience. None of these four are attendance-blocked, but COMM-313's onboarding-step
 correlation reads COMM-316's two new columns, so it is ordered after the
 recaps cluster above despite not being attendance-blocked itself. COMM-310
 is the one ticket in this cluster with real grounding: `docs/community/
@@ -1108,9 +1125,9 @@ schema, community health score (COMM-312, Phase 3)".
 
 ### identity-privacy
 
-| ID | Title | Agent | Attendance-blocked |
-|---|---|---|---|
-| COMM-314 | Versioned abandoned-profile purge Edge Function and runbook | identity-privacy | no |
+| ID | Title | Agent | Attendance-blocked | Status |
+|---|---|---|---|---|
+| COMM-314 | Versioned abandoned-profile purge Edge Function and runbook | identity-privacy | no | review — no client surface (scheduled job only) |
 
 Not the same job as the already-shipped `purge_due_accounts()`
 (202608260001, a member's own *explicit* deletion request, purged 30 days

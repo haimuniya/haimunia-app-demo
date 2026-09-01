@@ -2,7 +2,7 @@
 
 Phase: 3
 Agent: admin-moderation
-Status: in progress — schema half shipped (202609010008 + pgTAP 0052); client
+Status: review — both halves shipped (schema + cloud.js client)
 half (the cohort chart, the two overlay toggles and the Hebrew error copy)
 still open
 Attendance-blocked: no
