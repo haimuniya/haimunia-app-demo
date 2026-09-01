@@ -2036,7 +2036,10 @@ function showUpdateBanner() {
 
 // ---------- Icons ----------
 const ICONS = {
-  flame: '<svg width="15" height="15" viewBox="0 0 24 24" fill="var(--brass)" stroke="none"><path d="M12 2c3 4-2 5-2 9a4 4 0 0 0 8 0c0-2-1-3-1-3s2 1 2 5a7 7 0 1 1-14 0c0-5 4-7 7-11z"/></svg>',
+  // The inner arc used to carve a circular hole under nonzero winding, so
+  // this rendered as a crescent, not a flame. Same drop shape as index.html's
+  // #glyphFlame (used by the medal sprite), just as a standalone icon.
+  flame: '<svg width="15" height="15" viewBox="0 0 100 100" fill="var(--brass)" stroke="none"><path d="M50 14 C40 32 30 40 30 56 C30 72 40 84 50 84 C60 84 70 72 70 56 C70 46 64 40 60 44 C60 30 56 20 50 14 Z"/></svg>',
   trash: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>',
   edit: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
   dumbbell: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--border)" stroke-width="2" stroke-linecap="round"><path d="M4 9v6M20 9v6M2 10v4M22 10v4M7 12h10"/></svg>',

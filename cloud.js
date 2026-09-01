@@ -485,6 +485,17 @@
     const color = AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
     return `<span aria-hidden="true" class="avatar-badge" style="width:${px}px;height:${px}px;font-size:${Math.round(px * 0.42)}px;background:${color};">${safeText(initial)}</span>`;
   }
+  // display_name is Hebrew and renders fine on its own; the "@handle"
+  // fallback is a Latin run with a leading neutral "@" - in this app's RTL
+  // paragraphs that "@" resolves to match the paragraph direction rather
+  // than hugging the handle, so it paints as "handle@" instead of
+  // "@handle". <bdi> isolates the run from the surrounding paragraph
+  // direction the same way this problem is meant to be solved - no CSS
+  // needed, and it degrades to plain text in a context that already
+  // requires no HTML (there is none here).
+  function nameHtml(displayName, handle) {
+    return displayName ? safeText(displayName) : `<bdi>@${safeText(handle || "")}</bdi>`;
+  }
   // Shared batch profile lookup - the shape loadCoachEngage(), loadCoachMemberOfWeek()
   // and loadFollowList() each independently hand-rolled. Consolidated after
   // finding real drift between the copies (a missing avatar_url column in
@@ -3307,7 +3318,16 @@
   function renderRankedList(items, selfKeyOf, formatValue) {
     if (!items.length) return `<div class="empty">אין נתונים עדיין</div>`;
     const selfId = state.user && state.user.id;
-    const rowHtml = (it, index, isSelf) => `<div class="log-row"${isSelf ? ' style="border-color:var(--energy);"' : ""}><span>${index + 1}. ${safeText(it.display_name || "@" + it.handle)}${isSelf ? " (את/ה)" : ""}</span><span class="mono" style="color:var(--brass);">${formatValue(it)}</span></div>`;
+    // A screen whose whole job is "who is winning" gave emphasis only to
+    // the viewer's own row - rank 1 rendered exactly like rank 40. The
+    // leader gets a trophy and a brass tint; isSelf still owns the border
+    // color when the two coincide, since "this is you" is the more useful
+    // thing to confirm at a glance.
+    const rowHtml = (it, index, isSelf) => {
+      const isLeader = index === 0;
+      const style = isSelf ? ' style="border-color:var(--energy);"' : (isLeader ? ' style="border-color:var(--brass);background:linear-gradient(90deg, color-mix(in srgb, var(--brass) 14%, transparent), transparent);"' : "");
+      return `<div class="log-row"${style}><span>${isLeader ? "🏆 " : ""}${index + 1}. ${nameHtml(it.display_name, it.handle)}${isSelf ? " (את/ה)" : ""}</span><span class="mono" style="color:var(--brass);font-weight:${isLeader ? "800" : "400"};">${formatValue(it)}</span></div>`;
+    };
     const top = items.slice(0, 3).map((it, i) => rowHtml(it, i, selfKeyOf(it) === selfId));
     const selfIndex = items.findIndex((it) => selfKeyOf(it) === selfId);
     const rows = selfIndex >= 3 ? [...top, `<div class="empty" style="padding:4px 0;font-size:16px;">···</div>`, rowHtml(items[selfIndex], selfIndex, true)] : top;
@@ -3463,7 +3483,7 @@
 
   // ---- Render ---------------------------------------------------------------
   function leaderboardScopeSwitchHtml(action, active) {
-    return `<div class="chip-row" role="group" aria-label="היקף הטבלה" style="margin:0 0 8px;">${LEADERBOARD_SCOPES.map((s) => `<button class="chip-btn${s.id === active ? " primary" : ""}" data-community-action="${action}" data-scope="${s.id}" aria-pressed="${s.id === active ? "true" : "false"}">${s.label}</button>`).join("")}</div>`;
+    return `<div class="chip-row" role="group" aria-label="היקף הטבלה" style="margin:0 0 8px;">${LEADERBOARD_SCOPES.map((s) => `<button class="chip-btn${s.id === active ? " selected" : ""}" data-community-action="${action}" data-scope="${s.id}" aria-pressed="${s.id === active ? "true" : "false"}">${s.label}</button>`).join("")}</div>`;
   }
   // Deliberately worded so it cannot be mistaken for the server-enforced
   // opt-out: this hides a row from this device's view of the table, it does
@@ -3481,8 +3501,12 @@
   // reinvented so one member reads the same on every ranked surface.
   function leaderboardRowHtml(row, formatValue) {
     const isSelf = !!row.is_self;
+    const isLeader = Number(row.rank) === 1;
     const name = row.display_name || (row.handle ? "@" + row.handle : "חבר/ה");
-    return `<div class="log-row" data-leaderboard-user="${safeText(row.user_id)}"${isSelf ? ` data-leaderboard-self="1" style="border-color:var(--energy);"` : ""}><span>${Number(row.rank)}. ${safeText(name)}${isSelf ? " (את/ה)" : ""}</span><span class="mono" style="color:var(--brass);">${formatValue(row)}</span></div>`;
+    // Same leader emphasis as renderRankedList's rowHtml - isSelf still owns
+    // the border color when the two coincide.
+    const style = isSelf ? ` style="border-color:var(--energy);"` : (isLeader ? ` style="border-color:var(--brass);background:linear-gradient(90deg, color-mix(in srgb, var(--brass) 14%, transparent), transparent);"` : "");
+    return `<div class="log-row" data-leaderboard-user="${safeText(row.user_id)}"${isSelf ? ` data-leaderboard-self="1"` : ""}${style}><span>${isLeader ? "🏆 " : ""}${Number(row.rank)}. ${safeText(name)}${isSelf ? " (את/ה)" : ""}</span><span class="mono" style="color:var(--brass);font-weight:${isLeader ? "800" : "400"};">${formatValue(row)}</span></div>`;
   }
   // COMM-212 / COMM-231. The friends empty state points at the members
   // directory, which is now the real people-finding surface (it ships its
@@ -3608,7 +3632,7 @@
     return `<div class="chart-card" data-suggestion-user="${safeText(item.user_id)}" style="flex:0 0 auto;min-width:148px;max-width:170px;text-align:center;margin:0;">
       ${avatarHtml(name, 44, item.avatar_url)}
       <div style="font-weight:700;margin-top:6px;font-size:13px;">${safeText(name)}</div>
-      ${item.handle ? `<div style="color:var(--steel);font-size:12px;">@${safeText(item.handle)}</div>` : ""}
+      ${item.handle ? `<div style="color:var(--steel);font-size:12px;"><bdi>@${safeText(item.handle)}</bdi></div>` : ""}
       ${reason ? `<div style="color:var(--steel);font-size:11px;margin-top:4px;">${safeText(reason)}</div>` : ""}
       <div class="chip-row" style="justify-content:center;margin-top:6px;">
         <button class="chip-btn primary" data-community-action="suggestion-follow" data-id="${safeText(item.user_id)}"${busy ? " disabled" : ""}>${busy ? "…" : "מעקב"}</button>
@@ -3790,7 +3814,7 @@
     return { members: "חברים", events: "אירועים", challenges: "אתגרים" }[key] || key;
   }
   function searchMemberRowHtml(person) {
-    return `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32, person.avatar_url)}<div><div style="font-weight:700;">${safeText(person.display_name || "@" + person.handle)}${isCoachRole(memberRole(person.id)) ? " " + coachBadgeHtml(memberRole(person.id)) : ""}</div><div style="color:var(--steel);font-size:12px;">@${safeText(person.handle)} ${safeText(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="view-profile" data-id="${safeText(person.id)}">פרופיל</button>${person.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${safeText(person.id)}">מעקב</button>`}<button class="chip-btn" data-community-action="block" data-id="${safeText(person.id)}">חסימה</button></div></div>`;
+    return `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32, person.avatar_url)}<div><div style="font-weight:700;">${nameHtml(person.display_name, person.handle)}${isCoachRole(memberRole(person.id)) ? " " + coachBadgeHtml(memberRole(person.id)) : ""}</div><div style="color:var(--steel);font-size:12px;"><bdi>@${safeText(person.handle)}</bdi> ${safeText(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="view-profile" data-id="${safeText(person.id)}">פרופיל</button>${person.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${safeText(person.id)}">מעקב</button>`}<button class="chip-btn" data-community-action="block" data-id="${safeText(person.id)}">חסימה</button></div></div>`;
   }
   function searchEventRowHtml(ev) {
     // No event detail surface exists yet (COMM-213 builds it), so the row
@@ -3892,7 +3916,7 @@
     const inner = p.loading
       ? `<div style="padding:8px 10px;color:var(--steel);font-size:12px;">מחפש חברים…</div>`
       : (items.length
-        ? items.map((m, i) => `<button type="button" class="mention-option" role="option" data-community-action="mention-pick" data-key="${safeText(key)}" data-id="${safeText(m.id)}" data-name="${safeText(m.display_name || m.handle)}" aria-selected="${i === (p.index || 0) ? "true" : "false"}" style="display:block;width:100%;text-align:right;padding:8px 10px;background:${i === (p.index || 0) ? "rgba(255,255,255,.06)" : "none"};border:0;color:var(--chalk);font-size:12.5px;cursor:pointer;">${safeText(m.display_name || "@" + m.handle)} <span style="color:var(--steel);">@${safeText(m.handle)}</span></button>`).join("")
+        ? items.map((m, i) => `<button type="button" class="mention-option" role="option" data-community-action="mention-pick" data-key="${safeText(key)}" data-id="${safeText(m.id)}" data-name="${safeText(m.display_name || m.handle)}" aria-selected="${i === (p.index || 0) ? "true" : "false"}" style="display:block;width:100%;text-align:right;padding:8px 10px;background:${i === (p.index || 0) ? "rgba(255,255,255,.06)" : "none"};border:0;color:var(--chalk);font-size:12.5px;cursor:pointer;">${nameHtml(m.display_name, m.handle)} <span style="color:var(--steel);"><bdi>@${safeText(m.handle)}</bdi></span></button>`).join("")
         : `<div style="padding:8px 10px;color:var(--steel);font-size:12px;">אין התאמות</div>`);
     return `<div class="mention-picker" role="listbox" style="position:absolute;z-index:40;top:100%;inset-inline-start:0;margin-top:4px;min-width:220px;background:#1f2023;border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,.4);max-height:180px;overflow-y:auto;">${inner}</div>`;
   }
@@ -3962,7 +3986,7 @@
   function renderModeration() {
     if (!(hasPerm(PERM.COMMENT_MODERATE) || isAdmin())) return "";
     const filters = `<div class="chip-row" style="margin:0 0 10px;">${MOD_QUEUE_STATUSES.map((s) =>
-      `<button class="chip-btn${state.modQueueStatus === s.id ? " primary" : ""}" data-community-action="mod-queue-status" data-status="${s.id}">${s.label}</button>`).join("")}</div>`;
+      `<button class="chip-btn${state.modQueueStatus === s.id ? " selected" : ""}" data-community-action="mod-queue-status" data-status="${s.id}">${s.label}</button>`).join("")}</div>`;
     let body;
     if (state.modQueueLoading && !state.modQueue.length) {
       body = `<div class="log-list" aria-busy="true">${`<div class="log-row" aria-hidden="true"><span style="height:12px;width:60%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`.repeat(3)}</div>`;
@@ -4071,7 +4095,7 @@
       return btns.join("");
     };
     const rowHtml = (m) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:6px;">
-      <div class="flex gap-10" style="align-items:center;">${avatarHtml(m.display_name || m.handle, 32, m.avatar_url)}<div><div style="font-weight:700;">${safeText(m.display_name || "@" + m.handle)}${isCoachRole(m.role) ? " " + coachBadgeHtml(m.role) : ""}</div><div style="color:var(--steel);font-size:11px;">@${safeText(m.handle)} · ${memberRoleLabel(m)}</div></div></div>
+      <div class="flex gap-10" style="align-items:center;">${avatarHtml(m.display_name || m.handle, 32, m.avatar_url)}<div><div style="font-weight:700;">${nameHtml(m.display_name, m.handle)}${isCoachRole(m.role) ? " " + coachBadgeHtml(m.role) : ""}</div><div style="color:var(--steel);font-size:11px;"><bdi>@${safeText(m.handle)}</bdi> · ${memberRoleLabel(m)}</div></div></div>
       <div style="color:var(--steel);font-size:11px;">הצטרפ/ה: ${m.redeemed_at ? safeText(String(m.redeemed_at).slice(0, 10)) : "—"} · פעילות אחרונה: ${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</div>
       <div class="footer-note" style="margin:0;font-size:10.5px;">${safeText(m.id)}</div>
       ${m.is_admin ? "" : `<div class="chip-row" style="margin-top:0;">
@@ -5865,7 +5889,7 @@
       <div class="flex gap-10" style="align-items:center;">
         ${avatarHtml(item.display_name || item.handle, 32, item.avatar_url)}
         <div>
-          <button class="link-btn" data-community-action="view-profile" data-id="${safeText(item.user_id)}" style="padding:0;font-weight:800;color:inherit;">${safeText(item.display_name || "@" + item.handle)}</button>
+          <button class="link-btn" data-community-action="view-profile" data-id="${safeText(item.user_id)}" style="padding:0;font-weight:800;color:inherit;">${nameHtml(item.display_name, item.handle)}</button>
           <div style="color:var(--steel);font-size:12px;">${safeText(what)} · ${relativeTime(item.occurred_at)}</div>
         </div>
       </div>
@@ -5893,7 +5917,7 @@
       <div class="flex gap-10" style="align-items:center;">
         ${avatarHtml(m.display_name || m.handle, 32, m.avatar_url)}
         <div>
-          <div style="font-weight:700;">${safeText(m.display_name || "@" + m.handle)}</div>
+          <div style="font-weight:700;">${nameHtml(m.display_name, m.handle)}</div>
           <div style="color:var(--steel);font-size:12px;">${days === 0 ? "הצטרפ/ה היום" : `לפני ${days} ימים`} · רצף נוכחי: ${streakCount} · ${contacted ? "נוצר קשר" : "טרם נוצר קשר"}</div>
         </div>
       </div>
@@ -5943,7 +5967,7 @@
       <div class="flex gap-10" style="align-items:center;">
         ${avatarHtml(c.display_name || c.handle, 32, c.avatar_url)}
         <div>
-          <button class="link-btn" data-community-action="view-profile" data-id="${safeText(c.user_id)}" style="padding:0;font-weight:800;color:inherit;">${safeText(c.display_name || "@" + c.handle)}</button>
+          <button class="link-btn" data-community-action="view-profile" data-id="${safeText(c.user_id)}" style="padding:0;font-weight:800;color:inherit;">${nameHtml(c.display_name, c.handle)}</button>
           <div style="color:var(--steel);font-size:12px;">${safeText(memberOfWeekCandidateDetailText(category, c.detail))}</div>
         </div>
       </div>
@@ -7118,7 +7142,7 @@
     return `<div class="log-row" data-classmate-user="${safeText(item.user_id)}">
       <button class="link-btn" data-community-action="view-profile" data-id="${safeText(item.user_id)}" style="padding:0;display:flex;gap:10px;align-items:center;color:inherit;text-align:right;">
         ${avatarHtml(name, 32, item.avatar_url)}
-        <span style="min-width:0;"><span style="font-weight:700;display:block;">${safeText(name)}</span>${item.handle ? `<span style="color:var(--steel);font-size:12px;">@${safeText(item.handle)}</span>` : ""}</span>
+        <span style="min-width:0;"><span style="font-weight:700;display:block;">${safeText(name)}</span>${item.handle ? `<span style="color:var(--steel);font-size:12px;"><bdi>@${safeText(item.handle)}</bdi></span>` : ""}</span>
       </button>
       <div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="follow" data-id="${safeText(item.user_id)}">מעקב</button></div>
     </div>`;
@@ -9312,14 +9336,14 @@
     // COMM-P01, and setFeedScope refuses it on the way in as well.
     const filterHtml = `<div class="chip-row" id="communityFeedFilters" role="tablist" aria-label="סינון הפיד" style="margin:0 0 10px;">${FEED_SCOPES.map((s) => s.parked
       ? `<button class="chip-btn" data-community-action="feed-scope" data-scope="${s.id}" disabled aria-disabled="true" title="בקרוב, ממתין למודול הנוכחות">${safeText(s.label)} · בקרוב</button>`
-      : `<button class="chip-btn${state.feedScope === s.id ? " primary" : ""}" data-community-action="feed-scope" data-scope="${s.id}" role="tab" aria-selected="${state.feedScope === s.id ? "true" : "false"}">${safeText(s.label)}</button>`).join("")}</div>`;
+      : `<button class="chip-btn${state.feedScope === s.id ? " selected" : ""}" data-community-action="feed-scope" data-scope="${s.id}" role="tab" aria-selected="${state.feedScope === s.id ? "true" : "false"}">${safeText(s.label)}</button>`).join("")}</div>`;
 
     const feed = state.feedLoading && !state.feed.length
       ? `<div class="log-list" aria-busy="true">${renderPostCardSkeleton().repeat(3)}</div>`
       : state.feedError && !state.feed.length
       ? `<div class="empty">לא ניתן לטעון את פיד המועדון.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="feed-retry">ניסיון חוזר</button></div></div>`
       : state.feed.length ? `<div class="log-list" id="communityFeedList">${state.feed.map((post) => post && post.post_type ? renderPostCard(post) : `<article class="chart-card post-card">
-      <div class="post-head">${avatarHtml(post.display_name || post.handle, 36, (post.author && post.author.avatar_url) || post.avatar_url)}<div class="post-head-text"><div class="post-author">${safeText(post.display_name || "@" + post.handle)}</div><div class="post-time">${relativeTime(post.published_at)}</div></div></div>
+      <div class="post-head">${avatarHtml(post.display_name || post.handle, 36, (post.author && post.author.avatar_url) || post.avatar_url)}<div class="post-head-text"><div class="post-author">${nameHtml(post.display_name, post.handle)}</div><div class="post-time">${relativeTime(post.published_at)}</div></div></div>
       <div class="post-title">${safeText(post.title)}</div>
       <div class="mono post-result">${safeText(post.result_text)}</div>
       ${post.photo_path && photoUrlCache[post.photo_path] ? `<img src="${photoUrlCache[post.photo_path]}" alt="" class="post-photo"/>` : ""}
@@ -9329,7 +9353,7 @@
         ${post.comparison_key ? `<button class="chip-btn${state.comparisonForPostId === post.id ? " primary" : ""}" data-community-action="compare" data-key="${safeText(post.comparison_key)}" data-id="${safeText(post.id)}">השוואה</button>` : ""}
         ${post.author_id === (state.user && state.user.id) ? `<button class="chip-btn" data-community-action="delete-post" data-id="${safeText(post.id)}">הסרה</button>` : `<button class="chip-btn" data-community-action="report" data-id="${safeText(post.id)}">דיווח</button>`}
       </div>
-      ${state.comparisonForPostId === post.id ? `<div class="log-list" style="margin-top:10px;">${state.comparison.length ? state.comparison.map((item, index) => `<div class="log-row"><span>${index + 1}. ${safeText(item.display_name || "@" + item.handle)}</span><span class="mono" style="color:var(--brass);">${safeText(item.result_text)}</span></div>`).join("") : `<div class="empty">אין עדיין תוצאות להשוואה</div>`}</div>` : ""}
+      ${state.comparisonForPostId === post.id ? `<div class="log-list" style="margin-top:10px;">${state.comparison.length ? state.comparison.map((item, index) => `<div class="log-row"><span>${index + 1}. ${nameHtml(item.display_name, item.handle)}</span><span class="mono" style="color:var(--brass);">${safeText(item.result_text)}</span></div>`).join("") : `<div class="empty">אין עדיין תוצאות להשוואה</div>`}</div>` : ""}
       ${renderComments(post)}</article>`).join("")}</div>` : `<div class="empty">${safeText(feedScopeDef(state.feedScope).empty || "פעילות המועדון תופיע כאן.")}</div>`;
     // COMM-113. The sentinel is what IntersectionObserver watches; the
     // button under it is the same call for keyboard and for anywhere the
@@ -9414,8 +9438,8 @@
     // Post-Phase-3 Hebrew copy fix: "חברים חדשים" - the exact phrase COMM-107's
     // welcome post and the coach-tools "Welcome" section already use for the
     // same concept (מתאמנים was this list's own one-off).
-    const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "חברים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין חברים חדשים לאחרונה</div>`}</div>` : "";
-    const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${safeText(m.display_name || "@" + m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
+    const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "חברים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${nameHtml(m.display_name, m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין חברים חדשים לאחרונה</div>`}</div>` : "";
+    const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${nameHtml(m.display_name, m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
     const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderClubModulesPanel() + renderAdminAnalyticsDashboard() + renderRetentionCorrelations() + renderCommunityHealthScore() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`

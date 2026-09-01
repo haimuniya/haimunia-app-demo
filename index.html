@@ -86,6 +86,13 @@
     --yellow:#B07E12; --green:#2E7A48; --purple:#7A4FC2; --brass:#A6702E;
     --teal:#1E7D76;
     --energy:#C94B29;
+    /* Text over an AVATAR_PALETTE swatch (cloud.js). White reads fine
+       against every swatch in this theme (measured contrast 4.2-6.7:1) but
+       collapses in the dark theme below, where several swatches lighten -
+       --brass measured 1.79:1 against white there. One ink per theme,
+       matching how .chip-btn.primary/.save-btn already pair a colored
+       background with a fixed ink rather than always white. */
+    --avatar-ink:#ffffff;
     --color-scheme:light;
     --stripe-a:var(--energy); --stripe-b:#22345C;
     --stripe:repeating-linear-gradient(135deg, var(--stripe-a) 0 14px, var(--stripe-b) 14px 28px);
@@ -101,6 +108,7 @@
       --yellow:#E0B23C; --green:#4B9B5F; --purple:#9B6FD9; --brass:#E8B98A;
       --teal:#3FA7A0;
       --energy:#E85D3D;
+      --avatar-ink:#1a0d08;
       --color-scheme:dark;
       --stripe-a:var(--energy); --stripe-b:#ffffff;
       --shadow-card: 0 1px 0 rgba(255,255,255,.04) inset, 0 14px 28px -18px rgba(0,0,0,.65);
@@ -112,6 +120,7 @@
     --yellow:#E0B23C; --green:#4B9B5F; --purple:#9B6FD9; --brass:#E8B98A;
     --teal:#3FA7A0;
     --energy:#E85D3D;
+    --avatar-ink:#1a0d08;
     --color-scheme:dark;
     --stripe-a:var(--energy); --stripe-b:#ffffff;
     --shadow-card: 0 1px 0 rgba(255,255,255,.04) inset, 0 14px 28px -18px rgba(0,0,0,.65);
@@ -437,6 +446,19 @@
      "delete account") standing in for every primary action. */
   .chip-btn{ display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:9px 16px; border-radius:12px; border:1px solid var(--border); background:var(--surface2); color:var(--chalk); font-weight:700; font-size:13px; white-space:nowrap; }
   .chip-btn.primary{ background:var(--energy); color:#1a0d08; border-color:var(--energy); }
+  /* .primary was doing double duty as both "primary action" (compose, send,
+     save) and "this filter/scope is selected" (feed scope, leaderboard
+     scope, mod-queue status) - identical fill, so a selected filter chip
+     was visually indistinguishable from a submit button, and a screen with
+     both read as a wall of orange. Selected state gets its own, quieter
+     treatment; .primary stays reserved for actions. */
+  .chip-btn.selected{ border-color:var(--brass); border-width:2px; color:var(--brass); }
+  /* No rule anywhere styled [disabled] - 75+ disabled buttons across the
+     app (a busy submit, a parked filter, a checkbox mid-save) rendered
+     pixel-identical to an enabled one, cursor:pointer included. One rule,
+     every button/input/textarea in the app. */
+  button:disabled, input:disabled, textarea:disabled, select:disabled{ opacity:.45; cursor:default; }
+  input[type="checkbox"]{ accent-color:var(--energy); }
   .chip-row{ display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
   .admin-tag{ display:inline-flex; align-items:center; font-size:10px; font-weight:800; letter-spacing:.3px; color:var(--energy); background:rgba(232,93,61,.12); border:1px solid var(--energy); border-radius:999px; padding:2px 9px; margin-inline-start:8px; }
   .admin-card{ border-color:var(--energy); }
@@ -454,7 +476,7 @@
 
   /* Community: identity + timing, so a feed post reads as a person and a
      moment rather than an anonymous card of numbers. */
-  .avatar-badge{ display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; border-radius:50%; color:#fff; font-weight:800; line-height:1; }
+  .avatar-badge{ display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; border-radius:50%; color:var(--avatar-ink); font-weight:800; line-height:1; }
   .post-card{ padding:16px; }
   .post-head{ display:flex; align-items:center; gap:10px; margin-bottom:10px; }
   .post-head-text{ display:flex; flex-direction:column; gap:1px; min-width:0; }

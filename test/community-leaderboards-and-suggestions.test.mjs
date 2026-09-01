@@ -146,7 +146,9 @@ test("COMM-210: rows render in the order returned, print the server's rank rathe
   await openBoards(window);
   await waitFor(() => boardRows(window).length === 3, 4000);
   assert.deepStrictEqual(boardRows(window).map((el) => el.dataset.leaderboardUser), ["u2", "u3", "u1"]);
-  assert.match(rowTexts(window)[0], /^1\. נועם/);
+  // 🏆 prefix is the new leader-emphasis treatment (rank 1 only) - the
+  // assertion itself is about the RANK NUMBER printed, not the index.
+  assert.match(rowTexts(window)[0], /^🏆 1\. נועם/);
   assert.match(rowTexts(window)[2], /^3\. דנה \(את\/ה\)/);
   const self = board(window).querySelector("[data-leaderboard-self]");
   assert.equal(self.dataset.leaderboardUser, "u1");
