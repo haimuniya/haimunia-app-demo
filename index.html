@@ -250,6 +250,20 @@
   .modal-overlay.open{ display:flex; }
   .modal-sheet{ background:var(--bg); border-top-left-radius:22px; border-top-right-radius:22px; width:100%; max-height:85%; padding-bottom:env(safe-area-inset-bottom,0px); display:flex; flex-direction:column; border:1px solid var(--border); border-bottom:none; overflow-x:hidden; }
   .modal-head{ display:flex; align-items:center; justify-content:space-between; padding:16px 16px 8px; }
+  /* #navMenuSheet and #settingsSheet are the only two .modal-sheet instances
+     that go full-height (align-items:stretch on their overlay, height:100%
+     on the sheet) - every other modal-sheet anchors to the bottom
+     (align-items:flex-end, the .modal-overlay default) and never reaches
+     the top of the screen, so this only needs to target these two. Without
+     it, their close button and title render flush against the very top
+     edge - the same status-bar collision #app's own padding and the
+     body::before scrim (above) exist to prevent, but neither helps a
+     position:fixed overlay with its own z-index:50, higher than the
+     scrim's 40. */
+  #navMenuSheet > .modal-head, #settingsSheet > .modal-head{ padding-top:calc(env(safe-area-inset-top,0px) + 16px); }
+  @media (display-mode: standalone){
+    #navMenuSheet > .modal-head, #settingsSheet > .modal-head{ padding-top:calc(max(env(safe-area-inset-top,0px), 28px) + 16px); }
+  }
   .modal-title{ color:var(--chalk); font-weight:800; font-size:16px; }
   .search-box{ display:flex; align-items:center; margin:0 16px 12px; background:var(--surface2); border:1px solid var(--border); border-radius:12px; padding:8px 12px; gap:8px; }
   .search-box input{ background:transparent; border:none; color:var(--chalk); flex:1; outline:none; }
