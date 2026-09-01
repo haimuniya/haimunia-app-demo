@@ -1,7 +1,9 @@
-// COMM-223..226. Phase 2 coach-tools cluster: the Coach Dashboard shell,
+// COMM-223..226, COMM-304. Coach-tools cluster: the Coach Dashboard shell,
 // Celebrate (recent PRs/anniversaries/challenge completions +
 // one-tap Congratulate), Welcome (new members, contact status, actions),
-// and the Engage scaffold (hidden behind a feature flag, empty table).
+// and Engage - COMM-226's hidden, flag-gated, empty-table scaffold, and
+// COMM-304's client half that flips the flag default-on and gives it real
+// rows, a level badge, review/dismiss and a "reach out" one-tap action.
 //
 // Executed for real (bootCommunity + the mock Supabase client), not
 // source-text matches - these drive the real render path and the real
@@ -298,35 +300,127 @@ test("a failed Congratulate shows the standard error and leaves the control enab
   assert.equal(window.document.querySelector('[data-community-action="coach-congratulate"]').disabled, false);
 });
 
-// --- COMM-226: Engage scaffold, hidden -------------------------------------
+// --- COMM-226 / COMM-304: Engage ------------------------------------------
 
-test("Engage is entirely absent from the Coach Dashboard when the feature flag is off (the default)", async () => {
+test("Engage is entirely absent from the Coach Dashboard when the feature flag is explicitly turned off", async () => {
   const mock = seeded({ coach_engagement_flags: [{ id: "f1", user_id: "u9", level: "mild", status: "open", flagged_at: VERIFIED }] }, true);
-  const window = await bootCommunity(mock, { syncEnabled: false });
+  const window = await bootCommunity(mock, { syncEnabled: false, localStorage: { "haimunia-demo:coachEngageFlag": "0" } });
   await openCoachTab(window);
   await waitFor(() => window.document.body.textContent.includes("קבלת פנים"), 3000);
   assert.equal(window.document.body.textContent.includes("מעקב מעורבות"), false, "the Engage section renders nothing at all when the flag is off");
   assert.equal(mock.callsTo && mock.db.coach_engagement_flags.length, 1, "the table exists and is untouched by this ticket's own read gate");
 });
 
-test("flipping the feature flag on with an empty coach_engagement_flags table renders the clean empty state", async () => {
+test("COMM-304: the feature flag now defaults ON with no localStorage override, and an empty coach_engagement_flags table renders the clean empty state", async () => {
   // state.featureFlags.coachEngage is read once, synchronously, at cloud.js's
   // module-level state literal - the same moment state.syncEnabled already
-  // reads its own localStorage-backed flag - so it has to be set before
-  // cloud.js is eval'd, via bootCommunity's generic opts.localStorage hook,
-  // not after boot.
+  // reads its own localStorage-backed flag. COMM-304 flips the default from
+  // `=== "1"` to `!== "0"`, so this test - unlike COMM-226's own version of
+  // it - deliberately passes no localStorage override at all.
   const mock = seeded({}, true);
-  const window = await bootCommunity(mock, { syncEnabled: false, localStorage: { "haimunia-demo:coachEngageFlag": "1" } });
+  const window = await bootCommunity(mock, { syncEnabled: false });
   await openCoachTab(window);
   await waitFor(() => window.document.body.textContent.includes("מעקב מעורבות"), 3000);
-  await waitFor(() => window.document.body.textContent.includes("אין פריטים לבדיקה."), 3000);
+  await waitFor(() => window.document.body.textContent.includes("אין חברים שדורשים תשומת לב"), 3000);
 });
 
-test("with the flag on, a real row in coach_engagement_flags renders instead of the empty state, still only on the staff surface", async () => {
-  const mock = seeded({ coach_engagement_flags: [{ id: "f1", user_id: "u9", level: "mild", status: "open", flagged_at: VERIFIED }] }, true);
-  const window = await bootCommunity(mock, { syncEnabled: false, localStorage: { "haimunia-demo:coachEngageFlag": "1" } });
+test("a real open flag renders the member's name, a translated level badge (never the raw enum text) and no session-count figures, with review, dismiss and reach-out controls", async () => {
+  const mock = seeded({ coach_engagement_flags: [{ id: "f1", user_id: "u9", level: "significant", status: "open", flagged_at: VERIFIED, baseline_sessions_per_week: 3, recent_sessions_per_week: 1 }] }, true);
+  const window = await bootCommunity(mock, { syncEnabled: false });
   await openCoachTab(window);
   await waitFor(() => window.document.body.textContent.includes("מעקב מעורבות"), 3000);
-  await waitFor(() => !window.document.body.textContent.includes("אין פריטים לבדיקה."), 3000);
-  assert.match(window.document.body.textContent, /mild/);
+  await waitFor(() => !!window.document.querySelector('[data-community-action="coach-engage-review"]'), 3000);
+  const row = window.document.querySelector('[data-community-action="coach-engage-review"]').closest(".log-row");
+  assert.match(row.textContent, /נועה/, "the flagged member's own display name resolves through the batched profiles read");
+  assert.equal(row.textContent.includes("significant"), false, "the raw level enum never reaches the DOM as text");
+  assert.equal(row.textContent.includes("3"), false, "the baseline figure is never rendered");
+  assert.equal(row.textContent.includes("1"), false, "the recent figure is never rendered");
+  assert.ok(window.document.querySelector('[data-community-action="coach-engage-reach-out"]'), "a reach-out control is offered");
+  assert.ok(window.document.querySelector('[data-community-action="coach-engage-dismiss"]'), "a dismiss control is offered");
+});
+
+test("marking a flag reviewed sends a direct update with status/reviewed_by/reviewed_at and the row disappears from the open list", async () => {
+  const mock = seeded({ coach_engagement_flags: [{ id: "f1", user_id: "u9", level: "mild", status: "open", flagged_at: VERIFIED }] }, true);
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCoachTab(window);
+  await waitFor(() => !!window.document.querySelector('[data-community-action="coach-engage-review"]'), 3000);
+  window.document.querySelector('[data-community-action="coach-engage-review"]').click();
+  await waitFor(() => mock.db.coach_engagement_flags.find((f) => f.id === "f1").status === "reviewed", 3000);
+  const row = mock.db.coach_engagement_flags.find((f) => f.id === "f1");
+  assert.equal(row.reviewed_by, "u1");
+  assert.ok(row.reviewed_at, "reviewed_at is stamped");
+  await waitFor(() => window.document.querySelector('[data-community-action="coach-engage-review"]') == null, 3000);
+  await waitFor(() => window.document.body.textContent.includes("אין חברים שדורשים תשומת לב"), 3000);
+});
+
+test("dismissing a flag sends status 'dismissed' and the row disappears from the open list the same way review does", async () => {
+  const mock = seeded({ coach_engagement_flags: [{ id: "f1", user_id: "u9", level: "inactive", status: "open", flagged_at: VERIFIED }] }, true);
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCoachTab(window);
+  await waitFor(() => !!window.document.querySelector('[data-community-action="coach-engage-dismiss"]'), 3000);
+  window.document.querySelector('[data-community-action="coach-engage-dismiss"]').click();
+  await waitFor(() => mock.db.coach_engagement_flags.find((f) => f.id === "f1").status === "dismissed", 3000);
+  await waitFor(() => window.document.body.textContent.includes("אין חברים שדורשים תשומת לב"), 3000);
+});
+
+test("reach-out sends a generic post_create + POST_COACH update naming the member, never the level or a session figure, then disables to 'פנייה נשלחה'", async () => {
+  const mock = seeded({ coach_engagement_flags: [{ id: "f1", user_id: "u9", level: "significant", status: "open", flagged_at: VERIFIED }] }, true);
+  mock.onRpc("post_create", (args, ctx) => {
+    const id = "engage-post-1";
+    ctx.db.workout_posts = ctx.db.workout_posts || [];
+    ctx.db.workout_posts.push({ id, author_id: ctx.currentUser.id, post_type: "POST_TEXT", body: args.body, visibility: args.visibility, metadata: {}, status: "active", created_at: new Date().toISOString() });
+    return { data: id, error: null };
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCoachTab(window);
+  await waitFor(() => !!window.document.querySelector('[data-community-action="coach-engage-reach-out"]'), 3000);
+  window.document.querySelector('[data-community-action="coach-engage-reach-out"]').click();
+  await waitFor(() => mock.db.workout_posts.some((p) => p.post_type === "POST_COACH"), 3000);
+  const post = mock.db.workout_posts.find((p) => p.post_type === "POST_COACH");
+  assert.match(post.body, /נועה/, "the post names the flagged member");
+  assert.equal(/significant|ירידה|אחוז|\d/.test(post.body), false, "the post never carries the level, a figure, or anything decline-shaped");
+  await waitFor(() => window.document.querySelector('[data-community-action="coach-engage-reach-out"]').textContent.includes("פנייה נשלחה"), 3000);
+  assert.equal(window.document.querySelector('[data-community-action="coach-engage-reach-out"]').disabled, true);
+  // The flag itself is untouched by a reach-out - it is not a review or a
+  // dismissal, and the row still needs one of those before it leaves the list.
+  assert.equal(mock.db.coach_engagement_flags.find((f) => f.id === "f1").status, "open");
+});
+
+test("reaching out twice is a no-op the second time - the control is disabled and no second post_create call is sent", async () => {
+  const mock = seeded({ coach_engagement_flags: [{ id: "f1", user_id: "u9", level: "mild", status: "open", flagged_at: VERIFIED }] }, true);
+  mock.onRpc("post_create", (args, ctx) => {
+    const id = "engage-post-2";
+    ctx.db.workout_posts = ctx.db.workout_posts || [];
+    ctx.db.workout_posts.push({ id, author_id: ctx.currentUser.id, post_type: "POST_TEXT", body: args.body, visibility: args.visibility, metadata: {}, status: "active", created_at: new Date().toISOString() });
+    return { data: id, error: null };
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCoachTab(window);
+  await waitFor(() => !!window.document.querySelector('[data-community-action="coach-engage-reach-out"]'), 3000);
+  const btn = () => window.document.querySelector('[data-community-action="coach-engage-reach-out"]');
+  btn().click();
+  await waitFor(() => btn().textContent.includes("פנייה נשלחה"), 3000);
+  const before = mock.callsTo("post_create").length;
+  btn().click();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(mock.callsTo("post_create").length, before, "a disabled control produces no second call");
+});
+
+test("a flagged user_id whose profile row cannot be resolved still renders a row with the generic fallback label, rather than dropping it", async () => {
+  // The mock's plain .from("profiles") read has no RLS simulation (unlike
+  // its onRpc() stand-ins, which hand-implement the policy checks they
+  // need), so this cannot exercise the real visible_to_club/is_staff() gap
+  // documented in loadCoachEngageFlags's own comment - only the client's
+  // fallback behaviour when a profile is simply missing from the batched
+  // read, which is the same code path that gap would hit in production. A
+  // coach must still be able to act on a flag whose member could not be
+  // named, not have it silently vanish from the list.
+  const mock = seeded({
+    coach_engagement_flags: [{ id: "f2", user_id: "u-ghost", level: "mild", status: "open", flagged_at: VERIFIED }],
+  }, true);
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCoachTab(window);
+  await waitFor(() => !!window.document.querySelector('[data-community-action="coach-engage-review"][data-id="f2"]'), 3000);
+  const row = window.document.querySelector('[data-community-action="coach-engage-review"][data-id="f2"]').closest(".log-row");
+  assert.match(row.textContent, /חבר\/ה/, "the row falls back to the generic label rather than disappearing");
 });

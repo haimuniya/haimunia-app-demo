@@ -116,16 +116,31 @@
     // note fields, keyed by member id, read only at click time (no rerender
     // on input, so typing never loses focus).
     coachWelcome: { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null },
-    // COMM-226. Hidden behind featureFlags.coachEngage (defaults off, same
-    // localStorage-backed pattern as syncEnabled above, so a test can flip
-    // it before boot the same way it flips cloud sync). No producer writes
-    // coach_engagement_flags in Phase 2 - this only ever reads.
+    // COMM-226 built this section flag-gated and hidden, default off, with
+    // no producer. COMM-304 is that producer (coach_detect_engagement_decline(),
+    // the scheduled job in 202608310008) and this is the ticket that flips
+    // the flag: default ON now (`!== "0"`, not `=== "1"`), so a test that
+    // wants the pre-304 hidden state has to opt into it explicitly the same
+    // localStorage-backed way a test always has. featureFlags.coachEngage is
+    // still read once, synchronously, at this module-level literal - before
+    // cloud.js's own module-load, not after - so a test flips it via
+    // bootCommunity's localStorage hook, never by mutating state post-boot.
     // COMM-229. Same localStorage-backed pattern as coachEngage above, so a
     // test can flip it before boot the same way. Stays default off in
     // production until VAPID keys are provisioned server-side (per the
     // plan's operator checklist) - this ticket does not flip that default.
-    featureFlags: { coachEngage: localStorage.getItem("haimunia-demo:coachEngageFlag") === "1", notifPush: localStorage.getItem("haimunia-demo:notifPushFlag") === "1" },
-    coachEngage: { items: [], loading: false, loaded: false, error: false },
+    featureFlags: { coachEngage: localStorage.getItem("haimunia-demo:coachEngageFlag") !== "0", notifPush: localStorage.getItem("haimunia-demo:notifPushFlag") === "1" },
+    // profiles is a batched user_id -> {display_name,handle,avatar_url} map
+    // for the open flags in .items, read the same way coachWelcome.contactedIds
+    // is: a second, separate query rather than an embedded `profiles(...)`
+    // select (see loadCoachEngageFlags for why). reachedOut is a client-only
+    // dedupe set keyed by flag id, the same shape coachCelebrate.congratulated
+    // uses, so a second tap on an already-sent "reach out" - or a tap while
+    // the first is still in flight - is a no-op. busy is { id, action } for
+    // whichever flag row has a review/dismiss/reach-out in flight, if any -
+    // all three actions on one row share it, so a row disables itself
+    // entirely rather than only the one control that was tapped.
+    coachEngage: { items: [], loading: false, loaded: false, error: false, profiles: {}, reachedOut: {}, busy: null },
     // COMM-210/211/212 leaderboard cluster. `leaderboard` is the club-wide
     // consistency board on the Boards sub-tab: rows are feed_leaderboard()
     // output in the exact order the function returned them and are never
@@ -857,26 +872,136 @@
     rerender();
   }
 
-  // ---- Engage scaffold, hidden (COMM-226) ----------------------------------
-  // Flag-gated (state.featureFlags.coachEngage, defaults off) on top of the
-  // staff gate every other section here already has - COMM-226 asks that no
-  // code path reach coach_engagement_flags outside the flag-gated staff
-  // surface, so this is never called from refreshSession() the way the
-  // always-on staff loads above are; only from the coach tab's own lazy
-  // load, and only once the flag is on. The table's own RLS
-  // (`user_id <> auth.uid()`, COMM-011) is the real boundary that keeps a
-  // flagged member from ever reading their own row, staff or not; this
-  // function adds no workaround around that.
+  // ---- Engage (COMM-226 scaffold, COMM-304 real data + actions) ------------
+  // Flag-gated (state.featureFlags.coachEngage, defaults ON as of COMM-304)
+  // on top of the staff gate every other section here already has - COMM-226
+  // asked that no code path reach coach_engagement_flags outside the
+  // flag-gated staff surface, and that still holds: this is never called
+  // from refreshSession() the way the always-on staff loads above are, only
+  // from the coach tab's own lazy load. The table's own RLS
+  // (`user_id <> auth.uid()`, COMM-011, re-asserted against real rows by
+  // 202608310008) is the real boundary that keeps a flagged member from ever
+  // reading their own row, staff or not; nothing here works around it.
+  //
+  // COLUMNS DELIBERATELY NOT SELECTED: baseline_sessions_per_week and
+  // recent_sessions_per_week. COMM-304's own "Frontend states" wording -
+  // "no raw session numbers shown to anyone but the reviewing staff member"
+  // - is a narrower bar than "staff may see them", so this reads the same
+  // five columns COMM-226 already selected and no more: id, user_id, level,
+  // status, flagged_at. The level bucket is the signal a coach needs to
+  // decide whether to act; the two figures behind it are not rendered
+  // anywhere in this file.
+  //
+  // PROFILE JOIN, AND A KNOWN GAP: display name/handle/avatar are a second,
+  // separate `.from("profiles")` read batched over every flagged user_id -
+  // the same shape coachWelcome.contactedIds already uses for
+  // member_contact_log - rather than an embedded `coach_engagement_flags`
+  // select with `profiles(...)` nested in it. Worth flagging for a reviewer:
+  // profiles_read_authenticated (202608280003) only bypasses a member's own
+  // `visible_to_club = false` for `is_admin()`, not for `is_staff()` - so a
+  // coach who is not an admin resolving a flagged member who has hidden
+  // their own profile from the club gets nothing back for that id, and the
+  // row below falls back to the generic "חבר/ה" label instead of a name.
+  // Same failure mode COMM-224's own comment already logged for
+  // invite_redemptions ("looks like it works, does nothing" for a coach,
+  // not for an admin) - not fixed here, since fixing it is a policy change
+  // this client-only ticket does not own.
   async function loadCoachEngageFlags() {
     if (!state.user || !isStaff() || !state.featureFlags.coachEngage) return;
     state.coachEngage.loading = true;
     state.coachEngage.error = false;
     rerender();
     const { data, error } = await client.from("coach_engagement_flags").select("id,user_id,level,status,flagged_at").eq("status", "open").order("flagged_at", { ascending: false });
+    if (error) {
+      state.coachEngage.loading = false; state.coachEngage.loaded = true; state.coachEngage.error = true; state.coachEngage.items = [];
+      rerender();
+      return;
+    }
+    const items = data || [];
+    const ids = Array.from(new Set(items.map((it) => it.user_id).filter(Boolean)));
+    const profiles = {};
+    if (ids.length) {
+      const { data: profs } = await client.from("profiles").select("id,handle,display_name,avatar_url").in("id", ids);
+      for (const p of profs || []) profiles[p.id] = p;
+    }
+    state.coachEngage.items = items;
+    state.coachEngage.profiles = profiles;
     state.coachEngage.loading = false;
     state.coachEngage.loaded = true;
-    if (error) { state.coachEngage.error = true; state.coachEngage.items = []; rerender(); return; }
-    state.coachEngage.items = data || [];
+    rerender();
+  }
+  // The three level buckets coach_detect_engagement_decline() writes
+  // (202608310008), translated for display - the raw enum value never
+  // reaches the DOM as text. Colour is severity only, not a new signal:
+  // `inactive` reuses the same red the section header already carries.
+  const ENGAGE_LEVEL_LABELS = { mild: "ירידה קלה בהגעה", significant: "ירידה משמעותית בהגעה", inactive: "לא פעיל/ה" };
+  const ENGAGE_LEVEL_COLORS = { mild: "var(--brass)", significant: "var(--energy)", inactive: "var(--red)" };
+  function engageLevelLabel(level) { return ENGAGE_LEVEL_LABELS[level] || level || ""; }
+  function engageLevelColor(level) { return ENGAGE_LEVEL_COLORS[level] || "var(--steel)"; }
+  function engageMemberName(userId) {
+    const p = state.coachEngage.profiles[userId] || {};
+    return p.display_name || (p.handle ? "@" + p.handle : "חבר/ה");
+  }
+  // COMM-304's "reach out" one-tap action, modeled directly on COMM-225's
+  // congratulateCelebrateItem(): no confirmation dialog (the tap itself is
+  // the confirmation), deduped by reachedOut so a second tap - or a tap
+  // while the first is still in flight - is a no-op. It always takes
+  // congratulateCelebrateItem's post_create branch, never its
+  // add_post_comment one: an engagement flag has no source post the way a
+  // PR or an anniversary does, so there is nothing to comment on. No new
+  // "Message" affordance is added - this is the same public
+  // post_create + own-row POST_COACH update path Celebrate already uses,
+  // per the phase's standing no-direct-messaging resolution.
+  //
+  // The template is deliberately generic and carries no per-level text -
+  // the same warm check-in a coach could send any member, unrelated to why
+  // this one was flagged. It never mentions attendance, a session figure or
+  // a level. `user_id <> auth.uid()` on this table exists so the flagged
+  // member never learns they were flagged; a post that says "we noticed
+  // you've been away" would leak exactly that fact, just through a
+  // different door than the table it is trying to protect.
+  function engageReachOutTemplateBody(name) {
+    return `היי ${name}, רק רצינו לומר שלום ולראות מה שלומך! נשמח לראות אותך באימון בקרוב 😊`;
+  }
+  async function coachEngageReachOut(flagId) {
+    if (!flagId) return;
+    if (state.coachEngage.reachedOut[flagId] || (state.coachEngage.busy && state.coachEngage.busy.id === flagId)) return;
+    const item = state.coachEngage.items.find((it) => it.id === flagId);
+    if (!item) return;
+    state.coachEngage.busy = { id: flagId, action: "reach-out" };
+    rerender();
+    const body = engageReachOutTemplateBody(engageMemberName(item.user_id));
+    let ok = false;
+    const { data: postId, error } = await client.rpc("post_create", { body, visibility: "club", media: [], links: null });
+    if (!error && postId) {
+      const { error: updErr } = await client.from("workout_posts").update({ post_type: "POST_COACH" }).eq("id", postId);
+      ok = !updErr;
+    }
+    state.coachEngage.busy = null;
+    if (ok) { state.coachEngage.reachedOut[flagId] = true; setMessage(""); }
+    else setMessage("לא ניתן היה לשלוח פנייה. נסו שוב.");
+    rerender();
+  }
+  // Review / dismiss. A direct RLS update on `status`, `reviewed_by`,
+  // `reviewed_at` - COMM-304's schema half (202608310008) verified rather
+  // than assumed that coach_engagement_flags_staff_update (Phase 0,
+  // 202608280011) already covers all three columns for any staff member
+  // acting on another member's row, so no migration backs this call. Once
+  // resolved, a flag falls out of the open list this section reads (it only
+  // ever selects status='open'), so the row is removed locally rather than
+  // re-fetched.
+  async function coachEngageResolveFlag(flagId, status) {
+    if (!flagId || (state.coachEngage.busy && state.coachEngage.busy.id === flagId)) return;
+    state.coachEngage.busy = { id: flagId, action: status };
+    rerender();
+    const { error } = await client.from("coach_engagement_flags")
+      .update({ status, reviewed_by: state.user.id, reviewed_at: new Date().toISOString() })
+      .eq("id", flagId);
+    state.coachEngage.busy = null;
+    if (error) { setMessage("לא ניתן היה לבצע את הפעולה. נסו שוב."); rerender(); return; }
+    state.coachEngage.items = state.coachEngage.items.filter((it) => it.id !== flagId);
+    delete state.coachEngage.reachedOut[flagId];
+    setMessage(status === "reviewed" ? "סומן כנבדק" : "הפריט נדחה");
     rerender();
   }
   // ==========================================================================
@@ -4042,9 +4167,30 @@
       : w.members.length ? `<div class="log-list">${w.members.map(renderCoachWelcomeRow).join("")}</div>` : `<div class="empty">אין חברים חדשים בחודש האחרון.</div>`;
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "קבלת פנים")}${body}</div>`;
   }
-  // COMM-226. Absent entirely (not merely styled hidden) unless the flag is
-  // on, so "invisible in the shipped Phase 2 build" is literally true - a
-  // hidden member view has nothing to inspect to learn this section exists.
+  // COMM-226 built this absent entirely (not merely styled hidden) unless
+  // the flag is on; COMM-304 flips that flag default-on and gives it real
+  // rows, but the same absent-when-off gate stays exactly as it was, for
+  // whichever future ticket needs to turn it back off again.
+  function renderCoachEngageRow(it) {
+    const busy = !!(state.coachEngage.busy && state.coachEngage.busy.id === it.id);
+    const reachBusy = busy && state.coachEngage.busy.action === "reach-out";
+    const reached = !!state.coachEngage.reachedOut[it.id];
+    const name = engageMemberName(it.user_id);
+    return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:8px;">
+      <div class="flex gap-10" style="align-items:center;">
+        ${avatarHtml(state.coachEngage.profiles[it.user_id] && (state.coachEngage.profiles[it.user_id].display_name || state.coachEngage.profiles[it.user_id].handle), 32)}
+        <div>
+          <button class="link-btn" data-community-action="view-profile" data-id="${safeText(it.user_id)}" style="padding:0;font-weight:800;color:inherit;">${safeText(name)}</button>
+          <div style="margin-top:2px;"><span class="admin-tag" style="background:${engageLevelColor(it.level)};">${safeText(engageLevelLabel(it.level))}</span></div>
+        </div>
+      </div>
+      <div class="chip-row">
+        <button class="chip-btn${reached ? "" : " primary"}" data-community-action="coach-engage-reach-out" data-id="${safeText(it.id)}"${reached || busy ? " disabled" : ""}>${reachBusy ? "שולח…" : reached ? "פנייה נשלחה" : "פנייה"}</button>
+        <button class="chip-btn" data-community-action="coach-engage-review" data-id="${safeText(it.id)}"${busy ? " disabled" : ""}>סימון כנבדק</button>
+        <button class="chip-btn" data-community-action="coach-engage-dismiss" data-id="${safeText(it.id)}"${busy ? " disabled" : ""}>דחייה</button>
+      </div>
+    </div>`;
+  }
   function renderCoachEngageSection() {
     if (!state.featureFlags.coachEngage) return "";
     const e = state.coachEngage;
@@ -4053,8 +4199,8 @@
       : e.error
       ? `<div class="empty">לא ניתן היה לטעון את הנתונים.<div class="chip-row" style="justify-content:center;"><button class="chip-btn" data-community-action="coach-engage-retry">ניסיון חוזר</button></div></div>`
       : e.items.length
-      ? `<div class="log-list">${e.items.map((it) => `<div class="log-row"><button class="link-btn" data-community-action="view-profile" data-id="${safeText(it.user_id)}" style="padding:0;color:inherit;">${safeText(it.user_id)}</button><span style="color:var(--steel);font-size:12px;">${safeText(it.level)}</span></div>`).join("")}</div>`
-      : `<div class="empty">אין פריטים לבדיקה.</div>`;
+      ? `<div class="log-list">${e.items.map(renderCoachEngageRow).join("")}</div>`
+      : `<div class="empty">אין חברים שדורשים תשומת לב</div>`;
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מעקב מעורבות")}${body}</div>`;
   }
   function renderCoachTab() {
@@ -7609,6 +7755,9 @@
     else if (action === "coach-assign-handle") coachAssignByHandle(el.dataset.id);
     else if (action === "coach-mark-contacted") coachMarkContacted(el.dataset.id);
     else if (action === "coach-engage-retry") loadCoachEngageFlags();
+    else if (action === "coach-engage-reach-out") coachEngageReachOut(el.dataset.id);
+    else if (action === "coach-engage-review") coachEngageResolveFlag(el.dataset.id, "reviewed");
+    else if (action === "coach-engage-dismiss") coachEngageResolveFlag(el.dataset.id, "dismissed");
   };
   window.isCommunitySignedIn = function () { return !!(state.user && state.profile); };
   window.shareAchievementToCommunity = function (achievementId, title, rule) { publishAchievement(achievementId, title, rule); };
@@ -7697,7 +7846,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.notifPushSub = null; state.notifPushChecked = false; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} }; state.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false }; state.classmatesToday = { items: [], loading: false, loaded: false, error: false }; classmatesCardViewLogged = false; /* COMM-307: the next member to sign in on this device gets a fresh card and a fresh classmates_card_viewed, never the previous session's rows or its already-counted view. */
+        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.notifPushSub = null; state.notifPushChecked = false; state.permissions = []; state.permissionsLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false, profiles: {}, reachedOut: {}, busy: null }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} }; state.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false }; state.classmatesToday = { items: [], loading: false, loaded: false, error: false }; classmatesCardViewLogged = false; /* COMM-307: the next member to sign in on this device gets a fresh card and a fresh classmates_card_viewed, never the previous session's rows or its already-counted view. */
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();
