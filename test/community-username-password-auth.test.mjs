@@ -65,7 +65,11 @@ test("the login form and the credentials form each validate independently and cl
   assert.match(src, /field\("communityCredentials", "username"/);
   assert.match(src, /field\("communityCredentials", "password"/);
   assert.match(src, /field\("communityCredentials", "passwordConfirm"/);
-  assert.match(src, /setFieldErrors\("communityCredentials", \{\}\);/);
+  // setCredentials() keys its field errors on form.id (not a hardcoded
+  // string) since a second form - the standalone backup-only
+  // "backupCredentials" in Settings, see community-backup-sync.test.mjs -
+  // now shares this same handler.
+  assert.match(src, /setFieldErrors\(formId, \{\}\);/);
 });
 
 test("sign-out is wired now that logging back in is possible, and resets signupStarted plus the anonymous-attempt guard so a fresh signup can start cleanly afterward", () => {

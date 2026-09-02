@@ -76,9 +76,12 @@ await page.waitForFunction(() => document.body.textContent.includes("1 / 2"), { 
 check("RSVPing going updates the capacity figure to 1 / 2 with no reload", true);
 
 const goingLabelActive = await page.evaluate(
-  () => document.querySelector('[data-cloud-dialog="eventView"] [data-community-action="event-rsvp"][data-response="going"]').classList.contains("primary")
+  // COMM-325 replaced .primary with .selected for chip "currently chosen"
+  // state (vs. .primary staying reserved for submit/action buttons) -
+  // this control is a selection, not an action.
+  () => document.querySelector('[data-cloud-dialog="eventView"] [data-community-action="event-rsvp"][data-response="going"]').classList.contains("selected")
 );
-check("the Going control itself flips to the active/primary state", goingLabelActive);
+check("the Going control itself flips to the active/selected state", goingLabelActive);
 
 check("no console errors", errors.length === 0, errors.join(" | "));
 

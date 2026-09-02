@@ -6,6 +6,15 @@
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
   }) : null;
   const state = { configured, client, user: null, profile: null, feed: [], people: [], comparison: [], comparisonForPostId: null, loading: false, message: "", syncEnabled: localStorage.getItem("haimunia-demo:cloudSyncEnabled") === "1",
+    // COMM-331. Guards ensureCommunityDataLoaded()'s feed/streaks/
+    // announcements/etc. cascade so it fires once, the first time the
+    // Community tab actually renders, instead of on every cold boot. See
+    // that function's own comment for exactly which loaders this covers
+    // and, just as importantly, which ones it deliberately does NOT (kept
+    // eager in refreshSession()/onAuthStateChange instead, because a
+    // cross-tab consumer needs them regardless of whether Community was
+    // ever opened).
+    communityDataLoaded: false, communityDataLoading: false,
     streaks: [], announcements: [], announcementSaving: false, weeklyChallenge: null, weeklyLeaderboard: [], inactiveMembers: [], newMembers: [], redemption: null,
     communityTab: "feed", comments: {}, openComments: {}, fieldErrors: {}, reports: [], confirmDialog: null, signupStarted: false, memberSearch: "", memberResults: [], openShare: {},
     // COMM-318. { status: "idle"|"processing", error }, drives the avatar
@@ -526,18 +535,98 @@
     return new Date(iso).toLocaleDateString("he-IL");
   }
 
+  // COMM-331. The feed/streaks/announcements/weekly-challenge/club-summary/
+  // blocked-ids/achievements/notifications/pins/events/onboarding-progress/
+  // staff/mod-queue cascade used to run unconditionally inside
+  // refreshSession() (and again in onAuthStateChange below) on every cold
+  // boot - ~16 parallel requests fired before a member who only ever opens
+  // the training-log tabs had touched the Community tab once. It now runs
+  // once per session, gated by the communityDataLoaded/communityDataLoading
+  // pair, the first time the Community tab actually renders - see the
+  // afterRenderCommunity() call below, the same once-per-session lazy
+  // pattern already used there for the audit log and analytics dashboard.
+  //
+  // What this function deliberately does NOT cover, and why: loadProfile(),
+  // loadRedemption(), loadChallenges() and loadClubFeatures() stay eager in
+  // refreshSession()/onAuthStateChange instead of moving here, along with
+  // pingActivity() and the syncCommunityMilestones() trigger that depend on
+  // profile being loaded. A first attempt at this ticket deferred all of
+  // them and broke real, cross-tab behavior (18 test failures) that a
+  // static read of the call sites did not surface: window.isCommunitySignedIn()
+  // - a global gate consumed by the PR-share prompt and achievement-claim
+  // flows, both triggered from the core training-log tabs, not just the
+  // Community tab - depends on state.profile. onPrCreatedForChallenges()
+  // (also triggered from a core-tab save, via the PR_CREATED bus event)
+  // reads state.challenges/state.challengeParticipation to auto-log a
+  // challenge delta, which is why loadChallenges() is eager here too - and
+  // loadClubFeatures() rides along with it: isModuleEnabled() defaults a
+  // module "on" until its row loads, so with challenges data present but
+  // the feature gate still pending, a module the club actually turned off
+  // would render for the gap between the two (caught by a real test, not
+  // static analysis, and closed by loading both together rather than
+  // leaving it to self-correct after a visible flash). Every other loader
+  // below was traced against every top-level event-bus listener and every
+  // window.*-exposed function app.js calls before being
+  // judged safe to defer - see the reverted attempt's own writeup
+  // (docs/community/tickets/COMM-331.md) for the full trace.
+  async function ensureCommunityDataLoaded() {
+    // Also gated on recovery_verified_at: renderCommunityApp() returns the
+    // recovery gate's own content and nothing else while it's pending (see
+    // that check's own comment, COMM-016), so there's no UI yet for any of
+    // this to feed. Loading it anyway raced loadFeed()'s state.message
+    // reset (on success, loadFeed sets it to "") against verifyRecovery()'s
+    // own failure message on the exact same field - whichever finished
+    // last silently won, so a real verification failure could show no
+    // error at all depending on timing. The gate's own success path
+    // re-renders once verified, which re-enters afterRenderCommunity() and
+    // triggers this for real at that point.
+    if (!state.user || !state.profile || !state.profile.recovery_verified_at || state.communityDataLoaded || state.communityDataLoading) return;
+    state.communityDataLoading = true;
+    try {
+      await Promise.all([loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadEvents(), loadOnboardingProgress()]);
+      if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers()]);
+      if (hasPerm(PERM.COMMENT_MODERATE) || isAdmin()) await loadModQueue();
+      // COMM-141. Arm the own-row notification channel for this session.
+      ensureNotifRealtime();
+      // COMM-229. Consumes window.__pendingPushDeepLink once the session
+      // and its data are actually ready - see communityHandlePushDeepLink
+      // for why this exists (the cold-start "sw.js opened a fresh window"
+      // path). Deferring this alongside the rest is safe: a push
+      // notification's deep link always points into Community, so it
+      // needs this same data loaded before it can resolve regardless.
+      if (window.__pendingPushDeepLink) {
+        const link = window.__pendingPushDeepLink;
+        window.__pendingPushDeepLink = null;
+        communityHandlePushDeepLink(link);
+      }
+    } finally {
+      state.communityDataLoaded = true;
+      state.communityDataLoading = false;
+    }
+    rerender();
+  }
+
   async function refreshSession() {
     if (!client) return;
     const { data } = await client.auth.getSession();
     state.user = data.session ? data.session.user : null;
     if (state.user) {
+      enableSyncIfAllowed();
       // COMM-170. First thing in the session-ready path, so every track()
       // below it writes instead of dropping.
       ensureAnalyticsConfigured();
       await loadRedemption();
-      await Promise.all([loadProfile(), loadPermissions(), loadClubFeatures(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadChallenges(), loadEvents(), loadOnboardingProgress()]);
-      if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers()]);
-      if (hasPerm(PERM.COMMENT_MODERATE) || isAdmin()) await loadModQueue();
+      // loadProfile() and loadChallenges() stay eager - see
+      // ensureCommunityDataLoaded()'s own comment for exactly why (both
+      // gate cross-tab flows triggered from the core training-log tabs,
+      // not just from Community). loadClubFeatures() rides along with
+      // loadChallenges() rather than living in the deferred batch: with
+      // challenges data present but the club-feature gate not yet
+      // resolved, a module the club has turned off would render (its
+      // resolver defaults "on" until a row loads) for the brief window
+      // before the deferred batch finishes - loading both together closes
+      // that gap instead of leaving it to self-correct after a flash.
+      await Promise.all([loadProfile(), loadChallenges(), loadClubFeatures()]);
       // Push pending local edits before pulling the remote copy - without
       // this, reopening the app with an unflushed outbox (e.g. a set
       // logged offline seconds ago) pulls the still-stale server record
@@ -552,17 +641,10 @@
       // COMM-130. Claim any non-attendance milestone this device already
       // crossed before the member joined the community.
       if (typeof window.syncCommunityMilestones === "function") window.syncCommunityMilestones();
-      // COMM-141. Arm the own-row notification channel for this session.
-      ensureNotifRealtime();
-      // COMM-229. Consumes window.__pendingPushDeepLink once the session
-      // and its data are actually ready - see communityHandlePushDeepLink
-      // for why this exists (the cold-start "sw.js opened a fresh window"
-      // path).
-      if (window.__pendingPushDeepLink) {
-        const link = window.__pendingPushDeepLink;
-        window.__pendingPushDeepLink = null;
-        communityHandlePushDeepLink(link);
-      }
+      // If the Community tab happens to be the active one on this boot
+      // (e.g. a manifest shortcut, a deep link, or the last-active tab),
+      // render() calling afterRenderCommunity() below already triggers
+      // ensureCommunityDataLoaded() - nothing further to do here.
     }
     rerender();
   }
@@ -2749,6 +2831,13 @@
   // identity is upgraded to a real username+password account (same
   // auth.uid(), same redemption/profile - see setCredentials) before
   // profile completion, never left as the permanent identity.
+  //
+  // Two independent callers reach this now: startSignup() below (explicit
+  // click), and maybeAutoStartBackup() (fires on the member's first local
+  // write, no click at all - see that function's comment for why this
+  // does not reopen the "nothing happens silently" concern the removed
+  // on-load version raised). Both share the exact same session; whichever
+  // fires first wins, the guard below makes the second call a no-op.
   let anonSignInAttempted = false;
   async function ensureAnonymousSession() {
     if (!client || state.user || anonSignInAttempted) return;
@@ -2758,6 +2847,36 @@
     // onAuthStateChange below picks up the new session and loads everything.
   }
   function startSignup() { state.signupStarted = true; ensureAnonymousSession(); rerender(); }
+
+  // Private-backup-to-cloud is opt-out, not opt-in - see PRIVACY.md. Distinct
+  // from cloudSyncEnabled (which is the actual on/off switch flushOutbox()
+  // checks): this only remembers that the member explicitly declined, so
+  // maybeAutoStartBackup()/enableSyncIfAllowed() never re-enable it behind
+  // their back after they turned it off in Settings.
+  const BACKUP_OPTOUT_KEY = "haimunia-demo:backupOptOut";
+  function backupOptedOut() { return localStorage.getItem(BACKUP_OPTOUT_KEY) === "1"; }
+  // Turns cloudSyncEnabled on the moment any session exists (anonymous
+  // backup-only, or a real community member), unless the member opted out.
+  // Only ever flips it on - going forward, never touches history already
+  // sitting unsynced in IndexedDB. That's still what the "migrate"/"sync
+  // private history" action is for.
+  function enableSyncIfAllowed() {
+    if (state.syncEnabled || backupOptedOut()) return;
+    state.syncEnabled = true;
+    localStorage.setItem("haimunia-demo:cloudSyncEnabled", "1");
+  }
+  // COMM sync-loss fix (iOS 7-day IndexedDB eviction). Fires on the
+  // member's first local write (queueSyncRecord's haimunia-sync-needed
+  // event), not on app load - creating a cloud account for a visit that
+  // never records a workout has no upside and a real cost (an
+  // auth.users row + a private_records writer that will never write
+  // anything). By the time this fires there is real data to protect, and
+  // the ensureAnonymousSession() guard makes it a no-op for anyone who
+  // already has a session, backup-only or otherwise.
+  function maybeAutoStartBackup() {
+    if (!client || state.user || backupOptedOut()) return;
+    ensureAnonymousSession();
+  }
 
   // COMM-016. Community RLS (is_community_member()) requires
   // profiles.recovery_verified_at, and mark_recovery_verified() is the
@@ -2805,6 +2924,11 @@
   // no migration step.
   async function setCredentials(form) {
     if (!state.user) return;
+    // Shared by two forms now: the Community-onboarding "communityCredentials"
+    // screen, and the standalone backup-only "backupCredentials" form in
+    // Settings (window.renderBackupSettingsPanel) - form.id keys the field
+    // errors so both report inline on whichever one was actually submitted.
+    const formId = form.id;
     const username = String(form.elements.username.value || "").trim().toLowerCase();
     const password = String(form.elements.password.value || "");
     const passwordConfirm = String(form.elements.passwordConfirm.value || "");
@@ -2812,11 +2936,11 @@
     if (!USERNAME_RE.test(username)) errors.username = "שם משתמש: 3–24 תווים, אותיות אנגליות קטנות, ספרות או קו תחתון";
     if (password.length < 8) errors.password = "הסיסמה חייבת להכיל לפחות 8 תווים";
     if (password !== passwordConfirm) errors.passwordConfirm = "הסיסמאות לא תואמות";
-    if (Object.keys(errors).length) return setFieldErrors("communityCredentials", errors);
+    if (Object.keys(errors).length) return setFieldErrors(formId, errors);
     const { data, error } = await client.auth.updateUser({ email: usernameToEmail(username), password });
-    if (error) return setFieldErrors("communityCredentials", { username: /registered|exists|taken/i.test(error.message || "") ? "שם המשתמש כבר תפוס" : "השמירה נכשלה, נסו שוב" });
+    if (error) return setFieldErrors(formId, { username: /registered|exists|taken/i.test(error.message || "") ? "שם המשתמש כבר תפוס" : "השמירה נכשלה, נסו שוב" });
     state.user = data.user;
-    setFieldErrors("communityCredentials", {});
+    setFieldErrors(formId, {});
     setMessage("החשבון נוצר, אפשר להתחבר איתו מכל מכשיר");
     // For a member who already had a profile before setting a recovery
     // method (an existing anonymous account after the Phase 0 migration),
@@ -3309,7 +3433,7 @@
     </div>`;
   }
   function sectionHead(color, title, adminTag) {
-    return `<div class="ach-section-head"><span class="ach-section-dot" style="background:${color};"></span><span class="ach-section-title">${title}</span>${adminTag ? `<span class="admin-tag">ניהול</span>` : ""}</div>`;
+    return `<div class="ach-section-head"><span class="ach-section-dot" style="background:${color};"></span><h2 class="ach-section-title">${title}</h2>${adminTag ? `<span class="admin-tag">ניהול</span>` : ""}</div>`;
   }
   // Top 3 in full, then — if the viewer isn't in the top 3 — a divider and
   // their own row, instead of one long ranked list past the leaders. Same
@@ -3916,9 +4040,9 @@
     const inner = p.loading
       ? `<div style="padding:8px 10px;color:var(--steel);font-size:12px;">מחפש חברים…</div>`
       : (items.length
-        ? items.map((m, i) => `<button type="button" class="mention-option" role="option" data-community-action="mention-pick" data-key="${safeText(key)}" data-id="${safeText(m.id)}" data-name="${safeText(m.display_name || m.handle)}" aria-selected="${i === (p.index || 0) ? "true" : "false"}" style="display:block;width:100%;text-align:right;padding:8px 10px;background:${i === (p.index || 0) ? "rgba(255,255,255,.06)" : "none"};border:0;color:var(--chalk);font-size:12.5px;cursor:pointer;">${nameHtml(m.display_name, m.handle)} <span style="color:var(--steel);"><bdi>@${safeText(m.handle)}</bdi></span></button>`).join("")
+        ? items.map((m, i) => `<button type="button" class="mention-option" role="option" data-community-action="mention-pick" data-key="${safeText(key)}" data-id="${safeText(m.id)}" data-name="${safeText(m.display_name || m.handle)}" aria-selected="${i === (p.index || 0) ? "true" : "false"}" style="display:block;width:100%;text-align:right;padding:8px 10px;background:${i === (p.index || 0) ? "var(--surface2)" : "none"};border:0;color:var(--chalk);font-size:12.5px;cursor:pointer;">${nameHtml(m.display_name, m.handle)} <span style="color:var(--steel);"><bdi>@${safeText(m.handle)}</bdi></span></button>`).join("")
         : `<div style="padding:8px 10px;color:var(--steel);font-size:12px;">אין התאמות</div>`);
-    return `<div class="mention-picker" role="listbox" style="position:absolute;z-index:40;top:100%;inset-inline-start:0;margin-top:4px;min-width:220px;background:#1f2023;border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,.4);max-height:180px;overflow-y:auto;">${inner}</div>`;
+    return `<div class="mention-picker" role="listbox" style="position:absolute;z-index:40;top:100%;inset-inline-start:0;margin-top:4px;min-width:220px;background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,.25);max-height:180px;overflow-y:auto;">${inner}</div>`;
   }
   function commentComposerHtml(postId, parentId) {
     const key = commentKey(postId, parentId || null);
@@ -4052,8 +4176,8 @@
   function renderAuditLog() {
     if (!hasPerm(PERM.ANALYTICS_VIEW)) return "";
     const filterChips = `<div class="chip-row" style="margin:0 0 10px;">
-      <button class="chip-btn${!state.auditFilters.action_type ? " primary" : ""}" data-community-action="audit-filter" data-type="">הכול</button>
-      ${AUDIT_ACTION_TYPES.map((t) => `<button class="chip-btn${state.auditFilters.action_type === t ? " primary" : ""}" data-community-action="audit-filter" data-type="${t}">${auditActionLabel(t)}</button>`).join("")}
+      <button class="chip-btn${!state.auditFilters.action_type ? " selected" : ""}" data-community-action="audit-filter" data-type="">הכול</button>
+      ${AUDIT_ACTION_TYPES.map((t) => `<button class="chip-btn${state.auditFilters.action_type === t ? " selected" : ""}" data-community-action="audit-filter" data-type="${t}">${auditActionLabel(t)}</button>`).join("")}
     </div>`;
     let body;
     if (state.auditLoading && !state.auditLog.length) {
@@ -4155,7 +4279,7 @@
   // ==========================================================================
   function renderAdminAnalyticsPeriodSelector() {
     const a = state.adminAnalytics;
-    const modeBtn = (id, label) => `<button class="chip-btn${a.mode === id ? " primary" : ""}" data-community-action="admin-analytics-mode" data-mode="${id}">${label}</button>`;
+    const modeBtn = (id, label) => `<button class="chip-btn${a.mode === id ? " selected" : ""}" data-community-action="admin-analytics-mode" data-mode="${id}">${label}</button>`;
     return `<div class="chip-row" style="margin:0 0 10px;align-items:center;">
       ${modeBtn("week", "שבוע")}${modeBtn("month", "חודש")}
       <button class="chip-btn" data-community-action="admin-analytics-shift" data-dir="-1" aria-label="התקופה הקודמת">‹ קודם</button>
@@ -4607,8 +4731,8 @@
   function renderRetentionOverlayToggles() {
     const r = state.retention;
     return `<div class="chip-row" style="margin:10px 0;" data-retention-overlay-toggles="1">
-      <button class="chip-btn${r.showOnboarding ? " primary" : ""}" data-community-action="retention-toggle-onboarding" aria-pressed="${r.showOnboarding ? "true" : "false"}">שכבת-על: שלבי הכוונה</button>
-      <button class="chip-btn${r.showWelcome ? " primary" : ""}" data-community-action="retention-toggle-welcome" aria-pressed="${r.showWelcome ? "true" : "false"}">שכבת-על: פניית מאמן/ת ראשונית</button>
+      <button class="chip-btn${r.showOnboarding ? " selected" : ""}" data-community-action="retention-toggle-onboarding" aria-pressed="${r.showOnboarding ? "true" : "false"}">שכבת-על: שלבי הכוונה</button>
+      <button class="chip-btn${r.showWelcome ? " selected" : ""}" data-community-action="retention-toggle-welcome" aria-pressed="${r.showWelcome ? "true" : "false"}">שכבת-על: פניית מאמן/ת ראשונית</button>
     </div>`;
   }
   // stamped=true is rendered first (matching the RPC's own `order by ...
@@ -4623,7 +4747,7 @@
   function renderRetentionOnboardingOverlay() {
     const r = state.retention;
     if (!r.showOnboarding) return "";
-    const stepChips = RETENTION_ONBOARDING_STEPS.map((s) => `<button class="chip-btn${r.onboardingStep === s.id ? " primary" : ""}" data-community-action="retention-onboarding-step" data-step="${s.id}">${safeText(s.label)}</button>`).join("");
+    const stepChips = RETENTION_ONBOARDING_STEPS.map((s) => `<button class="chip-btn${r.onboardingStep === s.id ? " selected" : ""}" data-community-action="retention-onboarding-step" data-step="${s.id}">${safeText(s.label)}</button>`).join("");
     const stepRows = (r.onboarding || []).filter((row) => row && row.step === r.onboardingStep);
     const stamped = stepRows.filter((row) => row.stamped === true);
     const notStamped = stepRows.filter((row) => row.stamped === false);
@@ -4912,7 +5036,7 @@
     }
     return `<div class="post-menu-wrap" style="position:relative;margin-inline-start:auto;">
       <button class="chip-btn" data-community-action="toggle-post-menu" data-id="${id}" aria-haspopup="true" aria-expanded="${open ? "true" : "false"}" aria-label="עוד פעולות">⋯</button>
-      ${open ? `<div class="post-menu" role="menu" style="position:absolute;inset-inline-start:0;top:100%;z-index:30;min-width:150px;background:#1f2023;border:1px solid var(--border);border-radius:12px;padding:4px;box-shadow:0 10px 30px rgba(0,0,0,.4);">${items}</div>` : ""}
+      ${open ? `<div class="post-menu" role="menu" style="position:absolute;inset-inline-start:0;top:100%;z-index:30;min-width:150px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:4px;box-shadow:0 10px 30px rgba(0,0,0,.25);">${items}</div>` : ""}
     </div>`;
   }
 
@@ -4961,7 +5085,7 @@
     const e = state.visibilityEdit;
     return `<div class="post-inline-edit" style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px;">
       <div class="field-label" style="margin-bottom:6px;">מי רואה את הפוסט</div>
-      <div class="chip-row">${POST_VISIBILITY_OPTIONS.map((o) => `<button class="chip-btn${e.visibility === o.value ? " primary" : ""}" data-community-action="visibility-pick" data-value="${o.value}">${o.label}</button>`).join("")}</div>
+      <div class="chip-row">${POST_VISIBILITY_OPTIONS.map((o) => `<button class="chip-btn${e.visibility === o.value ? " selected" : ""}" data-community-action="visibility-pick" data-value="${o.value}">${o.label}</button>`).join("")}</div>
       <button class="link-btn" data-community-action="visibility-cancel" style="margin-top:6px;display:inline-block;">ביטול</button>
     </div>`;
   }
@@ -6173,7 +6297,7 @@
   // ---- Rendering: create/edit form (COMM-201) ------------------------------
   function renderChallengeForm() {
     const f = state.challengeForm;
-    const typePicker = `<div class="chip-row" role="group" aria-label="סוג אתגר" style="margin-bottom:10px;">${CHALLENGE_TYPES.map((t) => `<button type="button" class="chip-btn${f.challengeType === t.id ? " primary" : ""}" data-community-action="challenge-form-type" data-type="${t.id}"${f.mode === "edit" ? " disabled" : ""}>${t.icon} ${safeText(t.label)}</button>`).join("")}</div>`;
+    const typePicker = `<div class="chip-row" role="group" aria-label="סוג אתגר" style="margin-bottom:10px;">${CHALLENGE_TYPES.map((t) => `<button type="button" class="chip-btn${f.challengeType === t.id ? " selected" : ""}" data-community-action="challenge-form-type" data-type="${t.id}"${f.mode === "edit" ? " disabled" : ""}>${t.icon} ${safeText(t.label)}</button>`).join("")}</div>`;
     const typeFields = f.challengeType === "coach" ? `
         ${field("communityChallengeForm", "rulesText", "חוקי האתגר", `<textarea class="text-input" name="rulesText" maxlength="1000" required>${safeText(f.rulesText)}</textarea>`)}
         ${field("communityChallengeForm", "metricLabel", "יחידת מדידה (לתצוגה)", `<input class="text-input" name="metricLabel" value="${safeText(f.metricLabel)}" placeholder="למשל בורפיז"/>`)}`
@@ -6842,7 +6966,7 @@
     const btn = (response, label) => {
       const disabled = closed || !!v.rsvpBusy || (response === "going" && full);
       const active = mine === response;
-      return `<button class="chip-btn${active ? " primary" : ""}" data-community-action="event-rsvp" data-id="${safeText(e.id)}" data-response="${response}"${disabled ? " disabled" : ""}>${v.rsvpBusy === response ? "מעדכנ/ת…" : label}</button>`;
+      return `<button class="chip-btn${active ? " selected" : ""}" data-community-action="event-rsvp" data-id="${safeText(e.id)}" data-response="${response}"${disabled ? " disabled" : ""}>${v.rsvpBusy === response ? "מעדכנ/ת…" : label}</button>`;
     };
     const notes = [];
     // COMM-214: "past its registration deadline disables any RSVP change".
@@ -6994,7 +7118,7 @@
   // ---- Create/edit form markup (COMM-213) ------------------------------------
   function renderEventForm() {
     const f = state.eventForm;
-    const typePicker = `<div class="chip-row" role="group" aria-label="סוג אירוע" style="margin-bottom:10px;flex-wrap:wrap;">${EVENT_TYPES.map((t) => `<button type="button" class="chip-btn${f.eventType === t.id ? " primary" : ""}" data-community-action="event-form-type" data-type="${t.id}">${t.icon} ${safeText(t.label)}</button>`).join("")}</div>`;
+    const typePicker = `<div class="chip-row" role="group" aria-label="סוג אירוע" style="margin-bottom:10px;flex-wrap:wrap;">${EVENT_TYPES.map((t) => `<button type="button" class="chip-btn${f.eventType === t.id ? " selected" : ""}" data-community-action="event-form-type" data-type="${t.id}">${t.icon} ${safeText(t.label)}</button>`).join("")}</div>`;
     return `<form id="communityEventForm" class="chart-card admin-card" style="margin-top:10px;">
       <div style="font-weight:800;margin-bottom:10px;">${f.mode === "edit" ? "עריכת אירוע" : "אירוע חדש"}<span class="admin-tag">ניהול</span></div>
       ${typePicker}
@@ -7044,8 +7168,8 @@
         <div style="color:var(--steel);font-size:12px;margin-top:2px;">${safeText(formatEventDate(e.start_at))} ${safeText(formatEventTime(e.start_at))} · ${going} משתתפים</div>
       </button>
       <div class="chip-row" style="margin-top:8px;">
-        <button class="chip-btn${mine === "going" ? " primary" : ""}" data-community-action="event-rsvp" data-id="${safeText(e.id)}" data-response="going"${closed || full ? " disabled" : ""}>משתתפ/ת</button>
-        <button class="chip-btn${mine === "interested" ? " primary" : ""}" data-community-action="event-rsvp" data-id="${safeText(e.id)}" data-response="interested"${closed ? " disabled" : ""}>מעוניינ/ת</button>
+        <button class="chip-btn${mine === "going" ? " selected" : ""}" data-community-action="event-rsvp" data-id="${safeText(e.id)}" data-response="going"${closed || full ? " disabled" : ""}>משתתפ/ת</button>
+        <button class="chip-btn${mine === "interested" ? " selected" : ""}" data-community-action="event-rsvp" data-id="${safeText(e.id)}" data-response="interested"${closed ? " disabled" : ""}>מעוניינ/ת</button>
       </div>
     </div>`;
   }
@@ -9062,7 +9186,7 @@
       const eff = (stored === "push" && !pushOn) ? "in_app" : stored;
       const saving = !!state.notifPrefSaving[t.key];
       const btn = (ch, label, disabled, title) =>
-        `<button type="button" class="chip-btn${eff === ch ? " primary" : ""}" data-community-action="notif-pref" data-type="${t.key}" data-channel="${ch}"${(disabled || saving) ? " disabled" : ""}${disabled && title ? ` aria-disabled="true" title="${safeText(title)}"` : ""}>${label}</button>`;
+        `<button type="button" class="chip-btn${eff === ch ? " selected" : ""}" data-community-action="notif-pref" data-type="${t.key}" data-channel="${ch}"${(disabled || saving) ? " disabled" : ""}${disabled && title ? ` aria-disabled="true" title="${safeText(title)}"` : ""}>${label}</button>`;
       const noteHtml = t.note ? `<span style="color:var(--steel);font-size:11px;">${safeText(t.note)}</span>` : "";
       // Populated (COMM-229 frontend states): an active subscription on
       // THIS device shows "פעיל" next to the push option, only for a row
@@ -9177,7 +9301,7 @@
     if (!a) return "";
     const def = MOD_DECISIONS.find((d) => d.id === a.decision) || { label: a.decision };
     const days = a.decision === "restrict_temp" ? `<label class="field" style="margin-top:10px;"><span class="field-label">משך ההגבלה</span>
-      <div class="chip-row" style="margin:0;">${RESTRICT_TEMP_DAYS.map((d) => `<button class="chip-btn${a.days === d ? " primary" : ""}" data-community-action="mod-action-days" data-days="${d}">${d} ימים</button>`).join("")}</div></label>` : "";
+      <div class="chip-row" style="margin:0;">${RESTRICT_TEMP_DAYS.map((d) => `<button class="chip-btn${a.days === d ? " selected" : ""}" data-community-action="mod-action-days" data-days="${d}">${d} ימים</button>`).join("")}</div></label>` : "";
     return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="modActionTitle" data-cloud-dialog="modAction" style="align-items:center;padding:0 20px;">
       <div class="modal-sheet" style="border-radius:22px;max-height:none;">
         <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
@@ -9218,12 +9342,19 @@
 
   window.renderCommunityApp = function () {
     if (!configured) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:8px;">הקהילה מוכנה לחיבור</div><div style="color:var(--steel);font-size:13px;line-height:1.7;">יש ליצור פרויקט Supabase, להריץ את קובץ המיגרציה ולהכניס URL ומפתח publishable בקובץ cloud-config.js. אין להכניס מפתח secret.</div></div>`;
-    if (!state.user) {
+    if (!state.user || (state.user.is_anonymous && !state.signupStarted)) {
       // Two real entry points, both visible at once: log into an existing
       // account (any device, same identity), or start fresh with a club
-      // invite code. Nothing happens silently here — the old
-      // ensureAnonymousSession()-on-load only fires once "start-signup"
-      // is actually chosen, below.
+      // invite code. Nothing happens silently *from this screen* — but
+      // state.user can already be a real (anonymous) session by the time
+      // anyone opens this tab: maybeAutoStartBackup() (Settings > protect
+      // my data) may have already created a backup-only session off the
+      // back of a saved set, with no invite code and no Community
+      // involvement at all. The is_anonymous + !signupStarted check keeps
+      // that person on this same neutral login-or-start choice instead of
+      // skipping straight to "enter your invite code" as if they had
+      // clicked start-signup — ensureAnonymousSession() below still
+      // no-ops for them since a session already exists.
       if (!state.signupStarted) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">כניסה לקהילה</div><div style="color:var(--steel);font-size:12.5px;line-height:1.7;margin-bottom:14px;">התחברות עם שם המשתמש והסיסמה משחזרת את הפרופיל, העוקבים, הסנכרון הפרטי והרשאות הצוות — גם ממכשיר חדש או אחרי מחיקת נתונים.</div><form id="communityLogin">${field("communityLogin", "username", "שם משתמש", `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="שם משתמש" required/>`)}${field("communityLogin", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="current-password" placeholder="סיסמה" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">התחברות ושחזור החשבון</button></form><button class="link-btn" data-community-action="start-signup" style="display:block;margin:18px auto 0;">חבר/ה חדש/ה? התחלת הרשמה עם קוד הזמנה</button>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
       ensureAnonymousSession();
       return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">מתחברים לקהילה…</div><div style="color:var(--steel);font-size:13px;">שנייה אחת.</div>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
@@ -9350,7 +9481,7 @@
       <div class="chip-row post-actions">
         <button class="chip-btn" data-community-action="cheer" data-id="${safeText(post.id)}" aria-label="עידוד, ${Number(post.cheer_count || 0)} עידודים">🔥 ${Number(post.cheer_count || 0)}</button>
         <button class="chip-btn" data-community-action="toggle-comments" data-id="${safeText(post.id)}" aria-label="תגובות, ${Number(post.comment_count || 0)}">💬 ${Number(post.comment_count || 0)}</button>
-        ${post.comparison_key ? `<button class="chip-btn${state.comparisonForPostId === post.id ? " primary" : ""}" data-community-action="compare" data-key="${safeText(post.comparison_key)}" data-id="${safeText(post.id)}">השוואה</button>` : ""}
+        ${post.comparison_key ? `<button class="chip-btn${state.comparisonForPostId === post.id ? " selected" : ""}" data-community-action="compare" data-key="${safeText(post.comparison_key)}" data-id="${safeText(post.id)}">השוואה</button>` : ""}
         ${post.author_id === (state.user && state.user.id) ? `<button class="chip-btn" data-community-action="delete-post" data-id="${safeText(post.id)}">הסרה</button>` : `<button class="chip-btn" data-community-action="report" data-id="${safeText(post.id)}">דיווח</button>`}
       </div>
       ${state.comparisonForPostId === post.id ? `<div class="log-list" style="margin-top:10px;">${state.comparison.length ? state.comparison.map((item, index) => `<div class="log-row"><span>${index + 1}. ${nameHtml(item.display_name, item.handle)}</span><span class="mono" style="color:var(--brass);">${safeText(item.result_text)}</span></div>`).join("") : `<div class="empty">אין עדיין תוצאות להשוואה</div>`}</div>` : ""}
@@ -9481,10 +9612,35 @@
   // active. app.js's own render() appends this unconditionally after
   // every tab's content (see index.html/app.js render()).
   window.renderCloudConfirmDialog = renderConfirmDialog;
+  // app.js's stale-backup-export reminder (renderSettingsBody) reads this to
+  // pick its threshold: someone already covered by automatic cloud sync
+  // needs the local-export nudge far less urgently than someone who is not.
+  window.cloudSyncActive = function () { return !!(state.user && state.syncEnabled); };
   window.cloudStorageStatusText = function () {
     if (!configured) return "נשמר במכשיר הזה בלבד, ללא שרת";
-    if (!state.user) return "נשמר במכשיר; התחברו כדי לסנכרן באופן פרטי";
-    return state.syncEnabled ? "נשמר במכשיר ומסונכרן באופן פרטי לחשבון" : "נשמר במכשיר; סנכרון ענן ממתין לאישורכם";
+    if (backupOptedOut()) return "נשמר במכשיר הזה בלבד — גיבוי אוטומטי כבוי";
+    if (!state.user) return "נשמר במכשיר; יגובה אוטומטית ופרטית עם השמירה הבאה";
+    return state.syncEnabled ? "נשמר במכשיר ומגובה אוטומטית ופרטית לחשבון" : "נשמר במכשיר; סנכרון ענן ממתין לאישורכם";
+  };
+  // Settings > "נתונים וגיבוי" (window.renderSettingsBody in app.js embeds
+  // this HTML directly, same cross-file pattern as cloudStorageStatusText
+  // above and renderCloudConfirmDialog below). Deliberately outside the
+  // Community tab's whole gated sequence - COMM-016 (invite code, profile,
+  // recovery verification) never has to be reached just to keep a private
+  // backup running. "join community" stays a fully separate, later,
+  // optional decision on the Community tab, never blended into this one.
+  window.renderBackupSettingsPanel = function () {
+    if (!configured) return "";
+    if (backupOptedOut()) {
+      return `<div class="footer-note" style="margin-bottom:8px;">גיבוי אוטומטי לענן כבוי — האימונים נשמרים במכשיר הזה בלבד.</div><button class="link-btn" data-community-action="backup-enable">הפעלת גיבוי אוטומטי</button>`;
+    }
+    if (!state.user) {
+      return `<div class="footer-note" style="margin-bottom:8px;">האימונים שלכם מתחילים להתגבות אוטומטית ופרטית לענן מהשמירה הראשונה — רק אתם רואים אותם. אפשר לכבות בכל שלב.</div><button class="link-btn" data-community-action="backup-optout">כיבוי גיבוי אוטומטי</button>`;
+    }
+    const credentialsCta = state.user.is_anonymous
+      ? `<div style="margin-top:12px;"><div class="footer-note" style="margin-bottom:6px;">גישה לאותם נתונים ממכשיר אחר דורשת שם משתמש וסיסמה.</div><form id="backupCredentials">${field("backupCredentials", "username", "שם משתמש", `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="אותיות אנגליות, ספרות או קו תחתון" required/>`)}${field("backupCredentials", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="new-password" placeholder="לפחות 8 תווים" required/>`)}${field("backupCredentials", "passwordConfirm", "אימות סיסמה", `<input class="text-input" name="passwordConfirm" type="password" dir="ltr" autocomplete="new-password" placeholder="הקלידו שוב" required/>`)}<button class="chip-btn primary" type="submit" style="margin-top:6px;">שמירת גישה ממכשיר אחר</button></form></div>`
+      : "";
+    return `<div class="footer-note" style="margin-bottom:8px;">${safeText(state.syncEnabled ? "האימונים שלכם מגובים אוטומטית ופרטית לענן — רק אתם רואים אותם." : "גיבוי מוגדר אך טרם הופעל.")}</div><button class="link-btn" data-community-action="backup-optout">כיבוי גיבוי אוטומטי</button>${credentialsCta}${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}`;
   };
   // ---- Shared Phase 1 dialog focus + keyboard management (COMM-190) -----
   // Every Phase 1 overlay dialog behaves the same way: focus moves in on
@@ -9627,6 +9783,12 @@
   window.syncCloudDialogFocus = syncCloudDialogFocus;
 
   window.afterRenderCommunity = function () {
+    // COMM-331. The one place the deferred feed/streaks/etc. cascade gets
+    // kicked off - the first time the Community tab actually renders (boot
+    // straight into it, or navigating to it later), not on every cold
+    // boot. See ensureCommunityDataLoaded()'s own comment for what it does
+    // and does not cover.
+    ensureCommunityDataLoaded();
     const input = document.getElementById("communityPeopleSearch");
     if (input) input.addEventListener("input", () => searchPeople(input.value));
     // COMM-228. A render replaces the box the member is typing into, which
@@ -9807,6 +9969,22 @@
     // the action itself and nothing awaits it.
     trackFeedClick(el);
     if (action === "migrate") askConfirm({ title: "סנכרון היסטוריה", message: "להעלות את היסטוריית האימונים הפרטית לחשבון? שום נתון לא יפורסם בקהילה.", confirmLabel: "העלאה", action: "migrate" });
+    // Settings > "protect my data" (window.renderBackupSettingsPanel) - fully
+    // separate from Community's own join flow: no invite code, no feed, no
+    // profile. "enable" clears the opt-out and starts (or resumes) a
+    // backup-only anonymous session; "optout" stops future syncing and
+    // remembers the choice so maybeAutoStartBackup() leaves it alone.
+    else if (action === "backup-enable") {
+      localStorage.removeItem(BACKUP_OPTOUT_KEY);
+      if (!state.user) ensureAnonymousSession();
+      else enableSyncIfAllowed();
+      rerender();
+    }
+    else if (action === "backup-optout") {
+      localStorage.setItem(BACKUP_OPTOUT_KEY, "1");
+      if (state.syncEnabled) { state.syncEnabled = false; localStorage.setItem("haimunia-demo:cloudSyncEnabled", "0"); }
+      rerender();
+    }
     else if (action === "avatar-remove") removeAvatarPhoto();
     else if (action === "cheer") react(el.dataset.id);
     else if (action === "report") report(el.dataset.id);
@@ -10074,6 +10252,7 @@
     else if (event.target.id === "communityInviteCode") { event.preventDefault(); redeemCode(event.target); }
     else if (event.target.id === "communityLogin") { event.preventDefault(); login(event.target); }
     else if (event.target.id === "communityCredentials") { event.preventDefault(); setCredentials(event.target); }
+    else if (event.target.id === "backupCredentials") { event.preventDefault(); setCredentials(event.target); }
     else if (event.target.dataset && event.target.dataset.commentPostId) {
       event.preventDefault();
       // COMM-114. The comment interaction is recorded here rather than
@@ -10102,33 +10281,30 @@
   }, true);
   window.addEventListener("pagehide", flushFeedImpressions);
   window.addEventListener("online", flushOutbox);
-  window.addEventListener("haimunia-sync-needed", () => { flushOutbox(); pingActivity(); });
+  window.addEventListener("haimunia-sync-needed", () => { maybeAutoStartBackup(); flushOutbox(); pingActivity(); });
   if (client) {
     client.auth.onAuthStateChange((_event, session) => {
       state.user = session ? session.user : null;
       if (state.user) {
+        enableSyncIfAllowed();
         // COMM-170. Same reason as refreshSession: configure before the
         // first track(). Idempotent, so whichever path arrives first wins.
         ensureAnalyticsConfigured();
+        // COMM-331. A fresh sign-in only happens from within the Community
+        // tab's own auth UI, so - unlike refreshSession()'s boot path -
+        // this loads community data immediately via ensureCommunityDataLoaded()
+        // rather than waiting for another afterRenderCommunity() pass; the
+        // member is already looking at it. communityDataLoaded is cleared
+        // first so a new session's sign-in isn't skipped by a stale flag
+        // left over from whoever was signed in before (or from a
+        // not-yet-loaded boot). loadProfile()/loadChallenges() stay eager
+        // here too, same reasoning as refreshSession().
         loadRedemption()
-          .then(() => Promise.all([loadProfile(), loadPermissions(), loadClubFeatures(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadEvents(), loadOnboardingProgress(), flushOutbox()]))
-          .then(() => (isStaff() ? Promise.all([loadInactiveMembers(), loadNewMembers()]) : null))
-          .then(() => (isAdmin() || hasPerm(PERM.COMMENT_MODERATE) ? loadModQueue() : null))
+          .then(() => Promise.all([loadProfile(), loadChallenges(), loadClubFeatures(), flushOutbox()]))
           .then(pullPrivateRecords)
           .then(pingActivity)
           .then(() => { if (typeof window.syncCommunityMilestones === "function") window.syncCommunityMilestones(); })
-          .then(ensureNotifRealtime)
-          // COMM-229. Same pending-deep-link consumption as refreshSession,
-          // for a member who opened the app from a push notification's
-          // cold-start window before signing in - the link waits for a
-          // real session instead of being dropped.
-          .then(() => {
-            if (window.__pendingPushDeepLink) {
-              const link = window.__pendingPushDeepLink;
-              window.__pendingPushDeepLink = null;
-              communityHandlePushDeepLink(link);
-            }
-          })
+          .then(() => { state.communityDataLoaded = false; return ensureCommunityDataLoaded(); })
           .then(rerender);
       } else {
         // COMM-114. Whatever the signed-out member had seen is written
@@ -10150,6 +10326,7 @@
         state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
         state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
         state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
+        state.communityDataLoaded = false; state.communityDataLoading = false;
         state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.avatarUpload = { status: "idle", error: "" }; state.clubModuleBusy = null; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.notifPushSub = null; state.notifPushChecked = false; state.permissions = []; state.permissionsLoaded = false; state.clubFeatures = {}; state.clubFeaturesLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false, profiles: {}, reachedOut: {}, busy: null }; state.coachMemberOfWeek = { loading: false, loaded: false, error: false, envelope: null, publishedProfile: null, previousProfile: null, pickHandle: "", pickReason: "", busy: null, publishErr: "" }; state.coachMonthlyRecap = { loading: false, loaded: false, error: false, row: null, busy: null, publishErr: "" }; state.monthlyRecap = { loading: false, loaded: false, error: false, row: null }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} }; state.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false }; state.classmatesToday = { items: [], loading: false, loaded: false, error: false }; classmatesCardViewLogged = false; /* COMM-307: the next member to sign in on this device gets a fresh card and a fresh classmates_card_viewed, never the previous session's rows or its already-counted view. */ state.onboardingAttendance = { count: 0, loading: false, loaded: false, error: false }; /* COMM-316: same reset reasoning as classmatesToday just above - the next member on this device gets a fresh count, never the previous member's. */
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;

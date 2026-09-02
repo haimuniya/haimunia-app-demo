@@ -193,7 +193,7 @@ test("RSVP round trip: clicking Going inserts an event_attendees row and the but
   await waitFor(() => mock.db.event_attendees.some((a) => a.event_id === "e1" && a.user_id === "u1" && a.response === "going"), 3000);
   await waitFor(() => {
     const btn = eventViewDialog(window).querySelector('[data-community-action="event-rsvp"][data-response="going"]');
-    return btn && btn.className.includes("primary");
+    return btn && btn.className.includes("selected");
   }, 3000);
 });
 

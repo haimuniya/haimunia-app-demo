@@ -14,6 +14,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { projectRoot } from "./lib/target.mjs";
 import { startStaticServer } from "./lib/server.mjs";
+import { installMockCloud } from "./lib/mockCloud.mjs";
 
 let failed = false;
 function check(label, ok, detail = "") {
@@ -37,6 +38,11 @@ const browser = await chromium.launch();
 async function freshPage() {
   const ctx = await browser.newContext({ viewport: { width: 420, height: 900 } });
   const page = await ctx.newPage();
+  // COMM-333: cloud.js boots unconditionally on every one of this script's
+  // page loads, and cloud-config.js points at the real, live production
+  // Supabase project - see ladder.mjs's own comment on this same call for
+  // the full reasoning (safety, and the source of intermittent 401/409s).
+  await installMockCloud(page);
   return { ctx, page };
 }
 async function waitForControllerActive(page) {

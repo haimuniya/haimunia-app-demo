@@ -252,6 +252,9 @@ test("the weekly_recap notification's deep link records the recap open as coming
   });
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openCommunity(window);
+  // COMM-331: the bell only renders once state.club loads via the deferred
+  // ensureCommunityDataLoaded().
+  await waitFor(() => !!window.document.querySelector('[data-community-action="feed-notifications"]'), 4000);
   window.document.querySelector('[data-community-action="feed-notifications"]').click();
   // weekly_recap is a batched type (contracts.md's routing table), so even a
   // single row renders as a collapsed group that has to be expanded first.

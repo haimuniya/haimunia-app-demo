@@ -248,6 +248,10 @@ test("notification centre: focus-in, trap, Escape restores focus, backdrop close
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openCommunity(window);
 
+  // COMM-331: the club-top card (and its bell) only renders once
+  // state.club loads via the deferred ensureCommunityDataLoaded(), not the
+  // instant the Community tab shell does.
+  await waitFor(() => !!window.document.querySelector('[data-community-action="feed-notifications"]'), 3000);
   const bell = window.document.querySelector('[data-community-action="feed-notifications"]');
   assert.ok(bell, "the notification bell renders");
   bell.focus();

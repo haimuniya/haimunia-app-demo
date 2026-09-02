@@ -30,8 +30,13 @@ test("ensureAnonymousSession only ever attempts once per page load, and only onc
   assert.match(fn, /anonSignInAttempted = true;/);
 });
 
-test("the signed-out render state triggers ensureAnonymousSession and shows a connecting message, not an email form", () => {
-  const branch = cloudJs.slice(cloudJs.indexOf("if (!state.user) {"), cloudJs.indexOf("if (!state.redemption)"));
+test("the signed-out (or backup-only anonymous, pre-signup) render state triggers ensureAnonymousSession and shows a connecting message, not an email form", () => {
+  // Widened from a plain !state.user check: a backup-only anonymous
+  // session (see community-backup-sync.test.mjs) can already exist by the
+  // time this renders, off the back of Settings > "protect my data" - the
+  // same login-or-start screen still has to show until signupStarted is
+  // explicitly set, rather than skipping straight past it.
+  const branch = cloudJs.slice(cloudJs.indexOf("if (!state.user || (state.user.is_anonymous && !state.signupStarted)) {"), cloudJs.indexOf("if (!state.redemption)"));
   assert.match(branch, /ensureAnonymousSession\(\);/);
   assert.doesNotMatch(branch, /type="email"/);
   assert.doesNotMatch(branch, /שליחת קישור/);

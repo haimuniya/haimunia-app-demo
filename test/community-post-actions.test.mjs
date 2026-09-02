@@ -29,7 +29,11 @@ function seeded() {
 
 async function openFeed(window) {
   window.document.getElementById("tabCommunityBtn").click();
-  await waitFor(() => window.document.querySelectorAll(".post-card").length >= 2, 3000);
+  // COMM-331: feed data now loads lazily behind ensureCommunityDataLoaded(),
+  // so a plain ".post-card" count briefly matches the loading skeleton
+  // (also .post-card, no data-post-id) before the real posts replace it -
+  // wait for real, identified post cards instead.
+  await waitFor(() => window.document.querySelectorAll(".post-card[data-post-id]").length >= 2, 3000);
 }
 
 function openMenu(window, postId) {

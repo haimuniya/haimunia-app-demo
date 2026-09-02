@@ -164,7 +164,7 @@ test("permission denied: the exact Hebrew copy is shown, the toggle reverts to I
   assert.equal(push.calls.subscribe, 0, "subscribe is never called once permission is denied");
   assert.equal(mock.db.push_subscriptions.length, 0);
   assert.equal(mock.db.notification_preferences.length, 0, "the preference write never happens");
-  assert.ok(window.document.querySelector('[data-community-action="notif-pref"][data-type="events"][data-channel="in_app"]').className.includes("primary"), "the control reads In-app, not Push");
+  assert.ok(window.document.querySelector('[data-community-action="notif-pref"][data-type="events"][data-channel="in_app"]').className.includes("selected"), "the control reads In-app, not Push");
 });
 
 test("a device that is already subscribed does not re-prompt when a second type also switches to push", async () => {

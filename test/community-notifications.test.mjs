@@ -379,7 +379,7 @@ test("the Account panel lists every type with Push (disabled), In-app and Off", 
   assert.equal(push.getAttribute("aria-disabled"), "true");
   const inApp = window.document.querySelector('[data-community-action="notif-pref"][data-type="comments"][data-channel="in_app"]');
   assert.ok(!inApp.disabled, "In-app works");
-  assert.ok(inApp.className.includes("primary"), "the default selection is In-app");
+  assert.ok(inApp.className.includes("selected"), "the default selection is In-app");
 });
 
 test("changing a preference is a direct own-row upsert into notification_preferences", async () => {
@@ -398,7 +398,7 @@ test("changing a preference is a direct own-row upsert into notification_prefere
   window.document.querySelector('[data-community-action="set-tab"][data-tab="feed"]').click();
   window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();
   await waitFor(() => !!window.document.querySelector('[data-community-action="notif-pref"]'), 4000);
-  assert.ok(window.document.querySelector('[data-community-action="notif-pref"][data-type="mentions"][data-channel="off"]').className.includes("primary"));
+  assert.ok(window.document.querySelector('[data-community-action="notif-pref"][data-type="mentions"][data-channel="off"]').className.includes("selected"));
 });
 
 test("stored preferences load and drive the panel selection", async () => {
@@ -408,8 +408,8 @@ test("stored preferences load and drive the panel selection", async () => {
   ] });
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openAccount(window);
-  assert.ok(window.document.querySelector('[data-community-action="notif-pref"][data-type="reactions"][data-channel="off"]').className.includes("primary"));
-  assert.ok(window.document.querySelector('[data-community-action="notif-pref"][data-type="replies"][data-channel="in_app"]').className.includes("primary"));
+  assert.ok(window.document.querySelector('[data-community-action="notif-pref"][data-type="reactions"][data-channel="off"]').className.includes("selected"));
+  assert.ok(window.document.querySelector('[data-community-action="notif-pref"][data-type="replies"][data-channel="in_app"]').className.includes("selected"));
 });
 
 test("a failed preference save reverts the control and shows the Hebrew error", async () => {
@@ -425,7 +425,7 @@ test("a failed preference save reverts the control and shows the Hebrew error", 
 
   window.document.querySelector('[data-community-action="notif-pref"][data-type="events"][data-channel="off"]').click();
   await waitFor(() => /לא ניתן לשמור העדפה זו/.test(window.document.getElementById("content").textContent), 4000);
-  assert.ok(window.document.querySelector('[data-community-action="notif-pref"][data-type="events"][data-channel="in_app"]').className.includes("primary"), "the control reverted to In-app");
+  assert.ok(window.document.querySelector('[data-community-action="notif-pref"][data-type="events"][data-channel="in_app"]').className.includes("selected"), "the control reverted to In-app");
 });
 
 test("the panel notes that operational announcements always show in-app", async () => {

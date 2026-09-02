@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { resolveTarget } from "./lib/target.mjs";
 import { switchTab, selectMovement, dismissCelebrationIfOpen, consoleErrorCollector } from "./lib/actions.mjs";
+import { installMockCloud } from "./lib/mockCloud.mjs";
 
 // Screenshots are a debugging aid, not an artifact this repo commits — the
 // OS temp dir keeps this script working on any machine, not just the one
@@ -34,6 +35,14 @@ const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 420, height: 1000 } });
 const errors = await consoleErrorCollector(page);
 
+// COMM-333: cloud.js boots unconditionally regardless of which tab a
+// script visits, and cloud-config.js points at the real, live production
+// Supabase project - without this, an offline-only check like this one
+// still fires real network calls (session restore, anonymous sign-in via
+// the auto-backup bootstrap, etc.) against production in the background,
+// which is both a safety risk (see lib/mockCloud.mjs's own comment) and
+// the source of intermittent 401/409 console errors this suite saw.
+await installMockCloud(page);
 await page.goto(target.url, { waitUntil: "networkidle" });
 await page.waitForSelector("#app", { state: "visible" });
 

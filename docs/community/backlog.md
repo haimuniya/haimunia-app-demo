@@ -16,10 +16,21 @@ Phase 1 Community V1.
 
 Phase 0 status: pushed on branch `community/phase-0`, commit 3977b85. CI:
 node-tests pass, browser-checks pass, migration-check applied all 13
-migrations against a real Postgres with no error. The `supabase test db`
-pgTAP step failed and is now `continue-on-error` until the suite is
-debugged, tracked as COMM-020, non-blocking. Schema is validated. Phase 1
-proceeds.
+migrations against a real Postgres with no error. Schema is validated.
+Phase 1 proceeds.
+
+Note (2026-09-02, re-verified as part of COMM-332): the paragraph above is
+Phase-0-era and stale on one point — it is kept as historical record, not
+updated in place, but this note corrects it. `.github/workflows/test.yml`'s
+`migration-check` job has never actually carried `continue-on-error` on the
+`supabase test db` step; it is a hard gate today, same as always. A prior
+same-day audit pass reported 68/1995 pgTAP failures, but that run was
+against a Supabase stack that was already up rather than a fresh
+`supabase start`/`db reset`, by its own admission. Re-run clean (`supabase
+db reset` against all 76 current migrations, then `supabase test db`):
+`Files=56, Tests=1995 ... Result: PASS`, zero failures. The gate is green;
+treat the 68-failure count as a stale-environment artifact, not a real
+regression to chase.
 
 ## Phase 0 tickets
 
@@ -2376,3 +2387,58 @@ tickets, numbered 11-14 below.
     criteria do not currently name a full WCAM re-review), or confirm a new
     ticket number should be minted for it — this planner did not invent one
     on its own, since it was not among the 17 titles given.
+
+## Design sync & audit remediation (2026-09-02)
+
+Filed from `2026-09-02-design-sync-and-cross-repo-audit.md`, a 10-agent cross-repo audit comparing this repo against `crossfit-pwa-Noam` (design reference) for visual-design parity and portable improvements, plus a top-to-bottom review of security, accessibility, performance, architecture, test coverage, and legal/content readiness. Full findings and rationale for every ticket below live in that audit doc. P2/informational findings (50 more) were intentionally left unfiled — see the audit doc's Proposed tickets sections per domain if you want those ticketed too. Two P1 findings (Noam's stale PRIVACY.md/TERMS.md and its unused cloud.js/cloud-config.js carrying live Supabase credentials) are not filed here since they belong to the `crossfit-pwa-Noam` repo, not this one's ticket system — see the audit doc directly.
+
+| ID | Title | Agent | Priority | Status |
+|---|---|---|---|---|
+| COMM-322 | Restore --shadow-sm design token | cross-cutting (UI/design) | P0 | done |
+| COMM-323 | Port Noam's card-based Settings screen redesign | cross-cutting (UI/design) | P0 | todo |
+| COMM-324 | Port Noam's two-card WOD Builder layout with pinned footer | cross-cutting (UI/design) | P0 | todo |
+| COMM-325 | Finish the .chip-btn.primary / .selected migration for filter and toggle chips | cross-cutting (UI/design) | P0 | done |
+| COMM-326 | Fix hardcoded dark popover background in post menu and mention picker | cross-cutting (UI/design) | P0 | done |
+| COMM-327 | Decide and align on one navigation pattern across both apps | cross-cutting (UI/design) | P0 | done |
+| COMM-328 | Port overlay focus-trap/Escape contract to Community's core training-log dialogs | unassigned (app.js core, outside the 15-agent community roster) | P0 | done |
+| COMM-329 | Add heading elements and landmark regions to the app shell | cross-cutting (UI/design) | P0 | partial |
+| COMM-330 | Reclassify cloud.js from REQUIRED to OPTIONAL in the service-worker precache list | platform | P0 | done |
+| COMM-331 | Defer the community data-load cascade until the Community tab is first opened | platform | P0 | done |
+| COMM-332 | Verify and fix migration-check / pgTAP CI status (COMM-020) | qa | P0 | done |
+| COMM-333 | Fix browser-check flakiness and stop run-all.mjs aborting on first failure | qa | P0 | done |
+| COMM-334 | Confirm CSP status of the real production repo (haimunia-app) and port CSP headers to it | unassigned (separate repo, outside this workspace) | P0 | todo |
+| COMM-335 | Finish legal essentials in PRIVACY.md / TERMS.md and remove draft language | identity-privacy | P0 | todo |
+| COMM-336 | Extend PRIVACY.md to disclose photos, comments, follows, and admin-visible data | identity-privacy | P0 | done |
+| COMM-337 | Move hosting off GitHub Pages (or add an edge layer) to enable clickjacking headers | platform | P1 | todo |
+| COMM-338 | Run the pgTAP suite in CI and add a multi-role live smoke test before deploy | qa | P1 | todo |
+| COMM-339 | Reset confirmClear when the Settings modal closes | unassigned (app.js core, outside the 15-agent community roster) | P1 | todo |
+| COMM-340 | Add interactive-widget=resizes-content to the viewport meta | unassigned (app.js core, outside the 15-agent community roster) | P1 | todo |
+| COMM-341 | Add a monthly stats summary, legend, and card chrome to the calendar screen | cross-cutting (UI/design) | P1 | todo |
+| COMM-342 | Fix reversed prev/next month chevron icons on the calendar | cross-cutting (UI/design) | P1 | todo |
+| COMM-343 | Port the chosen/unchosen exercise-select state and stat-hero cards to the Home/log screen | cross-cutting (UI/design) | P1 | todo |
+| COMM-344 | Fix onboarding modal subtitle to match the 5 screens now listed | cross-cutting (UI/design) | P1 | todo |
+| COMM-345 | Give the notification bell a consistent icon-button class matching the nav-menu button | cross-cutting (UI/design) | P1 | todo |
+| COMM-346 | Add a .chip-btn.danger modifier and remove inline destructive-button styling | cross-cutting (UI/design) | P1 | todo |
+| COMM-347 | Promote high-traffic classless inline components in cloud.js into real CSS classes | cross-cutting (UI/design) | P1 | todo |
+| COMM-348 | Give .post-media-grid an actual grid layout | cross-cutting (UI/design) | P1 | todo |
+| COMM-349 | Migrate the remaining 8 dialogs onto Community's dialog registry and narrow the focusable selector | unassigned (app.js core, outside the 15-agent community roster) | P1 | todo |
+| COMM-350 | Reconcile active-tab visual language once Community's nav IA is final | cross-cutting (UI/design) | P1 | todo |
+| COMM-351 | Reconcile --shadow-card formula across repos | cross-cutting (UI/design) | P1 | todo |
+| COMM-352 | Restore the --text-scale token and unify the Large Text magnitude | cross-cutting (UI/design) | P1 | todo |
+| COMM-353 | Align .page-title typography treatment | cross-cutting (UI/design) | P1 | todo |
+| COMM-354 | Reconcile the --steel token value between repos | cross-cutting (UI/design) | P1 | todo |
+| COMM-355 | Preserve the cloud-aware backup staleness threshold when porting the Settings redesign | cross-cutting (UI/design) | P1 | todo |
+| COMM-356 | Give the challenge-joined status its own tag style instead of overriding .admin-tag | cross-cutting (UI/design) | P1 | todo |
+| COMM-357 | Replace hardcoded rgba tints in announcement badges and coach comment highlight with color-mix() | cross-cutting (UI/design) | P1 | todo |
+| COMM-358 | Add roving-tabindex and Arrow-key support to all role="tablist" groups | cross-cutting (UI/design) | P1 | todo |
+| COMM-359 | Give the est-1RM trend chart an accessible name or data alternative | cross-cutting (UI/design) | P1 | todo |
+| COMM-360 | Default selectedId/selectedWodId to unset with an explicit pick-one empty state | unassigned (app.js core, outside the 15-agent community roster) | P1 | todo |
+| COMM-361 | Darken light-theme --brass or add a higher-contrast text variant | cross-cutting (UI/design) | P1 | todo |
+| COMM-362 | Add a session-expiry / refresh-failure auth test | qa | P1 | todo |
+| COMM-363 | Add browser-check scenarios for post composition and report moderation | qa | P1 | todo |
+| COMM-364 | Add a quota-exceeded regression test for noteStorageError | qa | P1 | todo |
+| COMM-365 | Namespace cloud.js's flat state object by feature domain | platform | P1 | todo |
+| COMM-366 | Spike scoped/keyed rendering as an alternative to cloud.js's full-tree innerHTML rerender | platform | P1 | todo |
+| COMM-367 | Remove the duplicate safeText() implementation in cloud.js, use the shared esc() | platform | P1 | todo |
+| COMM-368 | Extract shared low-level safety helpers into a package or submodule used by both repos | platform | P1 | todo |
+| COMM-369 | Backfill CHANGES.md with the missing 2026-08-28 through 2026-09-01 entries | planner | P1 | todo |

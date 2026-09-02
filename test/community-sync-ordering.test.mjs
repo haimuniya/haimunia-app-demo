@@ -29,6 +29,13 @@ test("refreshSession() flushes the outbox before pulling private records, same a
   assert.ok(flushAt < pullAt, "flushOutbox() must run before pullPrivateRecords(), or a pending local edit gets silently overwritten by the stale remote copy");
 });
 
+// COMM-331 restructured this handler: the deferred feed/streaks/etc.
+// cascade moved into ensureCommunityDataLoaded() (see cloud.js's own
+// comment on it and on afterRenderCommunity()), and flushOutbox() moved
+// inside the Promise.all alongside loadProfile()/loadChallenges()/
+// loadClubFeatures() (all three kept eager - see the same comment for
+// why). The flush-before-pull invariant this test guards still has to
+// hold on the sign-in path.
 test("the onAuthStateChange path still flushes before pulling too (regression guard, not just refreshSession)", () => {
-  assert.match(src, /flushOutbox\(\)\]\)\)\s*\n\s*\.then\(\(\) => \(isStaff\(\)[\s\S]*?\.then\(\(\) => \(isAdmin\(\)[\s\S]*?\.then\(pullPrivateRecords\)/);
+  assert.match(src, /Promise\.all\(\[loadProfile\(\), loadChallenges\(\), loadClubFeatures\(\), flushOutbox\(\)\]\)\)\s*\n\s*\.then\(pullPrivateRecords\)/);
 });

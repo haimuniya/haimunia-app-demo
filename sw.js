@@ -2,7 +2,7 @@
 // Version is the single source of truth for the cache name — bumping
 // APP_VERSION in app.js is what ships an update. Don't edit SW_VERSION by
 // hand: run `npm run sync-version` (see app.js) to copy it here.
-const SW_VERSION = "4.0.0";
+const SW_VERSION = "4.0.1";
 // "haimunia-demo-v..." — deliberately distinct from the production app's
 // own "haimunia-v..." cache prefix. Both service workers are scoped to
 // the same origin (haimuniya.github.io), and the activate handler below
@@ -11,30 +11,37 @@ const SW_VERSION = "4.0.0";
 // app's cached assets (Cache Storage is origin-wide, not scoped per SW).
 const CACHE = `haimunia-demo-v${SW_VERSION}`;
 
-// Required: the app cannot render/run offline without these. A miss here
-// fails the whole install (the old service worker — and its own cache —
+// Required: the offline training log cannot render/run without these. A miss
+// here fails the whole install (the old service worker — and its own cache —
 // stays in control, per the Cache/Service Worker spec's normal failed-
-// install behavior), rather than silently activating a shell that's
-// missing its own HTML or JS.
+// install behavior), rather than silently activating a shell that's missing
+// its own HTML or JS. src/constants.js, format.js, sanitize.js and db.js are
+// core dependencies app.js calls unconditionally (sanitizers, esc(), uid(),
+// openDB()) — there's no guard around them, so they stay required.
 const REQUIRED_ASSETS = [
   "./",
   "./index.html",
   "./app.js",
   "./theme-init.js",
-  "./cloud.js",
-  "./src/eventbus.js",
-  "./src/analytics.js",
-  "./src/realtime.js",
-  "./src/image.js",
   "./src/constants.js",
   "./src/format.js",
   "./src/sanitize.js",
   "./src/db.js",
 ];
-// Optional: visual/informational assets — a miss degrades the experience
-// (a font falls back, an icon is missing) but never breaks the app, so
-// install still proceeds without them.
+// Optional: everything the core offline training log tolerates being absent
+// (a font falls back, an icon is missing, the Community tab shows its own
+// loading/error state) — a miss degrades that one feature but never breaks
+// install or the core app. cloud.js and its community-only src/* deps belong
+// here: app.js already guards every cloud.js integration point defensively
+// (e.g. `typeof renderCommunityApp === "function"`, and PR-created events
+// wrap `bus.emit(...)` in a try/catch), so a failed fetch of any of these
+// must not take down offline support for the training log too.
 const OPTIONAL_ASSETS = [
+  "./cloud.js",
+  "./src/eventbus.js",
+  "./src/analytics.js",
+  "./src/realtime.js",
+  "./src/image.js",
   "./vendor/supabase.js",
   "./PRIVACY.md",
   "./TERMS.md",

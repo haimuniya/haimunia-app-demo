@@ -268,6 +268,10 @@ test("notification_opened fires once per opened row and carries the type, not th
   });
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openCommunity(window);
+  // COMM-331: the club-top card (and its bell button) only renders once
+  // state.club loads via the deferred ensureCommunityDataLoaded(), not the
+  // instant .subtabbar does - wait for the bell itself first.
+  await waitFor(() => !!window.document.querySelector('[data-community-action="feed-notifications"]'), 4000);
   window.document.querySelector('[data-community-action="feed-notifications"]').click();
   await waitFor(() => !!window.document.querySelector('[data-community-action="notif-open"]'), 4000);
 

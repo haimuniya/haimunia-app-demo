@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.0.0";
+const APP_VERSION = "4.0.1";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -73,14 +73,36 @@ let tab = VALID_TABS.includes(urlTab) ? urlTab : "add";
 // ICONS, which isn't defined until much later in this file - a function
 // body doesn't run until called, well after the whole script has loaded,
 // so the forward reference is safe the same way fieldMax's is.
+// COMM-327. `main: true` marks the 4 offline training-log tabs, which get
+// their own always-visible bottom tab bar (renderBottomTabBar below) - a
+// deliberate mix of Noam's all-in-the-bottom-bar design and Community's
+// hamburger, not a full port of either: Community needs a full-page sub-nav
+// of its own once signed in, not a single tap target, so it (and only it)
+// stays in the hamburger menu (renderNavRows' onlyOther filter).
 function getNavItems() {
   return [
-    { id: "add", tab: "add", rowId: "tabAddBtn", label: "רישום", tint: "energy", icon: ICONS.logIcon },
-    { id: "history", tab: "history", rowId: "tabHistoryBtn", label: "התקדמות", tint: "blue", icon: ICONS.chartIcon },
-    { id: "calendar", tab: "calendar", rowId: "tabCalendarBtn", label: "לוח שנה", tint: "yellow", icon: ICONS.calendarIcon },
-    { id: "wod", tab: "wod", rowId: "tabWodBtn", label: "אימונים", tint: "purple", icon: ICONS.stopwatchIcon },
-    { id: "community", tab: "community", rowId: "tabCommunityBtn", label: "קהילה", tint: "teal", icon: ICONS.communityIcon },
+    { id: "add", tab: "add", rowId: "tabAddBtn", label: "רישום", tint: "energy", icon: ICONS.logIcon, main: true },
+    { id: "history", tab: "history", rowId: "tabHistoryBtn", label: "התקדמות", tint: "blue", icon: ICONS.chartIcon, main: true },
+    { id: "calendar", tab: "calendar", rowId: "tabCalendarBtn", label: "לוח שנה", tint: "yellow", icon: ICONS.calendarIcon, main: true },
+    { id: "wod", tab: "wod", rowId: "tabWodBtn", label: "אימונים", tint: "purple", icon: ICONS.stopwatchIcon, main: true },
+    { id: "community", tab: "community", rowId: "tabCommunityBtn", label: "קהילה", tint: "teal", icon: ICONS.communityIcon, main: false },
   ];
+}
+// The fixed bottom tab bar (#bottomTabBar, index.html) - one tap to any of
+// the 4 main tabs. Bare icon + label, matching Noam's .tabbtn treatment,
+// not the icon-chip/list-row look renderNavRows below uses for the
+// hamburger menu and desktop sidebar. Regenerated on every render() call,
+// same "always regenerated, just glued into a fixed container" treatment
+// renderNavMenuList/renderSettingsBody already rely on.
+function renderBottomTabBar() {
+  return getNavItems().filter((item) => item.main).map((item) => {
+    const isActive = tab === item.tab;
+    return `
+      <button class="tabbtn${isActive ? " active" : ""}" id="${item.rowId}" data-action="switch-tab" data-tab="${item.tab}" role="tab" aria-selected="${isActive}" aria-controls="content">
+        ${item.icon}
+        <span>${esc(item.label)}</span>
+      </button>`;
+  }).join("");
 }
 // Renders the nav menu's user-info card + the 5 primary rows (+ Community's
 // own sub-tab preview, when signed in). Called unconditionally from
@@ -107,10 +129,16 @@ function renderNavWho() {
 // "tabbtn" class cloud.js's Community-tab-left detector needs - see the
 // comment inline below); the desktop copy renders withIds=false so the two
 // surfaces never produce duplicate DOM ids, using data-tab alone for the
-// click delegator, which already reads it independent of id.
-function renderNavRows(withIds) {
+// click delegator, which already reads it independent of id. onlyOther
+// (COMM-327) restricts the list to the non-main items (Community) - the
+// mobile hamburger menu uses this now that the 4 main tabs live in the
+// fixed bottom tab bar instead (renderBottomTabBar), so their ids aren't
+// duplicated between the two; the desktop sidebar still passes false and
+// shows every item, since it has no separate bottom bar to split against.
+function renderNavRows(withIds, onlyOther) {
   const communitySignedIn = typeof window.isCommunitySignedIn === "function" && window.isCommunitySignedIn();
-  return getNavItems().map((item) => {
+  const items = onlyOther ? getNavItems().filter((item) => !item.main) : getNavItems();
+  return items.map((item) => {
     const isActive = tab === item.tab;
     let sub = "";
     if (item.id === "community" && communitySignedIn && typeof window.getCommunityNavPreview === "function") {
@@ -146,7 +174,7 @@ function renderNavRows(withIds) {
 function renderTabHeader(navId) {
   const item = getNavItems().find((i) => i.id === navId);
   if (!item) return "";
-  return `<div class="page-title">${esc(item.label)}</div>`;
+  return `<h1 class="page-title">${esc(item.label)}</h1>`;
 }
 function renderNavSettingsRow() {
   return `
@@ -158,13 +186,15 @@ function renderNavSettingsRow() {
     </button>`;
 }
 function renderNavMenuList() {
-  return renderNavWho() + renderNavRows(true) + renderNavSettingsRow();
+  return renderNavWho() + renderNavRows(true, true) + renderNavSettingsRow();
 }
 // Desktop / wide-viewport sidebar (Phase 4) - same registry, same rows,
 // same settings entry, just without the mobile-only ids (see renderNavRows
-// above) and mounted into #desktopSidebar instead of the overlay.
+// above) and mounted into #desktopSidebar instead of the overlay. Shows
+// every item (onlyOther=false) - there's no separate bottom bar at this
+// width for the main tabs to split against (COMM-327).
 function renderDesktopSidebar() {
-  return renderNavWho() + renderNavRows(false) + renderNavSettingsRow();
+  return renderNavWho() + renderNavRows(false, false) + renderNavSettingsRow();
 }
 // COMM-229. sw.js's notificationclick handler opens a fresh window at
 // ?notif=<deep link> when no app window was already open to focus (see
@@ -533,13 +563,13 @@ function renderAchievementsContent() {
 
   const prSections = ACHIEVEMENT_PR_CATEGORIES.map((cat) => `
     <div class="ach-section">
-      <div class="ach-section-head"><span class="ach-section-dot" style="background:${CATEGORY_COLORS[cat]};"></span><span class="ach-section-title">${esc(CATEGORY_LABELS[cat])}</span></div>
+      <div class="ach-section-head"><span class="ach-section-dot" style="background:${CATEGORY_COLORS[cat]};"></span><h2 class="ach-section-title">${esc(CATEGORY_LABELS[cat])}</h2></div>
       <div class="ach-row">${ACHIEVEMENTS.filter((a) => a.group === "pr" && a.cat === cat).map((a) => renderMedal(a, earnedMap[a.id])).join("")}</div>
     </div>`).join("");
 
   const streakSection = `
     <div class="ach-section">
-      <div class="ach-section-head"><span class="ach-section-dot" style="background:var(--energy);"></span><span class="ach-section-title">רצף אימונים</span></div>
+      <div class="ach-section-head"><span class="ach-section-dot" style="background:var(--energy);"></span><h2 class="ach-section-title">רצף אימונים</h2></div>
       <div class="ach-row">${ACHIEVEMENTS.filter((a) => a.group === "streak").map((a) => renderMedal(a, earnedMap[a.id])).join("")}</div>
     </div>`;
 
@@ -551,14 +581,14 @@ function renderAchievementsContent() {
 
   const milestoneSection = `
     <div class="ach-section">
-      <div class="ach-section-head"><span class="ach-section-dot" style="background:var(--brass);"></span><span class="ach-section-title">אבני דרך</span></div>
+      <div class="ach-section-head"><span class="ach-section-dot" style="background:var(--brass);"></span><h2 class="ach-section-title">אבני דרך</h2></div>
       ${boxStartPrompt}
       <div class="ach-grid">${ACHIEVEMENTS.filter((a) => a.group === "milestone").map((a) => renderMedal(a, earnedMap[a.id])).join("")}</div>
     </div>`;
 
   const rxSection = `
     <div class="ach-section">
-      <div class="ach-section-head"><span class="ach-section-dot" style="background:var(--blue);"></span><span class="ach-section-title">Rx לכל אימון</span></div>
+      <div class="ach-section-head"><span class="ach-section-dot" style="background:var(--blue);"></span><h2 class="ach-section-title">Rx לכל אימון</h2></div>
       <div class="ach-grid">${ACHIEVEMENTS.filter((a) => a.group === "rx").map((a) => renderMedal(a, earnedMap[a.id])).join("")}</div>
     </div>`;
 
@@ -578,14 +608,19 @@ function renderAchievementsContent() {
     ${prSections}${streakSection}${milestoneSection}${rxSection}
   `;
 }
+let achievementsOpenerEl = null;
 function openAchievements() {
+  achievementsOpenerEl = document.activeElement;
   document.body.style.overflow = "hidden";
   document.getElementById("achievementsOverlay").classList.add("open");
   document.getElementById("achievementsList").innerHTML = renderAchievementsContent();
+  setTimeout(() => focusFirstAppDialogEl("achievementsOverlay"), 50);
 }
 function closeAchievements() {
   document.body.style.overflow = "";
   document.getElementById("achievementsOverlay").classList.remove("open");
+  if (achievementsOpenerEl && typeof achievementsOpenerEl.focus === "function") achievementsOpenerEl.focus();
+  achievementsOpenerEl = null;
 }
 
 // Which badges the athlete has already been shown a celebration for, so a
@@ -678,6 +713,7 @@ function celebrateAfterSave(prLabel) {
   if (newBadges.length) dbSetSetting(SEEN_ACHIEVEMENTS_KEY, [...seenAchievementIds]).catch(noteStorageError);
   showCelebration(prLabel, newBadges);
 }
+let celebrationOpenerEl = null;
 function showCelebration(prLabel, badges) {
   const title = document.getElementById("celebrationTitle");
   if (title) title.textContent = badges.length ? "כל הכבוד!" : "שיא אישי חדש!";
@@ -706,11 +742,15 @@ function showCelebration(prLabel, badges) {
       : "תמשיכו ככה!";
   }
   document.body.style.overflow = "hidden";
+  celebrationOpenerEl = document.activeElement;
   document.getElementById("celebrationOverlay").classList.add("open");
+  setTimeout(() => focusFirstAppDialogEl("celebrationOverlay"), 50);
 }
 function closeCelebration() {
   document.body.style.overflow = "";
   document.getElementById("celebrationOverlay").classList.remove("open");
+  if (celebrationOpenerEl && typeof celebrationOpenerEl.focus === "function") celebrationOpenerEl.focus();
+  celebrationOpenerEl = null;
 }
 
 // ---------- Update notifications ----------
@@ -793,15 +833,20 @@ function updateNotificationsBadge() {
   badge.textContent = count > 9 ? "9+" : String(count);
   badge.style.display = count > 0 ? "flex" : "none";
 }
+let notificationsOpenerEl = null;
 function openNotifications() {
+  notificationsOpenerEl = document.activeElement;
   renderNotificationsList();
   document.body.style.overflow = "hidden";
   document.getElementById("notificationsOverlay").classList.add("open");
   if (unseenReleaseNotes().length) { markNotificationsSeen(); updateNotificationsBadge(); }
+  setTimeout(() => focusFirstAppDialogEl("notificationsOverlay"), 50);
 }
 function closeNotifications() {
   document.body.style.overflow = "";
   document.getElementById("notificationsOverlay").classList.remove("open");
+  if (notificationsOpenerEl && typeof notificationsOpenerEl.focus === "function") notificationsOpenerEl.focus();
+  notificationsOpenerEl = null;
 }
 
 // ---------- First-time onboarding ----------
@@ -813,15 +858,20 @@ async function loadOnboardedFlag() {
     hasOnboarded = v === true;
   } catch (e) { hasOnboarded = true; }
 }
+let onboardingOpenerEl = null;
 function openOnboarding() {
+  onboardingOpenerEl = document.activeElement;
   document.body.style.overflow = "hidden";
   document.getElementById("onboardingOverlay").classList.add("open");
+  setTimeout(() => focusFirstAppDialogEl("onboardingOverlay"), 50);
 }
 function closeOnboarding() {
   hasOnboarded = true;
   dbSetSetting(HAS_ONBOARDED_KEY, true).catch(noteStorageError);
   document.body.style.overflow = "";
   document.getElementById("onboardingOverlay").classList.remove("open");
+  if (onboardingOpenerEl && typeof onboardingOpenerEl.focus === "function") onboardingOpenerEl.focus();
+  onboardingOpenerEl = null;
 }
 
 async function addMovement(name, category) {
@@ -1236,8 +1286,10 @@ function renderUserGreeting() {
   else el.removeAttribute("aria-label");
 }
 let welcomeEditing = false;
+let welcomeOpenerEl = null;
 function openWelcomeModal(editing) {
   welcomeEditing = !!editing;
+  welcomeOpenerEl = document.activeElement;
   document.body.style.overflow = "hidden";
   const overlay = document.getElementById("welcomeOverlay");
   if (overlay) overlay.classList.add("open");
@@ -1267,6 +1319,8 @@ function closeWelcomeModal() {
   document.body.style.overflow = "";
   const overlay = document.getElementById("welcomeOverlay");
   if (overlay) overlay.classList.remove("open");
+  if (welcomeOpenerEl && typeof welcomeOpenerEl.focus === "function") welcomeOpenerEl.focus();
+  welcomeOpenerEl = null;
 }
 function saveUserName(name) {
   const trimmed = cleanStr(name, LIMITS.nameLen);
@@ -1736,8 +1790,10 @@ async function deleteCustomWod(id) {
 }
 
 // ---------- WOD builder ----------
+let wodBuilderOpenerEl = null;
 function openWodBuilder(prefillName) {
   wodBuilderOpen = true;
+  wodBuilderOpenerEl = document.activeElement;
   builderFormat = null;
   builderMovements = bag();
   builderMoveSearch = "";
@@ -1755,12 +1811,15 @@ function openWodBuilder(prefillName) {
   if (moveSearch) moveSearch.value = "";
   renderWodBuilderMovements("");
   renderWodBuilderFormats();
+  setTimeout(() => focusFirstAppDialogEl("wodBuilderOverlay"), 50);
 }
 function closeWodBuilder() {
   wodBuilderOpen = false;
   document.body.style.overflow = "";
   const overlay = document.getElementById("wodBuilderOverlay");
   if (overlay) overlay.classList.remove("open");
+  if (wodBuilderOpenerEl && typeof wodBuilderOpenerEl.focus === "function") wodBuilderOpenerEl.focus();
+  wodBuilderOpenerEl = null;
 }
 function renderWodBuilderFormats() {
   document.querySelectorAll("#wodBuilderFormats .format-chip").forEach((btn) => {
@@ -2797,9 +2856,17 @@ function renderHistoryTab() {
 function renderSettingsBody() {
   const hasData = entries.length || wodEntries.length || bodyweightEntries.length || measureTypes.length;
   const days = daysSinceLastExport();
-  const staleBackupNote = hasData && (days === null || days >= 30)
+  // iOS evicts unvisited IndexedDB after ~7 days; a local export is the
+  // only safety net for someone not already covered by automatic cloud
+  // backup, so their threshold has to sit under that window. Someone
+  // already synced to the cloud has a real copy elsewhere, so the local
+  // export nudge stays the old, far less urgent 30-day cadence.
+  const cloudCovered = typeof window.cloudSyncActive === "function" && window.cloudSyncActive();
+  const staleThreshold = cloudCovered ? 30 : 5;
+  const staleBackupNote = hasData && (days === null || days >= staleThreshold)
     ? `<div class="footer-note" style="color:var(--yellow); margin-bottom:8px;">${esc(days === null ? "עדיין לא ביצעתם גיבוי" : `הגיבוי האחרון לפני ${days} ימים`)} — ייצוא גיבוי למטה</div>`
     : "";
+  const backupSettingsPanel = typeof window.renderBackupSettingsPanel === "function" ? window.renderBackupSettingsPanel() : "";
   return `
     <div class="footer" style="margin-top:0;">
       <div class="divider-label" style="padding-top:0;">פרופיל</div>
@@ -2812,6 +2879,11 @@ function renderSettingsBody() {
         ${renderThemeRow()}
         ${renderTextScaleRow()}
       </div>
+
+      ${backupSettingsPanel ? `<div class="divider-label">הגנה על הנתונים שלי</div>
+      <div class="card" style="margin-bottom:18px;">
+        ${backupSettingsPanel}
+      </div>` : ""}
 
       <div class="divider-label">נתונים וגיבוי</div>
       <div class="card" style="margin-bottom:18px;">
@@ -3053,6 +3125,11 @@ function render() {
   if (desktopSidebarEl) {
     try { desktopSidebarEl.innerHTML = renderDesktopSidebar(); }
     catch (err) { console.error("desktop sidebar render error:", err); }
+  }
+  const bottomTabBarEl = document.getElementById("bottomTabBar");
+  if (bottomTabBarEl) {
+    try { bottomTabBarEl.innerHTML = renderBottomTabBar(); }
+    catch (err) { console.error("bottom tab bar render error:", err); }
   }
   document.getElementById("bottomBar").style.display = (tab === "add" || (tab === "wod" && wodSubTab === "log" && wodById(selectedWodId))) ? "flex" : "none";
   updateStreakLabel();
@@ -3372,8 +3449,10 @@ function syncPickerViewport() {
 if (window.visualViewport) {
   window.visualViewport.addEventListener("resize", () => { if (pickerOpen) syncPickerViewport(); });
 }
+let pickerOpenerEl = null;
 function openPicker(target) {
   pickerOpen = true;
+  pickerOpenerEl = document.activeElement;
   pickerTarget = target === "partner" ? "partner" : "primary";
   document.body.style.overflow = "hidden";
   syncPickerViewport();
@@ -3408,20 +3487,22 @@ function closePicker() {
   pickerOpen = false;
   document.body.style.overflow = "";
   document.getElementById("pickerOverlay").classList.remove("open");
+  if (pickerOpenerEl && typeof pickerOpenerEl.focus === "function") pickerOpenerEl.focus();
+  pickerOpenerEl = null;
 }
 
 // ---- Shared Escape + Tab-trap for app.js's own full-page overlays ----
-// None of app.js's existing dialogs (picker, WOD picker/builder,
-// celebration, achievements, notifications, onboarding) have ever had
-// Escape-to-close or focus trapping - only a hand-copied backdrop-click
-// guard each. cloud.js has a real contract for its own dialogs (COMM-190)
-// but it's private to cloud.js's closure with no hook for app.js to
-// register into. The nav menu is the single highest-traffic surface in
-// the app - it replaces primary navigation and is tapped on every tab
-// switch - so it gets a real one; the existing dialogs are left as they
-// are for now rather than migrated in the same change.
+// COMM-328. Originally only the nav menu and Settings were wired into this
+// (see history) - the other 8 dialogs (picker, WOD picker/builder,
+// celebration, achievements, notifications, onboarding, welcome) had only a
+// hand-copied backdrop-click guard each, no Escape-to-close or focus
+// trapping. All 8 are registered below, alongside navMenu/settings.
+// escapable defaults true; onboarding/welcome opt out (def.escapable =
+// false) since they're a first-run flow meant to be stepped through
+// deliberately, not dismissed by an accidental Escape - they still get the
+// Tab trap and focus restore, just not the close-on-Escape behavior.
 const APP_DIALOGS = {};
-function registerAppDialog(key, def) { APP_DIALOGS[key] = def; }
+function registerAppDialog(key, def) { APP_DIALOGS[key] = Object.assign({ escapable: true }, def); }
 function currentAppDialog() {
   for (const key in APP_DIALOGS) { if (APP_DIALOGS[key].isOpen()) return APP_DIALOGS[key]; }
   return null;
@@ -3429,7 +3510,11 @@ function currentAppDialog() {
 function appDialogFocusables(overlayId) {
   const el = document.getElementById(overlayId);
   if (!el) return [];
-  return Array.from(el.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+  // a[href], not the bare [href] this used to be - a non-interactive
+  // <use href="#glyphN"> (the achievements panel's medal SVGs) matches a
+  // bare [href] selector too, which would have put a decorative SVG
+  // fragment reference into the Tab trap.
+  return Array.from(el.querySelectorAll('button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
     .filter((n) => !n.disabled && n.getClientRects().length > 0);
 }
 function focusFirstAppDialogEl(overlayId) {
@@ -3439,7 +3524,7 @@ function focusFirstAppDialogEl(overlayId) {
 document.addEventListener("keydown", (e) => {
   const dlg = currentAppDialog();
   if (!dlg) return;
-  if (e.key === "Escape") { e.preventDefault(); dlg.close(); return; }
+  if (e.key === "Escape") { if (dlg.escapable) { e.preventDefault(); dlg.close(); } return; }
   if (e.key !== "Tab") return;
   const focusables = appDialogFocusables(dlg.overlayId);
   if (!focusables.length) return;
@@ -3487,6 +3572,22 @@ function closeSettings() {
   settingsOpenerEl = null;
 }
 registerAppDialog("settings", { overlayId: "settingsOverlay", isOpen: () => settingsOpen, close: closeSettings });
+// COMM-328. The remaining 8 dialogs (picker/wodPicker/wodBuilder use their
+// own boolean state var, already tracked for other reasons; the other 5
+// have no boolean of their own, so isOpen reads the overlay's own "open"
+// class - the same source of truth their existing open()/close() pair
+// already used). onboarding and welcome opt out of Escape-to-close: both
+// are a first-run flow meant to be stepped through deliberately, not
+// dismissed by an accidental Escape - they still get the Tab trap and
+// focus restore, just not the close-on-Escape behavior.
+registerAppDialog("picker", { overlayId: "pickerOverlay", isOpen: () => pickerOpen, close: closePicker });
+registerAppDialog("wodPicker", { overlayId: "wodPickerOverlay", isOpen: () => wodPickerOpen, close: closeWodPicker });
+registerAppDialog("wodBuilder", { overlayId: "wodBuilderOverlay", isOpen: () => wodBuilderOpen, close: closeWodBuilder });
+registerAppDialog("achievements", { overlayId: "achievementsOverlay", isOpen: () => document.getElementById("achievementsOverlay").classList.contains("open"), close: closeAchievements });
+registerAppDialog("celebration", { overlayId: "celebrationOverlay", isOpen: () => document.getElementById("celebrationOverlay").classList.contains("open"), close: closeCelebration });
+registerAppDialog("notifications", { overlayId: "notificationsOverlay", isOpen: () => document.getElementById("notificationsOverlay").classList.contains("open"), close: closeNotifications });
+registerAppDialog("onboarding", { overlayId: "onboardingOverlay", isOpen: () => document.getElementById("onboardingOverlay").classList.contains("open"), close: closeOnboarding, escapable: false });
+registerAppDialog("welcome", { overlayId: "welcomeOverlay", isOpen: () => document.getElementById("welcomeOverlay").classList.contains("open"), close: closeWelcomeModal, escapable: false });
 
 function renderPickerList(query) {
   const q = query.toLowerCase();
@@ -3536,8 +3637,10 @@ if (window.visualViewport) {
     }
   });
 }
+let wodPickerOpenerEl = null;
 function openWodPicker() {
   wodPickerOpen = true;
+  wodPickerOpenerEl = document.activeElement;
   document.body.style.overflow = "hidden";
   syncWodPickerViewport();
   document.getElementById("wodPickerOverlay").classList.add("open");
@@ -3550,6 +3653,8 @@ function closeWodPicker() {
   wodPickerOpen = false;
   document.body.style.overflow = "";
   document.getElementById("wodPickerOverlay").classList.remove("open");
+  if (wodPickerOpenerEl && typeof wodPickerOpenerEl.focus === "function") wodPickerOpenerEl.focus();
+  wodPickerOpenerEl = null;
 }
 function renderWodPickerList(query) {
   const q = query.toLowerCase();
@@ -3672,6 +3777,30 @@ window.addEventListener("appinstalled", () => {
   dismissInstallBanner();
 });
 
+// iOS Safari never fires beforeinstallprompt, so showInstallBanner() above
+// never appears there — the exact device where NOT being on the home
+// screen matters most, since Safari evicts a site's IndexedDB after ~7
+// days without a visit (home-screen installs get their own separate,
+// much longer-lived clock instead). This is a second, independent banner
+// with its own dismissal, not a variant of the Chrome/Android one, since
+// there's no deferred prompt to trigger here — only instructions.
+const IOS_INSTALL_DISMISS_KEY = "haimunia-demo:iosInstallDismissed";
+function isIOSDevice() {
+  const ua = navigator.userAgent || "";
+  return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+function maybeShowIOSInstallBanner() {
+  if (!isIOSDevice() || isStandalone()) return;
+  try { if (localStorage.getItem(IOS_INSTALL_DISMISS_KEY)) return; } catch (e) {}
+  const el = document.getElementById("iosInstallBanner");
+  if (el) el.style.display = "block";
+}
+function dismissIOSInstallBanner() {
+  const el = document.getElementById("iosInstallBanner");
+  if (el) el.style.display = "none";
+  try { localStorage.setItem(IOS_INSTALL_DISMISS_KEY, "1"); } catch (e) {}
+}
+
 // ---------- Event delegation ----------
 document.addEventListener("click", (e) => {
   const el = e.target.closest("[data-action]");
@@ -3684,6 +3813,7 @@ document.addEventListener("click", (e) => {
   if (action === "reload-app") { applyUpdate(); }
   else if (action === "install-app") { installApp(); }
   else if (action === "dismiss-install-hint") { dismissInstallBanner(); }
+  else if (action === "dismiss-ios-install-hint") { dismissIOSInstallBanner(); }
   else if (action === "switch-tab") { tab = el.dataset.tab; closeNavMenu(); render(); }
   else if (action === "switch-tab-community-sub") {
     tab = "community";
@@ -3986,6 +4116,14 @@ async function init() {
   document.getElementById("app").style.display = "block";
   renderUserGreeting();
   render();
+  maybeShowIOSInstallBanner();
+
+  // No hard guarantee, but real-world reports say it measurably reduces
+  // iOS's odds of evicting IndexedDB under storage pressure. Best-effort:
+  // some browsers/contexts don't expose this at all.
+  if (navigator.storage && navigator.storage.persist) {
+    navigator.storage.persist().catch(() => {});
+  }
 
   // Bootstrap flags that predate this device ever tracking them. A device
   // with real data/a name already existed before update-notifications and

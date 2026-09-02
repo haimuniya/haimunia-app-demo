@@ -14,8 +14,23 @@ const html = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
 
 test("the app shell's own core files are required precache assets", () => {
   const requiredBlock = sw.slice(sw.indexOf("const REQUIRED_ASSETS"), sw.indexOf("const OPTIONAL_ASSETS"));
-  for (const asset of ['"./"', '"./index.html"', '"./app.js"', '"./theme-init.js"', '"./cloud.js"']) {
+  for (const asset of ['"./"', '"./index.html"', '"./app.js"', '"./theme-init.js"']) {
     assert.ok(requiredBlock.includes(asset), `${asset} must be in REQUIRED_ASSETS`);
+  }
+});
+
+// COMM-330: cloud.js (700KB) and its community-only src/* dependencies were
+// previously required, so a failed fetch of any of them blocked the entire
+// offline app shell — even though app.js already guards every cloud.js
+// integration point defensively (typeof checks, try/catch around bus.emit).
+// They must degrade gracefully instead: the offline training log installs
+// fully even if the community layer can't be fetched.
+test("cloud.js and its community-only src/* dependencies are optional, not required", () => {
+  const requiredBlock = sw.slice(sw.indexOf("const REQUIRED_ASSETS"), sw.indexOf("const OPTIONAL_ASSETS"));
+  const optionalBlock = sw.slice(sw.indexOf("const OPTIONAL_ASSETS"), sw.indexOf("const ASSETS ="));
+  for (const asset of ['"./cloud.js"', '"./src/eventbus.js"', '"./src/analytics.js"', '"./src/realtime.js"', '"./src/image.js"']) {
+    assert.ok(!requiredBlock.includes(asset), `${asset} must not be in REQUIRED_ASSETS`);
+    assert.ok(optionalBlock.includes(asset), `${asset} must be in OPTIONAL_ASSETS`);
   }
 });
 
@@ -29,20 +44,33 @@ test("required assets are cached with a strict Promise.all (a miss fails install
   assert.doesNotMatch(requiredLine, /\.catch\(/);
 });
 
-test("every src/*.js file index.html loads is a required precache asset", () => {
-  // app.js was split into src/*.js files (see src/db.js), loaded as their
-  // own <script> tags - a forgotten one here breaks the offline shell
-  // silently, same failure mode as a forgotten app.js. Scoped to src/
-  // rather than every <script> tag: cloud.js/vendor/supabase.js/
-  // cloud-config.js are deliberately handled differently (optional or
-  // fetched fresh - see the tests above and the cloud-config.js special
-  // case in the fetch handler), so a blanket rule would false-positive
-  // on those, not just catch a real miss.
+// COMM-330: this used to require every src/*.js file index.html loads,
+// which pulled the community-only modules (eventbus, analytics, realtime,
+// image) into REQUIRED_ASSETS alongside the true core dependencies
+// (constants, format, sanitize, db) app.js calls unconditionally. Split by
+// which ones app.js actually cannot run without.
+const CORE_SRC_SCRIPTS = ["./src/constants.js", "./src/format.js", "./src/sanitize.js", "./src/db.js"];
+
+test("every core src/*.js file (constants, format, sanitize, db) is a required precache asset", () => {
   const requiredBlock = sw.slice(sw.indexOf("const REQUIRED_ASSETS"), sw.indexOf("const OPTIONAL_ASSETS"));
   const srcScripts = [...html.matchAll(/<script src="(\.\/src\/[^"]+)"/g)].map((m) => m[1]);
   assert.ok(srcScripts.length > 0, "sanity check: index.html should load at least one ./src/*.js file to compare against");
+  for (const src of CORE_SRC_SCRIPTS) {
+    assert.ok(srcScripts.includes(src), `sanity check: index.html should still load ${src}`);
+    assert.ok(requiredBlock.includes(`"${src}"`), `${src} is a core app.js dependency but missing from REQUIRED_ASSETS`);
+  }
+});
+
+test("every src/*.js file index.html loads is precached, required or optional", () => {
+  // A forgotten src/*.js file (in neither list) would silently break the
+  // offline shell or the community layer with no install-time signal.
+  const requiredBlock = sw.slice(sw.indexOf("const REQUIRED_ASSETS"), sw.indexOf("const OPTIONAL_ASSETS"));
+  const optionalBlock = sw.slice(sw.indexOf("const OPTIONAL_ASSETS"), sw.indexOf("const ASSETS ="));
+  const srcScripts = [...html.matchAll(/<script src="(\.\/src\/[^"]+)"/g)].map((m) => m[1]);
   for (const src of srcScripts) {
-    assert.ok(requiredBlock.includes(`"${src}"`), `${src} is loaded by index.html but missing from REQUIRED_ASSETS`);
+    const inRequired = requiredBlock.includes(`"${src}"`);
+    const inOptional = optionalBlock.includes(`"${src}"`);
+    assert.ok(inRequired || inOptional, `${src} is loaded by index.html but missing from both REQUIRED_ASSETS and OPTIONAL_ASSETS`);
   }
 });
 

@@ -12,6 +12,7 @@
 import { chromium } from "playwright";
 import { resolveTarget } from "./lib/target.mjs";
 import { dismissWelcomeModal, consoleErrorCollector } from "./lib/actions.mjs";
+import { installMockCloud } from "./lib/mockCloud.mjs";
 
 let failed = false;
 function check(label, ok, detail = "") {
@@ -28,6 +29,11 @@ const browser = await chromium.launch();
 {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   const errors = await consoleErrorCollector(page);
+  // COMM-333: cloud.js boots unconditionally regardless of viewport width,
+  // and cloud-config.js points at the real, live production Supabase
+  // project - see ladder.mjs's own comment on this same call for the full
+  // reasoning (safety, and the source of intermittent 401/409s).
+  await installMockCloud(page);
   await page.goto(target.url, { waitUntil: "networkidle" });
   await page.waitForSelector("#app", { state: "visible" });
   await dismissWelcomeModal(page);
@@ -44,6 +50,11 @@ const browser = await chromium.launch();
 {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   const errors = await consoleErrorCollector(page);
+  // COMM-333: cloud.js boots unconditionally regardless of viewport width,
+  // and cloud-config.js points at the real, live production Supabase
+  // project - see ladder.mjs's own comment on this same call for the full
+  // reasoning (safety, and the source of intermittent 401/409s).
+  await installMockCloud(page);
   await page.goto(target.url, { waitUntil: "networkidle" });
   await page.waitForSelector("#app", { state: "visible" });
   await dismissWelcomeModal(page);

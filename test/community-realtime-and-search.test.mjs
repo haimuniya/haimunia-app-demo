@@ -296,6 +296,10 @@ test("COMM-227: a reaction by another member moves the count on a visible card w
   const mock = seeded({ feed_page_rows: [feedRow({ reaction_count: 1 })], reactions: [{ post_id: "p1", user_id: "u2", kind: "cheer", created_at: new Date(NOW - 600000).toISOString(), profiles: { handle: "noam", display_name: "נועם", avatar_url: null } }] });
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openCommunity(window);
+  // COMM-331: feed data now loads lazily, so [data-post-id="p1"] does not
+  // exist the instant .subtabbar does - wait for the card itself first,
+  // same pattern the comments test above this one already uses.
+  await waitFor(() => !!window.document.querySelector('[data-post-id="p1"]'), 4000);
   await waitFor(() => /1 הגבות/.test(window.document.querySelector('[data-post-id="p1"]').textContent), 4000);
 
   mock.db.reactions.push({ post_id: "p1", user_id: "u3", kind: "cheer", created_at: new Date().toISOString(), profiles: { handle: "gil", display_name: "גיל", avatar_url: null } });
@@ -314,6 +318,9 @@ test("COMM-227: a removed reaction (a DELETE payload, which carries only `old`) 
   });
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openCommunity(window);
+  // COMM-331: same reasoning as the test above - wait for the card to exist
+  // before reading its text.
+  await waitFor(() => !!window.document.querySelector('[data-post-id="p1"]'), 4000);
   await waitFor(() => /2 הגבות/.test(window.document.querySelector('[data-post-id="p1"]').textContent), 4000);
 
   mock.db.reactions = mock.db.reactions.filter((r) => r.user_id !== "u3");

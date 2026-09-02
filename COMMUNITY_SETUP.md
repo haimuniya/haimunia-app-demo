@@ -257,6 +257,12 @@ access, never from the app itself.
 
 ## Offline synchronization
 
-Local writes are authoritative while offline and enter IndexedDB's `syncOutbox`. Once authenticated and online, the outbox upserts them into owner-only `private_records`. Existing history is queued only after the user explicitly approves the migration in the Community tab.
+Local writes are authoritative while offline and enter IndexedDB's `syncOutbox`. Once authenticated and online, the outbox upserts them into owner-only `private_records`.
+
+Getting a session and getting `syncEnabled` turned on no longer requires the Community tab at all. `maybeAutoStartBackup()` (cloud.js, fired off `queueSyncRecord`'s `haimunia-sync-needed` event) creates a backup-only anonymous session the first time a member saves anything, purely to survive iOS Safari's ~7-day IndexedDB eviction for anyone who never opens Community — see PRIVACY.md and window.renderBackupSettingsPanel's Settings > "הגנה על הנתונים שלי" panel. `enableSyncIfAllowed()` flips `syncEnabled` on the moment any session exists (this path, or the ordinary Community sign-up path), unless the member explicitly opted out (`haimunia-demo:backupOptOut`). This is forward-only: it never touches anything already sitting unsynced in IndexedDB before the session existed.
+
+Existing history predating a session is still queued only after the user explicitly approves it — the "סנכרון היסטוריה פרטית" ("sync private history") action in the Community tab's Account screen, unchanged from before, still the only path that calls `queueAllLocalRecordsForSync()`.
+
+RLS-wise, `private_records` requires nothing but `user_id = auth.uid()` under role `authenticated` — no profile row, no invite redemption. Community membership (`is_community_member()`, gating the feed/posts/etc.) is a separate, unrelated requirement layered on `profiles` + `invite_redemptions`; a backup-only session never touches either.
 
 The first release uses last-write-wins timestamps. A future multi-device conflict screen should be added before supporting collaborative editing of the same workout record.

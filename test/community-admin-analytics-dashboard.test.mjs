@@ -322,11 +322,11 @@ test("the period selector's own display shows the exact dates the RPC was called
   const section = window.document.querySelector('[data-admin-analytics-dashboard="1"]');
   assert.match(section.textContent, new RegExp(calls[0].p_period_start));
   assert.match(section.textContent, new RegExp(calls[0].p_period_end));
-  // The month toggle itself gets the "primary" highlight once selected.
+  // The month toggle itself gets the "selected" highlight once selected.
   window.document.querySelector('[data-community-action="admin-analytics-mode"][data-mode="month"]').click();
   await waitFor(() => calls.length === 2, 3000);
   const monthBtn = () => window.document.querySelector('[data-community-action="admin-analytics-mode"][data-mode="month"]');
-  assert.ok(monthBtn().classList.contains("primary"));
+  assert.ok(monthBtn().classList.contains("selected"));
   const section2 = window.document.querySelector('[data-admin-analytics-dashboard="1"]');
   assert.match(section2.textContent, new RegExp(calls[1].p_period_start));
 });
