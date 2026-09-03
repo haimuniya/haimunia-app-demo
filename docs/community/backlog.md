@@ -2562,7 +2562,7 @@ Filed from `2026-09-02-design-sync-and-cross-repo-audit.md`, a 10-agent cross-re
 | COMM-335 | Finish legal essentials in PRIVACY.md / TERMS.md and remove draft language | identity-privacy | P0 | partial |
 | COMM-336 | Extend PRIVACY.md to disclose photos, comments, follows, and admin-visible data | identity-privacy | P0 | done |
 | COMM-337 | Move hosting off GitHub Pages (or add an edge layer) to enable clickjacking headers | platform | P1 | todo |
-| COMM-338 | Run the pgTAP suite in CI and add a multi-role live smoke test before deploy | qa | P1 | todo |
+| COMM-338 | Run the pgTAP suite in CI and add a multi-role live smoke test before deploy | qa | P1 | partial |
 | COMM-339 | Reset confirmClear when the Settings modal closes | unassigned (app.js core, outside the 15-agent community roster) | P1 | todo |
 | COMM-340 | Add interactive-widget=resizes-content to the viewport meta | unassigned (app.js core, outside the 15-agent community roster) | P1 | todo |
 | COMM-341 | Add a monthly stats summary, legend, and card chrome to the calendar screen | cross-cutting (UI/design) | P1 | todo |
@@ -2586,9 +2586,9 @@ Filed from `2026-09-02-design-sync-and-cross-repo-audit.md`, a 10-agent cross-re
 | COMM-359 | Give the est-1RM trend chart an accessible name or data alternative | cross-cutting (UI/design) | P1 | todo |
 | COMM-360 | Default selectedId/selectedWodId to unset with an explicit pick-one empty state | unassigned (app.js core, outside the 15-agent community roster) | P1 | todo |
 | COMM-361 | Darken light-theme --brass or add a higher-contrast text variant | cross-cutting (UI/design) | P1 | todo |
-| COMM-362 | Add a session-expiry / refresh-failure auth test | qa | P1 | todo |
-| COMM-363 | Add browser-check scenarios for post composition and report moderation | qa | P1 | todo |
-| COMM-364 | Add a quota-exceeded regression test for noteStorageError | qa | P1 | todo |
+| COMM-362 | Add a session-expiry / refresh-failure auth test | qa | P1 | done |
+| COMM-363 | Add browser-check scenarios for post composition and report moderation | qa | P1 | done |
+| COMM-364 | Add a quota-exceeded regression test for noteStorageError | qa | P1 | done |
 | COMM-365 | Namespace cloud.js's flat state object by feature domain | platform | P1 | todo |
 | COMM-366 | Spike scoped/keyed rendering as an alternative to cloud.js's full-tree innerHTML rerender | platform | P1 | todo |
 | COMM-367 | Remove the duplicate safeText() implementation in cloud.js, use the shared esc() | platform | P1 | todo |
@@ -2653,3 +2653,77 @@ dropped. This ticket cannot move to `done` until a founder or legal pass
 resolves the bracketed facts above — that sign-off, and updating the
 in-app links at `app.js:2844` to be considered launch-ready, is out of
 scope for this pass and tracked by this ticket's own acceptance criteria.
+
+COMM-338 is `partial`: two of its three acceptance criteria were already
+true, not newly shipped here — confirmed again by re-reading
+`.github/workflows/test.yml`'s `migration-check` job (unchanged since
+COMM-332 re-verified it) rather than re-running the full docker-based
+`supabase test db` stack a second time in one day. The pgTAP suite
+(`supabase/tests/`, 56 files) runs on every push against a disposable,
+migration-only database, and that step has no `continue-on-error` — a red
+RLS test fails the build. What did not exist before this pass is the
+multi-role live smoke test: `scripts/smoke-test-multi-role.mjs`, following
+the exact convention `scripts/smoke-test-anon-key.mjs` already established
+(deliberately outside `npm test` and outside CI, run by hand against a real
+project's Auth/REST endpoints over the network) — but generalized to five
+real signed-in roles (anonymous, member, coach, admin, and a
+posting-restricted "blocked" member), each asserting its own real
+permission boundary (own-row reads, `admin_grant_coach` refused for
+everyone but an admin, a restricted member's `post_create` refused, an
+admin's `mod_queue` reachable). The real gap: there is no separate staging
+project distinct from production (see `docs/community/` "supabase-live-
+project" memory) and no test accounts are provisioned anywhere yet, so this
+session did not execute the script against a live project — doing so
+without staging risks writing test data into the one real project this app
+has. Each of the four credentialed roles is skipped, not failed, when its
+`SMOKE_<ROLE>_EMAIL`/`_PASSWORD` env vars are unset, so the script is honest
+about never having been run for real rather than reporting a false pass.
+Provisioning five throwaway accounts (one per role) on a real or staging
+project and actually running this once before the next go-live is the
+remaining work, and is a decision (and a credential-handling step) for the
+project owner, not something this pass could complete unattended.
+
+COMM-362, COMM-363 and COMM-364 are `done`. COMM-362:
+`test/community-session-expiry.test.mjs` adds two tests exercising both
+halves this ticket asked for. The sync/write path: `post_create` returning
+the 401/"JWT expired" shape a real unrefreshable expired token produces
+keeps the composer open with the existing retryable error
+(`publishComposer()`'s own `if (error || !data)` branch), never a silently
+dropped post. The realtime-subscribe path: a session dying mid-session from
+a refresh failure — not a user clicking sign out — still closes every open
+realtime channel (the COMM-141 own-row notification channel) and drops the
+app back to the signed-out gate, through the exact same
+`onAuthStateChange(SIGNED_OUT)` handler every sign-out test already
+exercises via the UI button. `test/helpers/mockSupabase.mjs` gained one
+small addition for this, `expireSession()` — fires the identical
+`SIGNED_OUT` event `signOut()` does (real gotrue-js makes no distinction
+between the two triggers either), named separately purely so a reader does
+not mistake a dying session for a user action. COMM-363:
+`scripts/browser-check/community-post-composition.mjs` composes and
+publishes a post through the real composer UI end to end (real `fill`/
+`selectOption`/`click`, not synthetic events), and
+`community-report-moderation.mjs` reports a post as one member, switches to
+a head-coach session, and reviews and removes it through the real
+moderation queue — both against real Chromium, bringing the suite from 24
+scenarios to 26 (`run-all.mjs`: 26/26 passed). The "report" control turned
+out to live inside the post's "⋯" overflow menu, not directly on the card —
+worth noting since it is easy to seed a post and never find the button.
+COMM-364: `test/storage-quota-exceeded.test.mjs` mocks `dbPut()` rejecting
+with a real `QuotaExceededError` and asserts `noteStorageError()` surfaces
+the dedicated out-of-storage Hebrew message (not the generic one), that a
+genuinely different failure gets the generic message instead (no
+mislabeling), that the failure is still logged, and that a later successful
+save clears the error state — all through `saveSet()`'s real save path,
+never throwing past it. Not ported to `crossfit-pwa-Noam` in this pass — that
+is a separate repo outside this workspace, per this ticket's own optional
+"if kept in sync" wording, and not something this session touched.
+`npm test`: 946 tests, 942 passing before and after this pass's own 9 new
+tests (5 in the two files above, plus the pre-existing 3 unrelated failures
+below); browser-check: 26/26. The 3 pre-existing `npm test` failures
+(`community-engagement-ui.test.mjs`, a photo-upload test, and
+`community-inline-compare.test.mjs`, all asserting the exact literal
+`safeText(...)` template string cloud.js used to use) are unrelated to
+these four tickets — they are mid-flight fallout from another concurrent
+session's uncommitted COMM-367/COMM-368 `esc`/`safeText` consolidation
+(`src/shared/safe-helpers.js`), caught here rather than papered over, and
+belong to that work to fix, not this one.

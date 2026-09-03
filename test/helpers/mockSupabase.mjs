@@ -290,6 +290,18 @@ export function createMockSupabase(seedTables = {}) {
     callsTo(name) { return rpcCalls.filter((c) => c.name === name).map((c) => c.args); },
     setUser(u) { currentUser = u; },
     getUser() { return currentUser; },
+    // COMM-362. gotrue-js fires the exact same SIGNED_OUT event both when a
+    // caller signs out on purpose and when its own background access-token
+    // refresh fails (expired/revoked refresh token) - cloud.js's
+    // onAuthStateChange handler makes no distinction, by design, so this
+    // reuses that one code path rather than inventing a second one. Named
+    // separately from client.auth.signOut() purely so a test reads as "the
+    // session died out from under the app" rather than "the user clicked
+    // sign out" - the mechanics are identical on purpose.
+    expireSession() {
+      currentUser = null;
+      queueMicrotask(() => authCb && authCb("SIGNED_OUT", null));
+    },
     // Register how a given RPC name should behave: (args, ctx) => ({ data, error }).
     // ctx exposes { db, currentUser } so a handler can read/write mock
     // tables the same way the real Postgres function would.
