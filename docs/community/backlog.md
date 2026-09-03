@@ -32,6 +32,13 @@ db reset` against all 76 current migrations, then `supabase test db`):
 treat the 68-failure count as a stale-environment artifact, not a real
 regression to chase.
 
+Note (2026-09-03): the "Phase 1 Community V1" heading above is stale in the
+same way the paragraph below it already was — kept as historical record,
+not rewritten. Phases 1, 2, and 3 are all filed and largely shipped (see
+their own sections below); Phase 4, Registration & invite management, is
+now also filed, from a direct product-owner ask rather than a spec
+section. See "## Phase 4 tickets, Registration & invite management" below.
+
 ## Phase 0 tickets
 
 | ID | Title | Agent | Status |
@@ -2263,6 +2270,151 @@ ticket does not ask for.
 | The celebratory post | Read off the row, not the migration text: `post_type = 'POST_ANNOUNCEMENT'`, `author_id` **null**, `visibility = 'club'`, `status = 'active'`, `source_type = 'announcement'`, `source_id` = the `member_of_week.id`, `occurred_on` = `week_start`, `metadata` carrying `member_id`, `category`, `week_start` and a non-empty `title` (which `renderAnnouncementPostCard` reads *first*), and a body naming the member. `club` is verified as a real target by having another member read all five posts through `post_visible_to_viewer()`. |
 | admin_actions | One row per successful publish and none for any of the five refusals, each with `action_type = 'member_of_week_publish'`, `target_type = 'member'`, `target_id` the recognised member, `admin_id` the publishing coach, and `after_data ->> 'category'`. **For qa:** the count has to be read past `admin_actions`'s own policy — it is gated on `community.analytics.view`, which a coach does not hold, so an authenticated count reads 0 for the wrong reason. 0045 uses a `security definer` helper in the `tests` schema for exactly this. The `action_type` CHECK gained its twelfth value here, the first widening since 202608280002; `target_type` was not widened, since `'member'` already fits. |
 | member_of_week category CHECK | A closed list of the four rotation categories, asserted as the superuser, so a typo cannot invent a fifth that no rotation week would ever produce. |
+
+## Phase 4 tickets, Registration & invite management
+
+ID range COMM-370 to COMM-381. Ticket files are in
+`docs/community/tickets/`. Filed from a direct product-owner ask (not one
+of the P0/P1 spec sections a prior phase mapped from): a complete
+per-person invite system alongside the existing shared per-role code, plus
+an admin/coach management screen covering invite/code management, a member
+roster, editable onboarding-step copy, and registration-funnel analytics.
+
+**Build order: schema first, all six of COMM-370 through COMM-375, exactly
+the "schema leads each phase" pattern every earlier phase followed** —
+every client-facing ticket in this phase calls at least one function from
+this cluster. Within schema, COMM-370 and COMM-371 have no ordering
+constraint against each other (different tables, different permissions);
+COMM-372 depends on COMM-370 (`invites` must exist before
+`redeem_invite_code` can read it); COMM-373, COMM-374, and COMM-375 are
+each independent of the others but COMM-375 additionally reads the tables
+COMM-370/371 create. Recommended concrete order: COMM-370, COMM-371,
+COMM-372, COMM-373, COMM-374, COMM-375. After that: admin-moderation's four
+screens (COMM-376 through COMM-379, no ordering constraint against each
+other), identity-privacy's COMM-380 (small, unblocked once COMM-372 ships),
+then qa's COMM-381 last, the phase's merge gate, the same role
+COMM-191/234/317/338 played for every earlier phase.
+
+### schema
+
+| ID | Title | Agent | Status |
+|---|---|---|---|
+| COMM-370 | Per-person invite table and admin create/list/revoke RPCs | schema | todo |
+| COMM-371 | Shared invite-code admin RPCs | schema | todo |
+| COMM-372 | redeem_invite_code accepts a per-person invite | schema | todo |
+| COMM-373 | Editable onboarding step content | schema | todo |
+| COMM-374 | Paginated member roster RPC | schema | todo |
+| COMM-375 | Registration funnel analytics RPC | schema | todo |
+
+Full signatures, return shapes, and RLS for all six are in
+`docs/community/contracts.md` under "Needs from schema, registration and
+invite management (Phase 4)", written before any of them is built, per
+this file's own standing rule.
+
+### admin-moderation
+
+| ID | Title | Agent | Status |
+|---|---|---|---|
+| COMM-376 | Invite and code management admin screen | admin-moderation | todo |
+| COMM-377 | Member roster screen | admin-moderation | todo |
+| COMM-378 | Onboarding step content editor | admin-moderation | todo |
+| COMM-379 | Registration funnel analytics screen | admin-moderation | todo |
+
+All four are client-only, no migration. COMM-378 (onboarding-content
+editing) is assigned here rather than to coach-tools: it is admin console
+content management in the same shape as this cluster's existing pinned
+content and announcement/analytics surfaces, not a member-relationship
+action in the shape coach-tools' own tickets (Welcome, Congratulate,
+Engage, Member of the week) all are. COMM-377 explicitly reuses the
+existing member-search row renderer and the existing
+`admin_grant_coach`/`admin_revoke_coach`/`GRANTABLE_ROLES` role-change
+machinery rather than rebuilding it — the roster is a new browse entry
+point onto member management that already exists, not a second
+implementation of it. COMM-379 shares COMM-310's dashboard shell and
+period selector rather than adding a second one.
+
+### identity-privacy
+
+| ID | Title | Agent | Status |
+|---|---|---|---|
+| COMM-380 | Signup screen supports per-person invite codes | identity-privacy | todo |
+
+Small on purpose: `redeem_invite_code`'s signature does not change
+(COMM-372), so the existing code-entry screen needs no new field and no
+new branch. This ticket is the copy review and the end-to-end test for the
+new code path, plus confirming the generic "invalid" error copy still
+reads honestly now that it also covers a spent per-person invite.
+
+### qa
+
+| ID | Title | Agent | Status |
+|---|---|---|---|
+| COMM-381 | Phase 4 QA sweep and merge gate | qa | todo |
+
+Last, depends on every other Phase 4 ticket.
+
+### Open questions for this phase
+
+Numbered separately from the running "Open questions for the user" list
+below since they are scoped to this phase; each was given a reasonable
+default and built against, per this planning session's own instruction to
+not block on them, the same posture Phase 3's own open questions (11-14
+below) were given.
+
+1. **Should a per-person invite expire by default?** Built with no default
+   expiry (`expires_at` nullable, null meaning "never expires") — an admin
+   can set one per invite via `admin_invite_create`'s optional parameter,
+   but nothing forces it. Confirm whether a standing default (7 days, 30
+   days) should apply when the admin does not specify one.
+2. **Does revoking a shared code retroactively affect anyone?** No.
+   COMM-371 builds it exactly like today's unexposed behavior: deactivating
+   a code only stops future redemptions, existing `invite_redemptions` rows
+   are untouched. Confirm this is the intended meaning of "revoke" for a
+   shared code, since it is a softer action than COMM-370's per-person
+   revoke (which can only ever target an *unredeemed* invite in the first
+   place).
+3. **Should a spent per-person invite give a distinguishable error?**
+   Built to return the exact same generic `'invalid'` a wrong guess
+   returns (COMM-372), preserving `redeem_invite_code`'s existing
+   anti-enumeration property. The alternative — telling a real person
+   "this invite was already used, contact your coach" — is friendlier but
+   means the function can no longer treat "never existed" and "already
+   spent" as the same answer, which is the property the throttle design
+   leans on. Confirm the generic-answer default is acceptable, or accept
+   the friendlier, distinguishable version as a deliberate trade against
+   that property.
+4. **Should onboarding-content edits be versioned or audited beyond the
+   standing `admin_actions` log?** Built with the same one audit row per
+   edit every other staff content change in this schema gets
+   (`onboarding_content_updated`, before/after in the audit blobs) — no
+   separate version history table, no diff view. Confirm that is enough,
+   or that a full edit history is wanted for a screen only staff sees.
+5. **Should onboarding steps be literally reorderable?** Not built as
+   asked literally — see COMM-373's own note: each of the five steps'
+   timing is tied to a real-world trigger (join date, elapsed days,
+   attendance count), and `cloud.js` already documents the current fixed
+   precedence as a deliberate anti-reorder decision from COMM-222/COMM-316
+   ("letting an attendance milestone occupy that slot ahead of welcome
+   would be exactly the reorder effect the ticket's own criterion asks
+   this file to avoid"). This phase ships copy editing only. Confirm that
+   satisfies the ask, or specify what reordering would concretely mean
+   given each step's trigger is fixed (for example: a display priority
+   used only as a tie-break on the rare day two steps become due at once,
+   which the current one-slot design does not currently need since only
+   one step is ever "due" at a time by construction).
+6. **Who should be allowed to generate a per-person invite?** Built at
+   `community.member.invite`, granted coach and above (the same tier
+   `community.member.restrict` already uses) — a coach can invite someone
+   without needing an admin. Confirm that tier, versus keeping invite
+   generation admin-only like the shared-code controls.
+7. **`registration_funnel`'s `invites_issued` denominator.** Built to
+   count per-person invites only, since a shared code has no "issued"
+   event (COMM-375's own note). Confirm this reading, or specify a
+   different unified denominator (for example, treating every shared-code
+   redemption as also "issued" at the moment of redemption, which would
+   make `invites_issued` and `redeemed` for that bucket always equal and
+   the funnel's first step less informative for a club that mostly uses
+   the shared code).
 
 ## Open questions for the user
 

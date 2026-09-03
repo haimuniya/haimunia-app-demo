@@ -5888,3 +5888,240 @@ COMM-314 shipped in `202609010004` plus
 with the one mechanism change from what was promised here, is **"###
 purge_abandoned_profiles — SHIPPED"** above. Read that, not this. The
 retention-window open question is resolved: 30 days, confirmed 2026-08-31.
+
+## Needs from schema, registration and invite management (Phase 4)
+
+Not yet built. Recorded here per this file's own rule — every function is
+specified before a feature agent calls it. Tickets: COMM-370 through
+COMM-375 (schema), COMM-376 through COMM-380 (client halves).
+
+Today's starting point: `public.invite_codes` (202608270003) is a single
+shared code per role, reusable indefinitely, with **zero client grant of
+any kind** — not even select. `redeem_invite_code(p_code text, p_actor_key
+text default null)` (202608280013) is the only path in. `invite_redemptions`
+is one row per member, own-row select only. Nothing below removes or
+narrows any of that; it adds a second invite model beside it and, for the
+first time, an admin-reachable read/write path onto the shared-code table.
+
+### invites (table, COMM-370)
+
+`id uuid pk default gen_random_uuid()`, `club_id uuid not null default
+default_club_id()`, `code text not null unique check (code ~
+'^[A-Z0-9]{8}$')` (server-generated only, never client-supplied), `role
+text not null default 'member' check (role in ('member','coach'))`, `label
+text check (char_length(label) <= 120)` (optional name/phone/note, never
+shown to the invitee), `created_by uuid not null references
+auth.users(id)`, `created_at timestamptz not null default now()`,
+`expires_at timestamptz` (nullable, no expiry by default — see the backlog
+open question), `revoked_at timestamptz`, `revoked_by uuid references
+auth.users(id)`, `redeemed_at timestamptz`, `redeemed_by uuid references
+auth.users(id)`, `check (revoked_at is null or redeemed_at is null)`.
+
+- RLS enabled, **zero grant to `authenticated` or `anon`** — the same
+  "definer functions are the whole API" shape `invite_codes` already has.
+  The three functions below are the only path in or out.
+
+### admin_invite_create(p_role text, p_label text default null, p_expires_at timestamptz default null) returns public.invites (COMM-370)
+
+- Auth: `security definer`. `auth.uid()` checked first, then
+  `has_perm('community.member.invite') or is_admin()`.
+- Errors, all `P0001`: `'not authorized'`, `'invalid role'` (anything but
+  `member`/`coach`), `'label too long'` (over 120 chars), `'expiry must be
+  in the future'`.
+- Generates an 8-character uppercase-alphanumeric code server-side, retried
+  on a unique-constraint collision.
+- Side effects: one `invites` insert, `created_by = auth.uid()`. One
+  `admin_actions` row, `action_type 'invite_created'`, `target_type
+  'invite'`, `target_id` the new invite's id, `after_data {role, label,
+  expires_at}`.
+- Returns the full created row, including the code — the one point in this
+  flow the raw code is retrievable, by design (COMM-376's "shown once"
+  reveal).
+
+### admin_invite_list(p_status text default 'all', p_cursor timestamptz default null, p_limit int default 25) returns setof jsonb (COMM-370)
+
+- Auth: same pair as `admin_invite_create`.
+- `p_status` one of `all`, `pending`, `redeemed`, `revoked`, `expired`.
+  `pending`: `redeemed_at is null and revoked_at is null and (expires_at is
+  null or expires_at > now())`. `expired`: `redeemed_at is null and
+  revoked_at is null and expires_at <= now()`.
+- `p_limit` clamped 1..100, matching `admin_actions_page`'s convention.
+  Cursor-paginated on `created_at desc`.
+- Returns `{id, code, role, label, created_at, expires_at, revoked_at,
+  redeemed_at, redeemed_by, redeemed_by_display_name, redeemed_by_handle,
+  status}` per row, `status` computed the same way `p_status` filters.
+
+### admin_invite_revoke(p_invite_id uuid) returns void (COMM-370)
+
+- Auth: same pair.
+- Errors: `'not authorized'`, `'invite not found'`, `'already redeemed'`
+  (revoking a redeemed invite is refused outright, never a silent no-op).
+  Revoking an already-revoked invite is an idempotent no-op.
+- Side effects: `revoked_at = now()`, `revoked_by = auth.uid()`. One
+  `admin_actions` row, `action_type 'invite_revoked'`, `target_type
+  'invite'`.
+
+### admin_invite_code_create(p_code text, p_role text) returns public.invite_codes (COMM-371)
+
+- Auth: `security definer`. `has_perm('community.invite.manage_codes') or
+  is_admin()` — deliberately narrower than `community.member.invite`
+  above: a shared code is club-wide and standing, kept admin-tier.
+- `p_code` must match `invite_codes`' existing CHECK
+  (`^[A-Za-z0-9_-]{4,32}$`). A duplicate raises `'code already exists'`
+  rather than surfacing the bare unique-constraint text.
+- Side effects: one `invite_codes` insert, `active = true`. One
+  `admin_actions` row, `action_type 'shared_code_created'`, `target_type
+  'invite_code'`, `target_id null` (the PK is text, not uuid),
+  `after_data {code, role}`.
+
+### admin_invite_code_list() returns setof jsonb (COMM-371)
+
+- Auth: same pair as `admin_invite_code_create`.
+- Returns `{code, role, active, created_at, redemption_count}` per row,
+  `redemption_count` a `count(*)` from `invite_redemptions` for that code.
+
+### admin_invite_code_set_active(p_code text, p_active boolean) returns void (COMM-371)
+
+- Auth: same pair.
+- Side effects: updates `active`. **No retroactive effect on existing
+  redemptions** — `invite_redemptions` rows are untouched either way,
+  matching today's behaviour (deactivating only stops future
+  `redeem_invite_code` matches, which already filters on `active`). One
+  `admin_actions` row, `action_type 'shared_code_status_changed'`,
+  `target_type 'invite_code'`, `target_id null`, `after_data {code,
+  active}`.
+
+### redeem_invite_code(p_code text, p_actor_key text default null) returns text — WIDENED (COMM-372)
+
+- Signature unchanged from 202608280013. Body widened with a second lookup
+  branch, `invite_codes` still checked first (today's dominant path,
+  unchanged order).
+- New branch: when no active `invite_codes` row matches, check `invites`
+  for `code = p_code and revoked_at is null and redeemed_at is null and
+  (expires_at is null or expires_at > now())`. A match grants that
+  invite's `role`.
+- Side effects on a per-person match: the existing `invite_redemptions`
+  insert/upsert, plus `invite_redemptions.invite_id` set to the matched
+  invite's id (null for every shared-code redemption, unchanged), plus
+  `invites.redeemed_at = now()` and `invites.redeemed_by = auth.uid()` on
+  the matched row, all in the same transaction.
+- **Anti-enumeration property, unchanged in spirit from today's function**:
+  a code matching neither table, or matching a per-person invite that is
+  already redeemed, revoked, or expired, all return the exact same generic
+  `'invalid'` — a caller cannot distinguish "never existed" from "already
+  spent." See the backlog's Phase 4 open questions for the alternative
+  this rules out (a distinguishable "already used" answer).
+- Throttle (`invite_attempts`, COMM-017) applies identically regardless of
+  which table eventually matches.
+- `invite_redemptions.invite_id uuid references public.invites(id)`,
+  nullable, added by this migration — every pre-existing row stays null.
+
+### onboarding_step_content (table, COMM-373)
+
+`step text primary key check (step in
+('welcome','first_week','first_month','first_class','third_class'))`,
+`title text not null check (char_length(title) <= 120)`, `body text not
+null check (char_length(body) <= 2000)`, `updated_by uuid references
+auth.users(id)`, `updated_at timestamptz not null default now()`.
+
+- Seeded with exactly five rows, the current live Hebrew copy from
+  `cloud.js`'s five `renderOnboarding*Step()` functions — first deploy
+  changes nothing a member sees.
+- RLS: `grant select to authenticated`, `using (true)` — same audience the
+  cards already have, no privacy dimension. `grant update to
+  authenticated`, `using (has_perm('community.content.manage_onboarding')
+  or is_admin()) with check (same)`. **No insert or delete grant to any
+  client role** — the step set is exactly five, by construction.
+- `onboarding_step_content_pin_updated_by` (BEFORE UPDATE): pins
+  `new.updated_by = auth.uid()` and `new.updated_at = now()` regardless of
+  what the client sent, the same "trigger pins the column" shape
+  `protect_is_admin()` uses.
+- `onboarding_step_content_audit` (AFTER UPDATE): calls
+  `log_admin_action('onboarding_content_updated', 'onboarding_step', null,
+  <old step/title/body jsonb>, <new step/title/body jsonb>)`.
+- **Only the fixed lead copy moves here.** `first_week`'s active-challenge
+  sentence and `first_month`'s sessions/PRs/achievements summary stay
+  computed at render time in `cloud.js`, appended after this table's
+  `body` — this table is not a template engine.
+- **Step precedence (`currentOnboardingStep()`) is untouched.** Editing
+  copy here cannot change which step is due or reorder the five —
+  `cloud.js` already documents that fixed order as deliberate (COMM-222/
+  COMM-316's anti-reorder decision). See the backlog's Phase 4 open
+  questions.
+
+### admin_member_roster(p_cursor timestamptz default null, p_limit int default 25) returns setof jsonb (COMM-374)
+
+- Auth: `security definer`, `is_staff()` — a coach may browse read-only.
+  Role-change actions stay on the existing, unchanged
+  `admin_grant_coach`/`admin_revoke_coach` (real `is_admin()` inline).
+- Returns exactly `admin_search_members`'s columns — `id, handle,
+  display_name, avatar_url, is_admin, role, redeemed_at,
+  last_activity_on` — deliberately the same shape so the client shares one
+  row renderer between roster and search.
+- Cursor-paginated on `coalesce(invite_redemptions.redeemed_at,
+  profiles.created_at) desc`, the module's existing tenure-fallback
+  convention (see `community_profile`, `consistency_week_streaks`
+  comments). `p_limit` clamped 1..100.
+- A profile with no `invite_redemptions` row still appears, `redeemed_at`
+  null, rather than being dropped.
+
+### registration_funnel(p_period_start date, p_period_end date) returns jsonb (COMM-375)
+
+- Auth: `security definer`, `stable`. Same pair, same order, as
+  `analytics_dashboard`: `has_perm('community.analytics.view') or
+  is_admin()`.
+- Same period rules as `analytics_dashboard`: `p_period_end` **inclusive**,
+  span capped at **366 days**, both bounds required, validated never
+  clamped. Errors: `'not authorized'`, `'period required'`, `'period end
+  before start'`, `'period exceeds 366 days'`.
+- Reads `invite_codes`, `invites`, `invite_redemptions`, `profiles` only —
+  no new table.
+- Response shape:
+
+```
+{ period: { start, end, end_exclusive, days },
+  shared_codes: { active_count, redemptions_in_period },
+  per_person_invites: { created_in_period, redeemed_in_period,
+                         revoked_in_period, pending_now,
+                         expired_unredeemed_now },
+  funnel: { invites_issued, redeemed, profile_completed, verified,
+            redeemed_rate, profile_completed_rate, verified_rate } }
+```
+
+- **`funnel.invites_issued` and `redeemed_rate` cover per-person invites
+  only.** A shared code has no "issued" event to divide by — it is a
+  standing, reusable code, not a one-off sent to a named person.
+  Shared-code activity is reported in `shared_codes`, not folded into this
+  denominator. `redeemed`/`profile_completed`/`verified` count every
+  account regardless of invite type, so `redeemed` can legitimately exceed
+  `invites_issued` in a club still mostly using the shared code — a real
+  shape, not a bug.
+- "Profile completed" = a `profiles` row with `created_at` in the period
+  (the flow is redeem, then set credentials, then the profile form, then
+  the `profiles` insert — a profile row existing is the server-observable
+  marker). "Verified" = `profiles.recovery_verified_at` in the period.
+- Ratios `null`, never `0`, over a zero denominator, matching
+  `analytics_dashboard`'s convention — render an em dash.
+- Aggregate only: no member id, handle, or display name anywhere in the
+  response, the same no-uuid-anywhere posture `analytics_dashboard`'s own
+  pgTAP file asserts structurally.
+
+### admin_actions widened labels (Phase 4)
+
+`action_type` CHECK gains `invite_created`, `invite_revoked`,
+`shared_code_created`, `shared_code_status_changed`,
+`onboarding_content_updated` (drop-and-recreate, the same pattern
+202609010001/002/005/012 used). `target_type` CHECK gains `invite`,
+`invite_code`, `onboarding_step`.
+
+### New permissions (Phase 4)
+
+- `community.member.invite` (COMM-370) — generate/list/revoke a per-person
+  invite. Seeded to `coach`, `head_coach`, `staff`, `admin`, `owner` — the
+  same "coach and above" tier `community.member.restrict` already uses.
+- `community.invite.manage_codes` (COMM-371) — create/list/toggle a shared
+  per-role code. Seeded to `admin`, `owner` only — narrower, since a
+  shared code is club-wide and standing rather than a one-off invitation.
+- `community.content.manage_onboarding` (COMM-373) — edit an onboarding
+  step's title/body. Seeded to the same list `community.announcement.publish`
+  already has (`coach`, `head_coach`, `staff`, `admin`, `owner`).
