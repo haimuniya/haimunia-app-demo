@@ -2173,7 +2173,17 @@ function renderChart(data) {
   const dots = pts.map((p) => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${p.isPR ? 5 : 2.5}" fill="${p.isPR ? "var(--brass)" : "var(--chalk)"}" ${p.isPR ? 'stroke="var(--surface)" stroke-width="2"' : ""}/>`).join("");
   const labelY = padTop + plotH + 12;
   const labels = pts.map((p) => `<text x="${p.x.toFixed(1)}" y="${labelY}" font-size="9" fill="var(--steel)" text-anchor="end" transform="rotate(-45 ${p.x.toFixed(1)} ${labelY})">${esc(p.label)}</text>`).join("");
-  const svg = `<svg viewBox="0 0 ${w} ${h}" style="${wide ? `width:${w}px;` : "width:100%;"} height:${h}px; display:block;">
+  // COMM-359. This SVG carries the same progression a sighted user reads
+  // visually (range, trend, which points are PRs) with nothing exposed to
+  // assistive tech before this - role="img" + a computed summary stands in
+  // for the actual chart; no unit is assumed here since this one function
+  // renders est1RM, bodyweight and body-measurement charts alike.
+  const prCount = pts.filter((p) => p.isPR).length;
+  const first = data[0], lastPoint = data[n - 1];
+  const chartLabel = n === 1
+    ? `גרף התקדמות: נתון יחיד, ${lastPoint.dateLabel}: ${lastPoint.est1RM}`
+    : `גרף התקדמות: ${n} נתונים בין ${first.dateLabel} (${first.est1RM}) ל-${lastPoint.dateLabel} (${lastPoint.est1RM})` + (prCount ? `, כולל ${prCount === 1 ? "שיא אישי אחד" : `${prCount} שיאים אישיים`}` : "");
+  const svg = `<svg role="img" aria-label="${esc(chartLabel)}" viewBox="0 0 ${w} ${h}" style="${wide ? `width:${w}px;` : "width:100%;"} height:${h}px; display:block;">
     <polyline points="${polyline}" fill="none" stroke="var(--brass)" stroke-width="2"/>
     ${dots}${labels}
   </svg>`;
