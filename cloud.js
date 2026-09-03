@@ -975,8 +975,8 @@
   // at all. Shared by the feed top area and the "today's note" card.
   function announcementPriorityBadge(a) {
     const priority = (a && a.priority) || "normal";
-    if (priority === "urgent") return `<span class="admin-tag" role="status" style="color:var(--red);background:rgba(194,57,44,.16);border-color:var(--red);">🚨 דחוף</span>`;
-    if (priority === "important") return `<span class="admin-tag" role="status" style="color:var(--brass);background:rgba(166,112,46,.14);border-color:var(--brass);">❗ חשוב</span>`;
+    if (priority === "urgent") return `<span class="admin-tag" role="status" style="color:var(--red);background:color-mix(in srgb, var(--red) 16%, transparent);border-color:var(--red);">🚨 דחוף</span>`;
+    if (priority === "important") return `<span class="admin-tag" role="status" style="color:var(--brass);background:color-mix(in srgb, var(--brass) 14%, transparent);border-color:var(--brass);">❗ חשוב</span>`;
     return "";
   }
   // The accent that goes with the badge above, applied to the wrapping
@@ -985,7 +985,7 @@
   // the border, so the two tiers stay visually distinct beyond the badge.
   function announcementAccentStyle(a) {
     const priority = (a && a.priority) || "normal";
-    if (priority === "urgent") return "border:1px solid var(--red);background:rgba(194,57,44,.07);";
+    if (priority === "urgent") return "border:1px solid var(--red);background:color-mix(in srgb, var(--red) 7%, transparent);";
     if (priority === "important") return "border:1px solid var(--brass);";
     return "";
   }
@@ -3426,7 +3426,7 @@
           <div style="color:var(--steel);font-size:13.5px;line-height:1.6;margin-bottom:20px;">${safeText(c.message)}</div>
           <div class="chip-row" style="margin-top:0;">
             <button class="chip-btn" data-community-action="confirm-no">ביטול</button>
-            <button class="chip-btn primary" data-community-action="confirm-yes" style="${c.destructive ? "background:var(--red);border-color:var(--red);color:#fff;" : ""}">${safeText(c.confirmLabel || "אישור")}</button>
+            <button class="chip-btn primary${c.destructive ? " danger" : ""}" data-community-action="confirm-yes">${safeText(c.confirmLabel || "אישור")}</button>
           </div>
         </div>
       </div>
@@ -3985,13 +3985,13 @@
     const label = rs.mine
       ? (total <= 1 ? "הגבתם" : `הגבתם ועוד ${total - 1}`)
       : `${total} הגבות`;
-    return `<div class="reaction-strip flex gap-6" style="align-items:center;margin-top:8px;">${avatars ? `<span class="flex" style="padding-inline-start:6px;">${avatars}</span>` : ""}<span style="color:var(--steel);font-size:11.5px;">${safeText(label)}</span></div>`;
+    return `<div class="reaction-strip">${avatars ? `<span class="flex" style="padding-inline-start:6px;">${avatars}</span>` : ""}<span style="color:var(--steel);font-size:11.5px;">${safeText(label)}</span></div>`;
   }
   // COMM-124. Text carries the meaning, not colour alone.
   function coachBadgeHtml(role) {
     const label = role === "head_coach" ? "מאמן/ת ראשי/ת" : role === "coach" ? "מאמן/ת" : "";
     if (!label) return "";
-    return `<span class="coach-badge" style="font-size:10px;font-weight:800;color:#0c0c0c;background:var(--brass);border-radius:999px;padding:1px 7px;">${label}</span>`;
+    return `<span class="coach-badge badge-tag">${label}</span>`;
   }
   function commentPlaceholder(text, reply) {
     return `<div class="comment-row" style="${reply ? "margin-inline-start:26px;" : ""}"><div style="flex:1;min-width:0;color:var(--steel);font-size:12px;font-style:italic;padding:4px 0;">${safeText(text)}</div></div>`;
@@ -4008,7 +4008,7 @@
     const own = c.author_id === meId;
     const editing = state.commentEdit && state.commentEdit.commentId === c.id;
     const wrapStyle = (opts.reply ? "margin-inline-start:26px;" : "")
-      + (isCoach ? "border-inline-start:3px solid var(--brass);padding-inline-start:8px;background:rgba(191,167,106,.06);border-radius:8px;" : "");
+      + (isCoach ? "border-inline-start:3px solid var(--brass);padding-inline-start:8px;background:color-mix(in srgb, var(--brass) 6%, transparent);border-radius:8px;" : "");
     let bodyHtml;
     if (editing) {
       const e = state.commentEdit;
@@ -4137,7 +4137,7 @@
           <div class="chip-row" style="margin-top:10px;">
             <button class="chip-btn" data-community-action="mod-context" data-id="${safeText(r.report_id)}">צפייה בהקשר</button>
             ${done ? "" : MOD_DECISIONS.map((d) =>
-              `<button class="chip-btn" data-community-action="mod-action" data-id="${safeText(r.report_id)}" data-decision="${d.id}"${d.destructive ? ' style="color:var(--red);"' : ""}>${d.label}</button>`).join("")}
+              `<button class="chip-btn${d.destructive ? " danger" : ""}" data-community-action="mod-action" data-id="${safeText(r.report_id)}" data-decision="${d.id}">${d.label}</button>`).join("")}
           </div>
         </div>`;
       };
@@ -4224,7 +4224,7 @@
       <div class="footer-note" style="margin:0;font-size:10.5px;">${safeText(m.id)}</div>
       ${m.is_admin ? "" : `<div class="chip-row" style="margin-top:0;">
         ${roleButtons(m)}
-        <button class="chip-btn" data-community-action="admin-remove-member" data-id="${safeText(m.id)}" style="color:var(--red);">הסרת חבר/ה</button>
+        <button class="chip-btn danger" data-community-action="admin-remove-member" data-id="${safeText(m.id)}">הסרת חבר/ה</button>
       </div>`}
     </div>`;
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--purple)", "ניהול חברים", true)}
@@ -5021,7 +5021,7 @@
     const own = postIsOwn(post);
     const open = state.openPostMenu === post.id;
     const mi = (action, label, dataId, danger) =>
-      `<button class="post-menu-item" role="menuitem" data-community-action="${action}" data-id="${safeText(dataId)}" style="display:block;width:100%;text-align:right;padding:9px 12px;background:none;border:0;color:${danger ? "var(--red)" : "var(--chalk)"};font-size:13px;cursor:pointer;">${safeText(label)}</button>`;
+      `<button class="post-menu-item${danger ? " danger" : ""}" role="menuitem" data-community-action="${action}" data-id="${safeText(dataId)}">${safeText(label)}</button>`;
     let items = "";
     if (own) {
       items += mi("post-edit-caption", "עריכת כיתוב", post.id);
@@ -5034,9 +5034,9 @@
       items += mi("report", "דיווח", post.id);
       if (post.author_id) items += mi("block", "חסימת החבר/ה", post.author_id, true);
     }
-    return `<div class="post-menu-wrap" style="position:relative;margin-inline-start:auto;">
+    return `<div class="post-menu-wrap">
       <button class="chip-btn" data-community-action="toggle-post-menu" data-id="${id}" aria-haspopup="true" aria-expanded="${open ? "true" : "false"}" aria-label="עוד פעולות">⋯</button>
-      ${open ? `<div class="post-menu" role="menu" style="position:absolute;inset-inline-start:0;top:100%;z-index:30;min-width:150px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:4px;box-shadow:0 10px 30px rgba(0,0,0,.25);">${items}</div>` : ""}
+      ${open ? `<div class="post-menu" role="menu">${items}</div>` : ""}
     </div>`;
   }
 
@@ -5068,7 +5068,7 @@
       }
       const alt = m.decorative ? "" : safeText(m.alt_text || "");
       if (!url) return `<div class="post-photo" aria-hidden="true" style="background:var(--border);min-height:120px;"></div>`;
-      return `<img src="${safeText(url)}" alt="${alt}" class="post-photo"${media.length > 1 ? ' style="margin-bottom:6px;"' : ""}/>`;
+      return `<img src="${safeText(url)}" alt="${alt}" class="post-photo"/>`;
     }).join("");
     return media.length > 1 ? `<div class="post-media-grid">${items}</div>` : items;
   }
@@ -5115,7 +5115,7 @@
     const effort = m.effort || (post.rx === true ? "rx" : post.rx === false ? "scaled" : m.level ? "level" : "");
     const effortLabel = effort === "rx" ? "Rx" : effort === "scaled" ? "מותאם" : effort === "level" ? ("רמה " + (m.level || "")) : "";
     const isPr = !!(m.is_pr || post.is_pr);
-    const prBadge = isPr ? ` <span class="pr-badge" style="display:inline-block;font-size:10px;font-weight:800;color:#0c0c0c;background:var(--brass);border-radius:999px;padding:1px 7px;vertical-align:middle;">PR</span>` : "";
+    const prBadge = isPr ? ` <span class="pr-badge badge-tag">PR</span>` : "";
     const detail = `<div class="post-title">${safeText(name)}${prBadge}</div>
       ${when ? `<div style="color:var(--steel);font-size:12px;">${safeText(String(when).slice(0, 10))}</div>` : ""}
       ${result ? `<div class="mono post-result">${safeText(result)}</div>` : ""}
@@ -5135,7 +5135,7 @@
       ["שיפור", m.improvement],
       ["תאריך", (m.achieved_on || post.occurred_on) ? String(m.achieved_on || post.occurred_on).slice(0, 10) : ""],
     ].filter((r) => r[1] != null && r[1] !== "");
-    const inner = `<div class="post-title">${safeText(movement)} <span class="pr-badge" style="display:inline-block;font-size:10px;font-weight:800;color:#0c0c0c;background:var(--brass);border-radius:999px;padding:1px 7px;vertical-align:middle;">PR</span></div>
+    const inner = `<div class="post-title">${safeText(movement)} <span class="pr-badge badge-tag">PR</span></div>
       <div class="log-list" style="margin-top:6px;">${rows.map((r) => `<div class="log-row"><span>${safeText(r[0])}</span><span class="mono" style="color:var(--brass);">${safeText(r[1])}</span></div>`).join("")}</div>
       ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${safeText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
     return postCardShell(post, inner + postMediaHtml(post));
@@ -5182,7 +5182,7 @@
     } else if (m.my_progress != null) {
       const pct = m.target_value ? Math.min(100, Math.round((Number(m.my_progress) / Number(m.target_value)) * 100)) : null;
       rows.push(`<div class="mono post-result" style="color:var(--brass);">${safeText(m.my_progress)}${m.target_value != null ? ` / ${safeText(m.target_value)}` : ""}</div>`);
-      if (pct != null) rows.push(`<div class="progress-track" style="background:var(--border);border-radius:999px;height:6px;overflow:hidden;margin-top:4px;"><div style="width:${pct}%;height:100%;background:var(--brass);"></div></div>`);
+      if (pct != null) rows.push(`<div class="progress-track"><div style="width:${pct}%;"></div></div>`);
     }
     const inner = `<div class="post-title">🏆 ${safeText(m.challenge_title || post.title || "אתגר")}</div>
       ${rows.join("")}
@@ -5325,7 +5325,7 @@
   }
   function challengeProgressBarHtml(pct) {
     const clamped = Math.max(0, Math.min(100, Number(pct) || 0));
-    return `<div class="progress-track" style="background:var(--border);border-radius:999px;height:6px;overflow:hidden;margin-top:4px;"><div style="width:${clamped}%;height:100%;background:var(--brass);"></div></div>`;
+    return `<div class="progress-track"><div style="width:${clamped}%;"></div></div>`;
   }
 
   async function loadChallenges() {
@@ -5965,7 +5965,7 @@
       <div class="chip-row" style="margin-top:8px;">
         <button class="chip-btn" data-community-action="open-challenge" data-id="${safeText(c.id)}" data-source="boards">פרטים</button>
         ${!isPast && c.status === "active" && !part ? `<button class="chip-btn primary" data-community-action="join-challenge" data-id="${safeText(c.id)}">הצטרפות</button>` : ""}
-        ${!isPast && part ? `<span class="admin-tag" style="background:var(--brass);">נרשמת/ה</span>` : ""}
+        ${!isPast && part ? `<span class="tag tag-brass">נרשמת/ה</span>` : ""}
       </div>
     </article>`;
   }
@@ -6329,7 +6329,7 @@
         <button class="chip-btn primary" type="submit"${f.saving ? " disabled" : ""}>${f.saving ? "שומר…" : "שמירה"}</button>
         <button class="chip-btn" type="button" data-community-action="challenge-form-cancel">ביטול</button>
         ${f.mode === "edit" && f.status === "draft" ? `<button class="chip-btn" type="button" data-community-action="challenge-publish" data-id="${safeText(f.id)}">פרסום</button>` : ""}
-        ${f.mode === "edit" && f.status === "draft" ? `<button class="chip-btn" type="button" data-community-action="challenge-delete" data-id="${safeText(f.id)}" style="color:var(--red);">מחיקת טיוטה</button>` : ""}
+        ${f.mode === "edit" && f.status === "draft" ? `<button class="chip-btn danger" type="button" data-community-action="challenge-delete" data-id="${safeText(f.id)}">מחיקת טיוטה</button>` : ""}
         ${f.mode === "edit" && (f.status === "active" || f.status === "completed") ? `<button class="chip-btn" type="button" data-community-action="challenge-archive" data-id="${safeText(f.id)}">העברה לארכיון</button>` : ""}
       </div>
     </form>`;
@@ -6561,7 +6561,7 @@
       <div class="log-list">${list.map((p) => {
         const prof = p.profiles || {};
         const name = prof.display_name || (prof.handle ? "@" + prof.handle : "חבר/ה");
-        return `<div class="log-row"><span>${safeText(name)}</span>${p.status === "completed" ? `<span class="admin-tag" style="background:var(--brass);">הושלם</span>` : ""}</div>`;
+        return `<div class="log-row"><span>${safeText(name)}</span>${p.status === "completed" ? `<span class="tag tag-brass">הושלם</span>` : ""}</div>`;
       }).join("")}</div>
     </div>`;
   }
@@ -6718,7 +6718,7 @@
       </div>
       <div class="chip-row" style="margin-top:8px;">
         <button class="chip-btn" data-community-action="open-event" data-id="${safeText(e.id)}" data-source="boards">פרטים</button>
-        ${mineLabel ? `<span class="admin-tag" style="background:var(--brass);">${mineLabel}</span>` : ""}
+        ${mineLabel ? `<span class="tag tag-brass">${mineLabel}</span>` : ""}
       </div>
     </article>`;
   }
@@ -7083,7 +7083,7 @@
     const staffToolbar = staff ? `<div class="chip-row" style="margin-bottom:10px;">
         <button class="chip-btn" data-community-action="event-edit" data-id="${safeText(e.id)}">עריכה</button>
         ${e.status === "draft" ? `<button class="chip-btn" data-community-action="event-publish" data-id="${safeText(e.id)}">פרסום</button>` : ""}
-        ${e.status === "published" ? `<button class="chip-btn" data-community-action="event-cancel-confirm" data-id="${safeText(e.id)}" style="color:var(--red);">ביטול האירוע</button>` : ""}
+        ${e.status === "published" ? `<button class="chip-btn danger" data-community-action="event-cancel-confirm" data-id="${safeText(e.id)}">ביטול האירוע</button>` : ""}
       </div>` : "";
     const actions = renderEventActions(v);
     const icsBtn = `<div class="chip-row" style="margin:8px 0;"><button class="chip-btn" data-community-action="event-ics" data-id="${safeText(e.id)}"${v.icsBusy ? " disabled" : ""}>${v.icsBusy ? "יוצר…" : "הוספה ליומן"}</button></div>${v.icsError ? `<div class="field-error" role="alert">${safeText(v.icsError)}</div>` : ""}`;
@@ -8384,7 +8384,7 @@
     } else if (active === "achievements") {
       const ach = Array.isArray(d.achievements) ? d.achievements : null;
       bodyHtml = ach == null ? `<div class="empty">ההישגים מוסתרים</div>`
-        : ach.length ? `<div class="badge-grid" style="display:flex;flex-wrap:wrap;gap:8px;">${ach.map((a) => `<div class="chart-card" style="flex:0 0 auto;padding:8px 10px;">${safeText(a.badge_icon || "🏅")} ${safeText(a.title || "")}</div>`).join("")}</div>`
+        : ach.length ? `<div class="badge-grid">${ach.map((a) => `<div class="chart-card" style="flex:0 0 auto;padding:8px 10px;">${safeText(a.badge_icon || "🏅")} ${safeText(a.title || "")}</div>`).join("")}</div>`
         : `<div class="empty">אין עדיין הישגים</div>`;
     } else if (active === "posts") {
       const posts = Array.isArray(d.posts) ? d.posts : [];
@@ -9098,7 +9098,7 @@
     const key = group[0].type + ":" + group[0].id;
     const open = !!c.expanded[key];
     const emphasise = group.some((g) => g._wasUnread);
-    return `<div class="notif-group" data-notif-group="${safeText(key)}" style="border-inline-start:3px solid ${emphasise ? "var(--energy)" : "transparent"};">
+    return `<div class="notif-group${emphasise ? " emphasise" : ""}" data-notif-group="${safeText(key)}">
       <button class="link-btn" data-community-action="notif-toggle-group" data-key="${safeText(key)}" aria-expanded="${open ? "true" : "false"}" style="display:flex;gap:10px;align-items:center;width:100%;text-align:right;padding:8px 10px;">
         <span aria-hidden="true" style="font-size:18px;">${safeText(def.icon)}</span>
         <span style="flex:1;min-width:0;">
@@ -9107,7 +9107,7 @@
         </span>
         <span aria-hidden="true">${open ? "▲" : "▼"}</span>
       </button>
-      ${open ? `<div class="notif-group-body" style="padding-inline-start:8px;">${group.map(renderNotifRow).join("")}</div>` : ""}
+      ${open ? `<div class="notif-group-body">${group.map(renderNotifRow).join("")}</div>` : ""}
     </div>`;
   }
   function renderNotifCategoryRows(rows, c) {
@@ -9312,7 +9312,7 @@
           ${a.error ? `<div class="footer-note" role="alert" style="color:var(--red);">${safeText(a.error)}</div>` : ""}
           <div class="chip-row" style="margin-top:12px;">
             <button class="chip-btn" data-community-action="mod-action-cancel">ביטול</button>
-            <button class="chip-btn primary" data-community-action="mod-action-run"${a.saving ? " disabled" : ""} style="${def.destructive ? "background:var(--red);border-color:var(--red);color:#fff;" : ""}">${a.saving ? "מבצע…" : "אישור"}</button>
+            <button class="chip-btn primary${def.destructive ? " danger" : ""}" data-community-action="mod-action-run"${a.saving ? " disabled" : ""}>${a.saving ? "מבצע…" : "אישור"}</button>
           </div>
         </div>
       </div>
