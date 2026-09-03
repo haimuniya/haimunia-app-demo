@@ -2493,6 +2493,21 @@ function updateStreakLabel() {
   el.style.display = "flex";
   el.setAttribute("aria-label", `${streak} ימים ברצף`);
 }
+// COMM-341. Training days / total sets / PR days for the month currently
+// shown - a real feature (a monthly summary), not just decoration, so it
+// lives next to renderCalendarGrid() and is recomputed on every month nav
+// the grid itself already handles. "Total sets" counts strength entries
+// only (one row in `entries` is one logged set); a WOD session is a
+// different unit of work and isn't folded into that count. "PR days"
+// counts a day once even if it carried multiple PRs.
+function computeCalendarMonthStats(year, month) {
+  const prefix = `${year}-${String(month + 1).padStart(2, "0")}-`;
+  const monthEntries = entries.filter((e) => e.date.startsWith(prefix));
+  const monthWods = wodEntries.filter((e) => e.date.startsWith(prefix));
+  const trainingDays = new Set([...monthEntries, ...monthWods].map((e) => e.date)).size;
+  const prDays = new Set([...monthEntries, ...monthWods].filter((e) => e.isPR).map((e) => e.date)).size;
+  return { trainingDays, totalSets: monthEntries.length, prDays };
+}
 function renderCalendarGrid() {
   const grid = document.getElementById("calGrid");
   const label = document.getElementById("calMonthLabel");
@@ -2519,6 +2534,15 @@ function renderCalendarGrid() {
     </button>`;
   }
   grid.innerHTML = cells;
+  const statsEl = document.getElementById("calMonthStats");
+  if (statsEl) {
+    const stats = computeCalendarMonthStats(calYear, calMonth);
+    statsEl.innerHTML = `
+      <div class="cal-month-stat"><div class="cal-month-stat-value">${stats.trainingDays}</div><div class="cal-month-stat-label">ימי אימון</div></div>
+      <div class="cal-month-stat"><div class="cal-month-stat-value">${stats.totalSets}</div><div class="cal-month-stat-label">סטים</div></div>
+      <div class="cal-month-stat"><div class="cal-month-stat-value">${stats.prDays}</div><div class="cal-month-stat-label">ימי שיא</div></div>
+    `;
+  }
   renderCalDetail();
 }
 
@@ -2704,17 +2728,24 @@ function renderVolumeReport() {
 function renderCalendarTab() {
   return `
     ${renderTabHeader("calendar")}
-    <div class="cal-header">
-      <button class="cal-nav-btn" data-action="cal-prev" aria-label="חודש קודם">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--chalk)" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
-      </button>
-      <span class="cal-month-label" id="calMonthLabel"></span>
-      <button class="cal-nav-btn" data-action="cal-next" aria-label="חודש הבא">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--chalk)" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
-      </button>
+    <div class="cal-panel">
+      <div class="cal-header">
+        <button class="cal-nav-btn" data-action="cal-prev" aria-label="חודש קודם">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--chalk)" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+        </button>
+        <span class="cal-month-label" id="calMonthLabel"></span>
+        <button class="cal-nav-btn" data-action="cal-next" aria-label="חודש הבא">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--chalk)" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+      </div>
+      <div class="cal-weekdays">${["א","ב","ג","ד","ה","ו","ש"].map((d) => `<div class="cal-weekday">${d}</div>`).join("")}</div>
+      <div class="cal-grid" id="calGrid"></div>
+      <div class="cal-legend">
+        <span class="cal-legend-item"><span class="cal-dot" aria-hidden="true"></span>יש נתונים</span>
+        <span class="cal-legend-item"><span class="cal-dot pr" aria-hidden="true"></span>שיא אישי</span>
+      </div>
+      <div class="cal-month-stats" id="calMonthStats"></div>
     </div>
-    <div class="cal-weekdays">${["א","ב","ג","ד","ה","ו","ש"].map((d) => `<div class="cal-weekday">${d}</div>`).join("")}</div>
-    <div class="cal-grid" id="calGrid"></div>
     <div id="calDetail" style="margin-bottom:20px;"></div>
     ${renderVolumeReport()}
   `;

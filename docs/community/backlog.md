@@ -2413,7 +2413,7 @@ Filed from `2026-09-02-design-sync-and-cross-repo-audit.md`, a 10-agent cross-re
 | COMM-338 | Run the pgTAP suite in CI and add a multi-role live smoke test before deploy | qa | P1 | todo |
 | COMM-339 | Reset confirmClear when the Settings modal closes | unassigned (app.js core, outside the 15-agent community roster) | P1 | todo |
 | COMM-340 | Add interactive-widget=resizes-content to the viewport meta | unassigned (app.js core, outside the 15-agent community roster) | P1 | todo |
-| COMM-341 | Add a monthly stats summary, legend, and card chrome to the calendar screen | cross-cutting (UI/design) | P1 | todo |
+| COMM-341 | Add a monthly stats summary, legend, and card chrome to the calendar screen | cross-cutting (UI/design) | P1 | done |
 | COMM-342 | Fix reversed prev/next month chevron icons on the calendar | cross-cutting (UI/design) | P1 | done |
 | COMM-343 | Port the chosen/unchosen exercise-select state and stat-hero cards to the Home/log screen | cross-cutting (UI/design) | P1 | todo |
 | COMM-344 | Fix onboarding modal subtitle to match the 5 screens now listed | cross-cutting (UI/design) | P1 | done |
@@ -2604,3 +2604,15 @@ instead of sitting mid-form. Each `.format-chip` regained a one-line
 subtitle (זמן→"כמה מהר סיימתם", etc.) — `renderWodBuilderFormats()` only
 toggles classes on the existing buttons and never regenerates their
 markup, so this carried no regression risk to it.
+
+**COMM-341 is done.** `.cal-panel` now wraps the calendar's header/weekday
+row/grid/legend/stats in one bordered/shadowed card, matching every other
+data surface in this app; `.cal-legend` explains the grid's existing two
+dot markers (plain = "יש נתונים", brass = "שיא אישי"). Since
+`crossfit-pwa-Noam` isn't checked out here, the stats formula wasn't
+literally "ported" from its `renderCalendarGrid()` — a real equivalent was
+built instead, from the ticket's own named figures: training days (distinct
+dates in the month with a strength or WOD entry), total sets (count of
+strength entries — a WOD session is a different unit of work), and PR days
+(distinct dates with a PR). Recomputed on every month nav the grid already
+handles.

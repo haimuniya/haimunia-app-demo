@@ -415,6 +415,18 @@
   .movement-btn.active{ background:var(--surface2); border-color:var(--brass); }
   @media (prefers-reduced-motion: reduce){ *{ transition:none !important; animation:none !important; } }
 
+  /* COMM-341: the month grid used to float directly on the page background
+     with no summary at all - a real feature loss (training-days/sets/PR
+     count), not just a styling gap. .cal-panel wraps header+grid+legend+
+     stats in one bordered/shadowed card, matching every other data
+     surface (.card/.chart-card) in this app. */
+  .cal-panel{ background:var(--surface); border:1px solid var(--border); border-radius:20px; padding:16px; box-shadow:var(--shadow-card); margin-bottom:16px; }
+  .cal-legend{ display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-top:4px; }
+  .cal-legend-item{ display:flex; align-items:center; gap:6px; color:var(--steel); font-size:11px; }
+  .cal-month-stats{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:14px; }
+  .cal-month-stat{ text-align:center; background:var(--surface2); border-radius:12px; padding:10px 6px; }
+  .cal-month-stat-value{ font-weight:800; font-size:18px; color:var(--chalk); }
+  .cal-month-stat-label{ color:var(--steel); font-size:10.5px; margin-top:2px; }
   .cal-header{ display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
   .cal-nav-btn{ width:44px; height:44px; display:flex; align-items:center; justify-content:center; background:var(--surface); border:1px solid var(--border); border-radius:10px; }
   .cal-month-label{ font-weight:800; font-size:15px; }
