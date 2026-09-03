@@ -2,7 +2,7 @@
 
 Phase: Design sync & audit remediation (2026-09-02)
 Agent: platform
-Status: todo
+Status: done
 Priority: P1
 Attendance-blocked: no
 
@@ -15,9 +15,14 @@ has to be made in two places.
 
 ## Acceptance criteria
 
-- [ ] `safeText()` deleted from `cloud.js`; all 372 call sites use `esc()` from
-  `src/format.js` instead.
-- [ ] `grep -c safeText cloud.js` returns 0; visual output unchanged.
+- [x] `safeText()` deleted from `cloud.js`; all 485 remaining references use
+  `esc()` instead. `esc()` itself moved on to `src/shared/safe-helpers.js`
+  in COMM-368, which landed in the same pass; cloud.js binds it once at the
+  head of its IIFE as `const esc = window.BoxLogSafe.esc`, the same way it
+  reaches every other platform module.
+- [x] `grep -c safeText cloud.js` returns 0; visual output unchanged (the two
+  implementations had an identical character map and an identical
+  null/undefined guard - `v == null` vs `?? ""`).
 
 ## Location / evidence
 

@@ -2,7 +2,7 @@
 
 Phase: Design sync & audit remediation (2026-09-02)
 Agent: platform
-Status: todo
+Status: partial
 Priority: P1
 Attendance-blocked: no
 
@@ -16,11 +16,18 @@ remembering to port it by hand.
 
 ## Acceptance criteria
 
-- [ ] Shared low-level helpers (`src/format.js` + `src/sanitize.js` + the relevant
-  slice of `src/constants.js`) extracted into a small versioned package or git
-  submodule consumed by both repos.
-- [ ] No behavior change; a follow-up fix to one repo propagates to the other via a
-  version bump instead of manual copy-paste.
+- [x] (this repo) Extracted into `src/shared/safe-helpers.js` +
+  `src/shared/package.json` (`@boxlog/safe-helpers` v1.0.0) +
+  `src/shared/README.md`. This repo now consumes it and no longer defines any
+  of the nine helpers anywhere else.
+- [ ] (other repo) `crossfit-pwa-Noam` consuming it. NOT DONE and not doable
+  from the workspace this ticket was implemented in - that repo was not
+  checked out. See the backlog note.
+- [x] No behavior change (verified helper-by-helper against the originals over a
+  shared input corpus before the originals were deleted).
+- [ ] Propagation via version bump is only half-wired: the versioned artifact
+  and the protocol exist (`src/shared/README.md`), but until the other repo
+  actually consumes it a fix here still has to be hand-carried there.
 
 ## Location / evidence
 

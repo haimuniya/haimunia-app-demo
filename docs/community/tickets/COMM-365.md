@@ -2,7 +2,7 @@
 
 Phase: Design sync & audit remediation (2026-09-02)
 Agent: platform
-Status: todo
+Status: done
 Priority: P1
 Attendance-blocked: no
 
@@ -16,10 +16,15 @@ increasing collision risk.
 
 ## Acceptance criteria
 
-- [ ] `state` restructured into per-domain namespaces (`state.feed`, `state.admin`,
-  `state.challenges`, ...).
-- [ ] All ~340 read/write sites updated to the new shape.
-- [ ] Existing test suite passes with no behavior change.
+- [x] `state` restructured into per-domain namespaces (`state.feed`, `state.admin`,
+  `state.challenges`, ...). 17 namespaces; the root keeps only the 13-key
+  session/auth/config core that every domain reads and no domain owns.
+- [x] All read/write sites updated to the new shape: 1,181 of the 1,538
+  `state.*` references were rewritten, the other 357 are the root session
+  core and stayed put. `state[key]` (the dialog registry) became a per-entry
+  `isOpen()` getter, so nothing reaches state by a computed key any more.
+- [x] Existing test suite passes with no behavior change. New guard:
+  `test/community-state-namespaces.test.mjs`.
 
 ## Location / evidence
 

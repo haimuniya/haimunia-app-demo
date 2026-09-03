@@ -2763,10 +2763,10 @@ Filed from `2026-09-02-design-sync-and-cross-repo-audit.md`, a 10-agent cross-re
 | COMM-362 | Add a session-expiry / refresh-failure auth test | qa | P1 | done |
 | COMM-363 | Add browser-check scenarios for post composition and report moderation | qa | P1 | done |
 | COMM-364 | Add a quota-exceeded regression test for noteStorageError | qa | P1 | done |
-| COMM-365 | Namespace cloud.js's flat state object by feature domain | platform | P1 | todo |
-| COMM-366 | Spike scoped/keyed rendering as an alternative to cloud.js's full-tree innerHTML rerender | platform | P1 | todo |
-| COMM-367 | Remove the duplicate safeText() implementation in cloud.js, use the shared esc() | platform | P1 | todo |
-| COMM-368 | Extract shared low-level safety helpers into a package or submodule used by both repos | platform | P1 | todo |
+| COMM-365 | Namespace cloud.js's flat state object by feature domain | platform | P1 | done |
+| COMM-366 | Spike scoped/keyed rendering as an alternative to cloud.js's full-tree innerHTML rerender | platform | P1 | done |
+| COMM-367 | Remove the duplicate safeText() implementation in cloud.js, use the shared esc() | platform | P1 | done |
+| COMM-368 | Extract shared low-level safety helpers into a package or submodule used by both repos | platform | P1 | partial |
 | COMM-369 | Backfill CHANGES.md with the missing 2026-08-28 through 2026-09-01 entries | planner | P1 | done |
 
 COMM-369: CHANGES.md's top entry was stale at 2026-08-27 while `git log`
@@ -3193,3 +3193,193 @@ and was left untouched. No test referenced the removed `log-empty-hint`
 class, so nothing needed updating there. The log screen's own
 est-1RM/best-hold/last-session cards get `.stat-hero` (brass accent, larger
 value) — scoped to this screen, not every `.stat-card` app-wide.
+
+COMM-365, COMM-366 and COMM-367 are `done`; COMM-368 is `partial`. All four
+were done in one pass because they are the same seam: 367 removes cloud.js's
+private copy of the escape, 368 gives the escape (and its eight siblings) one
+home, and 365 does the same thing for the other shared surface in that file,
+`state`.
+
+COMM-367: cloud.js defined `safeText()` — the same character map, the same
+null/undefined guard (`v == null` vs `?? ""`), a byte-for-byte second escape —
+and used it 485 times. All 485 references now call `esc()`, and the local
+definition is gone (`grep -c safeText cloud.js` → 0). Done as a scripted
+identifier rewrite rather than by hand, because the two implementations were
+provably equivalent and 485 hand edits are 485 chances to fat-finger one.
+cloud.js binds it once at the head of its IIFE, `const esc =
+window.BoxLogSafe.esc`, deliberately unguarded: an escape is the one
+dependency that must fail loudly at load rather than degrade to a no-op
+fallback that would ship XSS. Three test files asserted on the literal string
+`safeText(...)` inside cloud.js's templates and were updated to match
+(`community-inline-compare`, `community-engagement-ui` ×2) — the same three the
+QA agent's own COMM-362/363/364 note flagged as mid-flight fallout from this
+work; they are resolved now.
+
+COMM-368 is `partial`, and the reason is worth being blunt about. The half
+that is real and complete: `esc`, `cssSel`, `bag`, `cleanStr`, `cleanNum`,
+`cleanId`, `cleanISODate`, `cleanTs` and `uid` now have exactly one definition
+in this repo, in `src/shared/safe-helpers.js`, behind a named and independently
+versioned module boundary (`src/shared/package.json`, `@boxlog/safe-helpers`
+v1.0.0, with the `VERSION` constant inside the file kept in lockstep and
+`src/shared/README.md` documenting the patch/minor/major propagation protocol).
+`src/format.js`, `src/sanitize.js` and `src/constants.js` no longer define any
+of them; `src/constants.js` binds them for app.js and even reads `LIMITS.idLen`
+back off the shared module so `cleanId()`'s cap cannot drift. Those bindings are
+`var`, not `const`, on purpose — a top-level `var` in a classic script also
+publishes onto the global object, which is exactly what the `function esc() {}`
+declarations they replace did implicitly, and what the jsdom harness reaches
+them through (`window.esc`, `window.bag`, `window.cleanISODate` in
+`test/sanitizers.test.mjs`). Equivalence was verified helper-by-helper against
+the originals over a shared input corpus (including `null`/`undefined`,
+non-strings, `__proto__`, over-length ids and malformed dates) *before* the
+originals were deleted, not after. `safe-helpers.js` is now the first script
+`index.html` loads and a REQUIRED `sw.js` precache asset — `app.js` calls
+`esc()` and `uid()` unconditionally, so a miss on it genuinely does take down
+the offline log, and `test/sw-precache.test.mjs`'s existing "every src/*.js
+index.html loads is precached" assertion covers it automatically. New coverage:
+`test/shared-safe-helpers.test.mjs` (7 tests) pins the frozen surface, that the
+module is self-contained enough to run with nothing but a global object (the
+property that makes it portable at all), that `package.json` tracks `VERSION`,
+that no file in this repo re-declares a helper, the script ordering in
+`index.html`, and that the app's bare identifiers and `window.*` globals are the
+shared module's *own* function objects rather than copies.
+
+What is NOT done, and could not be done here: `crossfit-pwa-Noam` actually
+consuming it. That repo was not in this workspace — same limitation
+COMM-334/COMM-337 already carry, except COMM-334 got lucky (the sibling
+checkout turned out to be the real `haimunia-app`) and this one did not: the
+sibling repo the audit compared against was not present at all this session.
+Until a change lands in *that* repo — either loading this file as its own
+`<script>` (it is framework-free and host-agnostic on purpose) or vendoring it
+verbatim and recording the `VERSION` it copied — `app.js:320-402` over there is
+still an unlinked fork, and a security fix here still has to be hand-carried.
+The ticket's second acceptance criterion ("a follow-up fix propagates via a
+version bump instead of manual copy-paste") is therefore only half-satisfied:
+the versioned artifact and the written protocol exist; the second consumer does
+not. Do not close this ticket without that half.
+
+COMM-365: `state` had 139 top-level keys — more than the ~89 the ticket
+estimated — where the only thing keeping two feature clusters from colliding on
+a name like `view`, `items`, `loading` or `error` was a hand-maintained prefix
+convention (`feedScope`, `challengeView`, `coachCelebrate`, `modQueueStatus`).
+It is now 17 per-domain namespaces (`ui`, `feed`, `posts`, `engagement`,
+`members`, `club`, `leaderboard`, `admin`, `analytics`, `challenges`, `events`,
+`search`, `achievements`, `notif`, `onboarding`, `recaps`, `coach`) plus a
+13-key root. The root is deliberately NOT a domain: it holds only the
+session/auth/config core that every domain reads and no domain owns
+(`configured`/`client`, `user`/`profile`/`redemption`, the two
+localStorage-backed switches, the boot guard, the cached permission set,
+`featureFlags`, `avatarUpload`). Keeping `user`/`profile`/`redemption`/
+`signupStarted` flat is not laziness about the largest call-site counts — those
+four are also the paths three existing source-text tests assert on by exact
+string (`community-anonymous-auth`, `community-profile-gate`,
+`community-username-password-auth`), so leaving them put kept the auth-gate
+ordering assertions honest instead of rewriting the thing they check.
+
+Prefixes were stripped wherever the namespace made them redundant
+(`feedScope` → `feed.scope`, `challengeView` → `challenges.view`,
+`coachCelebrate` → `coach.celebrate`, `notifPushSub` → `notif.pushSub`,
+`adminAnalytics` → `analytics.dashboard`) and kept where they still carry
+meaning (`admin.modQueueStatus`, `admin.auditFilters` — `state.admin.mod.queue`
+would be a third level for no gain). 1,181 of the 1,538 `state.*` references
+were rewritten; the other 357 are the root core. Done as a scripted
+whole-identifier rewrite over one explicit old-key → new-path map, with the
+script refusing to run at all if it met a `state.` key the map did not cover —
+which is how the two keys `state.clubFeatures` and `state.clubFeaturesLoaded`
+were found: both were read and written throughout `cloud.js` but never declared
+in the literal, springing into existence on first write. They are declared now
+(`club.features`, `club.featuresLoaded`), with defaults matching what the first
+writer produced for a signed-out caller.
+
+Three things needed real thought rather than a rename. (1) The dialog registry
+did `state[key]`, which only worked because every dialog flag happened to be a
+top-level sibling; each `CLOUD_DIALOGS` entry now carries an `isOpen()` getter,
+so the registry stays the one place that knows where a dialog's flag lives and
+`key` goes back to meaning only what it always meant to the DOM (the
+`data-cloud-dialog` attribute). Nothing in cloud.js reaches state by a computed
+key any more, which is what makes the static leaf check below possible.
+(2) `hideMyLeaderboardResult` was absorbed into the already-grouped
+`state.leaderboard` object as `.hideMine` — which turned the sign-out reset's
+`state.leaderboard = { ...defaults }` into a silent bug, because that
+per-device localStorage-backed flag is meant to outlive a sign-out and a
+wholesale replacement would have dropped it. Caught before it shipped; the
+reset now assigns leaves. (3) That sign-out reset was one 2.4 KB line of ~120
+assignments, and namespacing only made it longer; it is now grouped one
+namespace per line, verified first to contain no duplicate left-hand side so
+the regrouping could not change the outcome.
+
+Correctness was not left to the test suite alone. Before the swap, the old and
+new literals were both evaluated and compared key-by-key through the map:
+every old key's initial value present at its new path with the same shape, no
+key invented, none dropped, no orphan leaf in the new literal. After the swap,
+every two-level `state.<ns>.<leaf>` reference anywhere in cloud.js was checked
+against the declared literal — because a flat `state.foo` that no longer exists
+throws on first read, but a `state.feed.scop` typo reads `undefined` forever and
+silently renders the wrong thing. Both checks are now permanent, as
+`test/community-state-namespaces.test.mjs` (6 tests): the root shape, the
+namespace list, the every-reference-resolves check plus its reverse (a declared
+leaf nothing reads is dead state), the no-computed-key rule, the dialog
+registry's key/path separation, and the leaves-never-namespaces rule for the
+sign-out reset.
+
+COMM-366 is `done` as a spike, per its own acceptance criteria — no rendering
+code was rewritten. `docs/community/2026-09-03-render-architecture-spike.md`
+records an explicit decision to KEEP the full-tree rerender, and it is grounded
+in real Chromium measurements rather than general advice about `innerHTML`:
+`scripts/browser-check/community-render-cost.mjs` is a new, re-runnable
+instrument (local static server + the in-page mock backend, same rule every
+community scenario follows). On a signed-in member with one loaded feed page
+(20 post cards) a full `window.render()` is 27.5 KB of HTML, 274 elements, 92
+focusable controls, and 0.96 ms — 3.79 ms at 4× CPU throttle (mid-range phone),
+5.92 ms at 6× (low-end). The `innerHTML` write scales linearly with feed depth
+with no cliff (2.06 ms at 120 cards, six pages deep), and one tap on the feed's
+comment toggle costs 2 full-tab rebuilds. So the ticket's "expensive enough
+that a focus-restoration subsystem exists" framing is measurably the wrong
+frame: at ~4× headroom inside a frame budget, the milliseconds are not the
+problem. The cost is correctness, and it is already being paid — 148 lines of
+`syncCloudDialogFocus` machinery (which has to capture clicks in the *capture*
+phase and serialise the clicked control into a CSS selector, because the
+re-render destroys the very button that triggered it), three hand-written
+"don't rerender on input, patch the counter directly" exceptions, and
+scroll/`<details>`/IME state simply accepted as lost. That scales with surface
+count, not feed depth. Hence: keep the model (a rewrite of 342 call sites in a
+10,700-line load-bearing file has negative expected value while the budget is
+met by 4×, and "state is wrong" being the *only* way the UI can be wrong is
+worth real milliseconds on a codebase with no component boundaries), adopt
+three guardrails, and record four trip-wires that reverse the decision (>16 ms
+at 4× throttle at a depth members reach; a third hand-rolled DOM-state
+restoration subsystem; a surface needing to animate across a state change; feed
+virtualisation). The migration path is costed in the note's §6 so a future
+ticket does not redo this analysis, and it deliberately starts from a pattern
+already in this repo — `app.js`'s other four tabs are *already* scope-rendered
+via `renderHistoryListArea()`/`renderCalendarGrid()`/`renderWodContent()`;
+Community is the one tab that never adopted it — rather than from a framework.
+Vendoring morphdom is listed last, and marked as a different risk profile
+because it changes all 342 call sites at once.
+
+One incidental finding while building that instrument, worth knowing before
+someone else hits it: `test/helpers/mockSupabase.mjs`'s `feed_page()` stand-in
+base64s its cursor through node's `Buffer`, which does not exist in a browser,
+so it throws the moment it has any row to page and the feed comes back empty.
+Every existing community browser scenario seeds `feed_page_rows: []` and never
+reaches it. `community-render-cost.mjs` is the first that needs a non-empty
+feed, and carries its own three-line `Buffer` shim rather than editing the
+shared mock out from under the jsdom suite. A real fix belongs to whoever owns
+that helper.
+
+`npm test` across this pass: 963 tests / 962 passing before, 976 / 975 after —
+the delta is exactly the 13 new tests added here (7 in
+`test/shared-safe-helpers.test.mjs`, 6 in
+`test/community-state-namespaces.test.mjs`), with no test lost and no
+behavioral assertion weakened. The counts above are steady-state; individual
+full-suite runs during this session showed between 1 and 5 `waitFor timed out`
+failures that all pass in isolation and are load flakiness from three agents
+running the suite concurrently on one machine, not regressions — each was
+re-run per file to confirm. Nine test files were edited, all of them
+source-text assertions that named a path or a helper this refactor moved
+(`safeText(` → `esc(`, `state.confirmDialog` → `state.ui.confirmDialog`,
+`state.feedCursor` → `state.feed.cursor`, `function cleanISODate` moving from
+`src/sanitize.js` to `src/shared/safe-helpers.js`, and one that asserted two
+sign-out reset assignments were adjacent lines, now rewritten to assert both
+run in the same block, which is what it actually cared about). No test's
+subject changed.

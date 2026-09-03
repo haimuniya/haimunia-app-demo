@@ -2,7 +2,7 @@
 
 Phase: Design sync & audit remediation (2026-09-02)
 Agent: platform
-Status: todo
+Status: done
 Priority: P1
 Attendance-blocked: no
 
@@ -16,10 +16,15 @@ recaps, coach dashboard) add more UI on top of the same pattern.
 
 ## Acceptance criteria
 
-- [ ] A design note or spike evaluates scoping rerenders to the changed panel (or a
+- [x] A design note or spike evaluates scoping rerenders to the changed panel (or a
   lightweight keyed-diff approach) instead of the whole tab.
-- [ ] Either a migration plan is proposed, or an explicit documented decision is
-  made to keep full-rerender with known limits.
+  `docs/community/2026-09-03-render-architecture-spike.md`, grounded in real
+  Chromium measurements from `scripts/browser-check/community-render-cost.mjs`.
+- [x] Explicit documented decision: KEEP the full-tree rerender, with three
+  named guardrails and four named trip-wires that would reverse it. The
+  migration path (scoped `renderSection` seam first, morphdom only as a last
+  resort) is costed in the note's §6 so a future ticket does not redo this
+  analysis. No rendering code was rewritten - this was a spike.
 
 ## Location / evidence
 
