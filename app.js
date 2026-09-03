@@ -215,6 +215,15 @@ if (urlNotif) {
   } catch (e) { /* not fatal - the pending link still gets consumed once */ }
 }
 let selectedId = MOVEMENTS[0].id;
+// COMM-360. selectedId always needs to point at a real movement internally
+// (ladder/superset switching, saveSet's exerciseId, movementById lookups
+// throughout the log screen) - it can't just be null. This flag is the real
+// "has the user actually picked one" signal: false means selectedId is only
+// a placeholder, the log screen shows a pick-a-movement prompt instead of
+// naming it, and saveSet() refuses to save against it. Flips true from
+// choosePickedMovement() (the picker) and startEditEntry() (opening a real
+// past set is as explicit a choice as picking one); reset on clearAllData().
+let movementExplicitlyChosen = false;
 let weight = 20, reps = 5, sets = 1;
 // "reps" (weight×reps×sets, the original/default) or "duration" (a timed
 // hold/carry — see sanitizeEntry). durationSeconds is that mode's own value,
@@ -252,7 +261,13 @@ let calSelectedDate = todayISO();
 let wodEntries = [];
 let customWods = [];
 let wodSubTab = "log";
-let selectedWodId = WOD_LIBRARY[0].id;
+// COMM-360: null (not WOD_LIBRARY[0].id/"Fran") until the user actually
+// picks one, unlike selectedId - there's no internal logic depending on
+// this always being a valid WOD, so a real null works. wodById(null) is
+// undefined, which renderWodLogSection() and the bottom-bar visibility
+// check (render()) already treat as "show the pick-a-WOD empty state, no
+// save action".
+let selectedWodId = null;
 let wodMinutes = 3, wodSeconds = 0, wodRounds = 5, wodReps = 0, wodWeight = 20;
 // EMOM-only: one rep count per movement in the selected WOD's rotation,
 // index-aligned with its emomMovements — kept in sync with that WOD's own
@@ -934,6 +949,10 @@ function emitCommunityPrCreated(entry, mov, detail) {
   try { bus.emit(events.PR_CREATED, { record }); } catch (e) { /* bus dropped it */ }
 }
 async function saveSet() {
+  // COMM-360: refuse to save against the placeholder movement nobody
+  // actually picked - the empty-state prompt has no save affordance of its
+  // own, but defend anyway (same reasoning as saveWod()'s own guard).
+  if (!movementExplicitlyChosen) return;
   const date = clampLogDate(logDate);
   const editId = editingEntryId;
   const existing = editId ? entries.find((e) => e.id === editId) : null;
@@ -1151,6 +1170,7 @@ function startEditEntry(id) {
   const entry = entries.find((e) => e.id === id);
   if (!entry) return;
   selectedId = entry.exerciseId;
+  movementExplicitlyChosen = true; // COMM-360: opening a real past set is as explicit a choice as the picker
   logEntryType = entry.type === "duration" ? "duration" : "reps";
   weight = entry.weight;
   reps = entry.reps;
@@ -1619,8 +1639,9 @@ async function clearAllData() {
     noteStorageError(e);
   }
   selectedId = MOVEMENTS[0].id;
+  movementExplicitlyChosen = false; // COMM-360: back to "nothing chosen yet", same as a cold load
   historyId = null;
-  selectedWodId = WOD_LIBRARY[0].id;
+  selectedWodId = null; // COMM-360
   wodHistoryId = null;
   bwWeight = 70;
   barWeight = 20;
@@ -1991,6 +2012,9 @@ function builderMovementsToDesc(movements) {
 
 async function saveWod() {
   const w = wodById(selectedWodId);
+  // COMM-360: no WOD chosen yet (selectedWodId now defaults to null, not a
+  // real WOD) - the empty state has no save button, but defend anyway.
+  if (!w) return;
   if (!isFinite(wodMinutes) || !isFinite(wodSeconds) || !isFinite(wodRounds) || !isFinite(wodReps) || !isFinite(wodWeight) || !isFinite(wodScaledWeight)) return;
   if (w.scoreType === "emom" && !wodEmomReps.every((r) => isFinite(r))) return;
   const editId = editingWodEntryId;
@@ -2217,12 +2241,17 @@ function renderLogTab() {
     </div>` : ""}
 
     <button class="exercise-select" data-action="open-picker">
+      ${movementExplicitlyChosen ? `
       <div class="flex items-center gap-8">
         <div class="dot" style="background:${esc(catColor(selected.category))}"></div>
         <span style="font-weight:800; font-size:16px;">${esc(selected.name)}</span>
       </div>
-      <span class="flex items-center gap-6" style="color:var(--steel); font-size:12px; font-weight:600;">שינוי${ICONS.chevronsLeft}</span>
+      <span class="flex items-center gap-6" style="color:var(--steel); font-size:12px; font-weight:600;">שינוי${ICONS.chevronsLeft}</span>` : `
+      <span style="font-weight:800; font-size:16px;">מה עשינו היום?</span>
+      <span class="flex items-center gap-6" style="color:var(--steel); font-size:12px; font-weight:600;">בחירת תרגיל${ICONS.chevronsLeft}</span>`}
     </button>
+
+    ${!movementExplicitlyChosen ? `<div class="empty">בחרו תרגיל כדי להתחיל</div>` : `
 
     <div class="rx-toggle" role="radiogroup" aria-label="סוג רישום">
       <button class="rx-btn ${!isDuration ? "active-type" : ""}" data-action="set-log-entry-type" data-type="reps" role="radio" aria-checked="${!isDuration}">משקל וחזרות</button>
@@ -2320,6 +2349,7 @@ function renderLogTab() {
         </div>` : `<div style="color:var(--steel); font-size:12px;">אפשר לשנות משקל וחזרות לכל סט בנפרד — לחצו על כפתור השמירה בכל פעם שסט מוכן</div>`}
       </div>` : ""}`;
     })()}
+    `}
 
     ${dayEntries.length === 0 ? `
     <div class="empty">${isToday ? "עדיין לא נרשמו סטים היום. קדימה למוט." : `עדיין לא נרשמו סטים ב-${esc(dayLabel)}.`}</div>` : `
@@ -3079,7 +3109,11 @@ function render() {
     if (tab === "add") {
       const selected = movementById(selectedId);
       content = renderLogTab();
-      if (selected) {
+      // COMM-360: only name the save action once a movement is actually
+      // chosen - selected is always truthy (selectedId keeps a placeholder
+      // id internally), so movementExplicitlyChosen is the real gate here,
+      // matching the bottom-bar visibility check below.
+      if (selected && movementExplicitlyChosen) {
         const prefix = editingEntryId ? "עדכון סט — " : ladderMode ? `הוספת סט ${currentLadderRounds().length + 1} ל${ladderPartnerId ? "סופרסט" : "סולם"} — ` : "רישום סט — ";
         document.getElementById("bottomBarBtn").dataset.action = "save-set";
         document.getElementById("saveBtnLabel").textContent = prefix + selected.name;
@@ -3131,7 +3165,9 @@ function render() {
     try { bottomTabBarEl.innerHTML = renderBottomTabBar(); }
     catch (err) { console.error("bottom tab bar render error:", err); }
   }
-  document.getElementById("bottomBar").style.display = (tab === "add" || (tab === "wod" && wodSubTab === "log" && wodById(selectedWodId))) ? "flex" : "none";
+  // COMM-360: the save action only appears once something is actually
+  // chosen on either tab - same rule, applied symmetrically.
+  document.getElementById("bottomBar").style.display = ((tab === "add" && movementExplicitlyChosen) || (tab === "wod" && wodSubTab === "log" && wodById(selectedWodId))) ? "flex" : "none";
   updateStreakLabel();
   // Rendered after every tab's own content, not just Community's, so a
   // share triggered from Calendar/Progress can still show its confirm
@@ -3468,6 +3504,7 @@ function choosePickedMovement(id) {
   if (pickerTarget === "partner") { setLadderPartner(id); return; }
   if (id !== selectedId) endEntryEditIfActive();
   selectedId = id;
+  movementExplicitlyChosen = true; // COMM-360
   syncLogEntryTypeToSelection();
   endLadder();
 }
@@ -3565,6 +3602,15 @@ function openSettings() {
 function closeSettings() {
   if (!settingsOpen) return;
   settingsOpen = false;
+  // COMM-339: reset the armed "delete everything" confirm on close, not just
+  // on an explicit cancel/confirm inside clearAllData() - otherwise a user
+  // who backs out by closing the sheet sees it still armed on reopen, one
+  // tap from a wipe with no fresh warning. render() so #settingsBody (kept
+  // current on every render() regardless of open state, see renderSettingsBody())
+  // actually reflects the reset before the next open, the same reason
+  // ask-clear/cancel-clear call render() themselves.
+  confirmClear = false;
+  render();
   document.body.style.overflow = "";
   const overlay = document.getElementById("settingsOverlay");
   if (overlay) overlay.classList.remove("open");

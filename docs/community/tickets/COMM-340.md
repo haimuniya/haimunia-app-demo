@@ -2,7 +2,7 @@
 
 Phase: Design sync & audit remediation (2026-09-02)
 Agent: unassigned (app.js core, outside the 15-agent community roster)
-Status: todo
+Status: done
 Priority: P1
 Attendance-blocked: no
 
@@ -16,9 +16,13 @@ meta. Community's viewport meta is missing the same directive.
 
 ## Acceptance criteria
 
-- [ ] `interactive-widget=resizes-content` added to Community's viewport meta tag.
+- [x] `interactive-widget=resizes-content` added to Community's viewport meta tag.
+  Already present (landed in e5fe413 alongside the P0 fixes; this ticket's own
+  status just hadn't been bumped) - now pinned by a source assertion in
+  `test/design-sync-audit-app-core.test.mjs`, which nothing did before.
 - [ ] Verified on Android Chrome: focusing any text/number input no longer leaves
-  fixed UI floating with an exposed gap beneath it.
+  fixed UI floating with an exposed gap beneath it. **Not done** - no real
+  Android device or browser access from this environment.
 
 ## Location / evidence
 

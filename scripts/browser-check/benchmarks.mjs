@@ -39,11 +39,12 @@ await dismissWelcomeModal(page);
 await switchTab(page, "tabWodBtn");
 await page.waitForTimeout(200);
 
-// A fresh load pre-selects WOD_LIBRARY[0] (selectedWodId's module-level
-// default, app.js) — there's no empty state to land on here; the log
-// subtab always shows a form for whichever WOD is currently selected.
-const logFormVisible = await page.evaluate(() => !!document.getElementById("wodLogDateInput"));
-check("the log subtab shows a form for the pre-selected WOD on a fresh load", logFormVisible);
+// COMM-360: selectedWodId now defaults to null (not WOD_LIBRARY[0]/"Fran")
+// so a fresh load lands on the log subtab's empty state, not a pre-filled
+// form - a user must explicitly pick a WOD (from here, via benchmarks
+// below) before any log form appears.
+const emptyStateVisible = await page.evaluate(() => (document.getElementById("wodContent")?.textContent || "").includes("בחרו אימון כדי להתחיל"));
+check("the log subtab shows the pick-a-WOD empty state on a fresh load, not a pre-filled form", emptyStateVisible);
 
 // Reach the benchmarks subtab via its pill in the subtabbar.
 await page.click("button.subtabbtn[data-subtab='benchmarks']");

@@ -7,7 +7,7 @@
 //   TARGET_URL=<url> node wod-extras.mjs # a deployed site
 import { chromium } from "playwright";
 import { resolveTarget } from "./lib/target.mjs";
-import { switchTab, dismissWelcomeModal, dismissCelebrationIfOpen, consoleErrorCollector } from "./lib/actions.mjs";
+import { switchTab, dismissWelcomeModal, dismissCelebrationIfOpen, selectBenchmarkWod, consoleErrorCollector } from "./lib/actions.mjs";
 import { installMockCloud } from "./lib/mockCloud.mjs";
 
 let failed = false;
@@ -37,6 +37,10 @@ await dismissWelcomeModal(page);
 
 await switchTab(page, "tabWodBtn");
 await page.waitForTimeout(200);
+// COMM-360: selectedWodId now defaults to unset - pick a real WOD first
+// (same as a real user must) before the exercise-select/open-wod-picker
+// button exists to click.
+await selectBenchmarkWod(page, "fran");
 await page.click("[data-action='open-wod-picker']");
 await page.waitForTimeout(200);
 await page.click("[data-action='open-wod-builder']");

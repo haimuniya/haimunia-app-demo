@@ -12,6 +12,12 @@ import { bootApp } from "./helpers/boot.mjs";
 test("switching WOD subtabs moves the pill highlight, not just the content", async () => {
   const window = await bootApp();
   window.document.getElementById("tabWodBtn").click();
+  // COMM-360: selectedWodId defaults to unset, so the log subtab's own
+  // content starts as the pick-a-WOD empty state (no form) - pick a real
+  // WOD first so the log-form assertion below (unrelated to this test's
+  // own subject, the pill highlight) has something to find.
+  window.document.querySelector('[data-action="switch-wod-subtab"][data-subtab="benchmarks"]').click();
+  window.document.querySelector('[data-action="select-benchmark"]').click();
   const isActive = (subtab) => window.document.querySelector(`.subtabbtn[data-subtab='${subtab}']`).classList.contains("active");
 
   assert.equal(isActive("log"), true, "log (רישום) is the default subtab and should start highlighted");

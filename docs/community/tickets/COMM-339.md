@@ -2,7 +2,7 @@
 
 Phase: Design sync & audit remediation (2026-09-02)
 Agent: unassigned (app.js core, outside the 15-agent community roster)
-Status: todo
+Status: done
 Priority: P1
 Attendance-blocked: no
 
@@ -17,8 +17,8 @@ from wiping all data with no fresh warning.
 
 ## Acceptance criteria
 
-- [ ] `confirmClear` is reset to `false` inside `closeSettings()`.
-- [ ] Closing/reopening Settings after tapping "מחיקת כל הנתונים" but not confirming
+- [x] `confirmClear` is reset to `false` inside `closeSettings()`.
+- [x] Closing/reopening Settings after tapping "מחיקת כל הנתונים" but not confirming
   or cancelling always shows the initial (non-armed) button.
 
 ## Location / evidence

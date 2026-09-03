@@ -22,5 +22,11 @@ test("clearing all data ends an active ladder instead of leaving it stale", asyn
   assert.equal(isOn(), true, "ladder should be active after toggling it on and logging a round");
 
   await window.clearAllData();
-  assert.equal(isOn(), false, "clearing all data should end the ladder, not leave it advertising a groupId that points at nothing");
+  // COMM-360: clearAllData() also resets movementExplicitlyChosen, so the
+  // log screen falls back to its pick-a-movement empty state - the ladder
+  // toggle button itself is gone, not just inactive. Either way (gone, or
+  // present-but-inactive) is a pass here: what must never happen is the
+  // toggle surviving in an "active" state pointing at a groupId that no
+  // longer exists.
+  assert.ok(!isOn(), "clearing all data should end the ladder, not leave it advertising a groupId that points at nothing");
 });

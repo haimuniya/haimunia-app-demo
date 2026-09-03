@@ -9,8 +9,14 @@ import { test } from "node:test";
 import assert from "node:assert";
 import { bootApp } from "./helpers/boot.mjs";
 
-test("the fixed bottom bar shows the Log tab's save-set action by default", async () => {
+test("the fixed bottom bar shows the Log tab's save-set action once a movement is chosen, hidden until then (COMM-360)", async () => {
   const window = await bootApp();
+  // COMM-360: nothing is pre-selected on a fresh load, so the save action
+  // has nothing to name yet - was previously "by default" here, back when
+  // selectedId defaulted to a real movement (Back Squat).
+  assert.equal(window.document.getElementById("bottomBar").style.display, "none");
+  window.document.querySelector('[data-action="open-picker"]').click();
+  window.document.querySelector('[data-action="pick-movement"]').click();
   const btn = window.document.getElementById("bottomBarBtn");
   assert.equal(btn.dataset.action, "save-set");
   assert.equal(window.document.getElementById("bottomBar").style.display, "flex");
