@@ -22,9 +22,16 @@
   _headers file), so there is no working clickjacking mitigation available
   on this host at all — adding the directive here would be inert and
   misleading, not a fix. It would take moving off GitHub Pages (a host that
-  supports a headers file) to actually close this gap. The production app
-  (haimunia-app) ships no CSP at all, so this demo is still strictly ahead
-  on every directive that *does* work via <meta>.
+  supports a headers file) to actually close this gap. Verified directly
+  against the live production app (COMM-334, 2026-09-03: both the raw HTTP
+  response headers and the served HTML of
+  https://haimuniya.github.io/haimunia-app/) rather than assumed: production
+  ships the same kind of meta-tag CSP as this demo, on the same
+  no-real-headers host, and its meta tag already lists frame-ancestors
+  'none' too (as inertly as it does here) — it is not "no CSP at all" as an
+  earlier version of this comment claimed. The only real remaining gap on
+  both apps is the same one: moving off GitHub Pages (or fronting it with an
+  edge layer) to get real response headers.
 -->
 <meta http-equiv="Content-Security-Policy" content="
   default-src 'self';
@@ -37,7 +44,8 @@
   worker-src 'self';
   object-src 'none';
   base-uri 'none';
-  form-action 'none'" />
+  form-action 'none';
+  frame-ancestors 'none'" />
 <meta name="referrer" content="no-referrer" />
 
 <!-- Pinch-zoom is deliberately NOT blocked: user-scalable=no fails WCAG 1.4.4

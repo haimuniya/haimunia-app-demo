@@ -2406,7 +2406,7 @@ Filed from `2026-09-02-design-sync-and-cross-repo-audit.md`, a 10-agent cross-re
 | COMM-331 | Defer the community data-load cascade until the Community tab is first opened | platform | P0 | done |
 | COMM-332 | Verify and fix migration-check / pgTAP CI status (COMM-020) | qa | P0 | done |
 | COMM-333 | Fix browser-check flakiness and stop run-all.mjs aborting on first failure | qa | P0 | done |
-| COMM-334 | Confirm CSP status of the real production repo (haimunia-app) and port CSP headers to it | unassigned (separate repo, outside this workspace) | P0 | todo |
+| COMM-334 | Confirm CSP status of the real production repo (haimunia-app) and port CSP headers to it | unassigned (separate repo, outside this workspace) | P0 | done |
 | COMM-335 | Finish legal essentials in PRIVACY.md / TERMS.md and remove draft language | identity-privacy | P0 | todo |
 | COMM-336 | Extend PRIVACY.md to disclose photos, comments, follows, and admin-visible data | identity-privacy | P0 | done |
 | COMM-337 | Move hosting off GitHub Pages (or add an edge layer) to enable clickjacking headers | platform | P1 | todo |
@@ -2457,3 +2457,17 @@ entries, which have no matching narrative here since that track sits outside
 the Community ticket system, are sourced from commit messages only and kept
 correspondingly shorter. CHANGES.md's top entry now matches the latest
 commit prior to this session's own work.
+
+COMM-334: closed by direct verification, not assumption. A local checkout of
+`haimunia-app`'s real `origin/main` was available in this workspace after
+all, at `crossfit-pwa-Noam` (its `origin` remote points at
+`github.com/haimuniya/haimunia-app`, not the Noam design-reference content
+its directory name suggests). `git show origin/main:index.html` and a direct
+`curl` against the live `https://haimuniya.github.io/haimunia-app/` both
+confirm production ships the same kind of meta-tag CSP this demo repo does,
+on the same GitHub-Pages-cannot-send-headers limitation — the "production
+ships no CSP at all" claim in this repo's own `index.html` comment was
+wrong, not verified. That comment is now corrected in place, and this demo's
+meta tag gained the `frame-ancestors 'none'` line production already had
+(inert in meta form on either app, real fix tracked separately as
+COMM-337).
