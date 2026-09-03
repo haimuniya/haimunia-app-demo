@@ -2411,8 +2411,8 @@ Filed from `2026-09-02-design-sync-and-cross-repo-audit.md`, a 10-agent cross-re
 | COMM-336 | Extend PRIVACY.md to disclose photos, comments, follows, and admin-visible data | identity-privacy | P0 | done |
 | COMM-337 | Move hosting off GitHub Pages (or add an edge layer) to enable clickjacking headers | platform | P1 | todo |
 | COMM-338 | Run the pgTAP suite in CI and add a multi-role live smoke test before deploy | qa | P1 | todo |
-| COMM-339 | Reset confirmClear when the Settings modal closes | unassigned (app.js core, outside the 15-agent community roster) | P1 | todo |
-| COMM-340 | Add interactive-widget=resizes-content to the viewport meta | unassigned (app.js core, outside the 15-agent community roster) | P1 | todo |
+| COMM-339 | Reset confirmClear when the Settings modal closes | unassigned (app.js core, outside the 15-agent community roster) | P1 | done |
+| COMM-340 | Add interactive-widget=resizes-content to the viewport meta | unassigned (app.js core, outside the 15-agent community roster) | P1 | done |
 | COMM-341 | Add a monthly stats summary, legend, and card chrome to the calendar screen | cross-cutting (UI/design) | P1 | todo |
 | COMM-342 | Fix reversed prev/next month chevron icons on the calendar | cross-cutting (UI/design) | P1 | todo |
 | COMM-343 | Port the chosen/unchosen exercise-select state and stat-hero cards to the Home/log screen | cross-cutting (UI/design) | P1 | todo |
@@ -2421,7 +2421,7 @@ Filed from `2026-09-02-design-sync-and-cross-repo-audit.md`, a 10-agent cross-re
 | COMM-346 | Add a .chip-btn.danger modifier and remove inline destructive-button styling | cross-cutting (UI/design) | P1 | todo |
 | COMM-347 | Promote high-traffic classless inline components in cloud.js into real CSS classes | cross-cutting (UI/design) | P1 | todo |
 | COMM-348 | Give .post-media-grid an actual grid layout | cross-cutting (UI/design) | P1 | todo |
-| COMM-349 | Migrate the remaining 8 dialogs onto Community's dialog registry and narrow the focusable selector | unassigned (app.js core, outside the 15-agent community roster) | P1 | todo |
+| COMM-349 | Migrate the remaining 8 dialogs onto Community's dialog registry and narrow the focusable selector | unassigned (app.js core, outside the 15-agent community roster) | P1 | done |
 | COMM-350 | Reconcile active-tab visual language once Community's nav IA is final | cross-cutting (UI/design) | P1 | todo |
 | COMM-351 | Reconcile --shadow-card formula across repos | cross-cutting (UI/design) | P1 | todo |
 | COMM-352 | Restore the --text-scale token and unify the Large Text magnitude | cross-cutting (UI/design) | P1 | todo |
@@ -2432,7 +2432,7 @@ Filed from `2026-09-02-design-sync-and-cross-repo-audit.md`, a 10-agent cross-re
 | COMM-357 | Replace hardcoded rgba tints in announcement badges and coach comment highlight with color-mix() | cross-cutting (UI/design) | P1 | todo |
 | COMM-358 | Add roving-tabindex and Arrow-key support to all role="tablist" groups | cross-cutting (UI/design) | P1 | todo |
 | COMM-359 | Give the est-1RM trend chart an accessible name or data alternative | cross-cutting (UI/design) | P1 | todo |
-| COMM-360 | Default selectedId/selectedWodId to unset with an explicit pick-one empty state | unassigned (app.js core, outside the 15-agent community roster) | P1 | todo |
+| COMM-360 | Default selectedId/selectedWodId to unset with an explicit pick-one empty state | unassigned (app.js core, outside the 15-agent community roster) | P1 | done |
 | COMM-361 | Darken light-theme --brass or add a higher-contrast text variant | cross-cutting (UI/design) | P1 | todo |
 | COMM-362 | Add a session-expiry / refresh-failure auth test | qa | P1 | todo |
 | COMM-363 | Add browser-check scenarios for post composition and report moderation | qa | P1 | todo |
@@ -2442,3 +2442,102 @@ Filed from `2026-09-02-design-sync-and-cross-repo-audit.md`, a 10-agent cross-re
 | COMM-367 | Remove the duplicate safeText() implementation in cloud.js, use the shared esc() | platform | P1 | todo |
 | COMM-368 | Extract shared low-level safety helpers into a package or submodule used by both repos | platform | P1 | todo |
 | COMM-369 | Backfill CHANGES.md with the missing 2026-08-28 through 2026-09-01 entries | planner | P1 | todo |
+
+The four "unassigned (app.js core, outside the 15-agent community roster)"
+P1 tickets are now done, closed together in one pass since none of the four
+touch Community feature code (all pure app.js/index.html core, `COMM-328`'s
+territory, not any of the 15 feature agents' surfaces).
+
+COMM-339 was exactly as filed: `closeSettings()` now resets `confirmClear`
+alongside `settingsOpen`, and calls `render()` (the same thing
+`ask-clear`/`cancel-clear` already did) so `#settingsBody` — kept current on
+every `render()` regardless of the overlay's open state — actually reflects
+the reset before the sheet can be reopened, rather than leaving stale
+"armed" markup sitting in the DOM until some unrelated action re-rendered
+it. Pinned in `test/design-sync-audit-app-core.test.mjs`.
+
+COMM-340 was already fixed: `interactive-widget=resizes-content` landed on
+`index.html`'s viewport meta as part of e5fe413's own P0 pass, just never
+had the ticket's own status bumped off `todo`. Verified present and pinned
+with a source assertion in `test/design-sync-audit-app-core.test.mjs`, since
+nothing pinned it before.
+
+COMM-349 is a real duplicate, not busywork: it was filed by a second,
+independent audit pass over the same gap COMM-328 (done) already closed.
+Its own acceptance criteria is narrower than its title suggests — just
+"verify COMM-328's acceptance criteria explicitly include the `[href]` ->
+`a[href]` selector narrowing before closing both" — and both are: all 8
+dialogs are registered on app.js's own `APP_DIALOGS` (`registerAppDialog()`
+calls for `picker`, `wodPicker`, `wodBuilder`, `achievements`,
+`celebration`, `notifications`, `onboarding`, `welcome`, alongside the
+pre-existing `navMenu`/`settings`), and `appDialogFocusables()`'s selector
+already reads `a[href]`, not a bare `[href]`. No code change was needed,
+only verification — now pinned by two source assertions in
+`test/design-sync-audit-app-core.test.mjs` so a future edit can't quietly
+regress either fact. Worth flagging: COMM-349's own title ("migrate ...
+onto Community's dialog registry") describes `CLOUD_DIALOGS`
+(cloud.js's Community-feature dialog registry), but the dialogs it's
+actually about are app.js's own core training-log overlays, migrated onto
+app.js's own `APP_DIALOGS` by COMM-328 — a separate, parallel registry with
+the same contract, not `CLOUD_DIALOGS` itself. The ticket file's own
+"Dependencies: COMM-328" and "Location / evidence: Same locations as
+COMM-328" already point at this; only the title is imprecise.
+
+COMM-360 is the one real code change of the four, and the most invasive of
+this batch. `selectedId` stays a real movement id internally (ladder mode,
+superset partner switching, and `saveSet()`'s `exerciseId` all need one),
+but a new `movementExplicitlyChosen` flag (default `false`, mirroring
+Noam's own reference implementation) is now the real "has the user actually
+picked one" signal: `choosePickedMovement()` (the picker) and
+`startEditEntry()` (opening a real past set is as explicit a choice as
+picking one) are the only two places that flip it true, and `saveSet()`
+refuses to save while it's false. `selectedWodId` needed no equivalent flag
+— nothing internal depends on it always being a real WOD — so it now
+defaults to a real `null`, same as Noam. Both reset on `clearAllData()`.
+The WOD half turned out to need zero rendering changes: `renderWodLogSection()`
+already returned a `<div class="empty">בחרו אימון כדי להתחיל</div>` for
+`!wodById(selectedWodId)` and the bottom-bar visibility check already
+conditioned on `wodById(selectedWodId)` — both apparently written
+defensively ahead of this ticket — so flipping the default to `null` alone
+makes the existing empty state and hidden save button kick in. The
+movement half needed real changes since no such gate existed:
+`renderLogTab()`'s `.exercise-select` button now shows a generic "מה עשינו
+היום?" prompt instead of naming a movement when unchosen, followed by a
+`<div class="empty">בחרו תרגיל כדי להתחיל</div>` in place of the
+rx-toggle/date/stat-row/steppers/ladder block (today's cross-exercise log
+summary at the bottom is unaffected — it isn't about any one movement), and
+`render()`'s bottom-bar visibility/label logic now checks
+`movementExplicitlyChosen` the same way it already checked
+`wodById(selectedWodId)` for the WOD tab. `saveWod()` picked up the same
+`if (!w) return;` guard Noam's own version already carries ("no WOD chosen
+yet ... but defend anyway") — ours didn't have it, and needed it once
+`selectedWodId` could genuinely be `null`. Four existing tests asserted the
+old default-selected behavior as their premise and needed updating to pick
+a movement/WOD first (matching what a real user now must do), not because
+what they were actually testing changed: `test/audit-ux-fixes.test.mjs`'s
+auto-backup-before-wipe test, `test/clear-data.test.mjs`'s
+stale-ladder-after-wipe test, and `test/wod-save-button-pinned.test.mjs`
+and `test/wod-subtab.test.mjs`, both of which had "by default" baked into
+either their title or their premise and are now explicit about picking
+first. Seven `scripts/browser-check/*.mjs` scenarios shared the same stale
+assumption (a movement or WOD is always pre-selected) and were updated the
+same way, then re-verified for real against local Chromium (this session
+had a working Playwright/Chromium install, unlike some earlier sessions
+noted elsewhere in this doc): `duration.mjs` and `benchmarks.mjs` needed an
+explicit pick added; `emom.mjs`, `wod-extras.mjs`, `wod-builder-duration.mjs`,
+and `text-scale.mjs` needed one too, factored into a new shared
+`selectBenchmarkWod()` helper in `scripts/browser-check/lib/actions.mjs`
+rather than repeating the same three-line benchmarks-subtab dance four
+times; `ladder.mjs`, `superset.mjs`, and `roadmap.mjs` already picked a
+movement explicitly as their first action and needed no change. `npm test`
+and a full `node scripts/browser-check/run-all.mjs` pass both confirmed
+green after. New coverage for the ticket itself lives in
+`test/design-sync-audit-app-core.test.mjs`. One overlap worth flagging for
+whoever picks up COMM-343 ("port the chosen/unchosen exercise-select state
+and stat-hero cards"): this ticket already had to add a minimal
+chosen/unchosen split to `renderLogTab()` to satisfy COMM-360's own
+acceptance criteria, using the plain `.empty` class rather than Noam's
+`.log-empty-hint`/`.ex-sel-*` chrome — COMM-343 is still the one that owes
+the real visual treatment (stat-hero cards, the dedicated empty-hint
+component), it just now has a functional gate already in place to build
+that chrome on top of, not a bare stub.
