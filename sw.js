@@ -17,12 +17,16 @@ const CACHE = `haimunia-demo-v${SW_VERSION}`;
 // install behavior), rather than silently activating a shell that's missing
 // its own HTML or JS. src/constants.js, format.js, sanitize.js and db.js are
 // core dependencies app.js calls unconditionally (sanitizers, esc(), uid(),
-// openDB()) — there's no guard around them, so they stay required.
+// openDB()) — there's no guard around them, so they stay required. So is
+// src/shared/safe-helpers.js (COMM-368): esc()/uid()/clean*() are DEFINED
+// there now, and src/constants.js reads window.BoxLogSafe at its own top
+// level, so a miss on it takes down the offline log outright.
 const REQUIRED_ASSETS = [
   "./",
   "./index.html",
   "./app.js",
   "./theme-init.js",
+  "./src/shared/safe-helpers.js",
   "./src/constants.js",
   "./src/format.js",
   "./src/sanitize.js",

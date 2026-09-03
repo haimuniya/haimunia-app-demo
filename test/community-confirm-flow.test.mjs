@@ -26,8 +26,8 @@ test("no raw window.confirm() remains in cloud.js", () => {
 });
 
 test("askConfirm/closeConfirm/runConfirm exist, and the dispatcher wires confirm-yes/confirm-no", () => {
-  assert.match(src, /function askConfirm\(opts\) \{ state\.confirmDialog = opts; rerender\(\); \}/);
-  assert.match(src, /function closeConfirm\(\) \{ state\.confirmDialog = null; rerender\(\); \}/);
+  assert.match(src, /function askConfirm\(opts\) \{ state\.ui\.confirmDialog = opts; rerender\(\); \}/);
+  assert.match(src, /function closeConfirm\(\) \{ state\.ui\.confirmDialog = null; rerender\(\); \}/);
   assert.match(src, /function runConfirm\(\)/);
   assert.match(src, /action === "confirm-yes"\) runConfirm\(\)/);
   assert.match(src, /action === "confirm-no"\) closeConfirm\(\)/);
@@ -116,5 +116,5 @@ test("the confirm dialog is exposed globally (not just inside the Community tab'
   // executing test of this actually working across a tab switch.
   assert.match(src, /function renderConfirmDialog\(\)/);
   assert.match(src, /window\.renderCloudConfirmDialog = renderConfirmDialog;/);
-  assert.match(src, /state\.confirmDialog = null;\s*$/m);
+  assert.match(src, /state\.ui\.confirmDialog = null;\s*$/m);
 });

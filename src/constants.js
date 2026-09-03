@@ -1,3 +1,32 @@
+// ---------- Shared safety helpers (COMM-368) ----------
+// esc/cssSel/bag/clean*/uid are no longer defined anywhere in this repo's own
+// files: they live in src/shared/safe-helpers.js, the one versioned module
+// meant to be consumed byte-for-byte by every Box Log client (see that file's
+// header and src/shared/README.md). These are the bare-identifier bindings the
+// rest of the app has always used, re-pointed at that module — classic
+// <script> tags share one global lexical environment, so a binding here is
+// what app.js, src/format.js, src/sanitize.js and src/db.js all resolve to,
+// exactly the way LIMITS below already works.
+//
+// `var`, not `const`, on purpose: a top-level `var` in a classic script also
+// publishes onto the global object, which is precisely what the `function
+// esc() {}` / `function bag() {}` declarations these replace did implicitly.
+// The jsdom test harness reaches every app-level function that way
+// (window.esc, window.bag, window.cleanISODate in test/sanitizers.test.mjs,
+// alongside window.sanitizeEntry and friends), so keeping them on window is
+// the no-behavior-change choice, not an accident. There is still exactly one
+// implementation of each — these are bindings to it, not copies of it.
+//
+// safe-helpers.js is the FIRST script index.html loads, so window.BoxLogSafe
+// is always populated by the time this line runs. cloud.js is the one
+// exception to the bindings below: it is its own IIFE evaluated before this
+// file and reaches window.BoxLogSafe.esc directly, the same way it already
+// reaches every other platform module through window.
+const SAFE = window.BoxLogSafe;
+var esc = SAFE.esc, cssSel = SAFE.cssSel, bag = SAFE.bag;
+var cleanStr = SAFE.cleanStr, cleanNum = SAFE.cleanNum, cleanId = SAFE.cleanId;
+var cleanISODate = SAFE.cleanISODate, cleanTs = SAFE.cleanTs, uid = SAFE.uid;
+
 // ---------- Data ----------
 const CATEGORY_COLORS = {
   Squat: "var(--teal)", Deadlift: "var(--red)", Press: "var(--yellow)",
@@ -286,24 +315,23 @@ const PLATE_DEFS = [
 ];
 
 // ---------- Safety helpers ----------
-// Escape a value for use inside a CSS attribute selector.
-function cssSel(v) {
-  if (typeof CSS !== "undefined" && CSS.escape) return CSS.escape(String(v ?? ""));
-  return String(v ?? "").replace(/["\\\]]/g, "\\$&");
-}
-// Prototype-safe lookup tables. A record whose category is "__proto__" (only
-// reachable through an imported backup) must never resolve to Object.prototype.
+// cssSel() and bag() moved to src/shared/safe-helpers.js in COMM-368 and are
+// bound at the top of this file. catColor/catLabel stay here: they are
+// prototype-safe lookups over THIS file's own tables, not shareable helpers.
+// A record whose category is "__proto__" (only reachable through an imported
+// backup) must never resolve to Object.prototype.
 function catColor(cat) {
   return Object.prototype.hasOwnProperty.call(CATEGORY_COLORS, cat) ? CATEGORY_COLORS[cat] : "var(--steel)";
 }
 function catLabel(cat) {
   return Object.prototype.hasOwnProperty.call(CATEGORY_LABELS, cat) ? CATEGORY_LABELS[cat] : String(cat ?? "");
 }
-// Accumulator objects keyed by untrusted strings must have no prototype.
-function bag() { return Object.create(null); }
 const WOD_SCORE_TYPES = ["time", "amrap", "load", "emom"];
 const LIMITS = {
-  nameLen: 80, notesLen: 300, idLen: 128, importItems: 20000,
+  // idLen is read back off the shared module rather than restated here:
+  // cleanId() enforces it as a security boundary and there must be exactly
+  // one number, on the shared side, for the two repos to agree on.
+  nameLen: 80, notesLen: 300, idLen: SAFE.LIMITS.idLen, importItems: 20000,
   weight: 1000, reps: 1000, sets: 100, minutes: 999, seconds: 59,
   rounds: 9999, bodyweight: 500, measurement: 300, duration: 3600,
   emomMovements: 20, partnerTag: 40,

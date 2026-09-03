@@ -75,7 +75,15 @@ test("the login form and the credentials form each validate independently and cl
 test("sign-out is wired now that logging back in is possible, and resets signupStarted plus the anonymous-attempt guard so a fresh signup can start cleanly afterward", () => {
   assert.match(src, /data-community-action="sign-out"/);
   assert.match(src, /action === "sign-out"\) client\.auth\.signOut\(\)/);
-  assert.match(src, /state\.signupStarted = false;[^\n]*\n\s*anonSignInAttempted = false;/);
+  // COMM-365 regrouped the sign-out reset by namespace, so signupStarted and
+  // the anonymous-attempt guard are no longer adjacent lines - both still run
+  // in the same block, which is what actually matters.
+  const resetStart = src.indexOf("state.profile = null; state.redemption = null;");
+  assert.ok(resetStart > -1, "the sign-out reset block must still be findable");
+  const signOutReset = src.slice(resetStart, src.indexOf("rerender();", resetStart));
+  assert.match(signOutReset, /state\.signupStarted = false;/);
+  assert.match(signOutReset, /anonSignInAttempted = false;/);
+  assert.match(signOutReset, /recoveryVerifyAttempted = false;/);
 });
 
 test("communityLogin and communityCredentials submits are wired to their handlers", () => {

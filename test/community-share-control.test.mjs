@@ -51,5 +51,5 @@ test("the share control is wired into Calendar's day-detail entries (strength an
 test("a successful publish collapses that entry's share control back down", () => {
   const start = cloudJs.indexOf("async function publishWorkout(type, id, visibility, photoFile)");
   const end = cloudJs.indexOf("\n  }", start);
-  assert.match(cloudJs.slice(start, end), /delete state\.openShare\[shareKey\(type, id\)\];/);
+  assert.match(cloudJs.slice(start, end), /delete state\.posts\.openShare\[shareKey\(type, id\)\];/);
 });

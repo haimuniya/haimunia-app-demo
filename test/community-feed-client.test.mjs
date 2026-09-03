@@ -96,8 +96,8 @@ test("the client renders feed_page's order untouched, even when it is not chrono
 test("cloud.js contains no sort of the feed rows", async () => {
   const fs = await import("node:fs");
   const cloudJs = fs.readFileSync(new URL("../cloud.js", import.meta.url), "utf8");
-  assert.doesNotMatch(cloudJs, /state\.feed\s*(=|\.)\s*[^;]*\.sort\(/);
-  assert.doesNotMatch(cloudJs, /state\.feed\.sort\(/);
+  assert.doesNotMatch(cloudJs, /state\.feed\.items\s*(=|\.)\s*[^;]*\.sort\(/);
+  assert.doesNotMatch(cloudJs, /state\.feed\.items\.sort\(/);
 });
 
 // --- COMM-111 filters -----------------------------------------------------
@@ -163,7 +163,7 @@ test("the cursor is opaque: the client never builds one and never uses an offset
   const cloudJs = fs.readFileSync(new URL("../cloud.js", import.meta.url), "utf8");
   const start = cloudJs.indexOf("async function fetchFeedPage()");
   const body = cloudJs.slice(start, cloudJs.indexOf("\n  }", start));
-  assert.match(body, /p_cursor: state\.feedCursor/);
+  assert.match(body, /p_cursor: state\.feed\.cursor/);
   assert.match(body, /rows\[rows\.length - 1\]\.next_cursor/);
   assert.doesNotMatch(body, /offset|p_offset|\.range\(/i);
 });

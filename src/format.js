@@ -18,5 +18,8 @@ function localISODate(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 function todayISO() { return localISODate(new Date()); }
-const ESC_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-function esc(str) { return String(str ?? "").replace(/[&<>"']/g, (c) => ESC_MAP[c]); }
+// esc() moved to src/shared/safe-helpers.js in COMM-368 (one HTML escape for
+// both Box Log clients, and, since COMM-367, for cloud.js too — which had its
+// own byte-identical copy named safeText). It is bound as a bare `esc`
+// identifier at the top of src/constants.js, which loads before this file,
+// so every call site in this file and in app.js is unchanged.

@@ -13,7 +13,7 @@ import fs from "node:fs";
 const src = fs.readFileSync(new URL("../cloud.js", import.meta.url), "utf8");
 
 test("Community tab is split into feed/boards/account sub-tabs, defaulting to feed", () => {
-  assert.match(src, /communityTab: "feed"/);
+  assert.match(src, /ui: \{ tab: "feed"/);
   assert.match(src, /function setCommunityTab\(tab\)/);
   assert.match(src, /action === "set-tab"\) setCommunityTab\(el\.dataset\.tab\)/);
   assert.match(src, /id: "feed".*id: "boards".*id: "account"/s);
@@ -27,8 +27,8 @@ test("Community tab is split into feed/boards/account sub-tabs, defaulting to fe
 // the top-3-plus-your-rank framing, so that half is asserted as before.
 test("the weekly challenge board still uses the top-3-plus-your-rank framing, and the consistency board moved onto feed_leaderboard", () => {
   assert.match(src, /function renderRankedList\(items, selfKeyOf, formatValue\)/);
-  assert.match(src, /renderRankedList\(state\.weeklyLeaderboard, \(it\) => it\.author_id/);
-  assert.doesNotMatch(src, /renderRankedList\(state\.streaks/, "the streaks strip is gone, superseded by the COMM-210 board");
+  assert.match(src, /renderRankedList\(state\.club\.weeklyLeaderboard, \(it\) => it\.author_id/);
+  assert.doesNotMatch(src, /renderRankedList\(state\.club\.streaks/, "the streaks strip is gone, superseded by the COMM-210 board");
   assert.match(src, /const streaksHtml = renderConsistencyLeaderboardSection\(\);/);
 });
 
@@ -37,7 +37,7 @@ test("comments expand/collapse per post and post through a per-post form, not a 
   // COMM-121: addComment gained an optional parentCommentId for replies.
   assert.match(src, /async function addComment\(postId, form, parentCommentId\)/);
   assert.match(src, /async function deleteComment\(commentId, postId\)/);
-  assert.match(src, /data-comment-post-id="\$\{safeText\(postId\)\}"/);
+  assert.match(src, /data-comment-post-id="\$\{esc\(postId\)\}"/);
   assert.match(src, /event\.target\.dataset\.commentPostId/);
   assert.match(src, /event\.target\.dataset\.commentParentId \|\| null/);
 });
@@ -50,7 +50,7 @@ test("a photo can be attached when sharing a result, uploaded to the private pos
   // Community tab into renderShareControl(), triggered from wherever the
   // result actually lives (Calendar, Progress) - see
   // community-share-control.test.mjs.
-  assert.match(src, /id="photo-\$\{safeText\(id\)\}"/);
+  assert.match(src, /id="photo-\$\{esc\(id\)\}"/);
 });
 
 test("who's-new and who's-inactive are both staff-only (admin or coach) and call the matching security-definer RPCs", () => {
@@ -66,7 +66,7 @@ test("an admin can pin an announcement as today's note, and it's excluded from t
   // COMM-218: pinnedToday/otherAnnouncements are derived off liveAnnouncements,
   // the defensive client-side expiry mirror, rather than state.announcements
   // directly, but they still key off pinned_date the same way.
-  assert.match(src, /const liveAnnouncements = state\.announcements\.filter\(\(a\) => !isAnnouncementExpired\(a\)\)/);
+  assert.match(src, /const liveAnnouncements = state\.club\.announcements\.filter\(\(a\) => !isAnnouncementExpired\(a\)\)/);
   assert.match(src, /const pinnedToday = liveAnnouncements\.find\(\(a\) => a\.pinned_date === todayIso\(\)\)/);
   assert.match(src, /otherAnnouncements = liveAnnouncements\.filter\(\(a\) => a !== pinnedToday\)/);
 });
@@ -82,8 +82,8 @@ test("the composer replaces nothing about the important boolean (never built cli
 test("expires_at must be after the moment of submission, client-side only, with the ticket's exact save-failure copy", () => {
   assert.match(src, /errors\.expiresAt = "תאריך התפוגה חייב להיות אחרי מועד הפרסום"/);
   assert.match(src, /setMessage\("לא ניתן היה לשמור את ההודעה\. נסו שוב\."\)/);
-  assert.match(src, /state\.announcementSaving = true; rerender\(\);/);
-  assert.match(src, /state\.announcementSaving \? "מפרסם…" : "פרסום הודעה"/);
+  assert.match(src, /state\.club\.announcementSaving = true; rerender\(\);/);
+  assert.match(src, /state\.club\.announcementSaving \? "מפרסם…" : "פרסום הודעה"/);
 });
 
 test("urgent is visually distinct from important with an icon and a label, never colour alone, and normal gets no badge", () => {

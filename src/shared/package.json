@@ -1,0 +1,14 @@
+{
+  "name": "@boxlog/safe-helpers",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The low-level safety helpers shared by every Box Log client: esc, cssSel, bag, cleanStr/cleanNum/cleanId/cleanISODate/cleanTs and uid. One dependency-free classic script, no build step. Keep this version in lockstep with the VERSION constant inside safe-helpers.js.",
+  "main": "safe-helpers.js",
+  "files": [
+    "safe-helpers.js",
+    "README.md"
+  ],
+  "browser": "safe-helpers.js",
+  "sideEffects": true,
+  "license": "UNLICENSED"
+}

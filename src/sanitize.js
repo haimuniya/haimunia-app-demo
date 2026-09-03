@@ -1,40 +1,14 @@
-function cleanStr(v, max) {
-  if (typeof v !== "string") return "";
-  // strip control chars, collapse runaway whitespace, hard-cap length
-  return v.replace(/[\u0000-\u001F\u007F]/g, "").trim().slice(0, max);
-}
-function cleanNum(v, min, max, fallback) {
-  const n = typeof v === "number" ? v : parseFloat(v);
-  if (!isFinite(n)) return fallback;
-  return Math.min(max, Math.max(min, Math.round(n * 100) / 100));
-}
-function cleanId(v) {
-  const raw = typeof v === "string" ? v : "";
-  // opaque identifier: conservative charset, never reaches HTML as markup
-  const id = raw.replace(/[^A-Za-z0-9._:-]/g, "").slice(0, LIMITS.idLen);
-  return id || null;
-}
-function cleanISODate(v) {
-  if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
-  const d = new Date(v + "T00:00:00");
-  return isNaN(d.getTime()) ? null : v;
-}
-function cleanTs(v) {
-  const n = Number(v);
-  if (!isFinite(n) || n <= 0 || n > 4102444800000) return Date.now(); // cap at year 2100
-  return Math.floor(n);
-}
-function uid(prefix) {
-  let r;
-  try { r = (self.crypto && self.crypto.randomUUID) ? self.crypto.randomUUID() : null; } catch (e) { r = null; }
-  if (!r) {
-    try {
-      const a = new Uint8Array(16); self.crypto.getRandomValues(a);
-      r = Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
-    } catch (e) { r = Date.now().toString(36) + Math.random().toString(36).slice(2); }
-  }
-  return prefix + "-" + r;
-}
+// ---------- Untrusted value cleaners ----------
+// cleanStr/cleanNum/cleanId/cleanISODate/cleanTs and uid moved to
+// src/shared/safe-helpers.js in COMM-368 - they are the generic, low-level
+// half of this file and the half the sibling Box Log client had a
+// byte-identical fork of. They are bound as bare identifiers at the top of
+// src/constants.js, which loads before this file, so every call site below
+// (and in app.js) is unchanged.
+//
+// What stays here is the half that is NOT shareable: the per-record
+// sanitizers, which are specific to this app's own schema (entries, WODs,
+// bodyweight, measurements) and to this repo's LIMITS/MOVEMENT_CATEGORIES.
 // ---------- Record sanitizers ----------
 // Applied to every record that comes off disk or out of an imported file.
 // Nothing else in the app is allowed to trust these shapes.

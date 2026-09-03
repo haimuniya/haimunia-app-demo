@@ -39,7 +39,12 @@ function readAppSrc() {
 // is a self-contained IIFE that only publishes to window, so unlike the
 // app src files they do not depend on a top-level `let` being visible
 // across script tags, and the separate eval costs nothing.
+// COMM-368. src/shared/safe-helpers.js belongs at the head of THIS list, not
+// the app-src concatenation below: it is the first script index.html loads,
+// before cloud.js, and cloud.js reads window.BoxLogSafe.esc off it (COMM-367).
+// It publishes only to window, so a separate eval costs it nothing.
 const platformSrcPaths = [
+  path.join(root, "src", "shared", "safe-helpers.js"),
   path.join(root, "src", "eventbus.js"),
   path.join(root, "src", "analytics.js"),
   path.join(root, "src", "realtime.js"),

@@ -24,12 +24,12 @@ test("compare() tracks which post it's for, and a second tap on the same post cl
   const start = cloudJs.indexOf("async function compare(comparisonKey, postId)");
   const end = cloudJs.indexOf("\n  }", start);
   const body = cloudJs.slice(start, end);
-  assert.match(body, /if \(state\.comparisonForPostId === postId\) \{ state\.comparisonForPostId = null; state\.comparison = \[\]; return rerender\(\); \}/);
-  assert.match(body, /state\.comparisonForPostId = postId;/);
+  assert.match(body, /if \(state\.posts\.comparisonForPostId === postId\) \{ state\.posts\.comparisonForPostId = null; state\.posts\.comparison = \[\]; return rerender\(\); \}/);
+  assert.match(body, /state\.posts\.comparisonForPostId = postId;/);
 });
 
 test("the compare button passes the post id, and the result renders inside that post's own card", () => {
-  assert.match(cloudJs, /data-community-action="compare" data-key="\$\{safeText\(post\.comparison_key\)\}" data-id="\$\{safeText\(post\.id\)\}"/);
+  assert.match(cloudJs, /data-community-action="compare" data-key="\$\{esc\(post\.comparison_key\)\}" data-id="\$\{esc\(post\.id\)\}"/);
   assert.match(cloudJs, /action === "compare"\) compare\(el\.dataset\.key, el\.dataset\.id\);/);
-  assert.match(cloudJs, /\$\{state\.comparisonForPostId === post\.id \? `<div class="log-list"/);
+  assert.match(cloudJs, /\$\{state\.posts\.comparisonForPostId === post\.id \? `<div class="log-list"/);
 });

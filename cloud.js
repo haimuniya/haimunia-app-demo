@@ -1,11 +1,57 @@
 (function () {
   "use strict";
+  // COMM-367/COMM-368. THE HTML escape for every template literal in this
+  // file - ~370 call sites. Until COMM-367 this file carried its own
+  // byte-identical local copy called esc(), so a hardening fix to the
+  // escape had to be made twice; now there is exactly one definition, in
+  // src/shared/safe-helpers.js, shared with app.js and (by design) with the
+  // sibling Box Log client.
+  //
+  // Read off window, not as a bare identifier, for the same reason every
+  // other platform module is (eventbus/analytics/realtime/image): this file
+  // is its own IIFE and jsdom does not share a lexical environment across
+  // separately-eval'd classic scripts the way a browser does. Reached
+  // unguarded, and deliberately: safe-helpers.js is the first script
+  // index.html loads and a REQUIRED service-worker precache asset, so it is
+  // always there - and an escape function is the one dependency that must
+  // fail loudly rather than degrade to a no-op fallback that would ship XSS.
+  const esc = window.BoxLogSafe.esc;
   const cfg = window.HAIMUNIA_CONFIG || {};
   const configured = /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(cfg.supabaseUrl || "") && !!cfg.supabasePublishableKey;
   const client = configured && window.supabase ? window.supabase.createClient(cfg.supabaseUrl, cfg.supabasePublishableKey, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
   }) : null;
-  const state = { configured, client, user: null, profile: null, feed: [], people: [], comparison: [], comparisonForPostId: null, loading: false, message: "", syncEnabled: localStorage.getItem("haimunia-demo:cloudSyncEnabled") === "1",
+  // COMM-365. One state object, namespaced by feature domain.
+  //
+  // Until COMM-365 this was 139 flat sibling keys, grouped only by which
+  // ticket added them and disambiguated only by hand-maintained name prefixes
+  // (feedScope / challengeView / coachCelebrate / modQueueStatus...). Every new
+  // feature cluster grew the same one namespace, so the prefix convention was
+  // the only thing keeping two clusters from colliding on a name like `view`,
+  // `items`, `loading` or `error`.
+  //
+  // Now each cluster owns a sub-object and the prefix is the namespace:
+  // state.feed.scope, state.challenges.view, state.coach.celebrate,
+  // state.admin.modQueueStatus. Two domains can both have `.loading` and
+  // `.error` without either one having to invent a longer name.
+  //
+  // The ROOT of the object is deliberately NOT a domain. It holds only the
+  // session/auth/config core that every domain reads and no domain owns:
+  // `configured`/`client` (the Supabase wiring), `user`/`profile`/`redemption`
+  // (who is signed in and what they are), `syncEnabled` and `featureFlags`
+  // (localStorage-backed, read once at module init), the boot guard, the
+  // cached permission set, and the caller's own avatar-upload status.
+  // Namespacing those would only add a level of indirection to the most-read
+  // keys in the file without separating anything.
+  //
+  // Sub-object identity matters: nothing ever replaces a whole namespace
+  // (state.feed = {...} would silently drop keys the sign-out reset does not
+  // list). Every write is to a leaf.
+  const state = {
+    // ---- session / auth / config core (see above: intentionally flat) ----
+    configured, client, user: null, profile: null, redemption: null,
+    syncEnabled: localStorage.getItem("haimunia-demo:cloudSyncEnabled") === "1",
+    signupStarted: false,
     // COMM-331. Guards ensureCommunityDataLoaded()'s feed/streaks/
     // announcements/etc. cascade so it fires once, the first time the
     // Community tab actually renders, instead of on every cold boot. See
@@ -15,325 +61,409 @@
     // cross-tab consumer needs them regardless of whether Community was
     // ever opened).
     communityDataLoaded: false, communityDataLoading: false,
-    streaks: [], announcements: [], announcementSaving: false, weeklyChallenge: null, weeklyLeaderboard: [], inactiveMembers: [], newMembers: [], redemption: null,
-    communityTab: "feed", comments: {}, openComments: {}, fieldErrors: {}, reports: [], confirmDialog: null, signupStarted: false, memberSearch: "", memberResults: [], openShare: {},
-    // COMM-318. { status: "idle"|"processing", error }, drives the avatar
-    // control on the account profile form only.
-    avatarUpload: { status: "idle", error: "" },
-    // COMM-321. Which module_key (if any) has an in-flight toggle write.
-    clubModuleBusy: null,
-    // COMM-120..125 engagement cluster.
-    commentDrafts: {}, commentErrors: {}, commentSending: null, commentEdit: null, openReplies: {}, replyTo: {},
-    // COMM-124 / COMM-160. One batched, cached user-id -> server role map,
-    // shared by the comment coach emphasis and the coach badge on every
-    // other surface a member is shown.
-    memberRoles: {},
-    reactions: {}, reactionError: null, blockedIds: [], blocksLoaded: false, mentionPicker: null,
-    composer: null, composerTrigger: null, openPostMenu: null, savedPostIds: {}, captionEdit: null, visibilityEdit: null, prPrompt: null, profileView: null,
-    // COMM-130/134 achievements cluster.
-    myAchievements: [], achUnlock: null,
-    // COMM-140..144 notifications cluster.
-    notifCenter: null, notifUnread: 0, notifUnreadLoaded: false, notifPrefs: {}, notifPrefsLoaded: false, notifPrefSaving: {}, _notifRtUid: null,
-    // COMM-229. Web push is device-level (one PushSubscription per
-    // browser/device backs every type whose preference is "push" -
-    // notifRoute above still decides per type whether that channel is
-    // used). notifPushSub is this device's existing push_subscriptions row
-    // once confirmed unrevoked (null until checked, or genuinely none).
-    // notifPushChecked guards the lazy load (window.afterRenderCommunity)
-    // to once per flag-on session, the same way coachEngage's own .loaded
-    // guards its own lazy load.
-    notifPushSub: null, notifPushChecked: false,
-    // COMM-110..115 feed cluster. state.feed holds feed_page() rows in the
-    // exact order the function returned them and is never re-sorted here.
-    feedScope: "for_you", feedCursor: null, feedLoading: false, feedError: false,
-    feedLoadingMore: false, feedMoreError: false, feedEnd: false, feedPagesLoaded: 0,
-    feedSessionId: null, feedSeen: {}, feedPending: [], club: null,
-    // COMM-150..156 admin-moderation cluster. permissions is the caller's
-    // permission set from my_permissions(), cached once per session and read
-    // through hasPerm(); the server policy behind each control is the real
-    // authority. modQueue holds mod_queue() rows. pins holds pin rows for
-    // the club strip. auditLog holds admin_actions_page() rows.
+    // COMM-150. permissions is the caller's permission set from
+    // my_permissions(), cached once per session and read through hasPerm();
+    // the server policy behind each control is the real authority and this
+    // only decides what to render. Session-scoped, not admin-scoped - a
+    // member with no permissions at all still has this pair.
     permissions: [], permissionsLoaded: false,
-    modQueue: [], modQueueStatus: "open", modQueueLoading: false, modQueueError: false, modQueueLoaded: false,
-    modAction: null, modContext: null, reportSheet: null,
-    pins: [], pinsLoaded: false, pinError: "",
-    auditLog: [], auditCursor: null, auditLoading: false, auditError: false, auditLoaded: false, auditEnd: false, auditFilters: {},
-    // COMM-201..207 challenges cluster. state.challenges holds every
-    // `challenges` row the caller may see (challenges_read already scopes
-    // out a draft that is not theirs), sorted soonest end_at first.
-    // challengeParticipation is the caller's own challenge_participants row
-    // per challenge_id, loaded alongside the list so a card can show
-    // Join/Joined without a per-card round trip. challengeAggregates is
-    // chal_progress() output cached per challenge_id, fetched only for the
-    // types whose card needs an aggregate figure (cooperative, team) - every
-    // other type's card reads straight off challengeParticipation. challengeView
-    // is the open detail dialog (COMM-207); challengeForm is the staff
-    // create/edit dialog (COMM-201).
-    challenges: [], challengesLoaded: false, challengesLoading: false, challengesError: false,
-    challengeParticipation: {}, challengeAggregates: {},
-    challengeView: null, challengeForm: null,
-    // COMM-209. The challenge id whose realtime channels are currently open,
-    // so re-arming after a teardown is idempotent and switching challenges
-    // closes the previous pair rather than stacking a second one.
-    _chalRtId: null,
-    // COMM-228 search cluster. One community_search() call fills all three
-    // groups. state.people keeps its name and its exact row shape - it is
-    // still the members group and still what the follow/block/profile
-    // controls read - so widening the search did not change the existing
-    // caller. searchQuery is what the member typed, kept verbatim so a
-    // re-render can put it back in the box; only the request is sanitized.
-    searchEvents: [], searchChallenges: [], searchQuery: "", searchLoading: false,
-    // In-memory only (COMM-205): which ISO week a consistency challenge has
-    // already logged a "week hit" delta for on this device this session, so
-    // a repeated WORKOUT_COMPLETED burst within the same week cannot log
-    // twice. Never persisted - a real attendance source replaces this
-    // client-side tally entirely (COMM-306, Phase 3).
-    _consistencyWeekLogged: {}, _consistencySessionCounts: {},
-    // COMM-213..217 events cluster. state.events holds every `events` row
-    // the caller may see (events_read already scopes out a draft that is
-    // not theirs), sorted soonest start_at first. eventsById is the same
-    // rows keyed by id, read both by the POST_EVENT card upgrade and by the
-    // feed top-area card. eventAttendees is every event_attendees row the
-    // caller may see (event_attendees_read's own show_in_attendee_lists
-    // filter already applies), keyed by event_id, which is what both the
-    // going count and the attendee list read. eventView is the open detail
-    // dialog; eventForm is the staff create/edit dialog.
-    events: [], eventsById: {}, eventsLoaded: false, eventsLoading: false, eventsError: false,
-    eventAttendees: {}, eventView: null, eventForm: null,
-    // COMM-220..222 recaps cluster. onboardingProgress is the caller's own
-    // onboarding_progress row (null = not loaded yet; a real row always
-    // exists once loaded, seeded server-side at MEMBER_JOINED).
-    // onboardingFirstMonth is the lazily-computed first-month personal
-    // summary (COMM-222's third step), fetched only once that step is due.
-    // recapView is the open weekly recap dialog (COMM-221); its own
-    // load/prev/next calls read straight off weekly_recaps, own row only.
-    onboardingProgress: null, onboardingFirstMonth: null, recapView: null,
-    // COMM-309. The member-facing monthly club recap, an inline Account-tab
-    // card rather than a dialog (unlike recapView above) - there is one
-    // club-wide row to browse, not a per-member history to page through.
-    // row is the newest PUBLISHED month only: the query behind
-    // loadMonthlyRecap() filters `published_at is not null` itself rather
-    // than leaning on RLS, so a draft can never surface here even before
-    // the row reaches this client. Empty (no row yet) and error both mean
-    // "render nothing" - COMM-309's own frontend states ask for the surface
-    // to simply not show a monthly recap entry before a month is published,
-    // and there is no separate error affordance specified for the member
-    // side (unlike the staff preview, which does have one).
-    monthlyRecap: { loading: false, loaded: false, error: false, row: null },
-    // COMM-223..226 coach-tools cluster. The whole Coach Dashboard sub-tab
-    // (only ever added to the tab bar for isStaff(), see the render
-    // function) - Celebrate, Welcome, Engage. Challenges re-surfaces
-    // renderChallengesListSection() unchanged, so it has no state of its
-    // own here.
-    //
-    // coachCelebrate.items holds coach_celebrate_feed() rows exactly as
-    // returned (already sorted by recency - never re-sorted here).
-    // congratulated is a client-only dedupe set keyed by celebrateItemKey()
-    // (kind+user_id+occurred_at, since a feed row has no id of its own),
-    // so a second tap on an already-congratulated item is a no-op even
-    // before the server rate limit would catch it. busy holds the key of
-    // whichever item's Congratulate is in flight, if any.
-    coachCelebrate: { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null },
-    // coachWelcome.members holds the last 30 days of joiners. contactedIds
-    // is a user_id -> true set built from member_contact_log (staff can
-    // read any row, COMM-224), so "contacted or not" never depends on the
-    // caller having been the one who logged it. assignDrafts/contactDrafts
-    // hold the free-text inputs for the assign-by-handle and mark-contacted
-    // note fields, keyed by member id, read only at click time (no rerender
-    // on input, so typing never loses focus).
-    coachWelcome: { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null },
-    // COMM-226 built this section flag-gated and hidden, default off, with
-    // no producer. COMM-304 is that producer (coach_detect_engagement_decline(),
-    // the scheduled job in 202608310008) and this is the ticket that flips
-    // the flag: default ON now (`!== "0"`, not `=== "1"`), so a test that
-    // wants the pre-304 hidden state has to opt into it explicitly the same
-    // localStorage-backed way a test always has. featureFlags.coachEngage is
-    // still read once, synchronously, at this module-level literal - before
-    // cloud.js's own module-load, not after - so a test flips it via
-    // bootCommunity's localStorage hook, never by mutating state post-boot.
+    // COMM-226 built the coach-engage section flag-gated and hidden, default
+    // off, with no producer. COMM-304 is that producer
+    // (coach_detect_engagement_decline(), the scheduled job in 202608310008)
+    // and this is the ticket that flips the flag: default ON now (`!== "0"`,
+    // not `=== "1"`), so a test that wants the pre-304 hidden state has to opt
+    // into it explicitly the same localStorage-backed way a test always has.
+    // featureFlags.coachEngage is still read once, synchronously, at this
+    // module-level literal - before cloud.js's own module-load, not after - so
+    // a test flips it via bootCommunity's localStorage hook, never by mutating
+    // state post-boot.
     // COMM-229. Same localStorage-backed pattern as coachEngage above, so a
     // test can flip it before boot the same way. Stays default off in
     // production until VAPID keys are provisioned server-side (per the
     // plan's operator checklist) - this ticket does not flip that default.
     featureFlags: { coachEngage: localStorage.getItem("haimunia-demo:coachEngageFlag") !== "0", notifPush: localStorage.getItem("haimunia-demo:notifPushFlag") === "1" },
-    // profiles is a batched user_id -> {display_name,handle,avatar_url} map
-    // for the open flags in .items, read the same way coachWelcome.contactedIds
-    // is: a second, separate query rather than an embedded `profiles(...)`
-    // select (see loadCoachEngageFlags for why). reachedOut is a client-only
-    // dedupe set keyed by flag id, the same shape coachCelebrate.congratulated
-    // uses, so a second tap on an already-sent "reach out" - or a tap while
-    // the first is still in flight - is a no-op. busy is { id, action } for
-    // whichever flag row has a review/dismiss/reach-out in flight, if any -
-    // all three actions on one row share it, so a row disables itself
-    // entirely rather than only the one control that was tapped.
-    coachEngage: { items: [], loading: false, loaded: false, error: false, profiles: {}, reachedOut: {}, busy: null },
-    // COMM-315. Coach Dashboard's own recognition section: Member of the
-    // Week, one rotating category a week (consistency streak -> most PRs ->
-    // challenge completion -> coach's pick, member_of_week_category() -
-    // never re-derived client-side). envelope holds
-    // member_of_week_candidates()'s single jsonb row exactly as returned -
-    // {week_start, category, category_label, rotation_index, free_selection,
-    // published, previous_week_user_id, candidates[]} - never reshaped here.
-    // publishedProfile/previousProfile are two small, separate profiles
-    // reads (the same batched-read shape coachEngage.profiles and
-    // coachWelcome.contactedIds already use) for the two ids the envelope
-    // names but does not itself carry a display name for: the published
-    // member once published is non-null, and last week's member so the
-    // free-selection form can name them in its grey-out note rather than a
-    // coach discovering the rule by hitting it. pickHandle/pickReason are
-    // the free-selection ("coach's pick") form's two inputs, read only at
-    // publish time - no rerender on input, the same no-focus-loss shape
-    // coachWelcome's assignDrafts/contactDrafts already use; the live
-    // character counter under the reason field is DOM-patched directly on
-    // input instead, the same way composerSetBody's own counter is. busy
-    // holds the user_id of whichever candidate publish is in flight, or the
-    // literal "pick" for the free-selection form's own publish.
-    coachMemberOfWeek: { loading: false, loaded: false, error: false, envelope: null, publishedProfile: null, previousProfile: null, pickHandle: "", pickReason: "", busy: null, publishErr: "" },
-    // COMM-309. Coach Dashboard's sixth section: the monthly club recap
-    // staff preview. row is a single monthly_club_recaps row - the newest
-    // month, draft or published, exactly as RLS hands it to a staff/
-    // community.analytics.view reader (monthly_club_recaps_staff_select),
-    // never reshaped. null means no month has ever been generated (there is
-    // no scheduler yet - see the migration's own note - so this is a real,
-    // expected state, not a load failure). busy holds the row id whose
-    // publish is in flight, the same single-flight shape
-    // coachMemberOfWeek.busy uses for its own publish action.
-    coachMonthlyRecap: { loading: false, loaded: false, error: false, row: null, busy: null, publishErr: "" },
-    // COMM-210/211/212 leaderboard cluster. `leaderboard` is the club-wide
-    // consistency board on the Boards sub-tab: rows are feed_leaderboard()
-    // output in the exact order the function returned them and are never
-    // re-sorted here (the rank column is the server's, not an array index).
-    // scope is 'club' or 'friends' and is the only thing a scope switch
-    // changes - it re-fetches, it does not reload the tab. The challenge
-    // progress board lives on state.challengeView.board instead, because it
-    // is scoped to whichever challenge detail is open.
-    leaderboard: { scope: "club", rows: [], loading: false, loaded: false, error: false },
-    // COMM-212. Client-only, per-device, never a query parameter and never a
-    // privacy setting: the server always returns the caller's own row, and
-    // this only stops the client from drawing it. The real, server-enforced
-    // opt-out is the in_leaderboards toggle in the Privacy panel (COMM-018).
-    // Stored the same localStorage-backed way as syncEnabled/coachEngage
-    // above, read once at module init, defaulting to showing the row.
-    hideMyLeaderboardResult: localStorage.getItem("haimunia-demo:hideMyLeaderboardResult") === "1",
-    // COMM-232. people_suggestions() output, rendered in the order returned
-    // (the function already ranks by strongest signal). busy holds the ids
-    // of in-flight follows. An error leaves the strip omitted entirely, so
-    // there is deliberately no retry affordance keyed off `error` here.
-    peopleSuggestions: { items: [], loading: false, loaded: false, error: false, busy: {} },
-    // COMM-231 members directory. items is the paginated roster loaded so
-    // far (display_name order, cursor = the last row's own display_name,
-    // page size DIRECTORY_PAGE_SIZE). query is what the member typed, kept
-    // verbatim the same way searchQuery is. searchResults is
-    // community_search's members group once the query reaches
-    // SEARCH_MIN_CHARS, or null when the box is empty/under threshold (in
-    // which case the visible rows are a client-side filter over items).
-    directory: { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false },
-    // COMM-307. attendance_classmates_today() output - the members other than
-    // the caller who logged a session today, in the order the function
-    // returned them (most recently recorded first; it is a total order and the
-    // client never re-sorts it). There is deliberately no `busy` map beside
-    // this one, unlike peopleSuggestions: a classmate row is not a suggestion
-    // card that disappears when followed, so the Follow control is the same
-    // plain `follow` action the directory and the following lists use.
-    //
-    // `error` and "loaded with zero items" both mean exactly one thing to the
-    // renderer - no card - so nothing downstream ever has to tell them apart.
-    // Neither does the server: an empty set is what a member gets when they
-    // did not train today, when they trained alone, and when their own
-    // show_attendance is off, and that indistinguishability is the function's
-    // own privacy answer (202608310005), not a gap here.
-    classmatesToday: { items: [], loading: false, loaded: false, error: false },
-    // COMM-316 (closing COMM-P07). The member's own attendance_log row count,
-    // read directly under attendance_log_self_select - the ONLY thing the
-    // two new onboarding steps (first_class, third_class) need to decide
-    // eligibility. attendance_log is unique on (user_id, occurred_on)
-    // (202608310001), so this plain row count already IS the distinct-day
-    // count; no separate query. `loaded` false is read by
-    // currentOnboardingStep() as "not due yet", never as "due" - see that
-    // function for why an undetermined answer must never flash a step on
-    // and then off.
-    onboardingAttendance: { count: 0, loading: false, loaded: false, error: false },
-    // COMM-310 admin community analytics dashboard, client half. THE
-    // FOUNDATIONAL SHELL later Phase 3 admin tickets extend - COMM-311
-    // (member segments), COMM-312 (health scores) and COMM-313 (retention
-    // cohorts) each say "reusing COMM-310's dashboard shell" in their own
-    // tickets. mode is "week" or "month", the two cadences metrics.md's own
-    // 18 metric definitions are written in ("per week", "in a week"); start/
-    // end are the resolved ISO dates for whichever period is currently
-    // anchored, both inclusive - matching analytics_dashboard()'s own
-    // p_period_start/p_period_end contract exactly, so they can be sent
-    // straight back as RPC args with no reshaping. data is the raw jsonb
-    // analytics_dashboard() returned, rendered as-is and never reshaped
-    // here, the same "server is the one definition" posture COMM-309's
-    // monthly recap figures already follow. A later ticket's own section
-    // (a Segments card, a Health score card, a Retention card) reads
-    // state.adminAnalytics.start/end the same way and appends its render
-    // call inside renderAdminAnalyticsDashboard() after the two
-    // metrics.md-defined groups, rather than opening a second nav
-    // destination or a second period selector.
-    adminAnalytics: { mode: "week", start: null, end: null, loading: false, loaded: false, error: false, errorText: "", data: null },
-    // COMM-311 member engagement segmentation, client half. THE FIRST
-    // ticket to actually extend COMM-310's shell, per that ticket's own
-    // "reusing COMM-310's dashboard shell" instruction. Its own load fires
-    // from inside loadAdminAnalyticsDashboard() itself (see that function),
-    // never from a second period selector or a second lazy-load gate on the
-    // account tab - see cloud.js's own comment there for why. data is the
-    // RAW array member_segments() returned (one {user_id, display_name,
-    // handle, segment} row per club member, already ordered by segment then
-    // name server-side - never re-sorted here), grouped into the six named
-    // buckets only at render time. asOf is the p_as_of this client actually
-    // sent (COMM-310's own selected period end, capped at today - see
-    // memberSegmentsAsOf()), shown so a reviewer can see what date a count
-    // was computed for. expanded is a plain {segment: bool} map of which
-    // segment cards are currently drilled into, reset never (a card a staff
-    // member opened stays open across a period change, the same way
-    // COMM-310's own period selector does not collapse anything else on
-    // screen).
-    memberSegments: { loading: false, loaded: false, error: false, errorText: "", data: null, asOf: null, expanded: {} },
-    // COMM-313 retention correlation views, client half. Gated STRICTLY on
-    // real is_admin() - not the hasPerm(PERM.ANALYTICS_VIEW) || isAdmin()
-    // pair every other section in this cluster (COMM-310/311) uses - per
-    // that ticket's own "gated by real is_admin, matching COMM-312's
-    // narrower bar" acceptance criterion. Because the gate is narrower than
-    // COMM-310's shell gate, this section is rendered as its OWN top-level
-    // ach-section (renderRetentionCorrelations(), wired in next to
-    // renderAdminAnalyticsDashboard() in the account tab, not appended
-    // inside it) - see that function's own comment for the full reasoning.
-    // Three independent RPC results, all fetched together on one lazy load
-    // (retention_cohorts/retention_onboarding_correlation/
-    // retention_welcome_correlation take no shared period from COMM-310's
-    // own selector - the two correlations do not even accept a parameter -
-    // so there is no period selector to reuse here). cohorts/onboarding/
-    // welcome are each the RAW array the matching RPC returned, never
-    // reshaped here (grouped into series only at render time, the same
-    // "server is the one definition" posture COMM-310/311 already follow).
-    // onboardingStep is which of the five onboarding_progress columns the
-    // onboarding overlay currently shows (one step at a time - all five at
-    // once would be five pairs of curves on screen together). showOnboarding
-    // / showWelcome are the two independent overlay toggles the ticket's own
-    // "Populated" frontend state calls for.
-    retention: {
-      loading: false, loaded: false, error: false, errorText: "",
-      cohorts: [], onboarding: [], welcome: [],
-      onboardingStep: "welcomed_at", showOnboarding: false, showWelcome: false,
+    // COMM-318. { status: "idle"|"processing", error }, drives the avatar
+    // control on the account profile form only.
+    avatarUpload: { status: "idle", error: "" },
+
+    // ---- ui: the community tab shell ----
+    // tab is which community sub-tab is showing. message is the one status
+    // line every surface writes through setMessage(). fieldErrors is keyed by
+    // form+field (see field()). confirmDialog is the shared confirm sheet.
+    ui: { tab: "feed", loading: false, message: "", fieldErrors: {}, confirmDialog: null },
+
+    // ---- feed (COMM-110..115) ----
+    // items holds feed_page() rows in the exact order the function returned
+    // them and is never re-sorted here.
+    feed: {
+      items: [], scope: "for_you", cursor: null, loading: false, error: false,
+      loadingMore: false, moreError: false, end: false, pagesLoaded: 0,
+      sessionId: null, seen: {}, pending: [],
     },
-    // COMM-312 community health score, client half. Same is_admin()-only bar
-    // as COMM-313 (not the hasPerm(PERM.ANALYTICS_VIEW) || isAdmin() pair
-    // COMM-310/311 use), for the same reason: community_health_history()
-    // itself is gated on real is_admin() alone, per that function's own
-    // migration comment. Its own top-level ach-section
-    // (renderCommunityHealthScore(), wired in next to
-    // renderRetentionCorrelations() in the account tab) and its own lazy
-    // load (loadCommunityHealth()), not piggybacking on either COMM-310's or
-    // COMM-313's load. weeks is the RAW array community_health_history()
-    // returned - {week_start, score, components} per row, already ordered
-    // OLDEST FIRST by the RPC itself, so it is drawn left-to-right with no
-    // re-sort here (see renderCommunityHealthTrend()). There is no p_weeks
-    // selector in state: COMMUNITY_HEALTH_WEEKS is a fixed constant passed on
-    // every load, per the ticket's own "your call" on offering a selector -
-    // this ticket's frontend states name no such control, and COMM-313's own
-    // sibling section has none either.
-    communityHealth: { loading: false, loaded: false, error: false, errorText: "", weeks: [] },
+
+    // ---- posts: composing, own-post controls, sharing (COMM-100..108) ----
+    // openMenu is the post id whose "..." menu is open; savedIds is the
+    // caller's own saved-post set; comparison/comparisonForPostId are the
+    // inline compare strip, scoped to the one post that asked for it.
+    posts: {
+      composer: null, composerTrigger: null, openMenu: null, savedIds: {},
+      captionEdit: null, visibilityEdit: null, prPrompt: null, openShare: {},
+      comparison: [], comparisonForPostId: null,
+    },
+
+    // ---- engagement: comments, replies, reactions, mentions (COMM-120..125) ----
+    engagement: {
+      comments: {}, openComments: {}, commentDrafts: {}, commentErrors: {},
+      commentSending: null, commentEdit: null, openReplies: {}, replyTo: {},
+      reactions: {}, reactionError: null, mentionPicker: null,
+    },
+
+    // ---- members: search results, directory, follow/block, profiles ----
+    members: {
+      // COMM-228. `people` is community_search()'s members group and keeps
+      // its exact row shape - it is what the follow/block/profile controls
+      // read. `search`/`results` are the older standalone member lookup.
+      people: [], search: "", results: [],
+      // COMM-124 / COMM-160. One batched, cached user-id -> server role map,
+      // shared by the comment coach emphasis and the coach badge on every
+      // other surface a member is shown.
+      roles: {},
+      blockedIds: [], blocksLoaded: false, profileView: null,
+      // COMM-231 members directory. items is the paginated roster loaded so
+      // far (display_name order, cursor = the last row's own display_name,
+      // page size DIRECTORY_PAGE_SIZE). query is what the member typed, kept
+      // verbatim the same way search.query is. searchResults is
+      // community_search's members group once the query reaches
+      // SEARCH_MIN_CHARS, or null when the box is empty/under threshold (in
+      // which case the visible rows are a client-side filter over items).
+      directory: { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false },
+      // COMM-232. people_suggestions() output, rendered in the order returned
+      // (the function already ranks by strongest signal). busy holds the ids
+      // of in-flight follows. An error leaves the strip omitted entirely, so
+      // there is deliberately no retry affordance keyed off `error` here.
+      suggestions: { items: [], loading: false, loaded: false, error: false, busy: {} },
+      // COMM-307. attendance_classmates_today() output - the members other than
+      // the caller who logged a session today, in the order the function
+      // returned them (most recently recorded first; it is a total order and the
+      // client never re-sorts it). There is deliberately no `busy` map beside
+      // this one, unlike suggestions: a classmate row is not a suggestion
+      // card that disappears when followed, so the Follow control is the same
+      // plain `follow` action the directory and the following lists use.
+      //
+      // `error` and "loaded with zero items" both mean exactly one thing to the
+      // renderer - no card - so nothing downstream ever has to tell them apart.
+      // Neither does the server: an empty set is what a member gets when they
+      // did not train today, when they trained alone, and when their own
+      // show_attendance is off, and that indistinguishability is the function's
+      // own privacy answer (202608310005), not a gap here.
+      classmatesToday: { items: [], loading: false, loaded: false, error: false },
+    },
+
+    // ---- club: the box itself and its club-wide surfaces ----
+    // `row` is the caller's own club record. features/featuresLoaded is the
+    // club_features module map; moduleBusy (COMM-321) is which module_key (if
+    // any) has an in-flight toggle write.
+    club: {
+      row: null, features: {}, featuresLoaded: false, moduleBusy: null,
+      announcements: [], announcementSaving: false, streaks: [],
+      inactiveMembers: [], newMembers: [],
+      weeklyChallenge: null, weeklyLeaderboard: [],
+    },
+
+    // ---- leaderboard (COMM-210/211/212) ----
+    // The club-wide consistency board on the Boards sub-tab: rows are
+    // feed_leaderboard() output in the exact order the function returned them
+    // and are never re-sorted here (the rank column is the server's, not an
+    // array index). scope is 'club' or 'friends' and is the only thing a scope
+    // switch changes - it re-fetches, it does not reload the tab. The challenge
+    // progress board lives on state.challenges.view.board instead, because it
+    // is scoped to whichever challenge detail is open.
+    //
+    // COMM-212. hideMine is client-only, per-device, never a query parameter
+    // and never a privacy setting: the server always returns the caller's own
+    // row, and this only stops the client from drawing it. The real,
+    // server-enforced opt-out is the in_leaderboards toggle in the Privacy
+    // panel (COMM-018). Stored the same localStorage-backed way as
+    // syncEnabled/coachEngage are, read once at module init, defaulting to
+    // showing the row.
+    leaderboard: {
+      scope: "club", rows: [], loading: false, loaded: false, error: false,
+      hideMine: localStorage.getItem("haimunia-demo:hideMyLeaderboardResult") === "1",
+    },
+
+    // ---- admin: moderation queue, reports, pins, audit log (COMM-150..156) ----
+    // modQueue holds mod_queue() rows. pins holds pin rows for the club
+    // strip. auditLog holds admin_actions_page() rows. The permission set
+    // these controls are checked against lives at the root, not here - see
+    // `permissions` above.
+    admin: {
+      reports: [],
+      modQueue: [], modQueueStatus: "open", modQueueLoading: false, modQueueError: false, modQueueLoaded: false,
+      modAction: null, modContext: null, reportSheet: null,
+      pins: [], pinsLoaded: false, pinError: "",
+      auditLog: [], auditCursor: null, auditLoading: false, auditError: false, auditLoaded: false, auditEnd: false, auditFilters: {},
+    },
+
+    // ---- analytics: the admin dashboards (COMM-310..313) ----
+    analytics: {
+      // COMM-310 admin community analytics dashboard, client half. THE
+      // FOUNDATIONAL SHELL later Phase 3 admin tickets extend - COMM-311
+      // (member segments), COMM-312 (health scores) and COMM-313 (retention
+      // cohorts) each say "reusing COMM-310's dashboard shell" in their own
+      // tickets. mode is "week" or "month", the two cadences metrics.md's own
+      // 18 metric definitions are written in ("per week", "in a week"); start/
+      // end are the resolved ISO dates for whichever period is currently
+      // anchored, both inclusive - matching analytics_dashboard()'s own
+      // p_period_start/p_period_end contract exactly, so they can be sent
+      // straight back as RPC args with no reshaping. data is the raw jsonb
+      // analytics_dashboard() returned, rendered as-is and never reshaped
+      // here, the same "server is the one definition" posture COMM-309's
+      // monthly recap figures already follow. A later ticket's own section
+      // (a Segments card, a Health score card, a Retention card) reads
+      // state.analytics.dashboard.start/end the same way and appends its render
+      // call inside renderAdminAnalyticsDashboard() after the two
+      // metrics.md-defined groups, rather than opening a second nav
+      // destination or a second period selector.
+      dashboard: { mode: "week", start: null, end: null, loading: false, loaded: false, error: false, errorText: "", data: null },
+      // COMM-311 member engagement segmentation, client half. THE FIRST
+      // ticket to actually extend COMM-310's shell, per that ticket's own
+      // "reusing COMM-310's dashboard shell" instruction. Its own load fires
+      // from inside loadAdminAnalyticsDashboard() itself (see that function),
+      // never from a second period selector or a second lazy-load gate on the
+      // account tab - see cloud.js's own comment there for why. data is the
+      // RAW array member_segments() returned (one {user_id, display_name,
+      // handle, segment} row per club member, already ordered by segment then
+      // name server-side - never re-sorted here), grouped into the six named
+      // buckets only at render time. asOf is the p_as_of this client actually
+      // sent (COMM-310's own selected period end, capped at today - see
+      // memberSegmentsAsOf()), shown so a reviewer can see what date a count
+      // was computed for. expanded is a plain {segment: bool} map of which
+      // segment cards are currently drilled into, reset never (a card a staff
+      // member opened stays open across a period change, the same way
+      // COMM-310's own period selector does not collapse anything else on
+      // screen).
+      segments: { loading: false, loaded: false, error: false, errorText: "", data: null, asOf: null, expanded: {} },
+      // COMM-313 retention correlation views, client half. Gated STRICTLY on
+      // real is_admin() - not the hasPerm(PERM.ANALYTICS_VIEW) || isAdmin()
+      // pair every other section in this cluster (COMM-310/311) uses - per
+      // that ticket's own "gated by real is_admin, matching COMM-312's
+      // narrower bar" acceptance criterion. Because the gate is narrower than
+      // COMM-310's shell gate, this section is rendered as its OWN top-level
+      // ach-section (renderRetentionCorrelations(), wired in next to
+      // renderAdminAnalyticsDashboard() in the account tab, not appended
+      // inside it) - see that function's own comment for the full reasoning.
+      // Three independent RPC results, all fetched together on one lazy load
+      // (retention_cohorts/retention_onboarding_correlation/
+      // retention_welcome_correlation take no shared period from COMM-310's
+      // own selector - the two correlations do not even accept a parameter -
+      // so there is no period selector to reuse here). cohorts/onboarding/
+      // welcome are each the RAW array the matching RPC returned, never
+      // reshaped here (grouped into series only at render time, the same
+      // "server is the one definition" posture COMM-310/311 already follow).
+      // onboardingStep is which of the five onboarding_progress columns the
+      // onboarding overlay currently shows (one step at a time - all five at
+      // once would be five pairs of curves on screen together). showOnboarding
+      // / showWelcome are the two independent overlay toggles the ticket's own
+      // "Populated" frontend state calls for.
+      retention: {
+        loading: false, loaded: false, error: false, errorText: "",
+        cohorts: [], onboarding: [], welcome: [],
+        onboardingStep: "welcomed_at", showOnboarding: false, showWelcome: false,
+      },
+      // COMM-312 community health score, client half. Same is_admin()-only bar
+      // as COMM-313 (not the hasPerm(PERM.ANALYTICS_VIEW) || isAdmin() pair
+      // COMM-310/311 use), for the same reason: community_health_history()
+      // itself is gated on real is_admin() alone, per that function's own
+      // migration comment. Its own top-level ach-section
+      // (renderCommunityHealthScore(), wired in next to
+      // renderRetentionCorrelations() in the account tab) and its own lazy
+      // load (loadCommunityHealth()), not piggybacking on either COMM-310's or
+      // COMM-313's load. weeks is the RAW array community_health_history()
+      // returned - {week_start, score, components} per row, already ordered
+      // OLDEST FIRST by the RPC itself, so it is drawn left-to-right with no
+      // re-sort here (see renderCommunityHealthTrend()). There is no p_weeks
+      // selector in state: COMMUNITY_HEALTH_WEEKS is a fixed constant passed on
+      // every load, per the ticket's own "your call" on offering a selector -
+      // this ticket's frontend states name no such control, and COMM-313's own
+      // sibling section has none either.
+      health: { loading: false, loaded: false, error: false, errorText: "", weeks: [] },
+    },
+
+    // ---- challenges (COMM-201..207) ----
+    // items holds every `challenges` row the caller may see (challenges_read
+    // already scopes out a draft that is not theirs), sorted soonest end_at
+    // first. participation is the caller's own challenge_participants row per
+    // challenge_id, loaded alongside the list so a card can show Join/Joined
+    // without a per-card round trip. aggregates is chal_progress() output
+    // cached per challenge_id, fetched only for the types whose card needs an
+    // aggregate figure (cooperative, team) - every other type's card reads
+    // straight off participation. view is the open detail dialog (COMM-207);
+    // form is the staff create/edit dialog (COMM-201).
+    //
+    // COMM-209. _rtId is the challenge id whose realtime channels are
+    // currently open, so re-arming after a teardown is idempotent and
+    // switching challenges closes the previous pair rather than stacking a
+    // second one.
+    //
+    // In-memory only (COMM-205): _consistencyWeekLogged is which ISO week a
+    // consistency challenge has already logged a "week hit" delta for on this
+    // device this session, so a repeated WORKOUT_COMPLETED burst within the
+    // same week cannot log twice. Never persisted - a real attendance source
+    // replaces this client-side tally entirely (COMM-306, Phase 3).
+    challenges: {
+      items: [], loaded: false, loading: false, error: false,
+      participation: {}, aggregates: {},
+      view: null, form: null,
+      _rtId: null,
+      _consistencyWeekLogged: {}, _consistencySessionCounts: {},
+    },
+
+    // ---- events (COMM-213..217) ----
+    // items holds every `events` row the caller may see (events_read already
+    // scopes out a draft that is not theirs), sorted soonest start_at first.
+    // byId is the same rows keyed by id, read both by the POST_EVENT card
+    // upgrade and by the feed top-area card. attendees is every
+    // event_attendees row the caller may see (event_attendees_read's own
+    // show_in_attendee_lists filter already applies), keyed by event_id, which
+    // is what both the going count and the attendee list read. view is the
+    // open detail dialog; form is the staff create/edit dialog.
+    events: {
+      items: [], byId: {}, loaded: false, loading: false, error: false,
+      attendees: {}, view: null, form: null,
+    },
+
+    // ---- search (COMM-228) ----
+    // One community_search() call fills all three groups; the members group
+    // lands in state.members.people, which keeps its own name and row shape,
+    // so widening the search did not change that existing caller. query is
+    // what the member typed, kept verbatim so a re-render can put it back in
+    // the box; only the request is sanitized.
+    search: { events: [], challenges: [], query: "", loading: false },
+
+    // ---- achievements (COMM-130/134) ----
+    achievements: { mine: [], unlock: null },
+
+    // ---- notif (COMM-140..144) ----
+    // COMM-229. Web push is device-level (one PushSubscription per
+    // browser/device backs every type whose preference is "push" -
+    // notifRoute still decides per type whether that channel is used).
+    // pushSub is this device's existing push_subscriptions row once confirmed
+    // unrevoked (null until checked, or genuinely none). pushChecked guards
+    // the lazy load (window.afterRenderCommunity) to once per flag-on session,
+    // the same way coach.engage's own .loaded guards its own lazy load.
+    notif: {
+      center: null, unread: 0, unreadLoaded: false,
+      prefs: {}, prefsLoaded: false, prefSaving: {},
+      _rtUid: null, pushSub: null, pushChecked: false,
+    },
+
+    // ---- onboarding (COMM-220..222, COMM-316) ----
+    // progress is the caller's own onboarding_progress row (null = not loaded
+    // yet; a real row always exists once loaded, seeded server-side at
+    // MEMBER_JOINED). firstMonth is the lazily-computed first-month personal
+    // summary (COMM-222's third step), fetched only once that step is due.
+    //
+    // COMM-316 (closing COMM-P07). attendance is the member's own
+    // attendance_log row count, read directly under
+    // attendance_log_self_select - the ONLY thing the two new onboarding steps
+    // (first_class, third_class) need to decide eligibility. attendance_log is
+    // unique on (user_id, occurred_on) (202608310001), so this plain row count
+    // already IS the distinct-day count; no separate query. `loaded` false is
+    // read by currentOnboardingStep() as "not due yet", never as "due" - see
+    // that function for why an undetermined answer must never flash a step on
+    // and then off.
+    onboarding: {
+      progress: null, firstMonth: null,
+      attendance: { count: 0, loading: false, loaded: false, error: false },
+    },
+
+    // ---- recaps (COMM-220..222, COMM-309) ----
+    // view is the open weekly recap dialog (COMM-221); its own
+    // load/prev/next calls read straight off weekly_recaps, own row only.
+    //
+    // COMM-309. monthly is the member-facing monthly club recap, an inline
+    // Account-tab card rather than a dialog (unlike view above) - there is one
+    // club-wide row to browse, not a per-member history to page through. .row
+    // is the newest PUBLISHED month only: the query behind loadMonthlyRecap()
+    // filters `published_at is not null` itself rather than leaning on RLS, so
+    // a draft can never surface here even before the row reaches this client.
+    // Empty (no row yet) and error both mean "render nothing" - COMM-309's own
+    // frontend states ask for the surface to simply not show a monthly recap
+    // entry before a month is published, and there is no separate error
+    // affordance specified for the member side (unlike the staff preview,
+    // which does have one - see state.coach.monthlyRecap).
+    recaps: {
+      view: null,
+      monthly: { loading: false, loaded: false, error: false, row: null },
+    },
+
+    // ---- coach: the Coach Dashboard sub-tab (COMM-223..226, 309, 315) ----
+    // Only ever added to the tab bar for isStaff(), see the render function -
+    // Celebrate, Welcome, Engage, Member of the Week, Monthly recap preview.
+    // Challenges re-surfaces renderChallengesListSection() unchanged, so it
+    // has no state of its own here.
+    coach: {
+      // celebrate.items holds coach_celebrate_feed() rows exactly as
+      // returned (already sorted by recency - never re-sorted here).
+      // congratulated is a client-only dedupe set keyed by celebrateItemKey()
+      // (kind+user_id+occurred_at, since a feed row has no id of its own),
+      // so a second tap on an already-congratulated item is a no-op even
+      // before the server rate limit would catch it. busy holds the key of
+      // whichever item's Congratulate is in flight, if any.
+      celebrate: { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null },
+      // welcome.members holds the last 30 days of joiners. contactedIds
+      // is a user_id -> true set built from member_contact_log (staff can
+      // read any row, COMM-224), so "contacted or not" never depends on the
+      // caller having been the one who logged it. assignDrafts/contactDrafts
+      // hold the free-text inputs for the assign-by-handle and mark-contacted
+      // note fields, keyed by member id, read only at click time (no rerender
+      // on input, so typing never loses focus).
+      welcome: { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null },
+      // COMM-226/304. Gated on featureFlags.coachEngage (see the root).
+      // profiles is a batched user_id -> {display_name,handle,avatar_url} map
+      // for the open flags in .items, read the same way welcome.contactedIds
+      // is: a second, separate query rather than an embedded `profiles(...)`
+      // select (see loadCoachEngageFlags for why). reachedOut is a client-only
+      // dedupe set keyed by flag id, the same shape celebrate.congratulated
+      // uses, so a second tap on an already-sent "reach out" - or a tap while
+      // the first is still in flight - is a no-op. busy is { id, action } for
+      // whichever flag row has a review/dismiss/reach-out in flight, if any -
+      // all three actions on one row share it, so a row disables itself
+      // entirely rather than only the one control that was tapped.
+      engage: { items: [], loading: false, loaded: false, error: false, profiles: {}, reachedOut: {}, busy: null },
+      // COMM-315. Coach Dashboard's own recognition section: Member of the
+      // Week, one rotating category a week (consistency streak -> most PRs ->
+      // challenge completion -> coach's pick, member_of_week_category() -
+      // never re-derived client-side). envelope holds
+      // member_of_week_candidates()'s single jsonb row exactly as returned -
+      // {week_start, category, category_label, rotation_index, free_selection,
+      // published, previous_week_user_id, candidates[]} - never reshaped here.
+      // publishedProfile/previousProfile are two small, separate profiles
+      // reads (the same batched-read shape engage.profiles and
+      // welcome.contactedIds already use) for the two ids the envelope
+      // names but does not itself carry a display name for: the published
+      // member once published is non-null, and last week's member so the
+      // free-selection form can name them in its grey-out note rather than a
+      // coach discovering the rule by hitting it. pickHandle/pickReason are
+      // the free-selection ("coach's pick") form's two inputs, read only at
+      // publish time - no rerender on input, the same no-focus-loss shape
+      // welcome's assignDrafts/contactDrafts already use; the live
+      // character counter under the reason field is DOM-patched directly on
+      // input instead, the same way composerSetBody's own counter is. busy
+      // holds the user_id of whichever candidate publish is in flight, or the
+      // literal "pick" for the free-selection form's own publish.
+      memberOfWeek: { loading: false, loaded: false, error: false, envelope: null, publishedProfile: null, previousProfile: null, pickHandle: "", pickReason: "", busy: null, publishErr: "" },
+      // COMM-309. Coach Dashboard's sixth section: the monthly club recap
+      // staff preview. row is a single monthly_club_recaps row - the newest
+      // month, draft or published, exactly as RLS hands it to a staff/
+      // community.analytics.view reader (monthly_club_recaps_staff_select),
+      // never reshaped. null means no month has ever been generated (there is
+      // no scheduler yet - see the migration's own note - so this is a real,
+      // expected state, not a load failure). busy holds the row id whose
+      // publish is in flight, the same single-flight shape
+      // memberOfWeek.busy uses for its own publish action.
+      monthlyRecap: { loading: false, loaded: false, error: false, row: null, busy: null, publishErr: "" },
+    },
   };
   const photoUrlCache = {};
 
@@ -375,7 +505,6 @@
     return true;
   }
 
-  function safeText(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
   // Coach and admin are both "staff" for the fixed set of powers every
   // coach gets (announcements, the weekly challenge, the new/inactive
   // member views) — matches public.is_staff() server-side, which is what
@@ -424,13 +553,13 @@
   // (no RLS role gate) - every member, not just staff, needs to know which
   // modules are on, same as permissions itself.
   async function loadClubFeatures() {
-    if (!state.user) { state.clubFeatures = {}; state.clubFeaturesLoaded = false; return; }
+    if (!state.user) { state.club.features = {}; state.club.featuresLoaded = false; return; }
     const { data, error } = await client.from("club_features").select("module_key,enabled,config");
-    if (error) { state.clubFeatures = {}; state.clubFeaturesLoaded = false; return; }
+    if (error) { state.club.features = {}; state.club.featuresLoaded = false; return; }
     const next = {};
     for (const row of (data || [])) next[row.module_key] = { enabled: row.enabled, config: row.config || {} };
-    state.clubFeatures = next;
-    state.clubFeaturesLoaded = true;
+    state.club.features = next;
+    state.club.featuresLoaded = true;
   }
   // Defaults to true while not yet loaded and for any key with no row at
   // all - deliberately not mirroring notifPrefsLoaded's skeleton-row
@@ -440,8 +569,8 @@
   // renders here during the brief pre-load window. Must never be reached
   // before isCommunitySignedIn() gates rendering, same as hasPerm().
   function isModuleEnabled(key, subKey) {
-    if (!state.clubFeaturesLoaded) return true;
-    const row = state.clubFeatures[key];
+    if (!state.club.featuresLoaded) return true;
+    const row = state.club.features[key];
     if (!row) return true;
     if (!row.enabled) return false;
     if (subKey && row.config && Object.prototype.hasOwnProperty.call(row.config, subKey)) return !!row.config[subKey];
@@ -460,11 +589,11 @@
   // admin_* member-management RPCs. Every other gate uses hasPerm().
   function isAdmin() { return !!(state.profile && state.profile.is_admin); }
   function rerender() { if (typeof window.render === "function") window.render(); }
-  function setMessage(message) { state.message = message || ""; rerender(); }
+  function setMessage(message) { state.ui.message = message || ""; rerender(); }
   function todayIso() { return new Date().toISOString().slice(0, 10); }
   function setFieldErrors(formId, errors) {
-    if (errors && Object.keys(errors).length) state.fieldErrors[formId] = errors;
-    else delete state.fieldErrors[formId];
+    if (errors && Object.keys(errors).length) state.ui.fieldErrors[formId] = errors;
+    else delete state.ui.fieldErrors[formId];
     rerender();
   }
   // Compact, deterministic per-identity color so the same person always
@@ -477,7 +606,7 @@
   function avatarHtml(name, size, avatarUrl) {
     const px = size || 36;
     if (avatarUrl) {
-      return `<img alt="" aria-hidden="true" class="avatar-badge" src="${safeText(avatarUrl)}" style="width:${px}px;height:${px}px;object-fit:cover;"/>`;
+      return `<img alt="" aria-hidden="true" class="avatar-badge" src="${esc(avatarUrl)}" style="width:${px}px;height:${px}px;object-fit:cover;"/>`;
     }
     // Two conventions call this: some sites pass the bare handle
     // (`display_name || handle`), others the display string
@@ -492,7 +621,7 @@
     let hash = 0;
     for (let i = 0; i < label.length; i++) hash = (hash * 31 + label.charCodeAt(i)) >>> 0;
     const color = AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
-    return `<span aria-hidden="true" class="avatar-badge" style="width:${px}px;height:${px}px;font-size:${Math.round(px * 0.42)}px;background:${color};">${safeText(initial)}</span>`;
+    return `<span aria-hidden="true" class="avatar-badge" style="width:${px}px;height:${px}px;font-size:${Math.round(px * 0.42)}px;background:${color};">${esc(initial)}</span>`;
   }
   // display_name is Hebrew and renders fine on its own; the "@handle"
   // fallback is a Latin run with a leading neutral "@" - in this app's RTL
@@ -503,7 +632,7 @@
   // needed, and it degrades to plain text in a context that already
   // requires no HTML (there is none here).
   function nameHtml(displayName, handle) {
-    return displayName ? safeText(displayName) : `<bdi>@${safeText(handle || "")}</bdi>`;
+    return displayName ? esc(displayName) : `<bdi>@${esc(handle || "")}</bdi>`;
   }
   // Shared batch profile lookup - the shape loadCoachEngage(), loadCoachMemberOfWeek()
   // and loadFollowList() each independently hand-rolled. Consolidated after
@@ -557,7 +686,7 @@
   // flows, both triggered from the core training-log tabs, not just the
   // Community tab - depends on state.profile. onPrCreatedForChallenges()
   // (also triggered from a core-tab save, via the PR_CREATED bus event)
-  // reads state.challenges/state.challengeParticipation to auto-log a
+  // reads state.challenges.items/state.challenges.participation to auto-log a
   // challenge delta, which is why loadChallenges() is eager here too - and
   // loadClubFeatures() rides along with it: isModuleEnabled() defaults a
   // module "on" until its row loads, so with challenges data present but
@@ -573,7 +702,7 @@
     // Also gated on recovery_verified_at: renderCommunityApp() returns the
     // recovery gate's own content and nothing else while it's pending (see
     // that check's own comment, COMM-016), so there's no UI yet for any of
-    // this to feed. Loading it anyway raced loadFeed()'s state.message
+    // this to feed. Loading it anyway raced loadFeed()'s state.ui.message
     // reset (on success, loadFeed sets it to "") against verifyRecovery()'s
     // own failure message on the exact same field - whichever finished
     // last silently won, so a real verification failure could show no
@@ -671,7 +800,7 @@
   async function loadOnboardingProgress() {
     if (!state.user) return;
     const { data, error } = await client.from("onboarding_progress").select("*").eq("user_id", state.user.id).maybeSingle();
-    state.onboardingProgress = error ? null : (data || null);
+    state.onboarding.progress = error ? null : (data || null);
   }
   // COMM-017. A stable per-client identifier the invite throttle keys on
   // in ADDITION to the Auth uid, so discarding an anonymous session and
@@ -751,7 +880,7 @@
   async function loadStreaks() {
     if (!state.user) return;
     const { data, error } = await client.from("community_streaks").select("user_id,handle,display_name,current_streak,last_activity_on").order("current_streak", { ascending: false }).limit(50);
-    state.streaks = error ? [] : (data || []).filter((r) => r.current_streak > 0);
+    state.club.streaks = error ? [] : (data || []).filter((r) => r.current_streak > 0);
   }
 
   // ---- COMM-222 onboarding sequence -----------------------------------
@@ -792,7 +921,7 @@
   // dismissing one lets whichever step is due next - by this same order -
   // show on the very next render.
   function currentOnboardingStep() {
-    const row = state.onboardingProgress;
+    const row = state.onboarding.progress;
     const redeemedAtRaw = state.redemption && state.redemption.redeemed_at;
     if (!row || !redeemedAtRaw) return null;
     const redeemedAt = new Date(redeemedAtRaw).getTime();
@@ -811,9 +940,9 @@
     // step whose data has not arrived - never as "due", which would risk a
     // step flashing on before its real eligibility is known and then off
     // once the real answer turns out to be "not yet".
-    if (!state.onboardingAttendance.loaded) return null;
-    if (row.first_class_shown_at == null && state.onboardingAttendance.count >= 1) return "first_class";
-    if (row.third_class_shown_at == null && state.onboardingAttendance.count >= 3) return "third_class";
+    if (!state.onboarding.attendance.loaded) return null;
+    if (row.first_class_shown_at == null && state.onboarding.attendance.count >= 1) return "first_class";
+    if (row.third_class_shown_at == null && state.onboarding.attendance.count >= 3) return "third_class";
     return null;
   }
   // COMM-316. Own-row attendance count - the only input the two new steps'
@@ -829,7 +958,7 @@
   // session.
   async function loadOnboardingAttendance() {
     if (!client || !state.user) return;
-    const s = state.onboardingAttendance;
+    const s = state.onboarding.attendance;
     s.loading = true;
     rerender();
     const { data, error } = await client.from("attendance_log").select("occurred_on").eq("user_id", state.user.id);
@@ -849,8 +978,8 @@
   // step simply becomes due again.
   async function dismissOnboardingStep(step) {
     const col = ONBOARDING_STEP_COLUMNS[step];
-    if (!col || !state.onboardingProgress || !state.user || !client) return;
-    state.onboardingProgress[col] = new Date().toISOString();
+    if (!col || !state.onboarding.progress || !state.user || !client) return;
+    state.onboarding.progress[col] = new Date().toISOString();
     rerender();
     // Same real bug pingActivity() had, found in the same front-end review
     // pass: .catch() chained directly on a PostgrestFilterBuilder throws
@@ -876,27 +1005,27 @@
   // club-wide monthly recap.
   async function loadOnboardingFirstMonthSummary() {
     if (!state.user || !client || !state.redemption || !state.redemption.redeemed_at) return;
-    state.onboardingFirstMonth = { loading: true, error: false, sessions: 0, prs: 0, achievements: 0 };
+    state.onboarding.firstMonth = { loading: true, error: false, sessions: 0, prs: 0, achievements: 0 };
     const redeemedAt = new Date(state.redemption.redeemed_at);
     const monthEnd = new Date(redeemedAt.getTime() + 30 * 86400000);
     const { data, error } = await client.from("weekly_recaps").select("sessions_completed,prs,achievements")
       .eq("user_id", state.user.id)
       .gte("week_start", redeemedAt.toISOString().slice(0, 10))
       .lte("week_start", monthEnd.toISOString().slice(0, 10));
-    if (!state.onboardingFirstMonth) return; // dismissed/torn down mid-flight
-    if (error) { state.onboardingFirstMonth = { loading: false, error: true, sessions: 0, prs: 0, achievements: 0 }; return rerender(); }
+    if (!state.onboarding.firstMonth) return; // dismissed/torn down mid-flight
+    if (error) { state.onboarding.firstMonth = { loading: false, error: true, sessions: 0, prs: 0, achievements: 0 }; return rerender(); }
     const totals = (data || []).reduce((acc, r) => {
       acc.sessions += Number(r.sessions_completed) || 0;
       acc.prs += Array.isArray(r.prs) ? r.prs.length : 0;
       acc.achievements += Array.isArray(r.achievements) ? r.achievements.length : 0;
       return acc;
     }, { sessions: 0, prs: 0, achievements: 0 });
-    state.onboardingFirstMonth = { loading: false, error: false, ...totals };
+    state.onboarding.firstMonth = { loading: false, error: false, ...totals };
     rerender();
   }
   function renderOnboardingCard(title, bodyHtml, step, extraActionHtml) {
     return `<div class="chart-card admin-card" style="margin-bottom:12px;" data-onboarding-step="${step}">
-      <div style="font-weight:800;margin-bottom:6px;">${safeText(title)}</div>
+      <div style="font-weight:800;margin-bottom:6px;">${esc(title)}</div>
       <div style="font-size:13px;line-height:1.6;color:var(--steel);margin-bottom:10px;">${bodyHtml}</div>
       <div class="chip-row">${extraActionHtml || ""}<button class="chip-btn primary" data-community-action="onboarding-dismiss" data-step="${step}">הבנתי</button></div>
     </div>`;
@@ -911,15 +1040,15 @@
   function renderOnboardingFirstWeekStep() {
     // COMM-207's own list, sorted the same soonest-end-first order the
     // Boards tab already uses - just the first entry.
-    const active = state.challenges.filter((c) => c.status === "active").slice().sort((a, b) => new Date(a.end_at) - new Date(b.end_at))[0];
+    const active = state.challenges.items.filter((c) => c.status === "active").slice().sort((a, b) => new Date(a.end_at) - new Date(b.end_at))[0];
     const body = active
-      ? `יש אתגר פעיל במועדון עכשיו: <strong>${safeText(active.title)}</strong>.`
+      ? `יש אתגר פעיל במועדון עכשיו: <strong>${esc(active.title)}</strong>.`
       : `אין כרגע אתגר פעיל במועדון, אבל שווה להציץ בלוח האתגרים מדי פעם.`;
-    const openBtn = active ? `<button class="chip-btn" data-community-action="open-challenge" data-id="${safeText(active.id)}" data-source="onboarding">פתיחת האתגר</button>` : "";
+    const openBtn = active ? `<button class="chip-btn" data-community-action="open-challenge" data-id="${esc(active.id)}" data-source="onboarding">פתיחת האתגר</button>` : "";
     return renderOnboardingCard("השבוע הראשון שלכם מאחוריכם", body, "first_week", openBtn);
   }
   function renderOnboardingFirstMonthStep() {
-    const summary = state.onboardingFirstMonth;
+    const summary = state.onboarding.firstMonth;
     const body = (!summary || summary.loading)
       ? `<span aria-hidden="true" style="display:inline-block;height:12px;width:70%;background:var(--border);border-radius:6px;"></span>`
       : summary.error
@@ -947,7 +1076,7 @@
   }
   function renderOnboardingStep() {
     const step = currentOnboardingStep();
-    if (!state.onboardingProgress) {
+    if (!state.onboarding.progress) {
       // A loading skeleton only while a redemption is actually known - a
       // pre-redemption visitor never had a row seeded, so there is nothing
       // pending to skeleton for.
@@ -997,7 +1126,7 @@
   async function loadAnnouncements() {
     if (!state.user) return;
     const { data, error } = await client.from("announcements").select("id,title,body,created_at,pinned_date,priority,expires_at,profiles(handle,display_name)").order("created_at", { ascending: false }).limit(20);
-    state.announcements = error ? [] : (data || []);
+    state.club.announcements = error ? [] : (data || []);
   }
   async function postAnnouncement(form) {
     if (!state.user || !isStaff()) return;
@@ -1027,18 +1156,18 @@
     const payload = { author_id: state.user.id, title, body, priority };
     if (expiresAtIso) payload.expires_at = expiresAtIso;
     if (form.elements.pinToday && form.elements.pinToday.checked) payload.pinned_date = todayIso();
-    state.announcementSaving = true; rerender();
+    state.club.announcementSaving = true; rerender();
     const { error } = await client.from("announcements").insert(payload);
-    state.announcementSaving = false;
+    state.club.announcementSaving = false;
     if (error) return setMessage("לא ניתן היה לשמור את ההודעה. נסו שוב.");
     form.reset(); await loadAnnouncements(); setMessage("ההודעה פורסמה"); rerender();
   }
   async function loadWeeklyChallenge() {
     if (!state.user) return;
     const { data, error } = await client.from("weekly_challenge_leaderboard").select("*").limit(50);
-    if (error || !data || !data.length) { state.weeklyChallenge = null; state.weeklyLeaderboard = []; return; }
-    state.weeklyChallenge = { title: data[0].title, comparisonKey: data[0].comparison_key, startsOn: data[0].starts_on, endsOn: data[0].ends_on };
-    state.weeklyLeaderboard = data.sort((a, b) => a.score_direction === "lower" ? Number(a.score_value) - Number(b.score_value) : Number(b.score_value) - Number(a.score_value));
+    if (error || !data || !data.length) { state.club.weeklyChallenge = null; state.club.weeklyLeaderboard = []; return; }
+    state.club.weeklyChallenge = { title: data[0].title, comparisonKey: data[0].comparison_key, startsOn: data[0].starts_on, endsOn: data[0].ends_on };
+    state.club.weeklyLeaderboard = data.sort((a, b) => a.score_direction === "lower" ? Number(a.score_value) - Number(b.score_value) : Number(b.score_value) - Number(a.score_value));
   }
   async function setWeeklyChallenge(form) {
     if (!state.user || !isStaff()) return;
@@ -1065,12 +1194,12 @@
   async function loadInactiveMembers() {
     if (!state.user || !isStaff()) return;
     const { data, error } = await client.rpc("coach_inactive_members");
-    state.inactiveMembers = error ? [] : (data || []);
+    state.club.inactiveMembers = error ? [] : (data || []);
   }
   async function loadNewMembers() {
     if (!state.user || !isStaff()) return;
     const { data, error } = await client.rpc("coach_new_members");
-    state.newMembers = error ? [] : (data || []);
+    state.club.newMembers = error ? [] : (data || []);
   }
 
   // ==========================================================================
@@ -1107,15 +1236,15 @@
   function celebrateItemKey(item) { return `${item.kind}|${item.user_id}|${item.occurred_at}`; }
   async function loadCoachCelebrate() {
     if (!state.user || !isStaff()) return;
-    state.coachCelebrate.loading = true;
-    state.coachCelebrate.error = false;
+    state.coach.celebrate.loading = true;
+    state.coach.celebrate.error = false;
     rerender();
     const { data, error } = await client.rpc("coach_celebrate_feed", { p_days: 7 });
-    state.coachCelebrate.loading = false;
-    state.coachCelebrate.loaded = true;
-    if (error) { state.coachCelebrate.error = true; state.coachCelebrate.items = []; rerender(); return; }
+    state.coach.celebrate.loading = false;
+    state.coach.celebrate.loaded = true;
+    if (error) { state.coach.celebrate.error = true; state.coach.celebrate.items = []; rerender(); return; }
     // The RPC already sorts newest-first; never re-sorted here.
-    state.coachCelebrate.items = data || [];
+    state.coach.celebrate.items = data || [];
     rerender();
   }
   // COMM-225 templates. Short, Hebrew, kind-specific, and well under the
@@ -1153,8 +1282,8 @@
   async function congratulateCelebrateItem(item) {
     if (!item) return;
     const key = celebrateItemKey(item);
-    if (state.coachCelebrate.congratulated[key] || state.coachCelebrate.busy === key) return;
-    state.coachCelebrate.busy = key;
+    if (state.coach.celebrate.congratulated[key] || state.coach.celebrate.busy === key) return;
+    state.coach.celebrate.busy = key;
     rerender();
     const body = celebrateTemplateBody(item);
     let ok = false;
@@ -1168,14 +1297,14 @@
         ok = !updErr;
       }
     }
-    state.coachCelebrate.busy = null;
+    state.coach.celebrate.busy = null;
     // COMM-233. After the write, and only on success. The row's user_id is
     // the coach, which is what makes this count toward the coach's own WCAM
     // and never the celebrated member's - being congratulated is not an
     // action they took. `kind` is the celebrate item's own enum and `via`
     // says which of the two write paths ran; neither the member nor the
     // generated greeting is a prop.
-    if (ok) { state.coachCelebrate.congratulated[key] = true; setMessage(""); track(A.COACH_CONGRATULATE_SENT, { kind: item.kind || null, via: item.post_id ? "comment" : "post" }); }
+    if (ok) { state.coach.celebrate.congratulated[key] = true; setMessage(""); track(A.COACH_CONGRATULATE_SENT, { kind: item.kind || null, via: item.post_id ? "comment" : "post" }); }
     else setMessage("לא ניתן היה לשלוח ברכה. נסו שוב.");
     rerender();
   }
@@ -1183,13 +1312,13 @@
   // ---- Welcome (COMM-224) --------------------------------------------------
   async function loadCoachWelcome() {
     if (!state.user || !isStaff()) return;
-    state.coachWelcome.loading = true;
-    state.coachWelcome.error = false;
+    state.coach.welcome.loading = true;
+    state.coach.welcome.error = false;
     rerender();
     const cutoffIso = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     const { data, error } = await client.from("profiles").select("id,handle,display_name,avatar_url,created_at,assigned_coach_id").gte("created_at", cutoffIso).order("created_at", { ascending: false });
     if (error) {
-      state.coachWelcome.loading = false; state.coachWelcome.loaded = true; state.coachWelcome.error = true; state.coachWelcome.members = [];
+      state.coach.welcome.loading = false; state.coach.welcome.loaded = true; state.coach.welcome.error = true; state.coach.welcome.members = [];
       rerender();
       return;
     }
@@ -1197,7 +1326,7 @@
     // excludes a soft-deleted row server-side, so there is nothing left for
     // a client-side filter to add here.
     const members = data || [];
-    state.coachWelcome.members = members;
+    state.coach.welcome.members = members;
     const ids = members.map((m) => m.id);
     // Staff can read any user's member_contact_log rows (COMM-224's own
     // shipped RLS), so this is one batched read, not one per member.
@@ -1206,9 +1335,9 @@
       const { data: contacts } = await client.from("member_contact_log").select("user_id").in("user_id", ids);
       for (const row of contacts || []) contactedIds[row.user_id] = true;
     }
-    state.coachWelcome.contactedIds = contactedIds;
-    state.coachWelcome.loading = false;
-    state.coachWelcome.loaded = true;
+    state.coach.welcome.contactedIds = contactedIds;
+    state.coach.welcome.loading = false;
+    state.coach.welcome.loaded = true;
     rerender();
   }
   // Same lookup shape ensureEventCompanionPost() below already uses for
@@ -1235,18 +1364,18 @@
   // add_post_comment call with a near-duplicate template - one Hebrew
   // welcome string, one place it is sent from.
   async function coachWelcomeMember(memberId) {
-    if (!memberId || state.coachWelcome.busy) return;
-    state.coachWelcome.busy = memberId;
+    if (!memberId || state.coach.welcome.busy) return;
+    state.coach.welcome.busy = memberId;
     rerender();
     const post = await findNewMemberPost(memberId);
     if (!post) {
-      state.coachWelcome.busy = null;
+      state.coach.welcome.busy = null;
       setMessage("לא ניתן היה לבצע את הפעולה. נסו שוב.");
       rerender();
       return;
     }
     await welcomeNewMember(post.id);
-    state.coachWelcome.busy = null;
+    state.coach.welcome.busy = null;
     rerender();
   }
   // Assign coach (optional). Only write path is coach_assign_coach() -
@@ -1264,19 +1393,19 @@
   // mis-assigning. A real staff-directory RPC would turn this into an
   // actual dropdown; noted as a follow-up rather than invented here.
   async function coachAssignCoach(memberId, coachId) {
-    if (!memberId || state.coachWelcome.busy) return;
-    state.coachWelcome.busy = memberId;
+    if (!memberId || state.coach.welcome.busy) return;
+    state.coach.welcome.busy = memberId;
     rerender();
     const { error } = await client.rpc("coach_assign_coach", { p_user_id: memberId, p_coach_id: coachId || null });
-    state.coachWelcome.busy = null;
+    state.coach.welcome.busy = null;
     if (error) { setMessage("לא ניתן היה לבצע את הפעולה. נסו שוב."); rerender(); return; }
-    const m = state.coachWelcome.members.find((x) => x.id === memberId);
+    const m = state.coach.welcome.members.find((x) => x.id === memberId);
     if (m) m.assigned_coach_id = coachId || null;
     setMessage(coachId ? "המאמן/ת שויכ/ה" : "השיוך בוטל");
     rerender();
   }
   async function coachAssignByHandle(memberId) {
-    const handle = String((state.coachWelcome.assignDrafts || {})[memberId] || "").trim().toLowerCase().replace(/^@/, "");
+    const handle = String((state.coach.welcome.assignDrafts || {})[memberId] || "").trim().toLowerCase().replace(/^@/, "");
     if (!handle) return;
     const { data } = await client.from("profiles").select("id").eq("handle", handle).maybeSingle();
     if (!data || !data.id) { setMessage("לא ניתן היה לבצע את הפעולה. נסו שוב."); rerender(); return; }
@@ -1285,14 +1414,14 @@
   // Mark contacted. Staff-only insert, contacted_by defaults to auth.uid()
   // server-side (202608290013), so the client sends only {user_id, note}.
   async function coachMarkContacted(memberId) {
-    if (!memberId || state.coachWelcome.busy) return;
-    state.coachWelcome.busy = memberId;
+    if (!memberId || state.coach.welcome.busy) return;
+    state.coach.welcome.busy = memberId;
     rerender();
-    const note = String((state.coachWelcome.contactDrafts || {})[memberId] || "").trim().slice(0, 500);
+    const note = String((state.coach.welcome.contactDrafts || {})[memberId] || "").trim().slice(0, 500);
     const { error } = await client.from("member_contact_log").insert({ user_id: memberId, note });
-    state.coachWelcome.busy = null;
+    state.coach.welcome.busy = null;
     if (error) { setMessage("לא ניתן היה לבצע את הפעולה. נסו שוב."); rerender(); return; }
-    state.coachWelcome.contactedIds[memberId] = true;
+    state.coach.welcome.contactedIds[memberId] = true;
     setMessage("סומן כנוצר קשר");
     rerender();
   }
@@ -1333,21 +1462,21 @@
   // this client-only ticket does not own.
   async function loadCoachEngageFlags() {
     if (!state.user || !isStaff() || !state.featureFlags.coachEngage) return;
-    state.coachEngage.loading = true;
-    state.coachEngage.error = false;
+    state.coach.engage.loading = true;
+    state.coach.engage.error = false;
     rerender();
     const { data, error } = await client.from("coach_engagement_flags").select("id,user_id,level,status,flagged_at").eq("status", "open").order("flagged_at", { ascending: false });
     if (error) {
-      state.coachEngage.loading = false; state.coachEngage.loaded = true; state.coachEngage.error = true; state.coachEngage.items = [];
+      state.coach.engage.loading = false; state.coach.engage.loaded = true; state.coach.engage.error = true; state.coach.engage.items = [];
       rerender();
       return;
     }
     const items = data || [];
     const { map: profiles } = await loadProfilesById(items.map((it) => it.user_id));
-    state.coachEngage.items = items;
-    state.coachEngage.profiles = profiles;
-    state.coachEngage.loading = false;
-    state.coachEngage.loaded = true;
+    state.coach.engage.items = items;
+    state.coach.engage.profiles = profiles;
+    state.coach.engage.loading = false;
+    state.coach.engage.loaded = true;
     rerender();
   }
   // The three level buckets coach_detect_engagement_decline() writes
@@ -1359,7 +1488,7 @@
   function engageLevelLabel(level) { return ENGAGE_LEVEL_LABELS[level] || level || ""; }
   function engageLevelColor(level) { return ENGAGE_LEVEL_COLORS[level] || "var(--steel)"; }
   function engageMemberName(userId) {
-    const p = state.coachEngage.profiles[userId] || {};
+    const p = state.coach.engage.profiles[userId] || {};
     return p.display_name || (p.handle ? "@" + p.handle : "חבר/ה");
   }
   // COMM-304's "reach out" one-tap action, modeled directly on COMM-225's
@@ -1385,10 +1514,10 @@
   }
   async function coachEngageReachOut(flagId) {
     if (!flagId) return;
-    if (state.coachEngage.reachedOut[flagId] || (state.coachEngage.busy && state.coachEngage.busy.id === flagId)) return;
-    const item = state.coachEngage.items.find((it) => it.id === flagId);
+    if (state.coach.engage.reachedOut[flagId] || (state.coach.engage.busy && state.coach.engage.busy.id === flagId)) return;
+    const item = state.coach.engage.items.find((it) => it.id === flagId);
     if (!item) return;
-    state.coachEngage.busy = { id: flagId, action: "reach-out" };
+    state.coach.engage.busy = { id: flagId, action: "reach-out" };
     rerender();
     const body = engageReachOutTemplateBody(engageMemberName(item.user_id));
     let ok = false;
@@ -1397,8 +1526,8 @@
       const { error: updErr } = await client.from("workout_posts").update({ post_type: "POST_COACH" }).eq("id", postId);
       ok = !updErr;
     }
-    state.coachEngage.busy = null;
-    if (ok) { state.coachEngage.reachedOut[flagId] = true; setMessage(""); }
+    state.coach.engage.busy = null;
+    if (ok) { state.coach.engage.reachedOut[flagId] = true; setMessage(""); }
     else setMessage("לא ניתן היה לשלוח פנייה. נסו שוב.");
     rerender();
   }
@@ -1411,16 +1540,16 @@
   // ever selects status='open'), so the row is removed locally rather than
   // re-fetched.
   async function coachEngageResolveFlag(flagId, status) {
-    if (!flagId || (state.coachEngage.busy && state.coachEngage.busy.id === flagId)) return;
-    state.coachEngage.busy = { id: flagId, action: status };
+    if (!flagId || (state.coach.engage.busy && state.coach.engage.busy.id === flagId)) return;
+    state.coach.engage.busy = { id: flagId, action: status };
     rerender();
     const { error } = await client.from("coach_engagement_flags")
       .update({ status, reviewed_by: state.user.id, reviewed_at: new Date().toISOString() })
       .eq("id", flagId);
-    state.coachEngage.busy = null;
+    state.coach.engage.busy = null;
     if (error) { setMessage("לא ניתן היה לבצע את הפעולה. נסו שוב."); rerender(); return; }
-    state.coachEngage.items = state.coachEngage.items.filter((it) => it.id !== flagId);
-    delete state.coachEngage.reachedOut[flagId];
+    state.coach.engage.items = state.coach.engage.items.filter((it) => it.id !== flagId);
+    delete state.coach.engage.reachedOut[flagId];
     setMessage(status === "reviewed" ? "סומן כנבדק" : "הפריט נדחה");
     rerender();
   }
@@ -1439,30 +1568,30 @@
   // same one Celebrate already uses.
   async function loadCoachMemberOfWeek() {
     if (!state.user || !isStaff()) return;
-    state.coachMemberOfWeek.loading = true;
-    state.coachMemberOfWeek.error = false;
+    state.coach.memberOfWeek.loading = true;
+    state.coach.memberOfWeek.error = false;
     rerender();
     const { data, error } = await client.rpc("member_of_week_candidates", { p_week_start: null });
     if (error || !data || !data[0]) {
-      state.coachMemberOfWeek.loading = false;
-      state.coachMemberOfWeek.loaded = true;
-      state.coachMemberOfWeek.error = true;
-      state.coachMemberOfWeek.envelope = null;
+      state.coach.memberOfWeek.loading = false;
+      state.coach.memberOfWeek.loaded = true;
+      state.coach.memberOfWeek.error = true;
+      state.coach.memberOfWeek.envelope = null;
       rerender();
       return;
     }
     const envelope = data[0];
-    state.coachMemberOfWeek.envelope = envelope;
+    state.coach.memberOfWeek.envelope = envelope;
     // One small, separate profile read (loadProfilesById - the shared shape
     // coachEngage/loadFollowList also use, rather than an embedded join)
     // for the two ids the envelope names but does not itself carry a
     // display name for.
     const { map: profiles } = await loadProfilesById([envelope.published && envelope.published.user_id, envelope.previous_week_user_id]);
-    state.coachMemberOfWeek.publishedProfile = envelope.published ? (profiles[envelope.published.user_id] || null) : null;
-    state.coachMemberOfWeek.previousProfile = envelope.previous_week_user_id ? (profiles[envelope.previous_week_user_id] || null) : null;
-    state.coachMemberOfWeek.loading = false;
-    state.coachMemberOfWeek.loaded = true;
-    state.coachMemberOfWeek.error = false;
+    state.coach.memberOfWeek.publishedProfile = envelope.published ? (profiles[envelope.published.user_id] || null) : null;
+    state.coach.memberOfWeek.previousProfile = envelope.previous_week_user_id ? (profiles[envelope.previous_week_user_id] || null) : null;
+    state.coach.memberOfWeek.loading = false;
+    state.coach.memberOfWeek.loaded = true;
+    state.coach.memberOfWeek.error = false;
     rerender();
   }
   // The five real Postgres errors member_of_week_publish() raises (COMM-315's
@@ -1494,24 +1623,24 @@
   // rather than patched by hand, since the server - not the client - resolves
   // which category the row actually records.
   async function publishMemberOfWeek(userId, reason, busyKey) {
-    if (!userId || state.coachMemberOfWeek.busy) return;
-    state.coachMemberOfWeek.busy = busyKey || userId;
-    state.coachMemberOfWeek.publishErr = "";
+    if (!userId || state.coach.memberOfWeek.busy) return;
+    state.coach.memberOfWeek.busy = busyKey || userId;
+    state.coach.memberOfWeek.publishErr = "";
     rerender();
     const p_reason = String(reason || "").trim().slice(0, 500);
     const { error } = await client.rpc("member_of_week_publish", { p_week_start: null, p_user_id: userId, p_reason });
     if (error) {
-      state.coachMemberOfWeek.busy = null;
-      state.coachMemberOfWeek.publishErr = memberOfWeekErrorText(error);
-      setMessage(state.coachMemberOfWeek.publishErr);
+      state.coach.memberOfWeek.busy = null;
+      state.coach.memberOfWeek.publishErr = memberOfWeekErrorText(error);
+      setMessage(state.coach.memberOfWeek.publishErr);
       rerender();
       return;
     }
-    state.coachMemberOfWeek.pickHandle = "";
-    state.coachMemberOfWeek.pickReason = "";
+    state.coach.memberOfWeek.pickHandle = "";
+    state.coach.memberOfWeek.pickReason = "";
     setMessage("חבר/ת השבוע פורסמ/ה");
     await loadCoachMemberOfWeek();
-    state.coachMemberOfWeek.busy = null;
+    state.coach.memberOfWeek.busy = null;
     rerender();
   }
   // A computed-candidate publish carries no typed reason - the category
@@ -1530,15 +1659,15 @@
   // still the real authority; this only saves a round trip for the obvious
   // case.
   async function memberOfWeekPublishPick() {
-    if (state.coachMemberOfWeek.busy) return;
-    const handle = String(state.coachMemberOfWeek.pickHandle || "").trim().toLowerCase().replace(/^@/, "");
-    const reason = String(state.coachMemberOfWeek.pickReason || "").trim();
-    if (!handle) { state.coachMemberOfWeek.publishErr = "יש להזין שם משתמש."; setMessage(state.coachMemberOfWeek.publishErr); rerender(); return; }
-    if (!reason) { state.coachMemberOfWeek.publishErr = "יש להזין סיבה לבחירת המאמן/ת."; setMessage(state.coachMemberOfWeek.publishErr); rerender(); return; }
+    if (state.coach.memberOfWeek.busy) return;
+    const handle = String(state.coach.memberOfWeek.pickHandle || "").trim().toLowerCase().replace(/^@/, "");
+    const reason = String(state.coach.memberOfWeek.pickReason || "").trim();
+    if (!handle) { state.coach.memberOfWeek.publishErr = "יש להזין שם משתמש."; setMessage(state.coach.memberOfWeek.publishErr); rerender(); return; }
+    if (!reason) { state.coach.memberOfWeek.publishErr = "יש להזין סיבה לבחירת המאמן/ת."; setMessage(state.coach.memberOfWeek.publishErr); rerender(); return; }
     const { data } = await client.from("profiles").select("id").eq("handle", handle).maybeSingle();
     if (!data || !data.id) {
-      state.coachMemberOfWeek.publishErr = "לא נמצא/ה חבר/ה עם שם המשתמש הזה.";
-      setMessage(state.coachMemberOfWeek.publishErr);
+      state.coach.memberOfWeek.publishErr = "לא נמצא/ה חבר/ה עם שם המשתמש הזה.";
+      setMessage(state.coach.memberOfWeek.publishErr);
       rerender();
       return;
     }
@@ -1577,40 +1706,40 @@
   //     not to a .maybeSingle() short-circuit.
   async function loadCoachMonthlyRecap() {
     if (!state.user || !isStaff()) return;
-    state.coachMonthlyRecap.loading = true;
-    state.coachMonthlyRecap.error = false;
+    state.coach.monthlyRecap.loading = true;
+    state.coach.monthlyRecap.error = false;
     rerender();
     const { data, error } = await client.from("monthly_club_recaps").select("*")
       .order("month_start", { ascending: false }).limit(1);
-    state.coachMonthlyRecap.loading = false;
-    state.coachMonthlyRecap.loaded = true;
+    state.coach.monthlyRecap.loading = false;
+    state.coach.monthlyRecap.loaded = true;
     if (error) {
-      state.coachMonthlyRecap.error = true;
-      state.coachMonthlyRecap.row = null;
+      state.coach.monthlyRecap.error = true;
+      state.coach.monthlyRecap.row = null;
       rerender();
       return;
     }
-    state.coachMonthlyRecap.error = false;
-    state.coachMonthlyRecap.row = (Array.isArray(data) && data.length) ? data[0] : null;
+    state.coach.monthlyRecap.error = false;
+    state.coach.monthlyRecap.row = (Array.isArray(data) && data.length) ? data[0] : null;
     rerender();
   }
   async function loadMonthlyRecap() {
     if (!state.user) return;
-    state.monthlyRecap.loading = true;
-    state.monthlyRecap.error = false;
+    state.recaps.monthly.loading = true;
+    state.recaps.monthly.error = false;
     rerender();
     const { data, error } = await client.from("monthly_club_recaps").select("*")
       .not("published_at", "is", null).order("month_start", { ascending: false }).limit(1);
-    state.monthlyRecap.loading = false;
-    state.monthlyRecap.loaded = true;
+    state.recaps.monthly.loading = false;
+    state.recaps.monthly.loaded = true;
     if (error) {
-      state.monthlyRecap.error = true;
-      state.monthlyRecap.row = null;
+      state.recaps.monthly.error = true;
+      state.recaps.monthly.row = null;
       rerender();
       return;
     }
-    state.monthlyRecap.error = false;
-    state.monthlyRecap.row = (Array.isArray(data) && data.length) ? data[0] : null;
+    state.recaps.monthly.error = false;
+    state.recaps.monthly.row = (Array.isArray(data) && data.length) ? data[0] : null;
     rerender();
   }
   // The two real Postgres errors recap_monthly_publish() raises (the schema
@@ -1638,21 +1767,21 @@
   // server is the real authority regardless - it only maps the refusal if
   // one somehow arrives anyway (e.g. a permission revoked mid-session).
   async function publishMonthlyRecap(id) {
-    if (!id || state.coachMonthlyRecap.busy) return;
-    state.coachMonthlyRecap.busy = id;
-    state.coachMonthlyRecap.publishErr = "";
+    if (!id || state.coach.monthlyRecap.busy) return;
+    state.coach.monthlyRecap.busy = id;
+    state.coach.monthlyRecap.publishErr = "";
     rerender();
     const { error } = await client.rpc("recap_monthly_publish", { p_id: id });
     if (error) {
-      state.coachMonthlyRecap.busy = null;
-      state.coachMonthlyRecap.publishErr = monthlyRecapErrorText(error);
-      setMessage(state.coachMonthlyRecap.publishErr);
+      state.coach.monthlyRecap.busy = null;
+      state.coach.monthlyRecap.publishErr = monthlyRecapErrorText(error);
+      setMessage(state.coach.monthlyRecap.publishErr);
       rerender();
       return;
     }
     setMessage("התקציר החודשי פורסם");
     await loadCoachMonthlyRecap();
-    state.coachMonthlyRecap.busy = null;
+    state.coach.monthlyRecap.busy = null;
     rerender();
   }
 
@@ -1703,36 +1832,36 @@
   // community.comment.moderate or real is_admin and only it can resolve the
   // reporter identities, which stay invisible to everyone else.
   async function loadModQueue() {
-    if (!state.user || !(hasPerm(PERM.COMMENT_MODERATE) || isAdmin())) { state.modQueue = []; return; }
-    state.modQueueLoading = true; state.modQueueError = false; rerender();
-    const { data, error } = await client.rpc("mod_queue", { p_status: state.modQueueStatus, p_cursor: null, p_limit: 50 });
-    state.modQueueLoading = false;
-    state.modQueueLoaded = true;
-    if (error) { state.modQueueError = true; state.modQueue = []; rerender(); return; }
-    state.modQueue = data || [];
+    if (!state.user || !(hasPerm(PERM.COMMENT_MODERATE) || isAdmin())) { state.admin.modQueue = []; return; }
+    state.admin.modQueueLoading = true; state.admin.modQueueError = false; rerender();
+    const { data, error } = await client.rpc("mod_queue", { p_status: state.admin.modQueueStatus, p_cursor: null, p_limit: 50 });
+    state.admin.modQueueLoading = false;
+    state.admin.modQueueLoaded = true;
+    if (error) { state.admin.modQueueError = true; state.admin.modQueue = []; rerender(); return; }
+    state.admin.modQueue = data || [];
     rerender();
   }
   function setModQueueStatus(status) {
-    if (!MOD_QUEUE_STATUSES.some((s) => s.id === status) || state.modQueueStatus === status) return;
-    state.modQueueStatus = status;
+    if (!MOD_QUEUE_STATUSES.some((s) => s.id === status) || state.admin.modQueueStatus === status) return;
+    state.admin.modQueueStatus = status;
     loadModQueue();
   }
   function openModContext(reportId) {
-    const item = (state.modQueue || []).find((r) => r.report_id === reportId);
+    const item = (state.admin.modQueue || []).find((r) => r.report_id === reportId);
     if (!item) return;
-    state.modContext = item;
+    state.admin.modContext = item;
     rerender();
   }
-  function closeModContext() { state.modContext = null; rerender(); }
+  function closeModContext() { state.admin.modContext = null; rerender(); }
   function openModAction(reportId, decision) {
-    const item = (state.modQueue || []).find((r) => r.report_id === reportId);
+    const item = (state.admin.modQueue || []).find((r) => r.report_id === reportId);
     if (!item || !MOD_DECISIONS.some((d) => d.id === decision)) return;
-    state.modAction = { reportId, decision, note: "", days: 7, saving: false, error: "", targetType: item.target_type };
+    state.admin.modAction = { reportId, decision, note: "", days: 7, saving: false, error: "", targetType: item.target_type };
     rerender();
   }
-  function closeModAction() { state.modAction = null; rerender(); }
+  function closeModAction() { state.admin.modAction = null; rerender(); }
   async function runModAction() {
-    const a = state.modAction;
+    const a = state.admin.modAction;
     if (!a || a.saving) return;
     a.saving = true; a.error = ""; rerender();
     const args = { p_report_id: a.reportId, p_decision: a.decision, p_note: String(a.note || "").slice(0, 500) };
@@ -1746,11 +1875,11 @@
       rerender();
       return;
     }
-    state.modAction = null;
+    state.admin.modAction = null;
     // The card carried a post that was removed - drop it from the feed too.
     if (a.decision === "remove" && a.targetType === "post") {
-      const it = (state.modQueue || []).find((r) => r.report_id === a.reportId);
-      if (it && Array.isArray(state.feed)) state.feed = state.feed.filter((p) => p && p.id !== it.target_id);
+      const it = (state.admin.modQueue || []).find((r) => r.report_id === a.reportId);
+      if (it && Array.isArray(state.feed.items)) state.feed.items = state.feed.items.filter((p) => p && p.id !== it.target_id);
     }
     setMessage("הפעולה נרשמה");
     await loadModQueue();
@@ -1761,11 +1890,11 @@
   // server-side too (admin_grant_coach/admin_revoke_coach/
   // admin_remove_member), this is only for deciding what to show.
   async function searchMembers(query) {
-    state.memberSearch = query;
+    state.members.search = query;
     const q = String(query || "").trim();
-    if (q.length < 2) { state.memberResults = []; return rerender(); }
+    if (q.length < 2) { state.members.results = []; return rerender(); }
     const { data, error } = await client.rpc("admin_search_members", { p_query: q });
-    state.memberResults = error ? [] : (data || []);
+    state.members.results = error ? [] : (data || []);
     rerender();
   }
   // COMM-156. HEAD_COACH is exposed in Phase 1; STAFF and OWNER are modelled
@@ -1785,7 +1914,7 @@
     const { error } = await client.rpc("admin_grant_coach", { p_user_id: userId });
     if (error) return setMessage("הענקת ההרשאה נכשלה");
     setMessage("הרשאת מאמן/ת הוענקה");
-    await searchMembers(state.memberSearch);
+    await searchMembers(state.members.search);
   }
   async function adminSetRole(userId, roleCode) {
     if (!state.user || !isAdmin()) return;
@@ -1795,14 +1924,14 @@
     const { error } = await client.rpc("admin_grant_coach", { p_user_id: userId, p_role: "head_coach" });
     if (error) return setMessage("שינוי ההרשאה נכשל");
     setMessage("ההרשאה עודכנה ל" + roleCodeLabel(roleCode));
-    await searchMembers(state.memberSearch);
+    await searchMembers(state.members.search);
   }
   async function adminRevokeCoach(userId) {
     if (!state.user || !isAdmin()) return;
     const { error } = await client.rpc("admin_revoke_coach", { p_user_id: userId });
     if (error) return setMessage("ביטול ההרשאה נכשל");
     setMessage("הרשאת מאמן/ת בוטלה");
-    await searchMembers(state.memberSearch);
+    await searchMembers(state.members.search);
   }
   // ---- Pinned content (COMM-155) --------------------------------------
   // Read is open to every member; pin_set / pin_clear are the only write
@@ -1810,19 +1939,19 @@
   // one transaction. The cap of 3 is a slot column server-side, so a fourth
   // pin_set raises pin_limit_reached rather than silently succeeding.
   async function loadPins() {
-    if (!state.user) { state.pins = []; return; }
+    if (!state.user) { state.admin.pins = []; return; }
     const { data, error } = await client.from("pins")
       .select("id,target_type,target_id,slot,note,created_at")
       .order("slot", { ascending: true });
-    state.pins = error ? [] : (data || []);
-    state.pinsLoaded = !error;
+    state.admin.pins = error ? [] : (data || []);
+    state.admin.pinsLoaded = !error;
   }
   async function pinTarget(targetType, targetId, note) {
     if (!state.user || !hasPerm(PERM.CONTENT_PIN)) return;
-    state.pinError = "";
+    state.admin.pinError = "";
     const { error } = await client.rpc("pin_set", { p_target_type: targetType, p_target_id: targetId, p_note: String(note || "").slice(0, 200) });
     if (error) {
-      state.pinError = (error.message || "") === "pin_limit_reached"
+      state.admin.pinError = (error.message || "") === "pin_limit_reached"
         ? "אפשר להצמיד עד שלושה פריטים. יש לבטל הצמדה קיימת קודם."
         : "לא ניתן היה לעדכן את ההצמדות.";
       return rerender();
@@ -1832,9 +1961,9 @@
   }
   async function unpinTarget(targetType, targetId) {
     if (!state.user || !hasPerm(PERM.CONTENT_PIN)) return;
-    state.pinError = "";
+    state.admin.pinError = "";
     const { error } = await client.rpc("pin_clear", { p_target_type: targetType, p_target_id: targetId });
-    if (error) { state.pinError = "לא ניתן היה לעדכן את ההצמדות."; return rerender(); }
+    if (error) { state.admin.pinError = "לא ניתן היה לעדכן את ההצמדות."; return rerender(); }
     await loadPins();
     setMessage("ההצמדה בוטלה");
   }
@@ -1896,8 +2025,8 @@
     return (msg && ADMIN_ANALYTICS_ERROR_LABELS[msg]) || "לא ניתן היה לטעון את הנתונים.";
   }
   async function loadAdminAnalyticsDashboard() {
-    if (!state.user || !(hasPerm(PERM.ANALYTICS_VIEW) || isAdmin())) { state.adminAnalytics.data = null; return; }
-    const a = state.adminAnalytics;
+    if (!state.user || !(hasPerm(PERM.ANALYTICS_VIEW) || isAdmin())) { state.analytics.dashboard.data = null; return; }
+    const a = state.analytics.dashboard;
     if (!a.start || !a.end) Object.assign(a, adminAnalyticsDefaultPeriod(a.mode));
     a.loading = true; a.error = false; a.errorText = "";
     rerender();
@@ -1921,7 +2050,7 @@
   }
   function setAdminAnalyticsMode(mode) {
     if (mode !== "week" && mode !== "month") return;
-    const a = state.adminAnalytics;
+    const a = state.analytics.dashboard;
     if (a.mode === mode) return;
     a.mode = mode;
     Object.assign(a, adminAnalyticsDefaultPeriod(mode, a.start));
@@ -1933,7 +2062,7 @@
   // mode), so paging never drifts off that anchor the way adding/
   // subtracting a flat 30 days would.
   function shiftAdminAnalyticsPeriod(dir) {
-    const a = state.adminAnalytics;
+    const a = state.analytics.dashboard;
     if (!a.start) return;
     const anchor = new Date(a.start + "T00:00:00.000Z");
     if (a.mode === "month") anchor.setUTCMonth(anchor.getUTCMonth() + (dir < 0 ? -1 : 1));
@@ -1954,7 +2083,7 @@
   // section a second period concept only it would use.
   function memberSegmentsAsOf() {
     const todayIso = adminAnalyticsIsoDate(new Date());
-    const end = state.adminAnalytics.end;
+    const end = state.analytics.dashboard.end;
     return (end && end < todayIso) ? end : todayIso;
   }
   // The two real Postgres errors member_segments() raises (the migration's
@@ -1972,8 +2101,8 @@
     return (msg && MEMBER_SEGMENTS_ERROR_LABELS[msg]) || "לא ניתן היה לטעון את הפילוח.";
   }
   async function loadMemberSegments() {
-    if (!state.user || !(hasPerm(PERM.ANALYTICS_VIEW) || isAdmin())) { state.memberSegments.data = null; return; }
-    const ms = state.memberSegments;
+    if (!state.user || !(hasPerm(PERM.ANALYTICS_VIEW) || isAdmin())) { state.analytics.segments.data = null; return; }
+    const ms = state.analytics.segments;
     const asOf = memberSegmentsAsOf();
     ms.loading = true; ms.error = false; ms.errorText = ""; ms.asOf = asOf;
     rerender();
@@ -1992,13 +2121,13 @@
   // card a staff member opened stays open across paging, matching how
   // nothing else on this screen collapses on a period change either).
   function toggleMemberSegment(segment) {
-    const ms = state.memberSegments;
+    const ms = state.analytics.segments;
     ms.expanded[segment] = !ms.expanded[segment];
     rerender();
   }
   // ---- Retention correlation views (COMM-313) --------------------------
   // Three security-definer functions (202609010008), all gated on real
-  // is_admin() ALONE - see state.retention's own comment for why that is
+  // is_admin() ALONE - see state.analytics.retention's own comment for why that is
   // deliberately narrower than every other section in this cluster.
   // retention_cohorts(p_cohort_months) returns the cohort retention curve
   // itself; retention_onboarding_correlation() and
@@ -2036,8 +2165,8 @@
   // mean a second loading state this ticket's own frontend-states list does
   // not name.
   async function loadRetentionCorrelations() {
-    if (!state.user || !isAdmin()) { state.retention.cohorts = []; state.retention.onboarding = []; state.retention.welcome = []; return; }
-    const r = state.retention;
+    if (!state.user || !isAdmin()) { state.analytics.retention.cohorts = []; state.analytics.retention.onboarding = []; state.analytics.retention.welcome = []; return; }
+    const r = state.analytics.retention;
     r.loading = true; r.error = false; r.errorText = "";
     rerender();
     const [cohortsRes, onboardingRes, welcomeRes] = await Promise.all([
@@ -2058,12 +2187,12 @@
     r.welcome = (!welcomeRes.error && Array.isArray(welcomeRes.data)) ? welcomeRes.data : [];
     rerender();
   }
-  function toggleRetentionOnboardingOverlay() { state.retention.showOnboarding = !state.retention.showOnboarding; rerender(); }
-  function toggleRetentionWelcomeOverlay() { state.retention.showWelcome = !state.retention.showWelcome; rerender(); }
+  function toggleRetentionOnboardingOverlay() { state.analytics.retention.showOnboarding = !state.analytics.retention.showOnboarding; rerender(); }
+  function toggleRetentionWelcomeOverlay() { state.analytics.retention.showWelcome = !state.analytics.retention.showWelcome; rerender(); }
   function setRetentionOnboardingStep(step) {
     if (!RETENTION_ONBOARDING_STEPS.some((s) => s.id === step)) return;
-    if (state.retention.onboardingStep === step) return;
-    state.retention.onboardingStep = step;
+    if (state.analytics.retention.onboardingStep === step) return;
+    state.analytics.retention.onboardingStep = step;
     rerender();
   }
   // ---- Community health score (COMM-312) --------------------------------
@@ -2091,8 +2220,8 @@
     return (msg && COMMUNITY_HEALTH_ERROR_LABELS[msg]) || "לא ניתן היה לטעון את הציון.";
   }
   async function loadCommunityHealth() {
-    if (!state.user || !isAdmin()) { state.communityHealth.weeks = []; return; }
-    const h = state.communityHealth;
+    if (!state.user || !isAdmin()) { state.analytics.health.weeks = []; return; }
+    const h = state.analytics.health;
     h.loading = true; h.error = false; h.errorText = "";
     rerender();
     const { data, error } = await client.rpc("community_health_history", { p_weeks: COMMUNITY_HEALTH_WEEKS });
@@ -2109,27 +2238,27 @@
   // the same permission again inside the function and once more via the
   // table's own select policy, so a client-only gate here changes nothing.
   async function loadAuditLog(reset) {
-    if (!state.user || !hasPerm(PERM.ANALYTICS_VIEW)) { state.auditLog = []; return; }
-    if (state.auditLoading) return;
-    state.auditLoading = true; state.auditError = false;
-    if (reset) { state.auditLog = []; state.auditCursor = null; state.auditEnd = false; }
+    if (!state.user || !hasPerm(PERM.ANALYTICS_VIEW)) { state.admin.auditLog = []; return; }
+    if (state.admin.auditLoading) return;
+    state.admin.auditLoading = true; state.admin.auditError = false;
+    if (reset) { state.admin.auditLog = []; state.admin.auditCursor = null; state.admin.auditEnd = false; }
     rerender();
     const filters = {};
-    if (state.auditFilters.action_type) filters.action_type = state.auditFilters.action_type;
-    if (state.auditFilters.admin_id) filters.admin_id = state.auditFilters.admin_id;
-    const { data, error } = await client.rpc("admin_actions_page", { p_cursor: state.auditCursor, p_limit: 25, p_filters: filters });
-    state.auditLoading = false;
-    state.auditLoaded = true;
-    if (error) { state.auditError = true; rerender(); return; }
+    if (state.admin.auditFilters.action_type) filters.action_type = state.admin.auditFilters.action_type;
+    if (state.admin.auditFilters.admin_id) filters.admin_id = state.admin.auditFilters.admin_id;
+    const { data, error } = await client.rpc("admin_actions_page", { p_cursor: state.admin.auditCursor, p_limit: 25, p_filters: filters });
+    state.admin.auditLoading = false;
+    state.admin.auditLoaded = true;
+    if (error) { state.admin.auditError = true; rerender(); return; }
     const rows = data || [];
-    state.auditLog = reset ? rows : state.auditLog.concat(rows);
-    state.auditCursor = rows.length ? rows[rows.length - 1].created_at : state.auditCursor;
-    state.auditEnd = rows.length < 25;
+    state.admin.auditLog = reset ? rows : state.admin.auditLog.concat(rows);
+    state.admin.auditCursor = rows.length ? rows[rows.length - 1].created_at : state.admin.auditCursor;
+    state.admin.auditEnd = rows.length < 25;
     rerender();
   }
   function setAuditFilter(key, value) {
-    state.auditFilters = Object.assign({}, state.auditFilters);
-    if (value) state.auditFilters[key] = value; else delete state.auditFilters[key];
+    state.admin.auditFilters = Object.assign({}, state.admin.auditFilters);
+    if (value) state.admin.auditFilters[key] = value; else delete state.admin.auditFilters[key];
     loadAuditLog(true);
   }
   // ---- Report flow (COMM-151) --------------------------------------
@@ -2139,13 +2268,13 @@
   // collapse server-side; the reporter count still moves once.
   function openReportSheet(targetType, targetId) {
     if (!state.user) return;
-    state.reportSheet = { targetType, targetId, reason: "", note: "", saving: false, error: "", done: false };
+    state.admin.reportSheet = { targetType, targetId, reason: "", note: "", saving: false, error: "", done: false };
     rerender();
   }
-  function closeReportSheet() { state.reportSheet = null; rerender(); }
-  function setReportReason(reason) { if (state.reportSheet) { state.reportSheet.reason = reason; state.reportSheet.error = ""; rerender(); } }
+  function closeReportSheet() { state.admin.reportSheet = null; rerender(); }
+  function setReportReason(reason) { if (state.admin.reportSheet) { state.admin.reportSheet.reason = reason; state.admin.reportSheet.error = ""; rerender(); } }
   async function submitReportSheet() {
-    const s = state.reportSheet;
+    const s = state.admin.reportSheet;
     if (!s || s.saving) return;
     if (!REPORT_REASONS.some((r) => r.id === s.reason)) { s.error = "יש לבחור סיבה"; return rerender(); }
     s.saving = true; s.error = ""; rerender();
@@ -2177,7 +2306,7 @@
     const { error } = await client.rpc("admin_remove_member", { p_user_id: userId });
     if (error) return setMessage("הסרת החבר/ה נכשלה");
     setMessage("החבר/ה הוסר/ה");
-    await searchMembers(state.memberSearch);
+    await searchMembers(state.members.search);
   }
   async function publishAchievement(achievementId, title, rule) {
     if (!state.user || !state.profile) return setMessage("התחברו לקהילה כדי לשתף עיטור");
@@ -2244,27 +2373,27 @@
   // the wrong session.
   function startFeedSession() {
     flushFeedImpressions();
-    state.feedSessionId = newFeedId();
-    state.feedSeen = {};
+    state.feed.sessionId = newFeedId();
+    state.feed.seen = {};
   }
 
   // COMM-110/113. One page. The cursor is opaque: the client stores it and
   // hands it back, it never parses or derives one.
   async function fetchFeedPage() {
     const { data, error } = await client.rpc("feed_page", {
-      p_cursor: state.feedCursor,
+      p_cursor: state.feed.cursor,
       p_limit: FEED_PAGE_SIZE,
-      p_scope: state.feedScope,
+      p_scope: state.feed.scope,
     });
     if (error) return false;
     const rows = Array.isArray(data) ? data : (data ? [data] : []);
     // Appended in the order feed_page returned them. No sort, no filter, no
     // re-ordering of any kind on this side.
-    for (const row of rows) state.feed.push(row);
-    state.feedPagesLoaded += 1;
+    for (const row of rows) state.feed.items.push(row);
+    state.feed.pagesLoaded += 1;
     const next = rows.length ? rows[rows.length - 1].next_cursor : null;
-    state.feedCursor = next || null;
-    state.feedEnd = !next;
+    state.feed.cursor = next || null;
+    state.feed.end = !next;
     for (const row of rows) {
       if (row && row.photo_path) resolvePhotoUrl(row.photo_path);
       for (const m of (row && row.media) || []) if (m && m.storage_path && !m.url) resolvePhotoUrl(m.storage_path);
@@ -2281,37 +2410,37 @@
   // commented deep in the list does not get collapsed back to twenty items.
   async function loadFeed() {
     if (!state.user) return;
-    const pages = Math.max(1, state.feedPagesLoaded || 1);
+    const pages = Math.max(1, state.feed.pagesLoaded || 1);
     startFeedSession();
-    state.loading = true;
-    state.feedLoading = true;
-    state.feedError = false;
-    state.feedMoreError = false;
-    state.feed = [];
-    state.feedCursor = null;
-    state.feedEnd = false;
-    state.feedPagesLoaded = 0;
+    state.ui.loading = true;
+    state.feed.loading = true;
+    state.feed.error = false;
+    state.feed.moreError = false;
+    state.feed.items = [];
+    state.feed.cursor = null;
+    state.feed.end = false;
+    state.feed.pagesLoaded = 0;
     let ok = true;
     for (let i = 0; i < pages; i++) {
       ok = await fetchFeedPage();
-      if (!ok || state.feedEnd) break;
+      if (!ok || state.feed.end) break;
     }
-    state.feedError = !ok;
-    state.message = ok ? "" : "לא ניתן לטעון את הקהילה כרגע";
-    state.feedLoading = false;
-    state.loading = false;
+    state.feed.error = !ok;
+    state.ui.message = ok ? "" : "לא ניתן לטעון את הקהילה כרגע";
+    state.feed.loading = false;
+    state.ui.loading = false;
   }
 
   // COMM-113. The "load more" control and the intersection sentinel both
   // land here. Earlier items are kept on failure, per the ticket.
   async function loadMoreFeed() {
-    if (!state.user || state.feedLoadingMore || state.feedEnd || !state.feedCursor) return;
-    state.feedLoadingMore = true;
-    state.feedMoreError = false;
+    if (!state.user || state.feed.loadingMore || state.feed.end || !state.feed.cursor) return;
+    state.feed.loadingMore = true;
+    state.feed.moreError = false;
     rerender();
     const ok = await fetchFeedPage();
-    state.feedMoreError = !ok;
-    state.feedLoadingMore = false;
+    state.feed.moreError = !ok;
+    state.feed.loadingMore = false;
     rerender();
   }
 
@@ -2320,9 +2449,9 @@
   // knows it.
   function setFeedScope(scope) {
     const def = FEED_SCOPES.find((s) => s.id === scope);
-    if (!def || def.parked || def.id === state.feedScope) return;
-    state.feedScope = def.id;
-    state.feedPagesLoaded = 0;
+    if (!def || def.parked || def.id === state.feed.scope) return;
+    state.feed.scope = def.id;
+    state.feed.pagesLoaded = 0;
     // COMM-170. A scope change is a new read of the feed, so it is a second
     // feed_viewed, distinguished from the tab entry by `source`. It is not
     // tracked in loadFeed(), which also runs after a reaction, a comment or
@@ -2337,7 +2466,7 @@
   async function loadClubSummary() {
     if (!state.user) return;
     const { data, error } = await client.rpc("club_summary");
-    state.club = error ? null : (data || null);
+    state.club.row = error ? null : (data || null);
   }
 
   // --- COMM-114 impressions and interactions --------------------------------
@@ -2346,26 +2475,26 @@
   // session (or per 50 rows, which is the server's cap), never on the render
   // path - nothing here is awaited by anything that draws.
   function noteFeedImpression(postId, position) {
-    if (!postId || !state.feedSessionId) return;
-    if (state.feedSeen[postId]) return;
-    state.feedSeen[postId] = true;
+    if (!postId || !state.feed.sessionId) return;
+    if (state.feed.seen[postId]) return;
+    state.feed.seen[postId] = true;
     // COMM-170. The ranking pipeline reads feed_impressions (COMM-114);
     // the product metric reads analytics_events. Two tables, two consumers,
-    // one trigger - and the state.feedSeen guard above is what makes both
+    // one trigger - and the state.feed.seen guard above is what makes both
     // of them exactly once per post per feed session.
-    track(A.POST_IMPRESSION, { post_id: postId, position: Math.max(0, Number(position) || 0), feed_session_id: state.feedSessionId });
-    state.feedPending.push({
+    track(A.POST_IMPRESSION, { post_id: postId, position: Math.max(0, Number(position) || 0), feed_session_id: state.feed.sessionId });
+    state.feed.pending.push({
       post_id: postId,
       position: Math.max(0, Number(position) || 0),
-      feed_session_id: state.feedSessionId,
+      feed_session_id: state.feed.sessionId,
       shown_at: new Date().toISOString(),
     });
-    if (state.feedPending.length >= FEED_IMPRESSION_BATCH) flushFeedImpressions();
+    if (state.feed.pending.length >= FEED_IMPRESSION_BATCH) flushFeedImpressions();
   }
   function flushFeedImpressions() {
-    if (!client || !state.user || !state.feedPending.length) return;
-    const rows = state.feedPending;
-    state.feedPending = [];
+    if (!client || !state.user || !state.feed.pending.length) return;
+    const rows = state.feed.pending;
+    state.feed.pending = [];
     for (let i = 0; i < rows.length; i += FEED_IMPRESSION_BATCH) {
       const chunk = rows.slice(i, i + FEED_IMPRESSION_BATCH);
       try { Promise.resolve(client.rpc("feed_record_impressions", { p_rows: chunk })).catch(() => {}); } catch (e) {}
@@ -2408,19 +2537,19 @@
   let feedObserver = null;
   const feedDwellTimers = {};
   function observeFeedImpressions() {
-    if (!state.user || !state.feedSessionId) return;
+    if (!state.user || !state.feed.sessionId) return;
     if (feedObserver) { try { feedObserver.disconnect(); } catch (e) {} feedObserver = null; }
     const cards = Array.prototype.slice.call(document.querySelectorAll("#communityFeedList [data-post-id]"));
     if (!cards.length) return;
     const positionOf = (el) => {
       const id = el.getAttribute("data-post-id");
-      const idx = state.feed.findIndex((p) => p && String(p.id) === id);
+      const idx = state.feed.items.findIndex((p) => p && String(p.id) === id);
       return idx < 0 ? 0 : idx;
     };
     if (typeof window.IntersectionObserver !== "function") {
       for (const el of cards) {
         const id = el.getAttribute("data-post-id");
-        if (state.feedSeen[id] || feedDwellTimers[id]) continue;
+        if (state.feed.seen[id] || feedDwellTimers[id]) continue;
         feedDwellTimers[id] = setTimeout(() => {
           delete feedDwellTimers[id];
           noteFeedImpression(id, positionOf(el));
@@ -2433,7 +2562,7 @@
         const id = entry.target.getAttribute("data-post-id");
         if (!id) continue;
         if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
-          if (state.feedSeen[id] || feedDwellTimers[id]) continue;
+          if (state.feed.seen[id] || feedDwellTimers[id]) continue;
           feedDwellTimers[id] = setTimeout(() => {
             delete feedDwellTimers[id];
             noteFeedImpression(id, positionOf(entry.target));
@@ -2493,7 +2622,7 @@
     return out;
   }
   function mentionMarkersToHtml(body) {
-    return safeText(String(body == null ? "" : body)).replace(new RegExp(MENTION_MARKER_RE.source, "g"),
+    return esc(String(body == null ? "" : body)).replace(new RegExp(MENTION_MARKER_RE.source, "g"),
       function (full, name, id) {
         return '<button type="button" class="link-btn mention-chip" data-community-action="view-profile" data-id="' + id + '" style="padding:0;font-weight:700;color:var(--blue);">@' + name + "</button>";
       });
@@ -2504,37 +2633,37 @@
   // authors server-side; this is the comment and reaction read half, a client
   // echo of the same rule rather than the enforcement point.
   async function loadBlockedIds() {
-    if (!state.user) { state.blockedIds = []; state.blocksLoaded = true; return; }
+    if (!state.user) { state.members.blockedIds = []; state.members.blocksLoaded = true; return; }
     const ids = {};
     const a = await client.from("blocks").select("blocked_id").eq("blocker_id", state.user.id);
     for (const r of (a.data || [])) ids[r.blocked_id] = true;
     const b = await client.from("blocks").select("blocker_id").eq("blocked_id", state.user.id);
     for (const r of (b.data || [])) ids[r.blocker_id] = true;
-    state.blockedIds = Object.keys(ids);
-    state.blocksLoaded = true;
+    state.members.blockedIds = Object.keys(ids);
+    state.members.blocksLoaded = true;
   }
-  function isBlockedUser(userId) { return !!userId && state.blockedIds.indexOf(userId) >= 0; }
+  function isBlockedUser(userId) { return !!userId && state.members.blockedIds.indexOf(userId) >= 0; }
 
   // ---- Reactions (COMM-120) ----------------------------------------------
 
   function reactionState(postId) {
-    if (state.reactions[postId]) return state.reactions[postId];
+    if (state.engagement.reactions[postId]) return state.engagement.reactions[postId];
     const row = findFeedPost(postId);
     const count = row ? Number((row.reaction_count != null ? row.reaction_count : row.cheer_count) || 0) : 0;
     return { loaded: false, mine: false, list: [], count: count };
   }
   function ensureReactionsLoaded(postId) {
-    if (!postId || state.reactions[postId]) return;
-    state.reactions[postId] = { loaded: false, loading: true, mine: false, list: [], count: reactionState(postId).count };
+    if (!postId || state.engagement.reactions[postId]) return;
+    state.engagement.reactions[postId] = { loaded: false, loading: true, mine: false, list: [], count: reactionState(postId).count };
     loadReactionsFor(postId);
   }
   async function loadReactionsFor(postId) {
     const { data, error } = await client.from("reactions")
       .select("user_id,profiles(handle,display_name,avatar_url)")
       .eq("post_id", postId).eq("kind", "cheer").order("created_at", { ascending: true }).limit(200);
-    if (error) { delete state.reactions[postId]; return; }
+    if (error) { delete state.engagement.reactions[postId]; return; }
     const rows = data || [];
-    state.reactions[postId] = {
+    state.engagement.reactions[postId] = {
       loaded: true,
       mine: !!(state.user && rows.some((r) => r.user_id === state.user.id)),
       list: rows.map((r) => ({ id: r.user_id, name: r.profiles ? (r.profiles.display_name || "@" + r.profiles.handle) : "", avatar_url: r.profiles ? r.profiles.avatar_url : null })),
@@ -2559,15 +2688,15 @@
       list: wasMine ? others : [{ id: state.user.id, name: selfDisplayName() }].concat(others),
       count: Math.max(0, before.count + (wasMine ? -1 : 1)),
     };
-    state.reactions[postId] = optimistic;
+    state.engagement.reactions[postId] = optimistic;
     syncFeedReactionCount(postId, optimistic.count);
-    state.reactionError = null;
+    state.engagement.reactionError = null;
     rerender();
     const { error } = await client.rpc("toggle_reaction", { p_post_id: postId });
     if (error) {
-      state.reactions[postId] = before;
+      state.engagement.reactions[postId] = before;
       syncFeedReactionCount(postId, before.count);
-      state.reactionError = postId;
+      state.engagement.reactionError = postId;
       setMessage(error.message === "rate_limited" ? "יותר מדי לחיצות, נסו שוב בעוד כמה דקות" : "לא ניתן היה להגיב כרגע");
       rerender();
       return;
@@ -2594,7 +2723,7 @@
       .select("id,body,created_at,edited_at,deleted_at,status,author_id,parent_comment_id,profiles!post_comments_author_id_fkey(handle,display_name,avatar_url)")
       .eq("post_id", postId).order("created_at", { ascending: true }).limit(400);
     const rows = error ? [] : (data || []);
-    state.comments[postId] = rows;
+    state.engagement.comments[postId] = rows;
     await loadMemberRoles(rows.map((c) => c.author_id));
     rerender();
   }
@@ -2616,26 +2745,26 @@
   // member_roles(uuid[]), a definer function added specifically for this
   // (202609010011) that returns only {user_id, role} for the requested ids -
   // never the whole table, never redeemed_at or code.
-  function memberRole(userId) { return (userId && state.memberRoles[userId]) || null; }
+  function memberRole(userId) { return (userId && state.members.roles[userId]) || null; }
   function isCoachRole(role) { return role === "coach" || role === "head_coach"; }
   async function loadMemberRoles(ids) {
     const need = [];
-    for (const id of ids || []) if (id && !(id in state.memberRoles)) need.push(id);
+    for (const id of ids || []) if (id && !(id in state.members.roles)) need.push(id);
     if (!need.length) return;
-    for (const id of need) state.memberRoles[id] = null;
+    for (const id of need) state.members.roles[id] = null;
     const { data } = await client.rpc("member_roles", { p_ids: need });
-    for (const r of (data || [])) state.memberRoles[r.user_id] = r.role || null;
+    for (const r of (data || [])) state.members.roles[r.user_id] = r.role || null;
   }
   function toggleComments(postId) {
-    if (state.openComments[postId]) { delete state.openComments[postId]; rerender(); return; }
-    state.openComments[postId] = true;
+    if (state.engagement.openComments[postId]) { delete state.engagement.openComments[postId]; rerender(); return; }
+    state.engagement.openComments[postId] = true;
     // COMM-170. Opening the thread is what "opened a post" means on this
     // feed - there is no separate post detail view in V1. The early return
     // above is what keeps a close from counting as a second open.
     const opened = findFeedPost(postId);
     track(A.POST_OPENED, { post_id: postId, post_type: (opened && opened.post_type) || null, source: "feed" });
-    if (!state.blocksLoaded) loadBlockedIds().then(rerender);
-    if (!state.comments[postId]) loadCommentsFor(postId); else rerender();
+    if (!state.members.blocksLoaded) loadBlockedIds().then(rerender);
+    if (!state.engagement.comments[postId]) loadCommentsFor(postId); else rerender();
   }
   function commentErrorMessage(error) {
     const msg = (error && error.message) || "";
@@ -2668,23 +2797,23 @@
     if (!body) return;
     // The draft is held in state until the server confirms the write, so a
     // failed send never drops what the member typed (COMM-121).
-    state.commentDrafts[key] = raw;
-    delete state.commentErrors[key];
-    state.commentSending = key;
-    state.mentionPicker = null;
+    state.engagement.commentDrafts[key] = raw;
+    delete state.engagement.commentErrors[key];
+    state.engagement.commentSending = key;
+    state.engagement.mentionPicker = null;
     rerender();
 
     const resolved = await resolveCommentMentions(body);
     const { data, error } = await client.rpc("add_post_comment", { p_post_id: postId, p_body: resolved.stored, p_parent_comment_id: parentCommentId || null });
-    state.commentSending = null;
+    state.engagement.commentSending = null;
     if (error) {
-      state.commentErrors[key] = commentErrorMessage(error);
+      state.engagement.commentErrors[key] = commentErrorMessage(error);
       rerender();
       return;
     }
-    delete state.commentDrafts[key];
-    delete state.commentErrors[key];
-    if (parentCommentId) { state.openReplies[parentCommentId] = true; state.replyTo[postId] = null; }
+    delete state.engagement.commentDrafts[key];
+    delete state.engagement.commentErrors[key];
+    if (parentCommentId) { state.engagement.openReplies[parentCommentId] = true; state.engagement.replyTo[postId] = null; }
     if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.COMMENT_CREATED) {
       try {
         window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.COMMENT_CREATED, {
@@ -2699,24 +2828,24 @@
   }
   function retryComment(postId, parentId) {
     const key = commentKey(postId, parentId || null);
-    const draft = state.commentDrafts[key];
+    const draft = state.engagement.commentDrafts[key];
     if (draft == null) return;
     addComment(postId, { elements: { body: { value: draft } }, reset: function () {} }, parentId || null);
   }
   async function deleteComment(commentId, postId) {
     if (!state.user) return;
-    const list = state.comments[postId] || [];
+    const list = state.engagement.comments[postId] || [];
     const target = list.find((c) => c.id === commentId);
     // post_comments_delete_self is author-only. A moderator removal is a
     // status change through mod_review (COMM-153), not a client delete, so it
     // is not offered here.
     if (target && target.author_id !== state.user.id) return;
     const snapshot = list.slice();
-    state.comments[postId] = list.filter((c) => c.id !== commentId);
+    state.engagement.comments[postId] = list.filter((c) => c.id !== commentId);
     rerender();
     const { error } = await client.from("post_comments").delete().eq("id", commentId).eq("author_id", state.user.id);
     if (error) {
-      state.comments[postId] = snapshot;
+      state.engagement.comments[postId] = snapshot;
       setMessage("מחיקת התגובה נכשלה");
       rerender();
       return;
@@ -2725,22 +2854,22 @@
     await loadFeed();
   }
   function startCommentEdit(commentId, postId) {
-    const list = state.comments[postId] || [];
+    const list = state.engagement.comments[postId] || [];
     const c = list.find((x) => x.id === commentId);
     if (!c || c.author_id !== (state.user && state.user.id)) return;
-    state.commentEdit = { commentId: commentId, postId: postId, body: String(c.body || ""), saving: false, error: "" };
-    state.mentionPicker = null;
+    state.engagement.commentEdit = { commentId: commentId, postId: postId, body: String(c.body || ""), saving: false, error: "" };
+    state.engagement.mentionPicker = null;
     rerender();
   }
-  function cancelCommentEdit() { state.commentEdit = null; rerender(); }
+  function cancelCommentEdit() { state.engagement.commentEdit = null; rerender(); }
   async function saveCommentEdit() {
-    const e = state.commentEdit;
+    const e = state.engagement.commentEdit;
     if (!e || e.saving) return;
     const body = String(e.body || "").replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "").trim().slice(0, COMMENT_BODY_MAX);
     if (!body) { e.error = "אי אפשר לשמור תגובה ריקה"; rerender(); return; }
     const resolved = await resolveCommentMentions(body);
     e.saving = true; e.error = ""; rerender();
-    const list = state.comments[e.postId] || [];
+    const list = state.engagement.comments[e.postId] || [];
     const target = list.find((x) => x.id === e.commentId);
     const prev = target ? { body: target.body, edited_at: target.edited_at } : null;
     if (target) { target.body = resolved.stored; target.edited_at = new Date().toISOString(); }
@@ -2755,7 +2884,7 @@
       rerender();
       return;
     }
-    state.commentEdit = null;
+    state.engagement.commentEdit = null;
     await loadCommentsFor(e.postId);
   }
   // COMM-151. Opens the reason sheet for a comment. The write goes through
@@ -2766,19 +2895,19 @@
 
   function onCommentInput(input) {
     const key = input.dataset.commentKey;
-    state.commentDrafts[key] = input.value;
+    state.engagement.commentDrafts[key] = input.value;
     const caret = input.selectionStart == null ? input.value.length : input.selectionStart;
     const m = /(?:^|\s)@([^\s@]{0,30})$/.exec(input.value.slice(0, caret));
     if (m) {
       const q = m[1];
-      const active = state.mentionPicker && state.mentionPicker.key === key;
-      if (active && state.mentionPicker.query === q) return;
-      state.mentionPicker = { key: key, query: q, results: active ? state.mentionPicker.results : [], loading: true, index: 0 };
+      const active = state.engagement.mentionPicker && state.engagement.mentionPicker.key === key;
+      if (active && state.engagement.mentionPicker.query === q) return;
+      state.engagement.mentionPicker = { key: key, query: q, results: active ? state.engagement.mentionPicker.results : [], loading: true, index: 0 };
       searchMentionPeople(key, q);
       rerender();
       restoreCommentFocus(key, caret);
-    } else if (state.mentionPicker && state.mentionPicker.key === key) {
-      state.mentionPicker = null;
+    } else if (state.engagement.mentionPicker && state.engagement.mentionPicker.key === key) {
+      state.engagement.mentionPicker = null;
       rerender();
       restoreCommentFocus(key, caret);
     }
@@ -2793,20 +2922,20 @@
         .neq("id", state.user.id).limit(6);
       results = (data || []).filter((p) => !isBlockedUser(p.id));
     }
-    if (state.mentionPicker && state.mentionPicker.key === key) {
-      state.mentionPicker.results = results;
-      state.mentionPicker.loading = false;
+    if (state.engagement.mentionPicker && state.engagement.mentionPicker.key === key) {
+      state.engagement.mentionPicker.results = results;
+      state.engagement.mentionPicker.loading = false;
       rerender();
       restoreCommentFocus(key, null);
     }
   }
   function mentionPick(key, id, name) {
-    const cur = state.commentDrafts[key] || "";
+    const cur = state.engagement.commentDrafts[key] || "";
     const replaced = cur.replace(/(^|\s)@([^\s@]*)$/, function (full, pre) { return pre + "@[" + name + "](" + id + ") "; });
-    state.commentDrafts[key] = replaced === cur ? cur + "@[" + name + "](" + id + ") " : replaced;
-    state.mentionPicker = null;
+    state.engagement.commentDrafts[key] = replaced === cur ? cur + "@[" + name + "](" + id + ") " : replaced;
+    state.engagement.mentionPicker = null;
     rerender();
-    restoreCommentFocus(key, state.commentDrafts[key].length);
+    restoreCommentFocus(key, state.engagement.commentDrafts[key].length);
   }
   function restoreCommentFocus(key, caret) {
     setTimeout(function () {
@@ -3086,23 +3215,23 @@
   // member abandoning the search. Nothing was searched, so nothing pending
   // is worth recording.
   function cancelSearchTracking() { if (searchTrackTimer) { clearTimeout(searchTrackTimer); searchTrackTimer = null; } }
-  function clearSearchResults() { state.people = []; state.searchEvents = []; state.searchChallenges = []; }
+  function clearSearchResults() { state.members.people = []; state.search.events = []; state.search.challenges = []; }
   async function communitySearch(query) {
     if (!state.user) return;
-    // state.searchQuery keeps what the member typed, so a re-render does not
+    // state.search.query keeps what the member typed, so a re-render does not
     // rewrite the box under their cursor; only the request is sanitized.
-    state.searchQuery = String(query || "");
+    state.search.query = String(query || "");
     const q = sanitizeSearchQuery(query);
     const token = ++searchToken;
     // Under two characters is empty results, no request and no error -
     // the same threshold the RPC re-applies for a caller that skips it.
-    if (q.length < SEARCH_MIN_CHARS) { cancelSearchTracking(); clearSearchResults(); state.searchLoading = false; return rerender(); }
-    state.searchLoading = true;
+    if (q.length < SEARCH_MIN_CHARS) { cancelSearchTracking(); clearSearchResults(); state.search.loading = false; return rerender(); }
+    state.search.loading = true;
     rerender();
     const { data, error } = await client.rpc("community_search", { p_query: q, p_limit: SEARCH_GROUP_LIMIT });
     // A slower earlier keystroke must not overwrite a later one's results.
     if (token !== searchToken) return;
-    state.searchLoading = false;
+    state.search.loading = false;
     // Failure clears rather than showing a broken state, matching what the
     // members-only search did before this ticket widened it.
     const groups = (!error && data && typeof data === "object") ? data : {};
@@ -3110,20 +3239,20 @@
     // be hidden for a member who turned follows off. The server still
     // rejects the insert (follows_insert_self checks the same column plus
     // block edges), this is only so the button does not lie.
-    state.people = Array.isArray(groups.members) ? groups.members : [];
-    state.searchEvents = Array.isArray(groups.events) ? groups.events : [];
-    state.searchChallenges = Array.isArray(groups.challenges) ? groups.challenges : [];
+    state.members.people = Array.isArray(groups.members) ? groups.members : [];
+    state.search.events = Array.isArray(groups.events) ? groups.events : [];
+    state.search.challenges = Array.isArray(groups.challenges) ? groups.challenges : [];
     trackSearchPerformed({
       source: "community_search",
       query_length: q.length,
-      member_count: state.people.length,
-      event_count: state.searchEvents.length,
-      challenge_count: state.searchChallenges.length,
+      member_count: state.members.people.length,
+      event_count: state.search.events.length,
+      challenge_count: state.search.challenges.length,
     });
     rerender();
     // COMM-160. Resolve the coach badge for the result set from the shared
     // server role cache, then re-render.
-    loadMemberRoles(state.people.map((p) => p.id)).then(() => rerender());
+    loadMemberRoles(state.members.people.map((p) => p.id)).then(() => rerender());
   }
   // The search box's input handler keeps its original name: it is still the
   // members-first entry point every existing caller wired, COMM-228 only
@@ -3176,17 +3305,17 @@
   // write path is admin_set_club_feature(), not a direct table write
   // (club_features has no write policy at all, only the definer RPC).
   async function toggleClubFeature(key, enabled) {
-    if (!state.user || CLUB_MODULE_KEYS.indexOf(key) < 0 || state.clubModuleBusy) return;
-    const prevRow = state.clubFeatures[key];
+    if (!state.user || CLUB_MODULE_KEYS.indexOf(key) < 0 || state.club.moduleBusy) return;
+    const prevRow = state.club.features[key];
     const prevEnabled = prevRow ? prevRow.enabled : true;
     if (prevEnabled === enabled) return;
-    state.clubFeatures[key] = { enabled, config: (prevRow && prevRow.config) || {} };
-    state.clubModuleBusy = key;
+    state.club.features[key] = { enabled, config: (prevRow && prevRow.config) || {} };
+    state.club.moduleBusy = key;
     rerender();
     const { error } = await client.rpc("admin_set_club_feature", { p_module_key: key, p_enabled: enabled });
-    state.clubModuleBusy = null;
+    state.club.moduleBusy = null;
     if (error) {
-      state.clubFeatures[key] = { enabled: prevEnabled, config: (prevRow && prevRow.config) || {} };
+      state.club.features[key] = { enabled: prevEnabled, config: (prevRow && prevRow.config) || {} };
       setMessage("לא ניתן היה לעדכן את המודול");
       return rerender();
     }
@@ -3220,11 +3349,11 @@
     const { error } = await client.from("blocks").upsert({ blocker_id: state.user.id, blocked_id: userId });
     if (error) { setMessage("לא ניתן היה לחסום. נסו שוב"); return; }
     await client.from("follows").delete().eq("follower_id", state.user.id).eq("followed_id", userId);
-    state.people = state.people.filter((person) => person.id !== userId);
+    state.members.people = state.members.people.filter((person) => person.id !== userId);
     // COMM-125. Refresh the block set so comments and reaction avatars from
     // the newly blocked member drop out of the current view too.
     await loadBlockedIds();
-    state.comments = {}; state.reactions = {};
+    state.engagement.comments = {}; state.engagement.reactions = {};
     await loadFeed();
     setMessage("המשתמש נחסם");
   }
@@ -3255,7 +3384,7 @@
     // This path predates the composer and does not emit POST_CREATED, so
     // workout_shared is the only record of it.
     track(A.WORKOUT_SHARED, { source_type: item.type, visibility: payload.visibility, has_photo: !!photoPath });
-    delete state.openShare[shareKey(type, id)];
+    delete state.posts.openShare[shareKey(type, id)];
     await loadFeed(); setMessage("התוצאה שותפה בלי הערות, מדדים או פרטים אישיים");
   }
   // Collapsed to one small icon by default wherever a result actually
@@ -3266,19 +3395,19 @@
   function shareKey(type, id) { return `${type}:${id}`; }
   function toggleShare(type, id) {
     const key = shareKey(type, id);
-    if (state.openShare[key]) delete state.openShare[key]; else state.openShare[key] = true;
+    if (state.posts.openShare[key]) delete state.posts.openShare[key]; else state.posts.openShare[key] = true;
     rerender();
   }
   window.renderShareControl = function (type, id) {
     if (!window.isCommunitySignedIn || !window.isCommunitySignedIn()) return "";
     const key = shareKey(type, id);
-    if (!state.openShare[key]) return `<button data-community-action="toggle-share" data-type="${safeText(type)}" data-id="${safeText(id)}" aria-label="שיתוף לקהילה" style="color:var(--steel);padding:4px;">📤</button>`;
+    if (!state.posts.openShare[key]) return `<button data-community-action="toggle-share" data-type="${esc(type)}" data-id="${esc(id)}" aria-label="שיתוף לקהילה" style="color:var(--steel);padding:4px;">📤</button>`;
     return `<div class="flex items-center gap-6" style="flex-wrap:wrap;">
-      <input type="file" id="photo-${safeText(id)}" accept="image/jpeg,image/png,image/webp" style="display:none;"/>
-      <label class="chip-btn" for="photo-${safeText(id)}" style="cursor:pointer;padding:5px 9px;font-size:11px;">📷</label>
-      <button class="chip-btn" data-community-action="publish" data-type="${safeText(type)}" data-id="${safeText(id)}" data-visibility="followers" style="padding:5px 9px;font-size:11px;">לעוקבים</button>
-      <button class="chip-btn primary" data-community-action="publish" data-type="${safeText(type)}" data-id="${safeText(id)}" data-visibility="public" style="padding:5px 9px;font-size:11px;">לכולם</button>
-      <button class="link-btn" data-community-action="toggle-share" data-type="${safeText(type)}" data-id="${safeText(id)}" aria-label="ביטול שיתוף" style="padding:5px;">✕</button>
+      <input type="file" id="photo-${esc(id)}" accept="image/jpeg,image/png,image/webp" style="display:none;"/>
+      <label class="chip-btn" for="photo-${esc(id)}" style="cursor:pointer;padding:5px 9px;font-size:11px;">📷</label>
+      <button class="chip-btn" data-community-action="publish" data-type="${esc(type)}" data-id="${esc(id)}" data-visibility="followers" style="padding:5px 9px;font-size:11px;">לעוקבים</button>
+      <button class="chip-btn primary" data-community-action="publish" data-type="${esc(type)}" data-id="${esc(id)}" data-visibility="public" style="padding:5px 9px;font-size:11px;">לכולם</button>
+      <button class="link-btn" data-community-action="toggle-share" data-type="${esc(type)}" data-id="${esc(id)}" aria-label="ביטול שיתוף" style="padding:5px;">✕</button>
     </div>`;
   };
   // Renders directly under the post whose "השוואה" button was tapped
@@ -3288,11 +3417,11 @@
   // visual link back to which post triggered it. A second tap on the
   // same post's button closes it again.
   async function compare(comparisonKey, postId) {
-    if (state.comparisonForPostId === postId) { state.comparisonForPostId = null; state.comparison = []; return rerender(); }
+    if (state.posts.comparisonForPostId === postId) { state.posts.comparisonForPostId = null; state.posts.comparison = []; return rerender(); }
     if (!comparisonKey) return;
     const { data, error } = await client.from("community_feed").select("id,handle,display_name,result_text,score_value,score_direction,occurred_on").eq("comparison_key", comparisonKey).limit(50);
-    state.comparison = error ? [] : (data || []).sort((a, b) => a.score_direction === "lower" ? Number(a.score_value) - Number(b.score_value) : Number(b.score_value) - Number(a.score_value));
-    state.comparisonForPostId = postId;
+    state.posts.comparison = error ? [] : (data || []).sort((a, b) => a.score_direction === "lower" ? Number(a.score_value) - Number(b.score_value) : Number(b.score_value) - Number(a.score_value));
+    state.posts.comparisonForPostId = postId;
     setMessage(error ? "השוואת התוצאות נכשלה" : "");
   }
   async function requestDeletion() {
@@ -3309,24 +3438,24 @@
   // notification channel all close here and re-arm from
   // afterRenderCommunity() if the new tab still wants them.
   function setCommunityTab(tab) {
-    if (state.communityTab !== tab) {
+    if (state.ui.tab !== tab) {
       // COMM-209. The challenge detail belongs to the view that opened it.
       // Leaving that view closes it, so its two channels stay closed after
       // the teardown below instead of being re-armed by the next render
       // for a dialog nobody can see behind the new tab.
-      state.challengeView = null;
+      state.challenges.view = null;
       if (window.HaimuniaRealtime) window.HaimuniaRealtime.teardownAll();
       // Both flags describe channels that no longer exist. Clearing them
       // is what lets the arm points above open a fresh channel instead of
       // trusting a stale "already subscribed" memory.
-      state._chalRtId = null;
-      state._notifRtUid = null;
+      state.challenges._rtId = null;
+      state.notif._rtUid = null;
       clearRealtimeDebounces();
     }
     // COMM-114: "flushed once per feed session, or on view change, whichever
     // comes first". Leaving the Feed sub-tab is a view change.
-    if (state.communityTab !== tab) flushFeedImpressions();
-    state.communityTab = tab;
+    if (state.ui.tab !== tab) flushFeedImpressions();
+    state.ui.tab = tab;
     rerender();
   }
 
@@ -3348,20 +3477,20 @@
   function resetClubTabView() { lastClubTabView = null; }
   function noteClubTabView() {
     if (!state.user || !state.profile) return;
-    const tab = state.communityTab || "feed";
+    const tab = state.ui.tab || "feed";
     if (lastClubTabView === tab) return;
     lastClubTabView = tab;
     track(A.CLUB_TAB_VIEWED, { tab });
     // The feed and the boards are surfaces in their own right, measured
     // separately from the tab that happens to contain them. Two different
     // event names on one action is not double counting.
-    if (tab === "feed") track(A.FEED_VIEWED, { scope: state.feedScope, source: "club_tab" });
+    if (tab === "feed") track(A.FEED_VIEWED, { scope: state.feed.scope, source: "club_tab" });
     if (tab === "boards") {
       // Only when there is one. An empty board is not a challenge view.
-      if (state.weeklyChallenge) {
-        track(A.CHALLENGE_VIEWED, { challenge_id: null, challenge_key: state.weeklyChallenge.comparisonKey || null, source: "boards" });
+      if (state.club.weeklyChallenge) {
+        track(A.CHALLENGE_VIEWED, { challenge_id: null, challenge_key: state.club.weeklyChallenge.comparisonKey || null, source: "boards" });
       }
-      track(A.LEADERBOARD_VIEWED, { board: "weekly_challenge", rows: (state.weeklyLeaderboard || []).length, source: "boards" });
+      track(A.LEADERBOARD_VIEWED, { board: "weekly_challenge", rows: (state.club.weeklyLeaderboard || []).length, source: "boards" });
     }
     // COMM-233. The roster is a surface in its own right, measured
     // separately from the sub-tab that contains it, the same way the feed
@@ -3381,11 +3510,11 @@
   // (publishing to the community feed, which — unlike blocking someone —
   // used to fire immediately). Every destructive or broadcast-to-others
   // action now goes through this same path.
-  function askConfirm(opts) { state.confirmDialog = opts; rerender(); }
-  function closeConfirm() { state.confirmDialog = null; rerender(); }
+  function askConfirm(opts) { state.ui.confirmDialog = opts; rerender(); }
+  function closeConfirm() { state.ui.confirmDialog = null; rerender(); }
   function runConfirm() {
-    const c = state.confirmDialog;
-    state.confirmDialog = null;
+    const c = state.ui.confirmDialog;
+    state.ui.confirmDialog = null;
     if (!c) return;
     if (c.action === "migrate") migrateLocalData();
     else if (c.action === "block") block(c.payload.userId);
@@ -3411,22 +3540,22 @@
   // same error, not a duplicate message, so a screen reader and a sighted
   // user learn the same thing at the same place.
   function field(formId, name, labelText, inputHtml) {
-    const err = (state.fieldErrors[formId] || {})[name];
+    const err = (state.ui.fieldErrors[formId] || {})[name];
     const errId = `err-${formId}-${name}`;
     const tagged = err ? inputHtml.replace(/^<(input|textarea)/, `<$1 aria-invalid="true" aria-describedby="${errId}"`) : inputHtml;
-    return `<label class="field"><span class="field-label">${labelText}</span>${tagged}${err ? `<span class="field-error" id="${errId}" role="alert">${safeText(err)}</span>` : ""}</label>`;
+    return `<label class="field"><span class="field-label">${labelText}</span>${tagged}${err ? `<span class="field-error" id="${errId}" role="alert">${esc(err)}</span>` : ""}</label>`;
   }
   function renderConfirmSheet() {
-    const c = state.confirmDialog;
+    const c = state.ui.confirmDialog;
     if (!c) return "";
     return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="communityConfirmTitle" style="align-items:center;padding:0 20px;">
       <div class="modal-sheet" style="border-radius:22px;border-bottom:1px solid var(--border);max-height:none;">
         <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
-          <div id="communityConfirmTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">${safeText(c.title || "אישור פעולה")}</div>
-          <div style="color:var(--steel);font-size:13.5px;line-height:1.6;margin-bottom:20px;">${safeText(c.message)}</div>
+          <div id="communityConfirmTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">${esc(c.title || "אישור פעולה")}</div>
+          <div style="color:var(--steel);font-size:13.5px;line-height:1.6;margin-bottom:20px;">${esc(c.message)}</div>
           <div class="chip-row" style="margin-top:0;">
             <button class="chip-btn" data-community-action="confirm-no">ביטול</button>
-            <button class="chip-btn primary${c.destructive ? " danger" : ""}" data-community-action="confirm-yes">${safeText(c.confirmLabel || "אישור")}</button>
+            <button class="chip-btn primary${c.destructive ? " danger" : ""}" data-community-action="confirm-yes">${esc(c.confirmLabel || "אישור")}</button>
           </div>
         </div>
       </div>
@@ -3478,7 +3607,7 @@
   //    when it fell outside p_limit. That is what makes "where do I stand"
   //    free; splitLeaderboardRows() below is what tells the two apart.
   // 3. "Hide my result" is a render choice on top of that row - never a
-  //    parameter, never a privacy setting. See state.hideMyLeaderboardResult.
+  //    parameter, never a privacy setting. See state.leaderboard.hideMine.
   // Post-Phase-3 Hebrew copy fix: "עוקבים" (followed), not "חברים" (club
   // members) - the app uses חברים everywhere else to mean club membership,
   // and labeling "people you follow" the same word was a real homonym
@@ -3519,7 +3648,7 @@
     return { top: rows, self: null };
   }
   function setHideMyLeaderboardResult(next) {
-    state.hideMyLeaderboardResult = !!next;
+    state.leaderboard.hideMine = !!next;
     try { localStorage.setItem(HIDE_MY_RESULT_KEY, next ? "1" : "0"); } catch (e) { /* private mode */ }
     rerender();
   }
@@ -3566,7 +3695,7 @@
   // popping in a frame later.
   async function loadChallengeBoard(id, opts) {
     if (!client || !state.user) return;
-    const v = state.challengeView;
+    const v = state.challenges.view;
     if (!v || v.id !== id || !v.board) return;
     const b = v.board;
     const scope = b.scope, limit = b.limit;
@@ -3575,7 +3704,7 @@
     const { data, error } = await client.rpc("feed_leaderboard", {
       p_mode: "progress", p_challenge_id: id, p_scope: scope, p_limit: limit,
     });
-    const cur = state.challengeView;
+    const cur = state.challenges.view;
     if (!cur || cur.id !== id || cur.board !== b || b.scope !== scope || b.limit !== limit) return;
     b.loading = false; b.loaded = true;
     if (error) { b.error = true; b.rows = []; }
@@ -3586,7 +3715,7 @@
     if (opts && opts.rerender) rerender();
   }
   function setChallengeBoardScope(scope) {
-    const v = state.challengeView;
+    const v = state.challenges.view;
     if (!v || !v.board || !scope || v.board.scope === scope) return;
     v.board.scope = scope;
     v.board.rows = [];
@@ -3597,7 +3726,7 @@
   // Rather than a second screen with a second fetch path, the same panel
   // re-asks for the full 50 in place - one code path, one set of states.
   function expandChallengeBoard() {
-    const v = state.challengeView;
+    const v = state.challenges.view;
     if (!v || !v.board || v.board.limit >= CHALLENGE_BOARD_FULL_LIMIT) return;
     v.board.limit = CHALLENGE_BOARD_FULL_LIMIT;
     v.board.rows = [];
@@ -3614,7 +3743,7 @@
   // not remove anyone from the table. The real opt-out is in_leaderboards,
   // reachable from the Privacy panel and from the link on the weekly board.
   function leaderboardHideToggleHtml() {
-    return `<label class="log-row" style="justify-content:space-between;gap:12px;cursor:pointer;margin-top:8px;"><span style="font-size:13px;">הסתרת השורה שלי בתצוגה הזו<span style="color:var(--steel);display:block;font-size:11px;">במכשיר הזה בלבד. אינה משנה את הגדרת הפרטיות.</span></span><input type="checkbox" data-leaderboard-hide-self="1"${state.hideMyLeaderboardResult ? " checked" : ""} aria-label="הסתרת השורה שלי בתצוגה הזו"/></label>`;
+    return `<label class="log-row" style="justify-content:space-between;gap:12px;cursor:pointer;margin-top:8px;"><span style="font-size:13px;">הסתרת השורה שלי בתצוגה הזו<span style="color:var(--steel);display:block;font-size:11px;">במכשיר הזה בלבד. אינה משנה את הגדרת הפרטיות.</span></span><input type="checkbox" data-leaderboard-hide-self="1"${state.leaderboard.hideMine ? " checked" : ""} aria-label="הסתרת השורה שלי בתצוגה הזו"/></label>`;
   }
   function leaderboardSkeletonHtml(n) {
     const row = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:52%;background:var(--border);border-radius:6px;display:inline-block;"></span><span style="height:12px;width:18%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
@@ -3630,7 +3759,7 @@
     // Same leader emphasis as renderRankedList's rowHtml - isSelf still owns
     // the border color when the two coincide.
     const style = isSelf ? ` style="border-color:var(--energy);"` : (isLeader ? ` style="border-color:var(--brass);background:linear-gradient(90deg, color-mix(in srgb, var(--brass) 14%, transparent), transparent);"` : "");
-    return `<div class="log-row" data-leaderboard-user="${safeText(row.user_id)}"${isSelf ? ` data-leaderboard-self="1"` : ""}${style}><span>${isLeader ? "🏆 " : ""}${Number(row.rank)}. ${safeText(name)}${isSelf ? " (את/ה)" : ""}</span><span class="mono" style="color:var(--brass);font-weight:${isLeader ? "800" : "400"};">${formatValue(row)}</span></div>`;
+    return `<div class="log-row" data-leaderboard-user="${esc(row.user_id)}"${isSelf ? ` data-leaderboard-self="1"` : ""}${style}><span>${isLeader ? "🏆 " : ""}${Number(row.rank)}. ${esc(name)}${isSelf ? " (את/ה)" : ""}</span><span class="mono" style="color:var(--brass);font-weight:${isLeader ? "800" : "400"};">${formatValue(row)}</span></div>`;
   }
   // COMM-212 / COMM-231. The friends empty state points at the members
   // directory, which is now the real people-finding surface (it ships its
@@ -3648,7 +3777,7 @@
     if (board.scope === "friends" && leaderboardHasNoFriends(rows)) return leaderboardFriendsEmptyHtml();
     if (leaderboardHasNoData(rows)) return `<div class="empty" data-leaderboard-empty="no-data">${opts.emptyText}</div>`;
     const { top, self } = splitLeaderboardRows(rows, opts.limit);
-    const hide = state.hideMyLeaderboardResult;
+    const hide = state.leaderboard.hideMine;
     const topHtml = top.filter((r) => !(hide && r.is_self)).map((r) => leaderboardRowHtml(r, opts.formatValue)).join("");
     // The divider marks the gap between the visible top and the caller's own
     // standing below it - the same "···" renderRankedList already uses.
@@ -3663,7 +3792,7 @@
   // stable tie-break and without the caller's own row when they were outside
   // the top three. Same figure, same source of truth as community_profile's
   // current_streak - see consistency_week_streaks() in contracts.md - now
-  // resolved server-side. loadStreaks()/state.streaks stay for the coach
+  // resolved server-side. loadStreaks()/state.club.streaks stay for the coach
   // Welcome surface, which reuses the same number per member.
   function renderConsistencyLeaderboardSection() {
     // COMM-321. feed_leaderboard() itself raises once this module is off
@@ -3722,7 +3851,7 @@
     // Same pre-profile guard as loadConsistencyLeaderboard: people_suggestions()
     // gates on my_role_code() too.
     if (!client || !state.user || !state.profile) return;
-    const s = state.peopleSuggestions;
+    const s = state.members.suggestions;
     s.loading = true; s.error = false;
     rerender();
     const { data, error } = await client.rpc("people_suggestions", { p_limit: PEOPLE_SUGGESTIONS_LIMIT });
@@ -3741,7 +3870,7 @@
   // a follow edge in either direction, so a refetch would drop it anyway.
   async function followSuggestion(userId) {
     if (!userId) return;
-    const s = state.peopleSuggestions;
+    const s = state.members.suggestions;
     s.busy[userId] = true;
     rerender();
     await follow(userId);
@@ -3752,20 +3881,20 @@
   function suggestionCardHtml(item) {
     const name = item.display_name || (item.handle ? "@" + item.handle : "חבר/ה");
     const reason = SUGGESTION_REASONS[item.reason] || "";
-    const busy = !!state.peopleSuggestions.busy[item.user_id];
-    return `<div class="chart-card" data-suggestion-user="${safeText(item.user_id)}" style="flex:0 0 auto;min-width:148px;max-width:170px;text-align:center;margin:0;">
+    const busy = !!state.members.suggestions.busy[item.user_id];
+    return `<div class="chart-card" data-suggestion-user="${esc(item.user_id)}" style="flex:0 0 auto;min-width:148px;max-width:170px;text-align:center;margin:0;">
       ${avatarHtml(name, 44, item.avatar_url)}
-      <div style="font-weight:700;margin-top:6px;font-size:13px;">${safeText(name)}</div>
-      ${item.handle ? `<div style="color:var(--steel);font-size:12px;"><bdi>@${safeText(item.handle)}</bdi></div>` : ""}
-      ${reason ? `<div style="color:var(--steel);font-size:11px;margin-top:4px;">${safeText(reason)}</div>` : ""}
+      <div style="font-weight:700;margin-top:6px;font-size:13px;">${esc(name)}</div>
+      ${item.handle ? `<div style="color:var(--steel);font-size:12px;"><bdi>@${esc(item.handle)}</bdi></div>` : ""}
+      ${reason ? `<div style="color:var(--steel);font-size:11px;margin-top:4px;">${esc(reason)}</div>` : ""}
       <div class="chip-row" style="justify-content:center;margin-top:6px;">
-        <button class="chip-btn primary" data-community-action="suggestion-follow" data-id="${safeText(item.user_id)}"${busy ? " disabled" : ""}>${busy ? "…" : "מעקב"}</button>
-        <button class="chip-btn" data-community-action="view-profile" data-id="${safeText(item.user_id)}">פרופיל</button>
+        <button class="chip-btn primary" data-community-action="suggestion-follow" data-id="${esc(item.user_id)}"${busy ? " disabled" : ""}>${busy ? "…" : "מעקב"}</button>
+        <button class="chip-btn" data-community-action="view-profile" data-id="${esc(item.user_id)}">פרופיל</button>
       </div>
     </div>`;
   }
   function renderPeopleSuggestions() {
-    const s = state.peopleSuggestions;
+    const s = state.members.suggestions;
     // COMM-232: on error the strip is not rendered at all - no heading, no
     // empty state, no retry. Nothing tells the member a thing failed.
     if (s.error) return "";
@@ -3803,7 +3932,7 @@
   const DIRECTORY_EMPTY_TEXT = "אין חברים להצגה.";
   async function loadDirectory(reset) {
     if (!state.user) return;
-    const d = state.directory;
+    const d = state.members.directory;
     if (reset) { d.items = []; d.cursor = null; d.end = false; d.loaded = false; }
     if (d.loading || d.loadingMore) return;
     if (reset) d.loading = true; else d.loadingMore = true;
@@ -3847,7 +3976,7 @@
   // per the ticket's own "falling back to the existing client-side filter"
   // clause. Clearing the box returns to the plain paginated roster.
   async function directorySearch(query) {
-    const d = state.directory;
+    const d = state.members.directory;
     d.query = String(query || "");
     const q = sanitizeSearchQuery(query);
     const token = ++directorySearchToken;
@@ -3868,7 +3997,7 @@
     loadMemberRoles(members.map((m) => m.id)).then(() => rerender());
   }
   function directoryRows() {
-    const d = state.directory;
+    const d = state.members.directory;
     const q = String(d.query || "").trim();
     if (!q) return d.items;
     if (Array.isArray(d.searchResults)) return d.searchResults;
@@ -3889,9 +4018,9 @@
     return { staff, rest };
   }
   function renderDirectorySection() {
-    const d = state.directory;
+    const d = state.members.directory;
     const q = String(d.query || "").trim();
-    const searchBox = `<input class="text-input" id="communityDirectorySearch" placeholder="חיפוש לפי שם" value="${safeText(d.query || "")}" aria-label="חיפוש חברים" style="margin-bottom:10px;"/>`;
+    const searchBox = `<input class="text-input" id="communityDirectorySearch" placeholder="חיפוש לפי שם" value="${esc(d.query || "")}" aria-label="חיפוש חברים" style="margin-bottom:10px;"/>`;
     const stillSearching = !!q && q.length >= SEARCH_MIN_CHARS && d.searchLoading && d.searchResults == null;
     let body;
     if (d.loading && !d.items.length) body = directorySkeletonHtml(6);
@@ -3938,7 +4067,7 @@
     return { members: "חברים", events: "אירועים", challenges: "אתגרים" }[key] || key;
   }
   function searchMemberRowHtml(person) {
-    return `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32, person.avatar_url)}<div><div style="font-weight:700;">${nameHtml(person.display_name, person.handle)}${isCoachRole(memberRole(person.id)) ? " " + coachBadgeHtml(memberRole(person.id)) : ""}</div><div style="color:var(--steel);font-size:12px;"><bdi>@${safeText(person.handle)}</bdi> ${safeText(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="view-profile" data-id="${safeText(person.id)}">פרופיל</button>${person.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${safeText(person.id)}">מעקב</button>`}<button class="chip-btn" data-community-action="block" data-id="${safeText(person.id)}">חסימה</button></div></div>`;
+    return `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32, person.avatar_url)}<div><div style="font-weight:700;">${nameHtml(person.display_name, person.handle)}${isCoachRole(memberRole(person.id)) ? " " + coachBadgeHtml(memberRole(person.id)) : ""}</div><div style="color:var(--steel);font-size:12px;"><bdi>@${esc(person.handle)}</bdi> ${esc(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="view-profile" data-id="${esc(person.id)}">פרופיל</button>${person.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${esc(person.id)}">מעקב</button>`}<button class="chip-btn" data-community-action="block" data-id="${esc(person.id)}">חסימה</button></div></div>`;
   }
   function searchEventRowHtml(ev) {
     // No event detail surface exists yet (COMM-213 builds it), so the row
@@ -3946,25 +4075,25 @@
     // navigate somewhere that is not built.
     const when = ev.start_at ? String(ev.start_at).slice(0, 16).replace("T", " ") : "";
     const meta = [when, ev.status === "draft" ? "טיוטה" : ev.status === "cancelled" ? "בוטל" : ""].filter(Boolean);
-    return `<div class="log-row" data-search-event-id="${safeText(ev.id)}"><div><div style="font-weight:700;">📅 ${safeText(ev.title || "אירוע")}</div>${meta.length ? `<div style="color:var(--steel);font-size:12px;">${meta.map(safeText).join(" · ")}</div>` : ""}</div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="open-event" data-id="${safeText(ev.id)}" data-source="search">פרטים</button></div></div>`;
+    return `<div class="log-row" data-search-event-id="${esc(ev.id)}"><div><div style="font-weight:700;">📅 ${esc(ev.title || "אירוע")}</div>${meta.length ? `<div style="color:var(--steel);font-size:12px;">${meta.map(esc).join(" · ")}</div>` : ""}</div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="open-event" data-id="${esc(ev.id)}" data-source="search">פרטים</button></div></div>`;
   }
   function searchChallengeRowHtml(c) {
     const meta = [challengeTypeDef(c.challenge_type).label, challengeStatusLabel(c), c.end_at ? `עד ${formatChallengeDate(c.end_at)}` : ""].filter(Boolean);
-    return `<div class="log-row" data-search-challenge-id="${safeText(c.id)}"><div><div style="font-weight:700;">${safeText(challengeTypeDef(c.challenge_type).icon)} ${safeText(c.title || "אתגר")}</div><div style="color:var(--steel);font-size:12px;">${meta.map(safeText).join(" · ")}</div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="open-challenge" data-id="${safeText(c.id)}" data-source="search">פרטים</button></div></div>`;
+    return `<div class="log-row" data-search-challenge-id="${esc(c.id)}"><div><div style="font-weight:700;">${esc(challengeTypeDef(c.challenge_type).icon)} ${esc(c.title || "אתגר")}</div><div style="color:var(--steel);font-size:12px;">${meta.map(esc).join(" · ")}</div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="open-challenge" data-id="${esc(c.id)}" data-source="search">פרטים</button></div></div>`;
   }
   function renderCommunitySearch() {
-    const box = `<div class="search-box"><input id="communityPeopleSearch" placeholder="חיפוש חברים, אירועים ואתגרים" aria-label="חיפוש בקהילה" value="${safeText(state.searchQuery || "")}"/></div>`;
+    const box = `<div class="search-box"><input id="communityPeopleSearch" placeholder="חיפוש חברים, אירועים ואתגרים" aria-label="חיפוש בקהילה" value="${esc(state.search.query || "")}"/></div>`;
     let body;
-    if (sanitizeSearchQuery(state.searchQuery).length < SEARCH_MIN_CHARS) {
+    if (sanitizeSearchQuery(state.search.query).length < SEARCH_MIN_CHARS) {
       // Under the threshold there is nothing to show and nothing was asked
       // of the server - not an error, and not an empty-results claim.
       body = `<div class="footer-note" style="margin:6px 0 0;">הקלידו לפחות ${SEARCH_MIN_CHARS} תווים</div>`;
-    } else if (state.searchLoading) {
+    } else if (state.search.loading) {
       body = `<div class="empty" role="status" style="padding:8px 0;">מחפש...</div>`;
     } else {
-      body = searchGroupHtml("members", state.people.map(searchMemberRowHtml).join(""))
-        + searchGroupHtml("events", state.searchEvents.map(searchEventRowHtml).join(""))
-        + searchGroupHtml("challenges", state.searchChallenges.map(searchChallengeRowHtml).join(""));
+      body = searchGroupHtml("members", state.members.people.map(searchMemberRowHtml).join(""))
+        + searchGroupHtml("events", state.search.events.map(searchEventRowHtml).join(""))
+        + searchGroupHtml("challenges", state.search.challenges.map(searchChallengeRowHtml).join(""));
     }
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--steel)", "חיפוש בקהילה")}${box}${body}</div>`;
   }
@@ -3975,7 +4104,7 @@
     const pid = post && post.id;
     if (!pid) return "";
     const base = reactionState(pid);
-    if (base.count > 0 || state.openComments[pid]) ensureReactionsLoaded(pid);
+    if (base.count > 0 || state.engagement.openComments[pid]) ensureReactionsLoaded(pid);
     const rs = reactionState(pid);
     const reactors = (rs.list || []).filter((r) => !isBlockedUser(r.id));
     const total = Number(rs.count || 0);
@@ -3985,7 +4114,7 @@
     const label = rs.mine
       ? (total <= 1 ? "הגבתם" : `הגבתם ועוד ${total - 1}`)
       : `${total} הגבות`;
-    return `<div class="reaction-strip">${avatars ? `<span class="flex" style="padding-inline-start:6px;">${avatars}</span>` : ""}<span style="color:var(--steel);font-size:11.5px;">${safeText(label)}</span></div>`;
+    return `<div class="reaction-strip">${avatars ? `<span class="flex" style="padding-inline-start:6px;">${avatars}</span>` : ""}<span style="color:var(--steel);font-size:11.5px;">${esc(label)}</span></div>`;
   }
   // COMM-124. Text carries the meaning, not colour alone.
   function coachBadgeHtml(role) {
@@ -3994,7 +4123,7 @@
     return `<span class="coach-badge badge-tag">${label}</span>`;
   }
   function commentPlaceholder(text, reply) {
-    return `<div class="comment-row" style="${reply ? "margin-inline-start:26px;" : ""}"><div style="flex:1;min-width:0;color:var(--steel);font-size:12px;font-style:italic;padding:4px 0;">${safeText(text)}</div></div>`;
+    return `<div class="comment-row" style="${reply ? "margin-inline-start:26px;" : ""}"><div style="flex:1;min-width:0;color:var(--steel);font-size:12px;font-style:italic;padding:4px 0;">${esc(text)}</div></div>`;
   }
   function renderCommentBubble(post, c, opts) {
     opts = opts || {};
@@ -4006,53 +4135,53 @@
     const isCoach = isCoachRole(role);
     const name = c.profiles ? (c.profiles.display_name || "@" + c.profiles.handle) : "חבר/ה";
     const own = c.author_id === meId;
-    const editing = state.commentEdit && state.commentEdit.commentId === c.id;
+    const editing = state.engagement.commentEdit && state.engagement.commentEdit.commentId === c.id;
     const wrapStyle = (opts.reply ? "margin-inline-start:26px;" : "")
       + (isCoach ? "border-inline-start:3px solid var(--brass);padding-inline-start:8px;background:color-mix(in srgb, var(--brass) 6%, transparent);border-radius:8px;" : "");
     let bodyHtml;
     if (editing) {
-      const e = state.commentEdit;
+      const e = state.engagement.commentEdit;
       bodyHtml = `<div class="comment-edit" style="margin-top:4px;">
-        <textarea class="text-input" data-comment-edit-input maxlength="${COMMENT_BODY_MAX}" rows="2" aria-label="עריכת תגובה">${safeText(e.body || "")}</textarea>
-        ${e.error ? `<div class="field-error" role="alert" style="margin-top:4px;">${safeText(e.error)}</div>` : ""}
+        <textarea class="text-input" data-comment-edit-input maxlength="${COMMENT_BODY_MAX}" rows="2" aria-label="עריכת תגובה">${esc(e.body || "")}</textarea>
+        ${e.error ? `<div class="field-error" role="alert" style="margin-top:4px;">${esc(e.error)}</div>` : ""}
         <div class="chip-row" style="margin-top:6px;"><button class="chip-btn" data-community-action="comment-edit-cancel">ביטול</button><button class="chip-btn primary" data-community-action="comment-edit-save"${e.saving ? " disabled" : ""}>${e.saving ? "שומר…" : "שמירה"}</button></div>
       </div>`;
     } else {
-      bodyHtml = `<div style="font-size:12.5px;line-height:1.55;"><b>${safeText(name)}</b> ${isCoach ? coachBadgeHtml(role) + " " : ""}${mentionMarkersToHtml(c.body)}</div>`;
+      bodyHtml = `<div style="font-size:12.5px;line-height:1.55;"><b>${esc(name)}</b> ${isCoach ? coachBadgeHtml(role) + " " : ""}${mentionMarkersToHtml(c.body)}</div>`;
     }
-    const edited = c.edited_at ? ` <span style="color:var(--steel);font-size:10.5px;" title="${safeText(relativeTime(c.edited_at))}">(נערך)</span>` : "";
+    const edited = c.edited_at ? ` <span style="color:var(--steel);font-size:10.5px;" title="${esc(relativeTime(c.edited_at))}">(נערך)</span>` : "";
     const actions = [];
-    if (!opts.reply) actions.push(`<button class="link-btn" data-community-action="comment-reply" data-post="${safeText(post.id)}" data-id="${safeText(c.id)}">תגובה</button>`);
+    if (!opts.reply) actions.push(`<button class="link-btn" data-community-action="comment-reply" data-post="${esc(post.id)}" data-id="${esc(c.id)}">תגובה</button>`);
     if (own && !editing) {
-      actions.push(`<button class="link-btn" data-community-action="comment-edit" data-post="${safeText(post.id)}" data-id="${safeText(c.id)}">עריכה</button>`);
-      actions.push(`<button class="link-btn" data-community-action="delete-comment" data-id="${safeText(c.id)}" data-post="${safeText(post.id)}" aria-label="מחיקת תגובה">מחיקה</button>`);
+      actions.push(`<button class="link-btn" data-community-action="comment-edit" data-post="${esc(post.id)}" data-id="${esc(c.id)}">עריכה</button>`);
+      actions.push(`<button class="link-btn" data-community-action="delete-comment" data-id="${esc(c.id)}" data-post="${esc(post.id)}" aria-label="מחיקת תגובה">מחיקה</button>`);
     }
-    if (!own) actions.push(`<button class="link-btn" data-community-action="report-comment" data-id="${safeText(c.id)}">דיווח</button>`);
+    if (!own) actions.push(`<button class="link-btn" data-community-action="report-comment" data-id="${esc(c.id)}">דיווח</button>`);
     return `<div class="comment-row${isCoach ? " comment-coach" : ""}" style="${wrapStyle}">${avatarHtml(name, 24, c.profiles && c.profiles.avatar_url)}<div style="flex:1;min-width:0;">
       ${bodyHtml}
-      <div class="flex gap-10" style="margin-top:2px;align-items:center;flex-wrap:wrap;"><span style="color:var(--steel);font-size:11px;">${safeText(relativeTime(c.created_at))}</span>${edited}${actions.join("")}</div>
+      <div class="flex gap-10" style="margin-top:2px;align-items:center;flex-wrap:wrap;"><span style="color:var(--steel);font-size:11px;">${esc(relativeTime(c.created_at))}</span>${edited}${actions.join("")}</div>
     </div></div>`;
   }
   function mentionPickerHtml(key) {
-    const p = state.mentionPicker;
+    const p = state.engagement.mentionPicker;
     if (!p || p.key !== key) return "";
     const items = p.results || [];
     const inner = p.loading
       ? `<div style="padding:8px 10px;color:var(--steel);font-size:12px;">מחפש חברים…</div>`
       : (items.length
-        ? items.map((m, i) => `<button type="button" class="mention-option" role="option" data-community-action="mention-pick" data-key="${safeText(key)}" data-id="${safeText(m.id)}" data-name="${safeText(m.display_name || m.handle)}" aria-selected="${i === (p.index || 0) ? "true" : "false"}" style="display:block;width:100%;text-align:right;padding:8px 10px;background:${i === (p.index || 0) ? "var(--surface2)" : "none"};border:0;color:var(--chalk);font-size:12.5px;cursor:pointer;">${nameHtml(m.display_name, m.handle)} <span style="color:var(--steel);"><bdi>@${safeText(m.handle)}</bdi></span></button>`).join("")
+        ? items.map((m, i) => `<button type="button" class="mention-option" role="option" data-community-action="mention-pick" data-key="${esc(key)}" data-id="${esc(m.id)}" data-name="${esc(m.display_name || m.handle)}" aria-selected="${i === (p.index || 0) ? "true" : "false"}" style="display:block;width:100%;text-align:right;padding:8px 10px;background:${i === (p.index || 0) ? "var(--surface2)" : "none"};border:0;color:var(--chalk);font-size:12.5px;cursor:pointer;">${nameHtml(m.display_name, m.handle)} <span style="color:var(--steel);"><bdi>@${esc(m.handle)}</bdi></span></button>`).join("")
         : `<div style="padding:8px 10px;color:var(--steel);font-size:12px;">אין התאמות</div>`);
     return `<div class="mention-picker" role="listbox" style="position:absolute;z-index:40;top:100%;inset-inline-start:0;margin-top:4px;min-width:220px;background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,.25);max-height:180px;overflow-y:auto;">${inner}</div>`;
   }
   function commentComposerHtml(postId, parentId) {
     const key = commentKey(postId, parentId || null);
-    const draft = state.commentDrafts[key] || "";
-    const err = state.commentErrors[key];
-    const sending = state.commentSending === key;
+    const draft = state.engagement.commentDrafts[key] || "";
+    const err = state.engagement.commentErrors[key];
+    const sending = state.engagement.commentSending === key;
     const reply = !!parentId;
-    return `${err ? `<div class="field-error" role="alert" style="margin:6px 0 4px;">${safeText(err)} <button class="link-btn" data-community-action="comment-retry" data-post="${safeText(postId)}"${reply ? ` data-parent="${safeText(parentId)}"` : ""}>ניסיון חוזר</button></div>` : ""}
-      <form data-comment-post-id="${safeText(postId)}"${reply ? ` data-comment-parent-id="${safeText(parentId)}"` : ""} class="flex gap-6" style="margin-top:8px;position:relative;flex-wrap:wrap;">
-        <input class="text-input" name="body" data-comment-input data-comment-key="${safeText(key)}" autocomplete="off" maxlength="${COMMENT_BODY_MAX}" placeholder="${reply ? "השבה לתגובה" : "הוספת תגובה"}" aria-label="${reply ? "השבה לתגובה" : "הוספת תגובה"}" value="${safeText(draft)}"/>
+    return `${err ? `<div class="field-error" role="alert" style="margin:6px 0 4px;">${esc(err)} <button class="link-btn" data-community-action="comment-retry" data-post="${esc(postId)}"${reply ? ` data-parent="${esc(parentId)}"` : ""}>ניסיון חוזר</button></div>` : ""}
+      <form data-comment-post-id="${esc(postId)}"${reply ? ` data-comment-parent-id="${esc(parentId)}"` : ""} class="flex gap-6" style="margin-top:8px;position:relative;flex-wrap:wrap;">
+        <input class="text-input" name="body" data-comment-input data-comment-key="${esc(key)}" autocomplete="off" maxlength="${COMMENT_BODY_MAX}" placeholder="${reply ? "השבה לתגובה" : "הוספת תגובה"}" aria-label="${reply ? "השבה לתגובה" : "הוספת תגובה"}" value="${esc(draft)}"/>
         <button class="chip-btn primary" type="submit"${sending ? " disabled" : ""}>${sending ? "שולח…" : reply ? "השבה" : "שליחה"}</button>
         ${mentionPickerHtml(key)}
       </form>`;
@@ -4061,9 +4190,9 @@
     const pid = post && post.id;
     if (!pid) return "";
     const strip = reactionStripHtml(post);
-    if (!state.openComments[pid]) return strip;
+    if (!state.engagement.openComments[pid]) return strip;
 
-    const all = state.comments[pid] || [];
+    const all = state.engagement.comments[pid] || [];
     const byId = {};
     for (const c of all) byId[c.id] = c;
     const tops = [];
@@ -4076,14 +4205,14 @@
 
     const nodeFor = (c) => {
       const kids = (repliesByParent[c.id] || []).slice().sort(sortByTime);
-      const repliesOpen = !!state.openReplies[c.id];
+      const repliesOpen = !!state.engagement.openReplies[c.id];
       const hidden = isBlockedUser(c.author_id) || !!c.deleted_at || (!!c.status && c.status !== "active");
       let html = renderCommentBubble(post, c, { reply: false });
       if (kids.length) {
-        html += `<div class="flex gap-10" style="margin:2px 0 2px 26px;"><button class="link-btn" data-community-action="toggle-replies" data-id="${safeText(c.id)}">${repliesOpen ? "הסתרת תשובות" : `${kids.length} תשובות`}</button></div>`;
+        html += `<div class="flex gap-10" style="margin:2px 0 2px 26px;"><button class="link-btn" data-community-action="toggle-replies" data-id="${esc(c.id)}">${repliesOpen ? "הסתרת תשובות" : `${kids.length} תשובות`}</button></div>`;
         if (repliesOpen) html += kids.map((k) => renderCommentBubble(post, k, { reply: true })).join("");
       }
-      if (!hidden && state.replyTo[pid] === c.id) {
+      if (!hidden && state.engagement.replyTo[pid] === c.id) {
         html += `<div style="margin-inline-start:26px;">${commentComposerHtml(pid, c.id)}</div>`;
       }
       return html;
@@ -4110,38 +4239,38 @@
   function renderModeration() {
     if (!(hasPerm(PERM.COMMENT_MODERATE) || isAdmin())) return "";
     const filters = `<div class="chip-row" style="margin:0 0 10px;">${MOD_QUEUE_STATUSES.map((s) =>
-      `<button class="chip-btn${state.modQueueStatus === s.id ? " selected" : ""}" data-community-action="mod-queue-status" data-status="${s.id}">${s.label}</button>`).join("")}</div>`;
+      `<button class="chip-btn${state.admin.modQueueStatus === s.id ? " selected" : ""}" data-community-action="mod-queue-status" data-status="${s.id}">${s.label}</button>`).join("")}</div>`;
     let body;
-    if (state.modQueueLoading && !state.modQueue.length) {
+    if (state.admin.modQueueLoading && !state.admin.modQueue.length) {
       body = `<div class="log-list" aria-busy="true">${`<div class="log-row" aria-hidden="true"><span style="height:12px;width:60%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`.repeat(3)}</div>`;
-    } else if (state.modQueueError) {
+    } else if (state.admin.modQueueError) {
       body = `<div class="empty">לא ניתן היה לטעון את התור.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="mod-queue-retry">ניסיון חוזר</button></div></div>`;
-    } else if (!state.modQueue.length) {
+    } else if (!state.admin.modQueue.length) {
       body = `<div class="empty">אין מה לבדוק.</div>`;
     } else {
       const rowHtml = (r) => {
         const done = r.status === "action_taken" || r.status === "dismissed";
         const reasons = Array.isArray(r.reasons) && r.reasons.length ? r.reasons : (r.latest_reason ? [r.latest_reason] : []);
-        return `<div class="chart-card" style="margin-bottom:10px;" data-mod-report-id="${safeText(r.report_id)}">
+        return `<div class="chart-card" style="margin-bottom:10px;" data-mod-report-id="${esc(r.report_id)}">
           <div class="flex" style="justify-content:space-between;align-items:flex-start;gap:10px;">
             <div style="min-width:0;">
-              <div style="font-weight:800;">${safeText(r.target_type === "comment" ? "תגובה" : "פוסט")} · ${safeText(r.content_author_name || "חבר/ה שהוסר/ה")}</div>
-              <div style="color:var(--steel);font-size:12.5px;margin-top:4px;white-space:pre-wrap;">${safeText(String(r.content_excerpt || "התוכן הוסר").slice(0, 240))}</div>
+              <div style="font-weight:800;">${esc(r.target_type === "comment" ? "תגובה" : "פוסט")} · ${esc(r.content_author_name || "חבר/ה שהוסר/ה")}</div>
+              <div style="color:var(--steel);font-size:12.5px;margin-top:4px;white-space:pre-wrap;">${esc(String(r.content_excerpt || "התוכן הוסר").slice(0, 240))}</div>
             </div>
-            <span class="admin-tag" style="${r.status === "open" ? "background:rgba(194,57,44,.12);border-color:var(--red);color:var(--red);" : ""}">${safeText(MOD_STATUS_LABEL[r.status] || r.status)}</span>
+            <span class="admin-tag" style="${r.status === "open" ? "background:rgba(194,57,44,.12);border-color:var(--red);color:var(--red);" : ""}">${esc(MOD_STATUS_LABEL[r.status] || r.status)}</span>
           </div>
           <div style="color:var(--steel);font-size:12px;margin-top:8px;">
-            ${Number(r.reporter_count || 0)} דיווחים · ${reasons.map(reportReasonLabel).map(safeText).join(", ") || "—"} · ${relativeTime(r.created_at)}
+            ${Number(r.reporter_count || 0)} דיווחים · ${reasons.map(reportReasonLabel).map(esc).join(", ") || "—"} · ${relativeTime(r.created_at)}
           </div>
-          ${r.note ? `<div style="color:var(--steel);font-size:12px;margin-top:4px;">״${safeText(String(r.note).slice(0, 240))}״</div>` : ""}
+          ${r.note ? `<div style="color:var(--steel);font-size:12px;margin-top:4px;">״${esc(String(r.note).slice(0, 240))}״</div>` : ""}
           <div class="chip-row" style="margin-top:10px;">
-            <button class="chip-btn" data-community-action="mod-context" data-id="${safeText(r.report_id)}">צפייה בהקשר</button>
+            <button class="chip-btn" data-community-action="mod-context" data-id="${esc(r.report_id)}">צפייה בהקשר</button>
             ${done ? "" : MOD_DECISIONS.map((d) =>
-              `<button class="chip-btn${d.destructive ? " danger" : ""}" data-community-action="mod-action" data-id="${safeText(r.report_id)}" data-decision="${d.id}">${d.label}</button>`).join("")}
+              `<button class="chip-btn${d.destructive ? " danger" : ""}" data-community-action="mod-action" data-id="${esc(r.report_id)}" data-decision="${d.id}">${d.label}</button>`).join("")}
           </div>
         </div>`;
       };
-      body = state.modQueue.map(rowHtml).join("");
+      body = state.admin.modQueue.map(rowHtml).join("");
     }
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "תור מודרציה", true)}${filters}${body}</div>`;
   }
@@ -4176,21 +4305,21 @@
   function renderAuditLog() {
     if (!hasPerm(PERM.ANALYTICS_VIEW)) return "";
     const filterChips = `<div class="chip-row" style="margin:0 0 10px;">
-      <button class="chip-btn${!state.auditFilters.action_type ? " selected" : ""}" data-community-action="audit-filter" data-type="">הכול</button>
-      ${AUDIT_ACTION_TYPES.map((t) => `<button class="chip-btn${state.auditFilters.action_type === t ? " selected" : ""}" data-community-action="audit-filter" data-type="${t}">${auditActionLabel(t)}</button>`).join("")}
+      <button class="chip-btn${!state.admin.auditFilters.action_type ? " selected" : ""}" data-community-action="audit-filter" data-type="">הכול</button>
+      ${AUDIT_ACTION_TYPES.map((t) => `<button class="chip-btn${state.admin.auditFilters.action_type === t ? " selected" : ""}" data-community-action="audit-filter" data-type="${t}">${auditActionLabel(t)}</button>`).join("")}
     </div>`;
     let body;
-    if (state.auditLoading && !state.auditLog.length) {
+    if (state.admin.auditLoading && !state.admin.auditLog.length) {
       body = `<div class="log-list" aria-busy="true">${`<div class="log-row" aria-hidden="true"><span style="height:12px;width:55%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`.repeat(4)}</div>`;
-    } else if (state.auditError) {
+    } else if (state.admin.auditError) {
       body = `<div class="empty">לא ניתן היה לטעון את היומן.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="audit-retry">ניסיון חוזר</button></div></div>`;
-    } else if (!state.auditLog.length) {
+    } else if (!state.admin.auditLog.length) {
       body = `<div class="empty">עדיין לא נרשמו פעולות ניהול.</div>`;
     } else {
-      body = `<div class="log-list">${state.auditLog.map((a) => `<div class="log-row" style="flex-direction:column;align-items:flex-start;gap:3px;">
-        <div style="font-weight:700;">${safeText(auditActionLabel(a.action_type))} · ${safeText(auditTargetLabel(a.target_type))}</div>
-        <div style="color:var(--steel);font-size:11px;">מנהל/ת ${safeText(String(a.admin_id || "").slice(0, 8))} · ${relativeTime(a.created_at)}</div>
-      </div>`).join("")}</div>${state.auditEnd ? "" : `<div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="audit-more"${state.auditLoading ? " disabled" : ""}>${state.auditLoading ? "טוען…" : "טעינת עוד"}</button></div>`}`;
+      body = `<div class="log-list">${state.admin.auditLog.map((a) => `<div class="log-row" style="flex-direction:column;align-items:flex-start;gap:3px;">
+        <div style="font-weight:700;">${esc(auditActionLabel(a.action_type))} · ${esc(auditTargetLabel(a.target_type))}</div>
+        <div style="color:var(--steel);font-size:11px;">מנהל/ת ${esc(String(a.admin_id || "").slice(0, 8))} · ${relativeTime(a.created_at)}</div>
+      </div>`).join("")}</div>${state.admin.auditEnd ? "" : `<div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="audit-more"${state.admin.auditLoading ? " disabled" : ""}>${state.admin.auditLoading ? "טוען…" : "טעינת עוד"}</button></div>`}`;
     }
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--steel)", "יומן פעולות ניהול", true)}${filterChips}${body}</div>`;
   }
@@ -4200,36 +4329,36 @@
   }
   function renderMemberManagement() {
     if (!isAdmin()) return "";
-    const results = state.memberResults;
+    const results = state.members.results;
     // COMM-156. member -> coach and coach -> member keep the original
     // dedicated controls. head_coach is the added selectable role.
     const roleButtons = (m) => {
       const role = m.role || "member";
       const btns = [];
       if (role === "coach" || role === "head_coach") {
-        btns.push(`<button class="chip-btn" data-community-action="admin-revoke-coach" data-id="${safeText(m.id)}">ביטול הרשאת מאמן/ת</button>`);
+        btns.push(`<button class="chip-btn" data-community-action="admin-revoke-coach" data-id="${esc(m.id)}">ביטול הרשאת מאמן/ת</button>`);
       } else {
-        btns.push(`<button class="chip-btn" data-community-action="admin-grant-coach" data-id="${safeText(m.id)}">הענקת הרשאת מאמן/ת</button>`);
+        btns.push(`<button class="chip-btn" data-community-action="admin-grant-coach" data-id="${esc(m.id)}">הענקת הרשאת מאמן/ת</button>`);
       }
       if (role !== "head_coach") {
-        btns.push(`<button class="chip-btn" data-community-action="admin-set-role" data-id="${safeText(m.id)}" data-role="head_coach">הפיכה למאמן/ת ראשי/ת</button>`);
+        btns.push(`<button class="chip-btn" data-community-action="admin-set-role" data-id="${esc(m.id)}" data-role="head_coach">הפיכה למאמן/ת ראשי/ת</button>`);
       } else {
-        btns.push(`<button class="chip-btn" data-community-action="admin-set-role" data-id="${safeText(m.id)}" data-role="coach">הורדה למאמן/ת</button>`);
+        btns.push(`<button class="chip-btn" data-community-action="admin-set-role" data-id="${esc(m.id)}" data-role="coach">הורדה למאמן/ת</button>`);
       }
       return btns.join("");
     };
     const rowHtml = (m) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:6px;">
-      <div class="flex gap-10" style="align-items:center;">${avatarHtml(m.display_name || m.handle, 32, m.avatar_url)}<div><div style="font-weight:700;">${nameHtml(m.display_name, m.handle)}${isCoachRole(m.role) ? " " + coachBadgeHtml(m.role) : ""}</div><div style="color:var(--steel);font-size:11px;"><bdi>@${safeText(m.handle)}</bdi> · ${memberRoleLabel(m)}</div></div></div>
-      <div style="color:var(--steel);font-size:11px;">הצטרפ/ה: ${m.redeemed_at ? safeText(String(m.redeemed_at).slice(0, 10)) : "—"} · פעילות אחרונה: ${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</div>
-      <div class="footer-note" style="margin:0;font-size:10.5px;">${safeText(m.id)}</div>
+      <div class="flex gap-10" style="align-items:center;">${avatarHtml(m.display_name || m.handle, 32, m.avatar_url)}<div><div style="font-weight:700;">${nameHtml(m.display_name, m.handle)}${isCoachRole(m.role) ? " " + coachBadgeHtml(m.role) : ""}</div><div style="color:var(--steel);font-size:11px;"><bdi>@${esc(m.handle)}</bdi> · ${memberRoleLabel(m)}</div></div></div>
+      <div style="color:var(--steel);font-size:11px;">הצטרפ/ה: ${m.redeemed_at ? esc(String(m.redeemed_at).slice(0, 10)) : "—"} · פעילות אחרונה: ${m.last_activity_on ? esc(m.last_activity_on) : "מעולם לא"}</div>
+      <div class="footer-note" style="margin:0;font-size:10.5px;">${esc(m.id)}</div>
       ${m.is_admin ? "" : `<div class="chip-row" style="margin-top:0;">
         ${roleButtons(m)}
-        <button class="chip-btn danger" data-community-action="admin-remove-member" data-id="${safeText(m.id)}">הסרת חבר/ה</button>
+        <button class="chip-btn danger" data-community-action="admin-remove-member" data-id="${esc(m.id)}">הסרת חבר/ה</button>
       </div>`}
     </div>`;
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--purple)", "ניהול חברים", true)}
-      <div class="search-box"><input id="adminMemberSearch" placeholder="חיפוש לפי handle, שם, או הדבקת מזהה משתמש" aria-label="חיפוש חברים לניהול" value="${safeText(state.memberSearch)}"/></div>
-      ${results.length ? `<div class="log-list">${results.map(rowHtml).join("")}</div>` : state.memberSearch.trim().length >= 2 ? `<div class="empty">לא נמצאו חברים תואמים</div>` : `<div class="empty">חיפוש לפי handle, שם, או מזהה משתמש (UUID)</div>`}
+      <div class="search-box"><input id="adminMemberSearch" placeholder="חיפוש לפי handle, שם, או הדבקת מזהה משתמש" aria-label="חיפוש חברים לניהול" value="${esc(state.members.search)}"/></div>
+      ${results.length ? `<div class="log-list">${results.map(rowHtml).join("")}</div>` : state.members.search.trim().length >= 2 ? `<div class="empty">לא נמצאו חברים תואמים</div>` : `<div class="empty">חיפוש לפי handle, שם, או מזהה משתמש (UUID)</div>`}
     </div>`;
   }
   // COMM-321 Club Modules. Same gating idiom the other four admin-only
@@ -4241,20 +4370,20 @@
   function renderClubModulesPanel() {
     if (!(hasPerm(PERM.CLUB_MANAGE_MODULES) || isAdmin())) return "";
     // toggleClubFeature() is single-flight (it returns early while
-    // state.clubModuleBusy is set), so EVERY row has to be disabled while a
+    // state.club.moduleBusy is set), so EVERY row has to be disabled while a
     // write is in flight, not just the one being written: leaving the other
     // five live let a second tap flip a checkbox that the guard then dropped
     // with no message, and the next rerender silently put it back - which is
     // exactly "the toggles don't work". Same busy/anyBusy split
     // renderMemberOfWeekPickForm already uses: `busy` still labels only the
     // row actually saving.
-    const anyBusy = !!state.clubModuleBusy;
+    const anyBusy = !!state.club.moduleBusy;
     const rows = CLUB_MODULE_TOGGLES.map((m) => {
-      const row = state.clubFeatures[m.key] || { enabled: true, config: {} };
-      const busy = state.clubModuleBusy === m.key;
+      const row = state.club.features[m.key] || { enabled: true, config: {} };
+      const busy = state.club.moduleBusy === m.key;
       return `<label class="log-row" style="justify-content:space-between;gap:12px;cursor:pointer;">
-        <span style="font-size:13px;">${safeText(m.label)}${busy ? " (שומר…)" : ""}</span>
-        <input type="checkbox" data-club-feature="${m.key}"${row.enabled ? " checked" : ""}${anyBusy ? " disabled" : ""} aria-label="${safeText(m.label)}"/>
+        <span style="font-size:13px;">${esc(m.label)}${busy ? " (שומר…)" : ""}</span>
+        <input type="checkbox" data-club-feature="${m.key}"${row.enabled ? " checked" : ""}${anyBusy ? " disabled" : ""} aria-label="${esc(m.label)}"/>
       </label>`;
     }).join("");
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מודולים למועדון", true)}
@@ -4274,16 +4403,16 @@
   // later ticket (COMM-311/312/313) extends is renderAdminAnalyticsDashboard()
   // itself: append a call to a new section-render function after the two
   // metrics.md groups, inside the same populated branch, reusing the same
-  // state.adminAnalytics.start/end and the same period selector - not a
+  // state.analytics.dashboard.start/end and the same period selector - not a
   // second nav entry, not a second RPC-driven load cycle.
   // ==========================================================================
   function renderAdminAnalyticsPeriodSelector() {
-    const a = state.adminAnalytics;
+    const a = state.analytics.dashboard;
     const modeBtn = (id, label) => `<button class="chip-btn${a.mode === id ? " selected" : ""}" data-community-action="admin-analytics-mode" data-mode="${id}">${label}</button>`;
     return `<div class="chip-row" style="margin:0 0 10px;align-items:center;">
       ${modeBtn("week", "שבוע")}${modeBtn("month", "חודש")}
       <button class="chip-btn" data-community-action="admin-analytics-shift" data-dir="-1" aria-label="התקופה הקודמת">‹ קודם</button>
-      <span style="color:var(--steel);font-size:12px;white-space:nowrap;">${safeText(a.start || "")} — ${safeText(a.end || "")}</span>
+      <span style="color:var(--steel);font-size:12px;white-space:nowrap;">${esc(a.start || "")} — ${esc(a.end || "")}</span>
       <button class="chip-btn" data-community-action="admin-analytics-shift" data-dir="1" aria-label="התקופה הבאה">הבא ›</button>
     </div>`;
   }
@@ -4296,9 +4425,9 @@
     if (!isFinite(n)) return "—";
     return asPercent ? (Math.round(n * 1000) / 10) + "%" : String(n);
   }
-  function adminAnalyticsCount(v) { return (v === null || v === undefined) ? "—" : safeText(v); }
+  function adminAnalyticsCount(v) { return (v === null || v === undefined) ? "—" : esc(v); }
   function adminAnalyticsRow(label, value) {
-    return `<div class="log-row"><span>${safeText(label)}</span><span class="mono" style="color:var(--brass);">${value}</span></div>`;
+    return `<div class="log-row"><span>${esc(label)}</span><span class="mono" style="color:var(--brass);">${value}</span></div>`;
   }
   // A jsonb {key: count} breakdown - ten of the eighteen metrics carry one,
   // per analytics_breakdown()'s own "count by one prop" shape - rendered
@@ -4312,7 +4441,7 @@
     return `<div class="log-list">${entries.map(([k, v]) => adminAnalyticsRow(k, adminAnalyticsCount(v))).join("")}</div>`;
   }
   function adminAnalyticsCard(title, bodyHtml) {
-    return `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:6px;">${safeText(title)}</div>${bodyHtml}</div>`;
+    return `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:6px;">${esc(title)}</div>${bodyHtml}</div>`;
   }
   // ---- Core metrics (metrics.md "## Core metrics", 5) --------------------
   function renderAdminAnalyticsWcam(core) {
@@ -4320,7 +4449,7 @@
     const share = core.wcam_share || {};
     const weeks = Array.isArray(w.weeks) ? w.weeks : [];
     const weeksHtml = weeks.length
-      ? `<div class="log-list">${weeks.map((wk) => adminAnalyticsRow(`${safeText(wk.week_start)}${wk.partial ? " (חלקי)" : ""}`, adminAnalyticsCount(wk.active_members))).join("")}</div>`
+      ? `<div class="log-list">${weeks.map((wk) => adminAnalyticsRow(`${esc(wk.week_start)}${wk.partial ? " (חלקי)" : ""}`, adminAnalyticsCount(wk.active_members))).join("")}</div>`
       : `<div class="empty" style="padding:4px 0;">אין נתונים בתקופה זו</div>`;
     return adminAnalyticsCard("חברים פעילים שבועית (WCAM)",
       weeksHtml
@@ -4333,7 +4462,7 @@
     const p = core.posting_members || {};
     const weeks = Array.isArray(p.weeks) ? p.weeks : [];
     const weeksHtml = weeks.length
-      ? `<div class="log-list">${weeks.map((wk) => adminAnalyticsRow(`${safeText(wk.week_start)}${wk.partial ? " (חלקי)" : ""}`, adminAnalyticsCount(wk.posting_members))).join("")}</div>`
+      ? `<div class="log-list">${weeks.map((wk) => adminAnalyticsRow(`${esc(wk.week_start)}${wk.partial ? " (חלקי)" : ""}`, adminAnalyticsCount(wk.posting_members))).join("")}</div>`
       : `<div class="empty" style="padding:4px 0;">אין נתונים בתקופה זו</div>`;
     return adminAnalyticsCard("חברים שפרסמו, לפי שבוע",
       weeksHtml
@@ -4561,14 +4690,14 @@
     const label = MEMBER_SEGMENT_LABELS[segmentKey] || segmentKey;
     const desc = MEMBER_SEGMENT_DESCRIPTIONS[segmentKey] || "";
     const listHtml = !isExpanded ? "" : (count
-      ? `<div class="log-list">${rows.map((r) => `<div class="log-row"><span>${safeText(memberSegmentName(r))}</span></div>`).join("")}</div>`
+      ? `<div class="log-list">${rows.map((r) => `<div class="log-row"><span>${esc(memberSegmentName(r))}</span></div>`).join("")}</div>`
       : `<div class="empty" style="padding:4px 0;">אין חברים בפילוח זה</div>`);
-    return `<div class="chart-card" style="margin-bottom:10px;" data-member-segment-card="${safeText(segmentKey)}">
-      <button type="button" class="log-row" style="width:100%;background:none;border:none;cursor:pointer;text-align:inherit;padding:0;" data-community-action="member-segments-toggle" data-segment="${safeText(segmentKey)}" aria-expanded="${isExpanded ? "true" : "false"}">
-        <span>${safeText(label)}</span>
+    return `<div class="chart-card" style="margin-bottom:10px;" data-member-segment-card="${esc(segmentKey)}">
+      <button type="button" class="log-row" style="width:100%;background:none;border:none;cursor:pointer;text-align:inherit;padding:0;" data-community-action="member-segments-toggle" data-segment="${esc(segmentKey)}" aria-expanded="${isExpanded ? "true" : "false"}">
+        <span>${esc(label)}</span>
         <span class="mono" style="color:var(--brass);">${count} · ${share}</span>
       </button>
-      <div class="footer-note" style="margin:2px 0 0;">${safeText(desc)}</div>
+      <div class="footer-note" style="margin:2px 0 0;">${esc(desc)}</div>
       ${listHtml}
     </div>`;
   }
@@ -4580,20 +4709,20 @@
   // because groupMemberSegments() pre-seeds every bucket.
   function renderMemberSegments() {
     if (!(hasPerm(PERM.ANALYTICS_VIEW) || isAdmin())) return "";
-    const ms = state.memberSegments;
+    const ms = state.analytics.segments;
     let body;
     if (ms.loading && !ms.data) {
       const skRow = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:45%;background:var(--border);border-radius:6px;display:inline-block;"></span><span style="height:12px;width:20%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
       const skCard = `<div class="chart-card" style="margin-bottom:10px;">${skRow}</div>`;
       body = `<div aria-busy="true" data-member-segments-skeleton="1">${skCard.repeat(6)}</div>`;
     } else if (ms.error) {
-      body = `<div class="empty">${safeText(ms.errorText || "לא ניתן היה לטעון את הפילוח.")}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="member-segments-retry">ניסיון חוזר</button></div></div>`;
+      body = `<div class="empty">${esc(ms.errorText || "לא ניתן היה לטעון את הפילוח.")}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="member-segments-retry">ניסיון חוזר</button></div></div>`;
     } else if (!ms.data) {
       body = `<div class="empty">אין עדיין נתונים לתצוגה.</div>`;
     } else {
       const groups = groupMemberSegments(ms.data);
       const total = ms.data.length;
-      body = `<div class="footer-note" style="margin:0 0 8px;">סה״כ חברי מועדון: ${total}${ms.asOf ? ` · נכון לתאריך ${safeText(ms.asOf)}` : ""}</div>`
+      body = `<div class="footer-note" style="margin:0 0 8px;">סה״כ חברי מועדון: ${total}${ms.asOf ? ` · נכון לתאריך ${esc(ms.asOf)}` : ""}</div>`
         + MEMBER_SEGMENT_ORDER.map((key) => renderMemberSegmentCard(key, groups[key] || [], total, !!ms.expanded[key])).join("");
     }
     return `<div style="margin-top:14px;" data-member-segments-section="1"><div class="field-label" style="margin:4px 0 8px;">פילוח מעורבות חברים</div>${body}</div>`;
@@ -4610,14 +4739,14 @@
   // period was busy or quiet.
   function renderAdminAnalyticsDashboard() {
     if (!(hasPerm(PERM.ANALYTICS_VIEW) || isAdmin())) return "";
-    const a = state.adminAnalytics;
+    const a = state.analytics.dashboard;
     let body;
     if (a.loading && !a.data) {
       const skRow = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:55%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
       const skCard = `<div class="chart-card" style="margin-bottom:10px;"><div class="log-list">${skRow.repeat(3)}</div></div>`;
       body = `<div aria-busy="true" data-admin-analytics-skeleton="1">${skCard.repeat(3)}</div>`;
     } else if (a.error) {
-      body = `<div class="empty">${safeText(a.errorText || "לא ניתן היה לטעון את הנתונים.")}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="admin-analytics-retry">ניסיון חוזר</button></div></div>`;
+      body = `<div class="empty">${esc(a.errorText || "לא ניתן היה לטעון את הנתונים.")}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="admin-analytics-retry">ניסיון חוזר</button></div></div>`;
     } else if (!a.data) {
       body = `<div class="empty">אין עדיין נתונים לתצוגה.</div>`;
     } else {
@@ -4626,7 +4755,7 @@
       // meant to be a new render function appended inside the same
       // populated branch ... not a second nav destination or a second date
       // picker." renderMemberSegments() carries its own independent
-      // loading/error/populated switch on state.memberSegments, so it is
+      // loading/error/populated switch on state.analytics.segments, so it is
       // not itself gated on a.data beyond appearing here.
       body = renderAdminAnalyticsCoreGroup(a.data) + renderAdminAnalyticsAdditionalGroup(a.data) + renderMemberSegments();
     }
@@ -4701,7 +4830,7 @@
   function retentionWeekRows(rows) {
     const sorted = (rows || []).slice().sort((x, y) => Number(x.week_number) - Number(y.week_number));
     if (!sorted.length) return `<div class="empty" style="padding:4px 0;">אין מספיק חברים לתצוגה יציבה</div>`;
-    return `<div class="log-list">${sorted.map((r) => adminAnalyticsRow(`שבוע ${safeText(r.week_number)}`, `${adminAnalyticsRatioText(r.retained_share, true)} (מתוך ${adminAnalyticsCount(r.member_count)})`)).join("")}</div>`;
+    return `<div class="log-list">${sorted.map((r) => adminAnalyticsRow(`שבוע ${esc(r.week_number)}`, `${adminAnalyticsRatioText(r.retained_share, true)} (מתוך ${adminAnalyticsCount(r.member_count)})`)).join("")}</div>`;
   }
   // cohort_month is 'YYYY-MM' or the literal 'other' (202609010008's own
   // rule - a real month key can never collide with that string); 'other'
@@ -4724,12 +4853,12 @@
     const months = Array.from(byMonth.keys()).sort(retentionCohortSortKey);
     if (!months.length) return `<div class="empty">אין עדיין נתוני שימור לתצוגה.</div>`;
     return months.map((m) => adminAnalyticsCard(
-      `קבוצת הצטרפות: ${m === "other" ? "קבוצות קטנות (מאוחדות)" : safeText(m)}`,
+      `קבוצת הצטרפות: ${m === "other" ? "קבוצות קטנות (מאוחדות)" : esc(m)}`,
       retentionWeekRows(byMonth.get(m)),
     )).join("");
   }
   function renderRetentionOverlayToggles() {
-    const r = state.retention;
+    const r = state.analytics.retention;
     return `<div class="chip-row" style="margin:10px 0;" data-retention-overlay-toggles="1">
       <button class="chip-btn${r.showOnboarding ? " selected" : ""}" data-community-action="retention-toggle-onboarding" aria-pressed="${r.showOnboarding ? "true" : "false"}">שכבת-על: שלבי הכוונה</button>
       <button class="chip-btn${r.showWelcome ? " selected" : ""}" data-community-action="retention-toggle-welcome" aria-pressed="${r.showWelcome ? "true" : "false"}">שכבת-על: פניית מאמן/ת ראשונית</button>
@@ -4745,9 +4874,9 @@
   // reviewer sees "not enough members yet" instead of a card that silently
   // vanished.
   function renderRetentionOnboardingOverlay() {
-    const r = state.retention;
+    const r = state.analytics.retention;
     if (!r.showOnboarding) return "";
-    const stepChips = RETENTION_ONBOARDING_STEPS.map((s) => `<button class="chip-btn${r.onboardingStep === s.id ? " selected" : ""}" data-community-action="retention-onboarding-step" data-step="${s.id}">${safeText(s.label)}</button>`).join("");
+    const stepChips = RETENTION_ONBOARDING_STEPS.map((s) => `<button class="chip-btn${r.onboardingStep === s.id ? " selected" : ""}" data-community-action="retention-onboarding-step" data-step="${s.id}">${esc(s.label)}</button>`).join("");
     const stepRows = (r.onboarding || []).filter((row) => row && row.step === r.onboardingStep);
     const stamped = stepRows.filter((row) => row.stamped === true);
     const notStamped = stepRows.filter((row) => row.stamped === false);
@@ -4761,7 +4890,7 @@
   // false second. No step selector here - retention_welcome_correlation()
   // has only the one cut.
   function renderRetentionWelcomeOverlay() {
-    const r = state.retention;
+    const r = state.analytics.retention;
     if (!r.showWelcome) return "";
     const contacted = (r.welcome || []).filter((row) => row && row.contacted === true);
     const notContacted = (r.welcome || []).filter((row) => row && row.contacted === false);
@@ -4783,19 +4912,19 @@
   // tooltip).
   function renderRetentionCorrelations() {
     if (!isAdmin()) return "";
-    const r = state.retention;
+    const r = state.analytics.retention;
     let body;
     if (r.loading && !r.loaded) {
       const skRow = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:55%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
       const skCard = `<div class="chart-card" style="margin-bottom:10px;"><div class="log-list">${skRow.repeat(3)}</div></div>`;
       body = `<div aria-busy="true" data-retention-skeleton="1">${skCard.repeat(3)}</div>`;
     } else if (r.error) {
-      body = `<div class="empty">${safeText(r.errorText || "לא ניתן היה לטעון את נתוני השימור.")}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="retention-retry">ניסיון חוזר</button></div></div>`;
+      body = `<div class="empty">${esc(r.errorText || "לא ניתן היה לטעון את נתוני השימור.")}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="retention-retry">ניסיון חוזר</button></div></div>`;
     } else if (!r.loaded) {
       body = `<div class="empty">אין עדיין נתונים לתצוגה.</div>`;
     } else {
       body = renderRetentionCohortCurves(r.cohorts)
-        + `<div class="footer-note" data-retention-correlation-note="1" style="margin:12px 0 0;">${safeText(RETENTION_CORRELATION_NOTE)}</div>`
+        + `<div class="footer-note" data-retention-correlation-note="1" style="margin:12px 0 0;">${esc(RETENTION_CORRELATION_NOTE)}</div>`
         + renderRetentionOverlayToggles()
         + renderRetentionOnboardingOverlay()
         + renderRetentionWelcomeOverlay();
@@ -4860,8 +4989,8 @@
         ? `<span data-community-health-dropped="1" style="color:var(--red);">לא נכלל בציון השבוע</span>`
         : `<span style="color:var(--steel);">במשקל ${Math.round(Number(comp.weight_applied) * 1000) / 10}%</span>`;
       return `<div class="log-row" data-community-health-component="${key}">
-        <span>${safeText(COMMUNITY_HEALTH_COMPONENT_LABELS[key] || key)}</span>
-        <span class="mono" style="color:var(--brass);text-align:left;">${safeText(valueText)}<br/>${weightHtml}</span>
+        <span>${esc(COMMUNITY_HEALTH_COMPONENT_LABELS[key] || key)}</span>
+        <span class="mono" style="color:var(--brass);text-align:left;">${esc(valueText)}<br/>${weightHtml}</span>
       </div>`;
     }).join("");
     return `<div class="log-list" data-community-health-components="1">${rows}</div>`;
@@ -4875,8 +5004,8 @@
   function renderCommunityHealthScoreCard(row) {
     if (!row) return "";
     return `<div class="chart-card" style="margin-bottom:10px;" data-community-health-score-card="1">
-      <div style="font-size:12px;color:var(--steel);margin-bottom:4px;">שבוע ${safeText(row.week_start || "")}</div>
-      <div style="font-size:34px;font-weight:800;color:var(--brass);" data-community-health-score-value="1">${safeText(communityHealthScoreText(row))}</div>
+      <div style="font-size:12px;color:var(--steel);margin-bottom:4px;">שבוע ${esc(row.week_start || "")}</div>
+      <div style="font-size:34px;font-weight:800;color:var(--brass);" data-community-health-score-value="1">${esc(communityHealthScoreText(row))}</div>
       <div style="font-size:12px;color:var(--steel);margin-bottom:8px;">מתוך 100</div>
       ${renderCommunityHealthComponents(row.components)}
     </div>`;
@@ -4902,7 +5031,7 @@
   // the score card plus the trend line.
   function renderCommunityHealthScore() {
     if (!isAdmin()) return "";
-    const h = state.communityHealth;
+    const h = state.analytics.health;
     let body;
     if (h.loading && !h.loaded) {
       const skRow = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:55%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
@@ -4911,7 +5040,7 @@
         <div class="log-list">${skRow.repeat(4)}</div>
       </div>`;
     } else if (h.error) {
-      body = `<div class="empty">${safeText(h.errorText || "לא ניתן היה לטעון את הציון.")}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="community-health-retry">ניסיון חוזר</button></div></div>`;
+      body = `<div class="empty">${esc(h.errorText || "לא ניתן היה לטעון את הציון.")}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="community-health-retry">ניסיון חוזר</button></div></div>`;
     } else if (!h.loaded) {
       body = `<div class="empty">אין עדיין נתונים לתצוגה.</div>`;
     } else if (!h.weeks.length) {
@@ -4928,15 +5057,15 @@
   function pinTargetLabel(t) { return { announcement: "הודעה", challenge: "אתגר", event: "אירוע", post: "פוסט" }[t] || t; }
   function renderPinnedStrip() {
     const canPin = hasPerm(PERM.CONTENT_PIN);
-    if (!state.pins.length && !state.pinError) return "";
-    const chips = state.pins.slice(0, 3).map((p) => `<div class="chip-btn" style="cursor:default;gap:6px;align-items:center;">
-      📌 <span>${safeText(p.note || pinTargetLabel(p.target_type))}</span>
-      ${canPin ? `<button class="link-btn" data-community-action="unpin" data-type="${safeText(p.target_type)}" data-id="${safeText(p.target_id)}" aria-label="ביטול הצמדה" style="margin:0;padding:0 4px;">✕</button>` : ""}
+    if (!state.admin.pins.length && !state.admin.pinError) return "";
+    const chips = state.admin.pins.slice(0, 3).map((p) => `<div class="chip-btn" style="cursor:default;gap:6px;align-items:center;">
+      📌 <span>${esc(p.note || pinTargetLabel(p.target_type))}</span>
+      ${canPin ? `<button class="link-btn" data-community-action="unpin" data-type="${esc(p.target_type)}" data-id="${esc(p.target_id)}" aria-label="ביטול הצמדה" style="margin:0;padding:0 4px;">✕</button>` : ""}
     </div>`).join("");
     return `<div class="chart-card" id="communityPinnedStrip" style="margin-bottom:12px;">
       <div style="font-weight:800;font-size:13px;margin-bottom:8px;">מוצמד</div>
       <div class="chip-row" style="margin:0;">${chips}</div>
-      ${state.pinError ? `<div class="footer-note" role="alert" style="color:var(--red);margin-top:6px;">${safeText(state.pinError)}</div>` : ""}
+      ${state.admin.pinError ? `<div class="footer-note" role="alert" style="color:var(--red);margin-top:6px;">${esc(state.admin.pinError)}</div>` : ""}
     </div>`;
   }
 
@@ -4996,7 +5125,7 @@
   function postTimestamp(post) {
     return (post && (post.created_at || post.published_at || post.occurred_on)) || null;
   }
-  function findFeedPost(id) { return Array.isArray(state.feed) ? state.feed.find((p) => p && p.id === id) : null; }
+  function findFeedPost(id) { return Array.isArray(state.feed.items) ? state.feed.items.find((p) => p && p.id === id) : null; }
   // Authorless posts render the club mark, never a broken avatar (COMM-107).
   const CLUB_MARK_HTML = `<span aria-hidden="true" class="avatar-badge" style="width:36px;height:36px;font-size:15px;background:var(--brass);">ח</span>`;
 
@@ -5008,27 +5137,27 @@
     const authorId = !authorless && post && post.author_id;
     // COMM-160. Same coach badge the comments carry, on the post author.
     const roleBadge = authorId ? coachBadgeHtml(memberRole(authorId)) : "";
-    const nameInner = `${safeText(name)}${roleBadge ? " " + roleBadge : ""}`;
+    const nameInner = `${esc(name)}${roleBadge ? " " + roleBadge : ""}`;
     const nameHtml = authorId
-      ? `<button class="post-author link-btn" data-community-action="view-profile" data-id="${safeText(authorId)}" style="padding:0;font:inherit;color:inherit;font-weight:800;">${nameInner}</button>`
+      ? `<button class="post-author link-btn" data-community-action="view-profile" data-id="${esc(authorId)}" style="padding:0;font:inherit;color:inherit;font-weight:800;">${nameInner}</button>`
       : `<div class="post-author">${nameInner}</div>`;
-    return `<div class="post-head">${avatar}<div class="post-head-text">${nameHtml}<div class="post-time">${safeText(relativeTime(postTimestamp(post)))}${opts.badge ? ` · ${safeText(opts.badge)}` : ""}</div></div>${opts.hideMenu ? "" : postMenuHtml(post)}</div>`;
+    return `<div class="post-head">${avatar}<div class="post-head-text">${nameHtml}<div class="post-time">${esc(relativeTime(postTimestamp(post)))}${opts.badge ? ` · ${esc(opts.badge)}` : ""}</div></div>${opts.hideMenu ? "" : postMenuHtml(post)}</div>`;
   }
 
   function postMenuHtml(post) {
     if (!post || !post.id) return "";
-    const id = safeText(post.id);
+    const id = esc(post.id);
     const own = postIsOwn(post);
-    const open = state.openPostMenu === post.id;
+    const open = state.posts.openMenu === post.id;
     const mi = (action, label, dataId, danger) =>
-      `<button class="post-menu-item${danger ? " danger" : ""}" role="menuitem" data-community-action="${action}" data-id="${safeText(dataId)}">${safeText(label)}</button>`;
+      `<button class="post-menu-item${danger ? " danger" : ""}" role="menuitem" data-community-action="${action}" data-id="${esc(dataId)}">${esc(label)}</button>`;
     let items = "";
     if (own) {
       items += mi("post-edit-caption", "עריכת כיתוב", post.id);
       items += mi("post-change-visibility", "שינוי נראוּת", post.id);
       items += mi("post-delete", "מחיקה", post.id, true);
     } else {
-      const saved = !!(state.savedPostIds && state.savedPostIds[post.id]);
+      const saved = !!(state.posts.savedIds && state.posts.savedIds[post.id]);
       items += mi("post-save", saved ? "הסרה מהשמורים" : "שמירה", post.id);
       items += mi("post-hide", "הסתרת הפוסט", post.id);
       items += mi("report", "דיווח", post.id);
@@ -5042,7 +5171,7 @@
 
   function postActionsHtml(post, opts) {
     opts = opts || {};
-    const id = safeText(post && post.id);
+    const id = esc(post && post.id);
     const reactions = Number((post && (post.reaction_count != null ? post.reaction_count : post.cheer_count)) || 0);
     const comments = Number((post && post.comment_count) || 0);
     return `<div class="chip-row post-actions">
@@ -5055,7 +5184,7 @@
   function postBodyHtml(post) {
     const body = post && post.body;
     if (!body) return "";
-    return `<div class="post-body" style="white-space:pre-wrap;line-height:1.6;">${safeText(String(body).slice(0, POST_BODY_MAX))}</div>`;
+    return `<div class="post-body" style="white-space:pre-wrap;line-height:1.6;">${esc(String(body).slice(0, POST_BODY_MAX))}</div>`;
   }
   function postMediaHtml(post) {
     const media = (post && post.media) || [];
@@ -5066,23 +5195,23 @@
         if (photoUrlCache[m.storage_path]) url = photoUrlCache[m.storage_path];
         else resolvePhotoUrl(m.storage_path);
       }
-      const alt = m.decorative ? "" : safeText(m.alt_text || "");
+      const alt = m.decorative ? "" : esc(m.alt_text || "");
       if (!url) return `<div class="post-photo" aria-hidden="true" style="background:var(--border);min-height:120px;"></div>`;
-      return `<img src="${safeText(url)}" alt="${alt}" class="post-photo"/>`;
+      return `<img src="${esc(url)}" alt="${alt}" class="post-photo"/>`;
     }).join("");
     return media.length > 1 ? `<div class="post-media-grid">${items}</div>` : items;
   }
 
   function captionEditPanel() {
-    const e = state.captionEdit;
+    const e = state.posts.captionEdit;
     return `<div class="post-inline-edit" style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px;">
       <label class="field"><span class="field-label">עריכת כיתוב</span>
-        <textarea class="text-input" data-caption-edit maxlength="${POST_BODY_MAX}" rows="3">${safeText(e.body || "")}</textarea></label>
+        <textarea class="text-input" data-caption-edit maxlength="${POST_BODY_MAX}" rows="3">${esc(e.body || "")}</textarea></label>
       <div class="chip-row"><button class="chip-btn" data-community-action="caption-cancel">ביטול</button><button class="chip-btn primary" data-community-action="caption-save">שמירה</button></div>
     </div>`;
   }
   function visibilityEditPanel() {
-    const e = state.visibilityEdit;
+    const e = state.posts.visibilityEdit;
     return `<div class="post-inline-edit" style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px;">
       <div class="field-label" style="margin-bottom:6px;">מי רואה את הפוסט</div>
       <div class="chip-row">${POST_VISIBILITY_OPTIONS.map((o) => `<button class="chip-btn${e.visibility === o.value ? " selected" : ""}" data-community-action="visibility-pick" data-value="${o.value}">${o.label}</button>`).join("")}</div>
@@ -5093,12 +5222,12 @@
   function postCardShell(post, inner, opts) {
     opts = opts || {};
     const pid = post && post.id;
-    return `<article class="chart-card post-card" data-post-type="${safeText((post && post.post_type) || "UNKNOWN")}"${opts.unknown ? ' data-post-unknown="1"' : ""}${pid ? ` data-post-id="${safeText(pid)}"` : ""}>
+    return `<article class="chart-card post-card" data-post-type="${esc((post && post.post_type) || "UNKNOWN")}"${opts.unknown ? ' data-post-unknown="1"' : ""}${pid ? ` data-post-id="${esc(pid)}"` : ""}>
       ${postHeadHtml(post, opts)}
       ${inner || ""}
       ${opts.engagementDisabled ? "" : postActionsHtml(post, opts)}
-      ${state.captionEdit && pid && state.captionEdit.postId === pid ? captionEditPanel() : ""}
-      ${state.visibilityEdit && pid && state.visibilityEdit.postId === pid ? visibilityEditPanel() : ""}
+      ${state.posts.captionEdit && pid && state.posts.captionEdit.postId === pid ? captionEditPanel() : ""}
+      ${state.posts.visibilityEdit && pid && state.posts.visibilityEdit.postId === pid ? visibilityEditPanel() : ""}
       ${!opts.engagementDisabled && pid && typeof renderComments === "function" ? renderComments(post) : ""}
     </article>`;
   }
@@ -5116,13 +5245,13 @@
     const effortLabel = effort === "rx" ? "Rx" : effort === "scaled" ? "מותאם" : effort === "level" ? ("רמה " + (m.level || "")) : "";
     const isPr = !!(m.is_pr || post.is_pr);
     const prBadge = isPr ? ` <span class="pr-badge badge-tag">PR</span>` : "";
-    const detail = `<div class="post-title">${safeText(name)}${prBadge}</div>
-      ${when ? `<div style="color:var(--steel);font-size:12px;">${safeText(String(when).slice(0, 10))}</div>` : ""}
-      ${result ? `<div class="mono post-result">${safeText(result)}</div>` : ""}
-      ${(scoreType || effortLabel) ? `<div style="color:var(--steel);font-size:12px;">${[scoreType, effortLabel].filter(Boolean).map(safeText).join(" · ")}</div>` : ""}`;
-    const caption = post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${safeText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : "";
+    const detail = `<div class="post-title">${esc(name)}${prBadge}</div>
+      ${when ? `<div style="color:var(--steel);font-size:12px;">${esc(String(when).slice(0, 10))}</div>` : ""}
+      ${result ? `<div class="mono post-result">${esc(result)}</div>` : ""}
+      ${(scoreType || effortLabel) ? `<div style="color:var(--steel);font-size:12px;">${[scoreType, effortLabel].filter(Boolean).map(esc).join(" · ")}</div>` : ""}`;
+    const caption = post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : "";
     const src = m.source_id || post.source_id || post.source_record_id;
-    const extra = src ? `<button class="chip-btn" data-community-action="open-source" data-source-type="${safeText(m.source_type || post.source_type || "workout")}" data-source-id="${safeText(src)}">פתיחת האימון</button>` : "";
+    const extra = src ? `<button class="chip-btn" data-community-action="open-source" data-source-type="${esc(m.source_type || post.source_type || "workout")}" data-source-id="${esc(src)}">פתיחת האימון</button>` : "";
     return postCardShell(post, detail + caption + postMediaHtml(post), { extra });
   }
 
@@ -5135,9 +5264,9 @@
       ["שיפור", m.improvement],
       ["תאריך", (m.achieved_on || post.occurred_on) ? String(m.achieved_on || post.occurred_on).slice(0, 10) : ""],
     ].filter((r) => r[1] != null && r[1] !== "");
-    const inner = `<div class="post-title">${safeText(movement)} <span class="pr-badge badge-tag">PR</span></div>
-      <div class="log-list" style="margin-top:6px;">${rows.map((r) => `<div class="log-row"><span>${safeText(r[0])}</span><span class="mono" style="color:var(--brass);">${safeText(r[1])}</span></div>`).join("")}</div>
-      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${safeText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
+    const inner = `<div class="post-title">${esc(movement)} <span class="pr-badge badge-tag">PR</span></div>
+      <div class="log-list" style="margin-top:6px;">${rows.map((r) => `<div class="log-row"><span>${esc(r[0])}</span><span class="mono" style="color:var(--brass);">${esc(r[1])}</span></div>`).join("")}</div>
+      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
     return postCardShell(post, inner + postMediaHtml(post));
   }
 
@@ -5148,11 +5277,11 @@
     const when = m.earned_on || post.occurred_on || "";
     const why = m.explanation || post.result_text || "";
     const inner = `<div class="flex gap-10" style="align-items:center;">
-        <span aria-hidden="true" style="font-size:26px;">${safeText(icon)}</span>
-        <div><div class="post-title" style="margin:0;">${safeText(title)}</div>${when ? `<div style="color:var(--steel);font-size:12px;">${safeText(String(when).slice(0, 10))}</div>` : ""}</div>
+        <span aria-hidden="true" style="font-size:26px;">${esc(icon)}</span>
+        <div><div class="post-title" style="margin:0;">${esc(title)}</div>${when ? `<div style="color:var(--steel);font-size:12px;">${esc(String(when).slice(0, 10))}</div>` : ""}</div>
       </div>
-      ${why ? `<div style="color:var(--steel);font-size:13px;margin-top:6px;">${safeText(why)}</div>` : ""}
-      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${safeText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
+      ${why ? `<div style="color:var(--steel);font-size:13px;margin-top:6px;">${esc(why)}</div>` : ""}
+      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
     return postCardShell(post, inner + postMediaHtml(post));
   }
 
@@ -5162,7 +5291,7 @@
   function renderAttendanceMilestonePostCard(post) {
     const m = post.metadata || {};
     const label = m.milestone_label || post.title || "אבן דרך בנוכחות";
-    const inner = `<div class="post-title">🎯 ${safeText(label)}</div>${m.count != null ? `<div class="mono post-result">${safeText(m.count)}</div>` : ""}${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${safeText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
+    const inner = `<div class="post-title">🎯 ${esc(label)}</div>${m.count != null ? `<div class="mono post-result">${esc(m.count)}</div>` : ""}${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
     return postCardShell(post, inner);
   }
 
@@ -5177,54 +5306,54 @@
     const m = post.metadata || {};
     const rows = [];
     if (m.milestone != null) {
-      rows.push(`<div class="mono post-result" style="color:var(--brass);">${safeText(m.milestone)}% מהיעד הושלמו</div>`);
-      if (m.club_total != null && m.target_value != null) rows.push(`<div style="color:var(--steel);font-size:12px;">${safeText(m.club_total)} מתוך ${safeText(m.target_value)}</div>`);
+      rows.push(`<div class="mono post-result" style="color:var(--brass);">${esc(m.milestone)}% מהיעד הושלמו</div>`);
+      if (m.club_total != null && m.target_value != null) rows.push(`<div style="color:var(--steel);font-size:12px;">${esc(m.club_total)} מתוך ${esc(m.target_value)}</div>`);
     } else if (m.my_progress != null) {
       const pct = m.target_value ? Math.min(100, Math.round((Number(m.my_progress) / Number(m.target_value)) * 100)) : null;
-      rows.push(`<div class="mono post-result" style="color:var(--brass);">${safeText(m.my_progress)}${m.target_value != null ? ` / ${safeText(m.target_value)}` : ""}</div>`);
+      rows.push(`<div class="mono post-result" style="color:var(--brass);">${esc(m.my_progress)}${m.target_value != null ? ` / ${esc(m.target_value)}` : ""}</div>`);
       if (pct != null) rows.push(`<div class="progress-track"><div style="width:${pct}%;"></div></div>`);
     }
-    const inner = `<div class="post-title">🏆 ${safeText(m.challenge_title || post.title || "אתגר")}</div>
+    const inner = `<div class="post-title">🏆 ${esc(m.challenge_title || post.title || "אתגר")}</div>
       ${rows.join("")}
-      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:4px;">${safeText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
-      <div class="chip-row"><button class="chip-btn" data-community-action="open-challenge" data-id="${safeText(m.challenge_id || post.source_id || "")}">פתיחת האתגר</button></div>`;
+      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:4px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
+      <div class="chip-row"><button class="chip-btn" data-community-action="open-challenge" data-id="${esc(m.challenge_id || post.source_id || "")}">פתיחת האתגר</button></div>`;
     return postCardShell(post, inner, { authorless: !postAuthorName(post) });
   }
   // COMM-213: upgraded from the COMM-101 fallback link card to a real event
-  // card, once the events cluster's own state.eventsById has the live row
+  // card, once the events cluster's own state.events.byId has the live row
   // (it is loaded in the same Promise.all as the feed, so this is the
   // common case). Falls back to the original metadata-only link card when
   // the event is not in cache yet (a cold feed load racing loadEvents()) or
   // no longer exists - a truthful degrade, never a broken render.
   function renderEventLinkCard(post) {
     const m = post.metadata || {};
-    const ev = m.event_id ? state.eventsById[m.event_id] : null;
+    const ev = m.event_id ? state.events.byId[m.event_id] : null;
     if (ev) {
       const going = eventGoingCount(ev.id);
       const meta = [eventTypeBadge(ev.event_type), formatEventDate(ev.start_at), formatEventTime(ev.start_at)];
       if (ev.location) meta.push(ev.location);
       meta.push(`${going} משתתפים`);
       if (ev.status === "cancelled") meta.push("בוטל");
-      const image = ev.image_url ? `<img src="${safeText(ev.image_url)}" alt="" style="width:100%;max-height:160px;object-fit:cover;border-radius:10px;margin-top:6px;"/>` : "";
-      const inner = `<div class="post-title">📅 ${safeText(ev.title)}</div>
-        <div style="color:var(--steel);font-size:12px;">${meta.map(safeText).join(" · ")}</div>
+      const image = ev.image_url ? `<img src="${esc(ev.image_url)}" alt="" style="width:100%;max-height:160px;object-fit:cover;border-radius:10px;margin-top:6px;"/>` : "";
+      const inner = `<div class="post-title">📅 ${esc(ev.title)}</div>
+        <div style="color:var(--steel);font-size:12px;">${meta.map(esc).join(" · ")}</div>
         ${image}
-        ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${safeText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
-        <div class="chip-row"><button class="chip-btn" data-community-action="open-event" data-id="${safeText(ev.id)}">פתיחת האירוע</button></div>`;
+        ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
+        <div class="chip-row"><button class="chip-btn" data-community-action="open-event" data-id="${esc(ev.id)}">פתיחת האירוע</button></div>`;
       return postCardShell(post, inner, { authorless: !postAuthorName(post) });
     }
     const when = m.starts_at ? String(m.starts_at).slice(0, 16).replace("T", " ") : "";
-    const inner = `<div class="post-title">📅 ${safeText(m.event_title || post.title || "אירוע")}</div>
-      ${when ? `<div style="color:var(--steel);font-size:12px;">${safeText(when)}</div>` : ""}
-      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:4px;">${safeText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
-      <div class="chip-row"><button class="chip-btn" data-community-action="open-event" data-id="${safeText(m.event_id || post.source_id || "")}">פתיחת האירוע</button></div>`;
+    const inner = `<div class="post-title">📅 ${esc(m.event_title || post.title || "אירוע")}</div>
+      ${when ? `<div style="color:var(--steel);font-size:12px;">${esc(when)}</div>` : ""}
+      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:4px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
+      <div class="chip-row"><button class="chip-btn" data-community-action="open-event" data-id="${esc(m.event_id || post.source_id || "")}">פתיחת האירוע</button></div>`;
     return postCardShell(post, inner, { authorless: !postAuthorName(post) });
   }
 
   function renderAnnouncementPostCard(post) {
     const m = post.metadata || {};
     const title = m.title || post.title || "";
-    const inner = `${title ? `<div class="post-title" style="color:var(--brass);">📣 ${safeText(title)}</div>` : ""}${postBodyHtml(post)}${postMediaHtml(post)}`;
+    const inner = `${title ? `<div class="post-title" style="color:var(--brass);">📣 ${esc(title)}</div>` : ""}${postBodyHtml(post)}${postMediaHtml(post)}`;
     return postCardShell(post, inner, { badge: "הודעת מועדון", authorless: !postAuthorName(post) });
   }
   function renderCoachPostCard(post) {
@@ -5240,11 +5369,11 @@
       <div class="flex gap-10" style="align-items:center;margin-top:6px;">
         ${/* COMM-318: no avatar_url available here on purpose - post_new_member_on_join's metadata is stamped at redemption time, before the profile row usually even exists, so a photo could never be threaded through without a second live lookup for a rarely-seen card. Initials only, matching the club-logo exception. */ avatarHtml(memberName, 40)}
         <div>
-          ${memberId ? `<button class="link-btn" data-community-action="view-profile" data-id="${safeText(memberId)}" style="padding:0;font-weight:800;color:inherit;">${safeText(memberName)}</button>` : `<div style="font-weight:800;">${safeText(memberName)}</div>`}
-          ${joined ? `<div style="color:var(--steel);font-size:12px;">${safeText(String(joined).slice(0, 10))}</div>` : ""}
+          ${memberId ? `<button class="link-btn" data-community-action="view-profile" data-id="${esc(memberId)}" style="padding:0;font-weight:800;color:inherit;">${esc(memberName)}</button>` : `<div style="font-weight:800;">${esc(memberName)}</div>`}
+          ${joined ? `<div style="color:var(--steel);font-size:12px;">${esc(String(joined).slice(0, 10))}</div>` : ""}
         </div>
       </div>`;
-    const extra = `${memberId ? `<button class="chip-btn" data-community-action="follow" data-id="${safeText(memberId)}">מעקב</button>` : ""}<button class="chip-btn" data-community-action="welcome-member" data-id="${safeText(post.id)}">ברכה</button>`;
+    const extra = `${memberId ? `<button class="chip-btn" data-community-action="follow" data-id="${esc(memberId)}">מעקב</button>` : ""}<button class="chip-btn" data-community-action="welcome-member" data-id="${esc(post.id)}">ברכה</button>`;
     return postCardShell(post, inner, { extra, authorless: true, clubName: "המועדון", hideMenu: true });
   }
 
@@ -5259,9 +5388,9 @@
   }
   function renderErrorPostCard(post) {
     const authorId = post && post.author_id;
-    return `<article class="chart-card post-card" data-post-type="${safeText((post && post.post_type) || "UNKNOWN")}" data-post-error="1">
+    return `<article class="chart-card post-card" data-post-type="${esc((post && post.post_type) || "UNKNOWN")}" data-post-error="1">
       <div class="empty">לא ניתן להציג את הפוסט הזה</div>
-      ${authorId ? `<div class="chip-row"><button class="chip-btn" data-community-action="view-profile" data-id="${safeText(authorId)}">מעבר לפרופיל</button></div>` : ""}
+      ${authorId ? `<div class="chip-row"><button class="chip-btn" data-community-action="view-profile" data-id="${esc(authorId)}">מעבר לפרופיל</button></div>` : ""}
     </article>`;
   }
   function renderPostCardSkeleton() {
@@ -5329,27 +5458,27 @@
   }
 
   async function loadChallenges() {
-    if (!state.user) { state.challenges = []; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengesLoaded = false; return; }
-    state.challengesLoading = true;
+    if (!state.user) { state.challenges.items = []; state.challenges.participation = {}; state.challenges.aggregates = {}; state.challenges.loaded = false; return; }
+    state.challenges.loading = true;
     rerender();
     const { data, error } = await client.from("challenges").select("*").order("end_at", { ascending: true });
-    if (error) { state.challengesLoading = false; state.challengesError = true; return rerender(); }
-    state.challenges = data || [];
-    state.challengesError = false;
+    if (error) { state.challenges.loading = false; state.challenges.error = true; return rerender(); }
+    state.challenges.items = data || [];
+    state.challenges.error = false;
     const { data: myRows, error: myErr } = await client.from("challenge_participants").select("*").eq("user_id", state.user.id);
-    state.challengeParticipation = {};
-    if (!myErr) for (const row of (myRows || [])) state.challengeParticipation[row.challenge_id] = row;
+    state.challenges.participation = {};
+    if (!myErr) for (const row of (myRows || [])) state.challenges.participation[row.challenge_id] = row;
     // chal_progress() is fetched for every active challenge, not lazily per
     // card: this is a single small club, active challenges are few, and the
     // list card needs a real participant_count and (for cooperative/team) a
     // real aggregate rather than a stale one, per COMM-207's card contract.
-    const active = state.challenges.filter((c) => c.status === "active");
+    const active = state.challenges.items.filter((c) => c.status === "active");
     await Promise.all(active.map(async (c) => {
       const { data: p, error: pErr } = await client.rpc("chal_progress", { challenge_id: c.id });
-      if (!pErr && p) state.challengeAggregates[c.id] = p;
+      if (!pErr && p) state.challenges.aggregates[c.id] = p;
     }));
-    state.challengesLoading = false;
-    state.challengesLoaded = true;
+    state.challenges.loading = false;
+    state.challenges.loaded = true;
     rerender();
   }
 
@@ -5357,7 +5486,7 @@
   async function openChallenge(id, source) {
     if (!id) return;
     track(A.CHALLENGE_VIEWED, { challenge_id: id, challenge_key: null, source: source || "boards" });
-    state.challengeView = {
+    state.challenges.view = {
       id, loading: true, error: false, challenge: null, progress: null, teams: [], participants: [], contributors: [], myParticipant: null,
       joining: false, leaving: false, teamJoining: null, sharing: false,
       logForm: { delta: "", note: "", busy: false, error: "" },
@@ -5385,29 +5514,29 @@
   // COMM-209. Leaving the detail closes its two channels immediately rather
   // than waiting for the next render to notice, so a member who opens and
   // closes several challenges never holds more than one pair open.
-  function closeChallengeView() { state.challengeView = null; ensureChallengeRealtime(); rerender(); }
+  function closeChallengeView() { state.challenges.view = null; ensureChallengeRealtime(); rerender(); }
   async function refreshChallengeView(id) {
-    const v = state.challengeView;
+    const v = state.challenges.view;
     if (!v || v.id !== id) return;
     const [{ data: challenge, error: cErr }, { data: progress, error: pErr }] = await Promise.all([
       client.from("challenges").select("*").eq("id", id).maybeSingle(),
       client.rpc("chal_progress", { challenge_id: id }),
     ]);
-    if (!state.challengeView || state.challengeView.id !== id) return;
-    if (cErr || !challenge) { state.challengeView.loading = false; state.challengeView.error = true; return rerender(); }
-    state.challengeView.challenge = challenge;
-    state.challengeView.progress = pErr ? null : progress;
-    if (challenge.status === "active" && !pErr && progress) state.challengeAggregates[id] = progress;
+    if (!state.challenges.view || state.challenges.view.id !== id) return;
+    if (cErr || !challenge) { state.challenges.view.loading = false; state.challenges.view.error = true; return rerender(); }
+    state.challenges.view.challenge = challenge;
+    state.challenges.view.progress = pErr ? null : progress;
+    if (challenge.status === "active" && !pErr && progress) state.challenges.aggregates[id] = progress;
     const { data: participants } = await client.from("challenge_participants")
       .select("*, profiles(display_name,handle,avatar_url,visible_to_club)")
       .eq("challenge_id", id).order("joined_at", { ascending: true });
-    state.challengeView.participants = participants || [];
+    state.challenges.view.participants = participants || [];
     const mine = (participants || []).find((p) => p.user_id === (state.user && state.user.id)) || null;
-    state.challengeView.myParticipant = mine;
-    if (state.user) { if (mine) state.challengeParticipation[id] = mine; else delete state.challengeParticipation[id]; }
+    state.challenges.view.myParticipant = mine;
+    if (state.user) { if (mine) state.challenges.participation[id] = mine; else delete state.challenges.participation[id]; }
     if (challenge.challenge_type === "team") {
       const { data: teams } = await client.from("challenge_teams").select("*").eq("challenge_id", id).order("name", { ascending: true });
-      state.challengeView.teams = teams || [];
+      state.challenges.view.teams = teams || [];
     }
     if (challenge.challenge_type === "cooperative") {
       const { data: contrib } = await client.from("challenge_progress")
@@ -5429,7 +5558,7 @@
         list.push(row);
         if (list.length >= 10) break;
       }
-      state.challengeView.contributors = list;
+      state.challenges.view.contributors = list;
     }
     // COMM-211. Awaited before the dialog drops its loading flag so the board
     // and the rest of the detail land in the same paint. Only the two types
@@ -5437,19 +5566,19 @@
     // feed_leaderboard from the challenge detail at all.
     if (challenge.challenge_type === "individual_performance" || challenge.challenge_type === "coach") {
       await loadChallengeBoard(id, { rerender: false });
-      if (!state.challengeView || state.challengeView.id !== id) return;
-    } else if (state.challengeView.board) {
-      state.challengeView.board.loading = false;
+      if (!state.challenges.view || state.challenges.view.id !== id) return;
+    } else if (state.challenges.view.board) {
+      state.challenges.view.board.loading = false;
     }
-    state.challengeView.loading = false;
+    state.challenges.view.loading = false;
     rerender();
   }
 
   // ---- Join / leave / team pick (COMM-204, COMM-207) -----------------------
   async function joinChallenge(id, source) {
     if (!state.user) return;
-    const v = state.challengeView;
-    const c = (v && v.challenge) || state.challenges.find((x) => x.id === id);
+    const v = state.challenges.view;
+    const c = (v && v.challenge) || state.challenges.items.find((x) => x.id === id);
     if (v && v.id === id) { v.joining = true; rerender(); }
     const { error } = await client.from("challenge_participants").insert({ challenge_id: id, user_id: state.user.id });
     if (v && v.id === id) v.joining = false;
@@ -5460,7 +5589,7 @@
     setMessage("הצטרפת לאתגר");
     if (c && c.challenge_type === "team" && c.join_mode === "auto") await autoAssignChallengeTeam(id);
     await loadChallenges();
-    if (state.challengeView && state.challengeView.id === id) await refreshChallengeView(id);
+    if (state.challenges.view && state.challenges.view.id === id) await refreshChallengeView(id);
     rerender();
   }
   async function autoAssignChallengeTeam(id) {
@@ -5477,12 +5606,12 @@
   }
   async function pickChallengeTeam(challengeId, teamId) {
     if (!state.user) return;
-    const v = state.challengeView;
+    const v = state.challenges.view;
     if (v) { v.teamJoining = teamId; rerender(); }
     const { error } = await client.from("challenge_participants").update({ team_id: teamId }).eq("challenge_id", challengeId).eq("user_id", state.user.id);
     if (v) v.teamJoining = null;
     if (error) { setMessage("לא ניתן היה להצטרף לקבוצה. נסו שוב."); return rerender(); }
-    if (state.challengeView && state.challengeView.id === challengeId) await refreshChallengeView(challengeId);
+    if (state.challenges.view && state.challenges.view.id === challengeId) await refreshChallengeView(challengeId);
     rerender();
   }
 
@@ -5523,20 +5652,20 @@
     return (msg && CHALLENGE_TEAM_MGMT_ERROR_LABELS[msg]) || "הפעולה נכשלה. נסו שוב.";
   }
   // Re-reads the whole detail after a team-management write, with its own
-  // skeleton flag around just that (state.challengeView.teamMgmt.loading),
+  // skeleton flag around just that (state.challenges.view.teamMgmt.loading),
   // not the dialog-level one refreshChallengeView() itself never sets after
   // the first open - see the state comment in openChallenge().
   async function refreshAfterTeamMgmt(id) {
-    const v = state.challengeView;
+    const v = state.challenges.view;
     if (!v || v.id !== id) return;
     v.teamMgmt.loading = true;
     rerender();
     await refreshChallengeView(id);
-    const after = state.challengeView;
+    const after = state.challenges.view;
     if (after && after.id === id) { after.teamMgmt.loading = false; rerender(); }
   }
   async function createChallengeTeam() {
-    const v = state.challengeView;
+    const v = state.challenges.view;
     if (!v || !v.challenge || v.teamMgmt.createBusy) return;
     const name = String(v.teamMgmt.createName || "").trim();
     if (!name || name.length > 80) { v.teamMgmt.createError = "יש להזין שם קבוצה, עד 80 תווים"; return rerender(); }
@@ -5549,7 +5678,7 @@
     await refreshAfterTeamMgmt(v.id);
   }
   async function renameChallengeTeam(teamId) {
-    const v = state.challengeView;
+    const v = state.challenges.view;
     if (!v || !v.challenge || v.teamMgmt.renameBusy[teamId]) return;
     const existing = (v.teams || []).find((t) => t.id === teamId);
     const draft = v.teamMgmt.renameDrafts[teamId];
@@ -5574,7 +5703,7 @@
     askConfirm({ title: "מחיקת קבוצה", message: "למחוק את הקבוצה? הפעולה אינה ניתנת לביטול.", confirmLabel: "מחיקה", destructive: true, action: "challenge-team-delete-confirm", payload: { teamId } });
   }
   async function deleteChallengeTeam(teamId) {
-    const v = state.challengeView;
+    const v = state.challenges.view;
     if (!v || !v.challenge || v.teamMgmt.deleteBusy[teamId]) return;
     v.teamMgmt.deleteBusy[teamId] = true; v.teamMgmt.error = ""; rerender();
     const { error } = await client.from("challenge_teams").delete().eq("id", teamId);
@@ -5584,7 +5713,7 @@
     await refreshAfterTeamMgmt(v.id);
   }
   async function reassignChallengeParticipant(challengeId, userId, teamId) {
-    const v = state.challengeView;
+    const v = state.challenges.view;
     if (!v || v.teamMgmt.reassignBusy[userId]) return;
     v.teamMgmt.reassignBusy[userId] = true; v.teamMgmt.error = ""; rerender();
     const { error } = await client.rpc("chal_reassign_team", { p_challenge_id: challengeId, p_user_id: userId, p_team_id: teamId || null });
@@ -5594,7 +5723,7 @@
     await refreshAfterTeamMgmt(v.id);
   }
   async function setChallengeTeamCaptain(teamId, userId) {
-    const v = state.challengeView;
+    const v = state.challenges.view;
     if (!v || v.teamMgmt.captainBusy[teamId]) return;
     v.teamMgmt.captainBusy[teamId] = true; v.teamMgmt.error = ""; rerender();
     const { error } = await client.rpc("chal_set_captain", { p_team_id: teamId, p_user_id: userId || null });
@@ -5609,15 +5738,15 @@
   }
   async function leaveChallenge(id) {
     if (!state.user) return;
-    const v = state.challengeView;
+    const v = state.challenges.view;
     if (v && v.id === id) { v.leaving = true; rerender(); }
     const { error } = await client.from("challenge_participants").delete().eq("challenge_id", id).eq("user_id", state.user.id);
     if (v && v.id === id) v.leaving = false;
     if (error) { setMessage("לא ניתן היה לעזוב את האתגר. נסו שוב."); return rerender(); }
-    delete state.challengeParticipation[id];
+    delete state.challenges.participation[id];
     setMessage("עזבת את האתגר");
     await loadChallenges();
-    if (state.challengeView && state.challengeView.id === id) await refreshChallengeView(id);
+    if (state.challenges.view && state.challenges.view.id === id) await refreshChallengeView(id);
     rerender();
   }
 
@@ -5630,7 +5759,7 @@
     }
   }
   async function submitChallengeLog() {
-    const v = state.challengeView;
+    const v = state.challenges.view;
     if (!v || !v.challenge || v.logForm.busy) return;
     const raw = String(v.logForm.delta || "").trim();
     const delta = Number(raw);
@@ -5644,7 +5773,7 @@
     v.logForm.delta = ""; v.logForm.note = "";
     await refreshChallengeView(v.id);
     await loadChallenges();
-    const after = state.challengeView && state.challengeView.myParticipant;
+    const after = state.challenges.view && state.challenges.view.myParticipant;
     if (after) maybeCelebrateChallengeCompletion(v.challenge.challenge_type, v.id, wasStatus, after.status);
     rerender();
   }
@@ -5652,7 +5781,7 @@
   // exactly one "week hit" once a week's target is reached. Detail-only, no
   // dedicated dialog.
   async function logConsistencyWeekHit() {
-    const v = state.challengeView;
+    const v = state.challenges.view;
     if (!v) return;
     const challengeId = v.id;
     v.logForm.delta = "1";
@@ -5667,7 +5796,7 @@
     // already allows a self-row update with no column restriction, so this
     // needs no new policy or function, matching COMM-201's "no new write
     // RPC" rule.
-    const after = state.challengeView;
+    const after = state.challenges.view;
     if (!after || after.id !== challengeId || !after.myParticipant || !after.challenge) return;
     const weeks = Number((after.challenge.config && after.challenge.config.weeks) || 0);
     if (after.myParticipant.status !== "completed" && weeks > 0 && Number(after.myParticipant.progress_value || 0) >= weeks) {
@@ -5685,7 +5814,7 @@
 
   // ---- Coach manual entry (COMM-206) ---------------------------------------
   async function submitCoachEntry(userId) {
-    const v = state.challengeView;
+    const v = state.challenges.view;
     if (!v || !v.challenge || !userId) return;
     const d = v.coachEntry.drafts[userId] || {};
     const delta = Number(String(d.delta || "").trim());
@@ -5699,14 +5828,14 @@
     if (error) { v.coachEntry.error = "לא ניתן היה לשמור את העדכון."; return rerender(); }
     v.coachEntry.drafts[userId] = { delta: "", note: "" };
     await refreshChallengeView(v.id);
-    const after = state.challengeView && state.challengeView.participants.find((p) => p.user_id === userId);
+    const after = state.challenges.view && state.challenges.view.participants.find((p) => p.user_id === userId);
     if (after) maybeCelebrateChallengeCompletion(v.challenge.challenge_type, v.id, wasStatus, after.status);
     rerender();
   }
 
   // ---- Share Progress (COMM-207) -------------------------------------------
   async function shareChallengeProgress() {
-    const v = state.challengeView;
+    const v = state.challenges.view;
     if (!v || !v.challenge || v.sharing) return;
     v.sharing = true; rerender();
     const c = v.challenge, p = v.progress || {};
@@ -5737,7 +5866,7 @@
 
   // ---- Create / edit form (COMM-201) ---------------------------------------
   function openChallengeForm(existing) {
-    state.challengeForm = existing ? {
+    state.challenges.form = existing ? {
       mode: "edit", id: existing.id, status: existing.status, challengeType: existing.challenge_type,
       title: existing.title, description: existing.description || "",
       metricType: existing.metric_type, targetValue: existing.target_value != null ? String(existing.target_value) : "",
@@ -5754,10 +5883,10 @@
     };
     rerender();
   }
-  function closeChallengeForm() { state.challengeForm = null; setFieldErrors("communityChallengeForm", {}); rerender(); }
-  function setChallengeFormType(type) { if (state.challengeForm && state.challengeForm.mode !== "edit") { state.challengeForm.challengeType = type; rerender(); } }
+  function closeChallengeForm() { state.challenges.form = null; setFieldErrors("communityChallengeForm", {}); rerender(); }
+  function setChallengeFormType(type) { if (state.challenges.form && state.challenges.form.mode !== "edit") { state.challenges.form.challengeType = type; rerender(); } }
   async function submitChallengeForm(form) {
-    const f = state.challengeForm;
+    const f = state.challenges.form;
     if (!f || f.saving) return;
     const fd = new FormData(form);
     const title = String(fd.get("title") || "").trim();
@@ -5819,7 +5948,7 @@
     }
     f.saving = false;
     if (error) { f.error = "לא ניתן היה לשמור את האתגר. נסו שוב."; return rerender(); }
-    state.challengeForm = null;
+    state.challenges.form = null;
     setMessage("האתגר נשמר");
     await loadChallenges();
     rerender();
@@ -5827,16 +5956,16 @@
   async function archiveChallenge(id) {
     const { error } = await client.from("challenges").update({ status: "archived" }).eq("id", id);
     if (error) return setMessage("הפעולה נכשלה");
-    state.challengeForm = null;
+    state.challenges.form = null;
     setMessage("האתגר הועבר לארכיון");
     await loadChallenges();
-    if (state.challengeView && state.challengeView.id === id) await refreshChallengeView(id);
+    if (state.challenges.view && state.challenges.view.id === id) await refreshChallengeView(id);
     rerender();
   }
   async function publishChallengeDraft(id) {
     const { error } = await client.from("challenges").update({ status: "active" }).eq("id", id);
     if (error) return setMessage("הפעולה נכשלה");
-    state.challengeForm = null;
+    state.challenges.form = null;
     setMessage("האתגר פורסם");
     await loadChallenges();
     rerender();
@@ -5844,7 +5973,7 @@
   async function deleteChallengeDraft(id) {
     const { error } = await client.from("challenges").delete().eq("id", id);
     if (error) return setMessage("הפעולה נכשלה");
-    state.challengeForm = null;
+    state.challenges.form = null;
     setMessage("הטיוטה נמחקה");
     await loadChallenges();
     rerender();
@@ -5859,15 +5988,15 @@
   // test exercises it by emitting the event directly on the bus.
   function activeChallengeParticipations(types) {
     if (!state.user) return [];
-    return state.challenges.filter((c) => c.status === "active" && types.indexOf(c.challenge_type) >= 0
-      && state.challengeParticipation[c.id] && state.challengeParticipation[c.id].status === "active");
+    return state.challenges.items.filter((c) => c.status === "active" && types.indexOf(c.challenge_type) >= 0
+      && state.challenges.participation[c.id] && state.challenges.participation[c.id].status === "active");
   }
   async function logAutoChallengeProgress(challengeId, delta, sourceType) {
     if (!state.user || !delta) return;
     const { error } = await client.from("challenge_progress").insert({ challenge_id: challengeId, user_id: state.user.id, delta, source_type: sourceType || "auto" });
     if (!error) {
       await loadChallenges();
-      if (state.challengeView && state.challengeView.id === challengeId) await refreshChallengeView(challengeId);
+      if (state.challenges.view && state.challenges.view.id === challengeId) await refreshChallengeView(challengeId);
       rerender();
     }
   }
@@ -5895,10 +6024,10 @@
     const week = isoWeekKey();
     for (const c of activeChallengeParticipations(["consistency"])) {
       const key = c.id + ":" + week;
-      state._consistencySessionCounts[key] = (state._consistencySessionCounts[key] || 0) + 1;
+      state.challenges._consistencySessionCounts[key] = (state.challenges._consistencySessionCounts[key] || 0) + 1;
       const target = Number((c.config && c.config.times_per_week) || 0);
-      if (target > 0 && state._consistencySessionCounts[key] >= target && !state._consistencyWeekLogged[key]) {
-        state._consistencyWeekLogged[key] = true;
+      if (target > 0 && state.challenges._consistencySessionCounts[key] >= target && !state.challenges._consistencyWeekLogged[key]) {
+        state.challenges._consistencyWeekLogged[key] = true;
         logAutoChallengeProgress(c.id, 1, "workout_completed");
       }
     }
@@ -5922,49 +6051,49 @@
 
   // ---- Rendering: list card (COMM-207) -------------------------------------
   function myChallengeCardProgressHtml(c) {
-    const part = state.challengeParticipation[c.id];
+    const part = state.challenges.participation[c.id];
     if (!part) return "";
     if (c.challenge_type === "cooperative") {
-      const agg = state.challengeAggregates[c.id];
+      const agg = state.challenges.aggregates[c.id];
       if (!agg || agg.club_total == null) return "";
       const pct = c.target_value ? Math.round((agg.club_total / c.target_value) * 100) : null;
-      return `<div class="mono" style="color:var(--brass);font-size:12px;">${safeText(agg.club_total)}${c.target_value != null ? ` / ${safeText(c.target_value)}` : ""}</div>${pct != null ? challengeProgressBarHtml(pct) : ""}`;
+      return `<div class="mono" style="color:var(--brass);font-size:12px;">${esc(agg.club_total)}${c.target_value != null ? ` / ${esc(c.target_value)}` : ""}</div>${pct != null ? challengeProgressBarHtml(pct) : ""}`;
     }
     if (c.challenge_type === "team") {
-      const agg = state.challengeAggregates[c.id];
+      const agg = state.challenges.aggregates[c.id];
       const mine = agg && Array.isArray(agg.team_totals) ? agg.team_totals.find((t) => t.team_id === part.team_id) : null;
-      return mine ? `<div class="mono" style="color:var(--brass);font-size:12px;">${safeText(mine.name)}: ${safeText(mine.total)}</div>` : (part.team_id ? "" : `<div style="color:var(--steel);font-size:12px;">טרם נבחרה קבוצה</div>`);
+      return mine ? `<div class="mono" style="color:var(--brass);font-size:12px;">${esc(mine.name)}: ${esc(mine.total)}</div>` : (part.team_id ? "" : `<div style="color:var(--steel);font-size:12px;">טרם נבחרה קבוצה</div>`);
     }
     if (c.challenge_type === "consistency") {
       const weeks = Number((c.config && c.config.weeks) || 0);
-      return `<div class="mono" style="color:var(--brass);font-size:12px;">${safeText(part.progress_value)}${weeks ? ` / ${weeks} שבועות` : ""}</div>`;
+      return `<div class="mono" style="color:var(--brass);font-size:12px;">${esc(part.progress_value)}${weeks ? ` / ${weeks} שבועות` : ""}</div>`;
     }
     const pct = c.target_value ? Math.round((Number(part.progress_value || 0) / c.target_value) * 100) : null;
-    return `<div class="mono" style="color:var(--brass);font-size:12px;">${safeText(part.progress_value)}${c.target_value != null ? ` / ${safeText(c.target_value)}` : ""}</div>${pct != null ? challengeProgressBarHtml(pct) : ""}`;
+    return `<div class="mono" style="color:var(--brass);font-size:12px;">${esc(part.progress_value)}${c.target_value != null ? ` / ${esc(c.target_value)}` : ""}</div>${pct != null ? challengeProgressBarHtml(pct) : ""}`;
   }
   function renderChallengeCard(c) {
     const def = challengeTypeDef(c.challenge_type);
-    const part = state.challengeParticipation[c.id];
-    const agg = state.challengeAggregates[c.id];
+    const part = state.challenges.participation[c.id];
+    const agg = state.challenges.aggregates[c.id];
     const isPast = c.status === "completed" || c.status === "archived";
     const image = (c.config && c.config.image_url)
-      ? `<img src="${safeText(c.config.image_url)}" alt="" style="width:44px;height:44px;border-radius:12px;object-fit:cover;"/>`
+      ? `<img src="${esc(c.config.image_url)}" alt="" style="width:44px;height:44px;border-radius:12px;object-fit:cover;"/>`
       : `<span aria-hidden="true" style="width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:20px;background:var(--border);">${def.icon}</span>`;
     const meta = [def.label, `${formatChallengeDate(c.start_at)}–${formatChallengeDate(c.end_at)}`];
     if (agg && agg.participant_count != null) meta.push(`${agg.participant_count} משתתפים`);
     if (c.status === "draft") meta.push(challengeStatusLabel(c));
-    return `<article class="chart-card" data-challenge-id="${safeText(c.id)}" data-challenge-status="${safeText(c.status)}" style="margin-bottom:10px;">
+    return `<article class="chart-card" data-challenge-id="${esc(c.id)}" data-challenge-status="${esc(c.status)}" style="margin-bottom:10px;">
       <div class="flex gap-10" style="align-items:flex-start;">
         ${image}
         <div style="flex:1;min-width:0;">
-          <button class="link-btn" data-community-action="open-challenge" data-id="${safeText(c.id)}" data-source="boards" style="padding:0;text-align:right;font-weight:800;font-size:15px;color:inherit;display:block;">${safeText(c.title)}</button>
-          <div style="color:var(--steel);font-size:11.5px;margin-top:2px;">${meta.map(safeText).join(" · ")}</div>
+          <button class="link-btn" data-community-action="open-challenge" data-id="${esc(c.id)}" data-source="boards" style="padding:0;text-align:right;font-weight:800;font-size:15px;color:inherit;display:block;">${esc(c.title)}</button>
+          <div style="color:var(--steel);font-size:11.5px;margin-top:2px;">${meta.map(esc).join(" · ")}</div>
           ${myChallengeCardProgressHtml(c)}
         </div>
       </div>
       <div class="chip-row" style="margin-top:8px;">
-        <button class="chip-btn" data-community-action="open-challenge" data-id="${safeText(c.id)}" data-source="boards">פרטים</button>
-        ${!isPast && c.status === "active" && !part ? `<button class="chip-btn primary" data-community-action="join-challenge" data-id="${safeText(c.id)}">הצטרפות</button>` : ""}
+        <button class="chip-btn" data-community-action="open-challenge" data-id="${esc(c.id)}" data-source="boards">פרטים</button>
+        ${!isPast && c.status === "active" && !part ? `<button class="chip-btn primary" data-community-action="join-challenge" data-id="${esc(c.id)}">הצטרפות</button>` : ""}
         ${!isPast && part ? `<span class="tag tag-brass">נרשמת/ה</span>` : ""}
       </div>
     </article>`;
@@ -5976,16 +6105,16 @@
     // showing beside an always-empty list.
     if (!isModuleEnabled("challenges")) return "";
     const staff = hasPerm(PERM.CHALLENGE_CREATE);
-    const active = state.challenges.filter((c) => c.status === "active" || (staff && c.status === "draft"));
-    const past = state.challenges.filter((c) => c.status === "completed" || c.status === "archived");
+    const active = state.challenges.items.filter((c) => c.status === "active" || (staff && c.status === "draft"));
+    const past = state.challenges.items.filter((c) => c.status === "completed" || c.status === "archived");
     const createBtn = staff ? `<button class="chip-btn primary" data-community-action="open-challenge-form" style="margin-bottom:10px;">אתגר חדש</button>` : "";
-    const list = (state.challengesLoading && !state.challengesLoaded)
+    const list = (state.challenges.loading && !state.challenges.loaded)
       ? `<div aria-busy="true">${`<div class="chart-card" style="height:64px;background:var(--border);opacity:.35;margin-bottom:10px;"></div>`.repeat(2)}</div>`
-      : state.challengesError
+      : state.challenges.error
       ? `<div class="empty">לא ניתן היה לטעון את האתגר. נסו שוב.<div class="chip-row" style="justify-content:center;"><button class="chip-btn" data-community-action="challenges-retry">ניסיון חוזר</button></div></div>`
       : active.length ? active.map(renderChallengeCard).join("") : `<div class="empty">אין אתגרים פעילים כרגע.</div>`;
     const pastHtml = past.length ? `<div style="margin-top:16px;"><div class="field-label" style="margin-bottom:6px;">אתגרים שהסתיימו</div>${past.map(renderChallengeCard).join("")}</div>` : "";
-    return `<div class="ach-section">${sectionHead("var(--energy)", "אתגרי המועדון")}${createBtn}${state.challengeForm ? renderChallengeForm() : ""}${list}${pastHtml}</div>`;
+    return `<div class="ach-section">${sectionHead("var(--energy)", "אתגרי המועדון")}${createBtn}${state.challenges.form ? renderChallengeForm() : ""}${list}${pastHtml}</div>`;
   }
 
   // ==========================================================================
@@ -5993,14 +6122,14 @@
   // ever reached through the "coach" sub-tab, and that sub-tab is only ever
   // added to the tab bar for isStaff() (see the render function below) - so
   // nothing in here repeats a ternary staff-only render gate of its own; the
-  // surrounding tab is the gate. A forced state.communityTab = "coach" for
+  // surrounding tab is the gate. A forced state.ui.tab = "coach" for
   // a non-staff caller still falls back to the feed tab there, since the
   // tab bar's own tabs array has no "coach" entry to find.
   // ==========================================================================
   function renderCoachCelebrateItem(item) {
     const key = celebrateItemKey(item);
-    const done = !!state.coachCelebrate.congratulated[key];
-    const busy = state.coachCelebrate.busy === key;
+    const done = !!state.coach.celebrate.congratulated[key];
+    const busy = state.coach.celebrate.busy === key;
     const d = item.detail || {};
     const what = item.kind === "pr"
       ? `שיא חדש${d.movement ? ": " + d.movement : ""}${d.result ? " — " + d.result : ""}`
@@ -6013,15 +6142,15 @@
       <div class="flex gap-10" style="align-items:center;">
         ${avatarHtml(item.display_name || item.handle, 32, item.avatar_url)}
         <div>
-          <button class="link-btn" data-community-action="view-profile" data-id="${safeText(item.user_id)}" style="padding:0;font-weight:800;color:inherit;">${nameHtml(item.display_name, item.handle)}</button>
-          <div style="color:var(--steel);font-size:12px;">${safeText(what)} · ${relativeTime(item.occurred_at)}</div>
+          <button class="link-btn" data-community-action="view-profile" data-id="${esc(item.user_id)}" style="padding:0;font-weight:800;color:inherit;">${nameHtml(item.display_name, item.handle)}</button>
+          <div style="color:var(--steel);font-size:12px;">${esc(what)} · ${relativeTime(item.occurred_at)}</div>
         </div>
       </div>
-      <button class="chip-btn${done ? "" : " primary"}" data-community-action="coach-congratulate" data-key="${safeText(key)}"${done || busy ? " disabled" : ""}>${busy ? "שולח…" : done ? "ברכתם" : "ברכה"}</button>
+      <button class="chip-btn${done ? "" : " primary"}" data-community-action="coach-congratulate" data-key="${esc(key)}"${done || busy ? " disabled" : ""}>${busy ? "שולח…" : done ? "ברכתם" : "ברכה"}</button>
     </div>`;
   }
   function renderCoachCelebrateSection() {
-    const c = state.coachCelebrate;
+    const c = state.coach.celebrate;
     const body = (c.loading && !c.loaded)
       ? `<div aria-busy="true">${`<div class="chart-card" style="height:56px;background:var(--border);opacity:.35;margin-bottom:10px;"></div>`.repeat(2)}</div>`
       : c.error
@@ -6031,12 +6160,12 @@
   }
   function renderCoachWelcomeRow(m) {
     const days = Math.max(0, Math.floor((Date.now() - new Date(m.created_at).getTime()) / 86400000));
-    const streakRow = state.streaks.find((s) => s.user_id === m.id);
+    const streakRow = state.club.streaks.find((s) => s.user_id === m.id);
     const streakCount = streakRow ? Number(streakRow.current_streak) : 0;
-    const contacted = !!state.coachWelcome.contactedIds[m.id];
-    const busy = state.coachWelcome.busy === m.id;
-    const assignDraft = (state.coachWelcome.assignDrafts || {})[m.id] || "";
-    const contactDraft = (state.coachWelcome.contactDrafts || {})[m.id] || "";
+    const contacted = !!state.coach.welcome.contactedIds[m.id];
+    const busy = state.coach.welcome.busy === m.id;
+    const assignDraft = (state.coach.welcome.assignDrafts || {})[m.id] || "";
+    const contactDraft = (state.coach.welcome.contactDrafts || {})[m.id] || "";
     return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:8px;">
       <div class="flex gap-10" style="align-items:center;">
         ${avatarHtml(m.display_name || m.handle, 32, m.avatar_url)}
@@ -6046,22 +6175,22 @@
         </div>
       </div>
       <div class="chip-row">
-        <button class="chip-btn" data-community-action="coach-welcome-member" data-id="${safeText(m.id)}"${busy ? " disabled" : ""}>ברכה</button>
-        <button class="chip-btn" data-community-action="view-profile" data-id="${safeText(m.id)}">צפייה בפרופיל</button>
+        <button class="chip-btn" data-community-action="coach-welcome-member" data-id="${esc(m.id)}"${busy ? " disabled" : ""}>ברכה</button>
+        <button class="chip-btn" data-community-action="view-profile" data-id="${esc(m.id)}">צפייה בפרופיל</button>
         ${m.assigned_coach_id
-          ? `<button class="chip-btn" data-community-action="coach-assign-clear" data-id="${safeText(m.id)}"${busy ? " disabled" : ""}>ביטול שיוך מאמן/ת</button>`
-          : `<button class="chip-btn" data-community-action="coach-assign-self" data-id="${safeText(m.id)}"${busy ? " disabled" : ""}>שיוך אליי</button>`}
-        <button class="chip-btn${contacted ? "" : " primary"}" data-community-action="coach-mark-contacted" data-id="${safeText(m.id)}"${busy ? " disabled" : ""}>סימון כנוצר קשר</button>
+          ? `<button class="chip-btn" data-community-action="coach-assign-clear" data-id="${esc(m.id)}"${busy ? " disabled" : ""}>ביטול שיוך מאמן/ת</button>`
+          : `<button class="chip-btn" data-community-action="coach-assign-self" data-id="${esc(m.id)}"${busy ? " disabled" : ""}>שיוך אליי</button>`}
+        <button class="chip-btn${contacted ? "" : " primary"}" data-community-action="coach-mark-contacted" data-id="${esc(m.id)}"${busy ? " disabled" : ""}>סימון כנוצר קשר</button>
       </div>
       ${!m.assigned_coach_id ? `<div class="flex gap-6" style="align-items:center;">
-        <input class="text-input" style="max-width:160px;" placeholder="שם משתמש מאמן/ת אחר/ת" dir="ltr" data-coach-assign-handle="${safeText(m.id)}" value="${safeText(assignDraft)}"/>
-        <button class="chip-btn" data-community-action="coach-assign-handle" data-id="${safeText(m.id)}"${busy ? " disabled" : ""}>שיוך</button>
+        <input class="text-input" style="max-width:160px;" placeholder="שם משתמש מאמן/ת אחר/ת" dir="ltr" data-coach-assign-handle="${esc(m.id)}" value="${esc(assignDraft)}"/>
+        <button class="chip-btn" data-community-action="coach-assign-handle" data-id="${esc(m.id)}"${busy ? " disabled" : ""}>שיוך</button>
       </div>` : ""}
-      <input class="text-input" placeholder="הערה קצרה לגבי הקשר (אופציונלי)" data-coach-contact-note="${safeText(m.id)}" value="${safeText(contactDraft)}"/>
+      <input class="text-input" placeholder="הערה קצרה לגבי הקשר (אופציונלי)" data-coach-contact-note="${esc(m.id)}" value="${esc(contactDraft)}"/>
     </div>`;
   }
   function renderCoachWelcomeSection() {
-    const w = state.coachWelcome;
+    const w = state.coach.welcome;
     const body = (w.loading && !w.loaded)
       ? `<div aria-busy="true">${`<div class="chart-card" style="height:56px;background:var(--border);opacity:.35;margin-bottom:10px;"></div>`.repeat(2)}</div>`
       : w.error
@@ -6077,7 +6206,7 @@
   // level enum above.
   function memberOfWeekCandidateDetailText(category, detail) {
     const d = detail || {};
-    if (category === "consistency_streak") return `רצף של ${Number(d.streak_weeks) || 0} שבועות · דירוג #${d.rank != null ? safeText(d.rank) : "?"}`;
+    if (category === "consistency_streak") return `רצף של ${Number(d.streak_weeks) || 0} שבועות · דירוג #${d.rank != null ? esc(d.rank) : "?"}`;
     if (category === "most_prs") return `${Number(d.pr_count) || 0} שיאים אישיים השבוע`;
     if (category === "challenge_completion") {
       const titles = Array.isArray(d.titles) ? d.titles.filter(Boolean).join(", ") : "";
@@ -6086,16 +6215,16 @@
     return "";
   }
   function renderMemberOfWeekCandidate(c, category) {
-    const busy = state.coachMemberOfWeek.busy === c.user_id;
+    const busy = state.coach.memberOfWeek.busy === c.user_id;
     return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:8px;">
       <div class="flex gap-10" style="align-items:center;">
         ${avatarHtml(c.display_name || c.handle, 32, c.avatar_url)}
         <div>
-          <button class="link-btn" data-community-action="view-profile" data-id="${safeText(c.user_id)}" style="padding:0;font-weight:800;color:inherit;">${nameHtml(c.display_name, c.handle)}</button>
-          <div style="color:var(--steel);font-size:12px;">${safeText(memberOfWeekCandidateDetailText(category, c.detail))}</div>
+          <button class="link-btn" data-community-action="view-profile" data-id="${esc(c.user_id)}" style="padding:0;font-weight:800;color:inherit;">${nameHtml(c.display_name, c.handle)}</button>
+          <div style="color:var(--steel);font-size:12px;">${esc(memberOfWeekCandidateDetailText(category, c.detail))}</div>
         </div>
       </div>
-      <button class="chip-btn primary" data-community-action="coach-mow-publish-candidate" data-id="${safeText(c.user_id)}"${state.coachMemberOfWeek.busy ? " disabled" : ""}>${busy ? "מפרסמ/ת…" : "פרסום"}</button>
+      <button class="chip-btn primary" data-community-action="coach-mow-publish-candidate" data-id="${esc(c.user_id)}"${state.coach.memberOfWeek.busy ? " disabled" : ""}>${busy ? "מפרסמ/ת…" : "פרסום"}</button>
     </div>`;
   }
   // The free-selection ("coach's pick") form. Rendered whenever the week is
@@ -6110,19 +6239,19 @@
   // greyed-out one of - so the greying out COMM-315's schema comments ask
   // for is expressed as a visible warning naming the ineligible member.
   function renderMemberOfWeekPickForm(env) {
-    const s = state.coachMemberOfWeek;
+    const s = state.coach.memberOfWeek;
     const busy = s.busy === "pick";
     const anyBusy = !!s.busy;
     const prevId = env.previous_week_user_id;
     const prevProfile = s.previousProfile;
     const prevName = prevProfile ? (prevProfile.display_name || "@" + prevProfile.handle) : "חבר/ה";
-    const prevNote = prevId ? `<div class="footer-note" style="margin-top:4px;">לא ניתן לבחור שוב ב${safeText(prevName)} — נבחר/ה כבר בשבוע שעבר.</div>` : "";
+    const prevNote = prevId ? `<div class="footer-note" style="margin-top:4px;">לא ניתן לבחור שוב ב${esc(prevName)} — נבחר/ה כבר בשבוע שעבר.</div>` : "";
     return `<div class="chart-card" style="margin-top:8px;">
       <div class="field-label" style="margin-bottom:6px;">בחירת מאמן/ת</div>
-      <label class="field"><span class="field-label">שם משתמש</span><input class="text-input" dir="ltr" placeholder="שם משתמש" data-mow-pick-handle value="${safeText(s.pickHandle)}"${anyBusy ? " disabled" : ""}/></label>
-      <label class="field"><span class="field-label">סיבה (חובה)</span><textarea class="text-input" rows="3" maxlength="500" data-mow-pick-reason placeholder="למה החבר/ה הזה/הזאת נבחר/ה השבוע"${anyBusy ? " disabled" : ""}>${safeText(s.pickReason)}</textarea></label>
+      <label class="field"><span class="field-label">שם משתמש</span><input class="text-input" dir="ltr" placeholder="שם משתמש" data-mow-pick-handle value="${esc(s.pickHandle)}"${anyBusy ? " disabled" : ""}/></label>
+      <label class="field"><span class="field-label">סיבה (חובה)</span><textarea class="text-input" rows="3" maxlength="500" data-mow-pick-reason placeholder="למה החבר/ה הזה/הזאת נבחר/ה השבוע"${anyBusy ? " disabled" : ""}>${esc(s.pickReason)}</textarea></label>
       <div data-mow-pick-counter style="text-align:left;font-size:11px;color:var(--steel);min-height:14px;">${s.pickReason.length}/500</div>
-      ${s.publishErr ? `<div class="field-error" role="alert">${safeText(s.publishErr)}</div>` : ""}
+      ${s.publishErr ? `<div class="field-error" role="alert">${esc(s.publishErr)}</div>` : ""}
       ${prevNote}
       <button class="chip-btn primary" data-community-action="coach-mow-publish-pick"${anyBusy ? " disabled" : ""}>${busy ? "מפרסמ/ת…" : "פרסום בחירת המאמן/ת"}</button>
     </div>`;
@@ -6132,23 +6261,23 @@
   // (COMM-315's own "shows what/who was published instead" instruction).
   function renderMemberOfWeekPublished(env) {
     const pub = env.published;
-    const p = state.coachMemberOfWeek.publishedProfile;
+    const p = state.coach.memberOfWeek.publishedProfile;
     const name = p ? (p.display_name || "@" + p.handle) : "חבר/ה";
     return `<div class="chart-card" style="margin-top:8px;">
       <div class="flex gap-10" style="align-items:center;">
         ${avatarHtml(p && (p.display_name || p.handle), 36, p && p.avatar_url)}
         <div>
-          <button class="link-btn" data-community-action="view-profile" data-id="${safeText(pub.user_id)}" style="padding:0;font-weight:800;color:inherit;">${safeText(name)}</button>
-          <div style="color:var(--steel);font-size:12px;">${safeText(env.category_label)}</div>
+          <button class="link-btn" data-community-action="view-profile" data-id="${esc(pub.user_id)}" style="padding:0;font-weight:800;color:inherit;">${esc(name)}</button>
+          <div style="color:var(--steel);font-size:12px;">${esc(env.category_label)}</div>
         </div>
       </div>
-      ${pub.reason ? `<div style="margin-top:8px;white-space:pre-wrap;">${safeText(pub.reason)}</div>` : ""}
+      ${pub.reason ? `<div style="margin-top:8px;white-space:pre-wrap;">${esc(pub.reason)}</div>` : ""}
       <div style="color:var(--steel);font-size:11px;margin-top:6px;">פורסם ${relativeTime(pub.published_at)}</div>
     </div>`;
   }
   function renderCoachMemberOfWeekSection() {
-    const s = state.coachMemberOfWeek;
-    const head = sectionHead("var(--brass)", s.envelope ? `חבר/ת השבוע · ${safeText(s.envelope.category_label)}` : "חבר/ת השבוע");
+    const s = state.coach.memberOfWeek;
+    const head = sectionHead("var(--brass)", s.envelope ? `חבר/ת השבוע · ${esc(s.envelope.category_label)}` : "חבר/ת השבוע");
     if (s.loading && !s.loaded) {
       return `<div class="ach-section" style="margin-top:18px;">${head}<div aria-busy="true"><div class="chart-card" style="height:64px;background:var(--border);opacity:.35;"></div></div></div>`;
     }
@@ -6178,11 +6307,11 @@
   // aggregate-only.
   function renderMonthlyRecapFigures(r) {
     return `<div class="log-list">
-      <div class="log-row"><span>אימונים שנרשמו</span><span class="mono" style="color:var(--brass);">${safeText(r.sessions_logged)}</span></div>
-      <div class="log-row"><span>פוסטים</span><span class="mono" style="color:var(--brass);">${safeText(r.posts_created)}</span></div>
-      <div class="log-row"><span>חברים חדשים</span><span class="mono" style="color:var(--brass);">${safeText(r.new_members)}</span></div>
-      <div class="log-row"><span>אתגרים שהושלמו</span><span class="mono" style="color:var(--brass);">${safeText(r.challenges_completed)}</span></div>
-      <div class="log-row"><span>אירועים שהתקיימו</span><span class="mono" style="color:var(--brass);">${safeText(r.events_held)}</span></div>
+      <div class="log-row"><span>אימונים שנרשמו</span><span class="mono" style="color:var(--brass);">${esc(r.sessions_logged)}</span></div>
+      <div class="log-row"><span>פוסטים</span><span class="mono" style="color:var(--brass);">${esc(r.posts_created)}</span></div>
+      <div class="log-row"><span>חברים חדשים</span><span class="mono" style="color:var(--brass);">${esc(r.new_members)}</span></div>
+      <div class="log-row"><span>אתגרים שהושלמו</span><span class="mono" style="color:var(--brass);">${esc(r.challenges_completed)}</span></div>
+      <div class="log-row"><span>אירועים שהתקיימו</span><span class="mono" style="color:var(--brass);">${esc(r.events_held)}</span></div>
     </div>`;
   }
   // The Coach Dashboard's sixth section: the staff preview + publish
@@ -6209,7 +6338,7 @@
   // one (the function's check is narrower) - gating the button on
   // isStaff() would show a coach a control the database refuses.
   function renderCoachMonthlyRecapSection() {
-    const s = state.coachMonthlyRecap;
+    const s = state.coach.monthlyRecap;
     const head = sectionHead("var(--purple)", "סיכום חודשי למועדון");
     if (s.loading && !s.loaded) {
       return `<div class="ach-section" style="margin-top:18px;">${head}<div aria-busy="true"><div class="chart-card" style="height:120px;background:var(--border);opacity:.35;"></div></div></div>`;
@@ -6230,57 +6359,57 @@
     if (r.published_at) {
       control = `<div style="color:var(--steel);font-size:11px;margin-top:8px;">פורסם ${relativeTime(r.published_at)}</div>`;
     } else if (canPublish) {
-      control = `<div class="chip-row" style="margin-top:8px;"><button class="chip-btn primary" data-community-action="coach-monthly-recap-publish" data-id="${safeText(r.id)}"${s.busy ? " disabled" : ""}>${busy ? "מפרסמ/ת…" : "פרסום"}</button></div>${s.publishErr ? `<div class="field-error" role="alert">${safeText(s.publishErr)}</div>` : ""}`;
+      control = `<div class="chip-row" style="margin-top:8px;"><button class="chip-btn primary" data-community-action="coach-monthly-recap-publish" data-id="${esc(r.id)}"${s.busy ? " disabled" : ""}>${busy ? "מפרסמ/ת…" : "פרסום"}</button></div>${s.publishErr ? `<div class="field-error" role="alert">${esc(s.publishErr)}</div>` : ""}`;
     } else {
       // A coach previewing a draft, per the asymmetry above - named rather
       // than simply omitted, so a coach understands why there is no button
       // rather than wondering if the draft is broken.
       control = `<div class="footer-note" style="margin-top:8px;">רק בעל/ת הרשאת אנליטיקה או מנהל/ת יכול/ה לפרסם.</div>`;
     }
-    return `<div class="ach-section" style="margin-top:18px;">${head}<div class="chart-card"><div class="field-label" style="margin-bottom:6px;">${safeText(r.month_start)}${r.published_at ? "" : " · טיוטה"}</div>${renderMonthlyRecapFigures(r)}${control}</div></div>`;
+    return `<div class="ach-section" style="margin-top:18px;">${head}<div class="chart-card"><div class="field-label" style="margin-bottom:6px;">${esc(r.month_start)}${r.published_at ? "" : " · טיוטה"}</div>${renderMonthlyRecapFigures(r)}${control}</div></div>`;
   }
   // The member-facing surface: an inline Account-tab card, sibling to the
   // COMM-221 "View Week" entry (recapEntry in the tab builder below), not a
   // new nav destination and not a dialog - there is one club-wide row to
   // show, not a per-member history to browse. Renders nothing at all - not
-  // a skeleton, not an empty-state card - until state.monthlyRecap.row is
+  // a skeleton, not an empty-state card - until state.recaps.monthly.row is
   // actually populated: COMM-309's own "Empty (member view)" frontend state
   // is explicit that the surface simply does not show a monthly recap entry
   // before a month is published, and loadMonthlyRecap's own query already
   // guarantees row is only ever a published row.
   function renderMonthlyRecapMemberSection() {
-    const r = state.monthlyRecap.row;
+    const r = state.recaps.monthly.row;
     if (!r) return "";
-    return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--purple)", "סיכום החודש של הקהילה")}<div class="chart-card"><div class="field-label" style="margin-bottom:6px;">${safeText(r.month_start)}</div>${renderMonthlyRecapFigures(r)}</div></div>`;
+    return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--purple)", "סיכום החודש של הקהילה")}<div class="chart-card"><div class="field-label" style="margin-bottom:6px;">${esc(r.month_start)}</div>${renderMonthlyRecapFigures(r)}</div></div>`;
   }
   // COMM-226 built this absent entirely (not merely styled hidden) unless
   // the flag is on; COMM-304 flips that flag default-on and gives it real
   // rows, but the same absent-when-off gate stays exactly as it was, for
   // whichever future ticket needs to turn it back off again.
   function renderCoachEngageRow(it) {
-    const busy = !!(state.coachEngage.busy && state.coachEngage.busy.id === it.id);
-    const reachBusy = busy && state.coachEngage.busy.action === "reach-out";
-    const reached = !!state.coachEngage.reachedOut[it.id];
+    const busy = !!(state.coach.engage.busy && state.coach.engage.busy.id === it.id);
+    const reachBusy = busy && state.coach.engage.busy.action === "reach-out";
+    const reached = !!state.coach.engage.reachedOut[it.id];
     const name = engageMemberName(it.user_id);
-    const prof = state.coachEngage.profiles[it.user_id];
+    const prof = state.coach.engage.profiles[it.user_id];
     return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:8px;">
       <div class="flex gap-10" style="align-items:center;">
         ${avatarHtml(prof && (prof.display_name || prof.handle), 32, prof && prof.avatar_url)}
         <div>
-          <button class="link-btn" data-community-action="view-profile" data-id="${safeText(it.user_id)}" style="padding:0;font-weight:800;color:inherit;">${safeText(name)}</button>
-          <div style="margin-top:2px;"><span class="admin-tag" style="background:${engageLevelColor(it.level)};">${safeText(engageLevelLabel(it.level))}</span></div>
+          <button class="link-btn" data-community-action="view-profile" data-id="${esc(it.user_id)}" style="padding:0;font-weight:800;color:inherit;">${esc(name)}</button>
+          <div style="margin-top:2px;"><span class="admin-tag" style="background:${engageLevelColor(it.level)};">${esc(engageLevelLabel(it.level))}</span></div>
         </div>
       </div>
       <div class="chip-row">
-        <button class="chip-btn${reached ? "" : " primary"}" data-community-action="coach-engage-reach-out" data-id="${safeText(it.id)}"${reached || busy ? " disabled" : ""}>${reachBusy ? "שולח…" : reached ? "פנייה נשלחה" : "פנייה"}</button>
-        <button class="chip-btn" data-community-action="coach-engage-review" data-id="${safeText(it.id)}"${busy ? " disabled" : ""}>סימון כנבדק</button>
-        <button class="chip-btn" data-community-action="coach-engage-dismiss" data-id="${safeText(it.id)}"${busy ? " disabled" : ""}>דחייה</button>
+        <button class="chip-btn${reached ? "" : " primary"}" data-community-action="coach-engage-reach-out" data-id="${esc(it.id)}"${reached || busy ? " disabled" : ""}>${reachBusy ? "שולח…" : reached ? "פנייה נשלחה" : "פנייה"}</button>
+        <button class="chip-btn" data-community-action="coach-engage-review" data-id="${esc(it.id)}"${busy ? " disabled" : ""}>סימון כנבדק</button>
+        <button class="chip-btn" data-community-action="coach-engage-dismiss" data-id="${esc(it.id)}"${busy ? " disabled" : ""}>דחייה</button>
       </div>
     </div>`;
   }
   function renderCoachEngageSection() {
     if (!state.featureFlags.coachEngage) return "";
-    const e = state.coachEngage;
+    const e = state.coach.engage;
     const body = (e.loading && !e.loaded)
       ? `<div aria-busy="true"><div class="log-row" style="height:40px;background:var(--border);opacity:.35;"></div></div>`
       : e.error
@@ -6296,41 +6425,41 @@
 
   // ---- Rendering: create/edit form (COMM-201) ------------------------------
   function renderChallengeForm() {
-    const f = state.challengeForm;
-    const typePicker = `<div class="chip-row" role="group" aria-label="סוג אתגר" style="margin-bottom:10px;">${CHALLENGE_TYPES.map((t) => `<button type="button" class="chip-btn${f.challengeType === t.id ? " selected" : ""}" data-community-action="challenge-form-type" data-type="${t.id}"${f.mode === "edit" ? " disabled" : ""}>${t.icon} ${safeText(t.label)}</button>`).join("")}</div>`;
+    const f = state.challenges.form;
+    const typePicker = `<div class="chip-row" role="group" aria-label="סוג אתגר" style="margin-bottom:10px;">${CHALLENGE_TYPES.map((t) => `<button type="button" class="chip-btn${f.challengeType === t.id ? " selected" : ""}" data-community-action="challenge-form-type" data-type="${t.id}"${f.mode === "edit" ? " disabled" : ""}>${t.icon} ${esc(t.label)}</button>`).join("")}</div>`;
     const typeFields = f.challengeType === "coach" ? `
-        ${field("communityChallengeForm", "rulesText", "חוקי האתגר", `<textarea class="text-input" name="rulesText" maxlength="1000" required>${safeText(f.rulesText)}</textarea>`)}
-        ${field("communityChallengeForm", "metricLabel", "יחידת מדידה (לתצוגה)", `<input class="text-input" name="metricLabel" value="${safeText(f.metricLabel)}" placeholder="למשל בורפיז"/>`)}`
+        ${field("communityChallengeForm", "rulesText", "חוקי האתגר", `<textarea class="text-input" name="rulesText" maxlength="1000" required>${esc(f.rulesText)}</textarea>`)}
+        ${field("communityChallengeForm", "metricLabel", "יחידת מדידה (לתצוגה)", `<input class="text-input" name="metricLabel" value="${esc(f.metricLabel)}" placeholder="למשל בורפיז"/>`)}`
       : f.challengeType === "consistency" ? `
         <div class="flex gap-16 field">
-          ${field("communityChallengeForm", "timesPerWeek", "אימונים בשבוע", `<input class="text-input" name="timesPerWeek" type="number" min="1" value="${safeText(f.timesPerWeek)}" required/>`)}
-          ${field("communityChallengeForm", "weeks", "מספר שבועות", `<input class="text-input" name="weeks" type="number" min="1" value="${safeText(f.weeks)}" required/>`)}
+          ${field("communityChallengeForm", "timesPerWeek", "אימונים בשבוע", `<input class="text-input" name="timesPerWeek" type="number" min="1" value="${esc(f.timesPerWeek)}" required/>`)}
+          ${field("communityChallengeForm", "weeks", "מספר שבועות", `<input class="text-input" name="weeks" type="number" min="1" value="${esc(f.weeks)}" required/>`)}
         </div>`
       : (f.challengeType === "team" && f.mode === "create") ? `
-        ${field("communityChallengeForm", "teamNames", "שמות הקבוצות (שורה לכל קבוצה)", `<textarea class="text-input" name="teamNames" placeholder="קבוצת בוקר&#10;קבוצת ערב">${safeText(f.teamNames)}</textarea>`)}
+        ${field("communityChallengeForm", "teamNames", "שמות הקבוצות (שורה לכל קבוצה)", `<textarea class="text-input" name="teamNames" placeholder="קבוצת בוקר&#10;קבוצת ערב">${esc(f.teamNames)}</textarea>`)}
         <label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="teamAuto"/><span style="font-size:12.5px;color:var(--steel);">שיבוץ אוטומטי לקבוצה עם פחות משתתפים</span></label>`
       : "";
     const showTarget = f.challengeType !== "coach";
     return `<form id="communityChallengeForm" class="chart-card admin-card" style="margin-top:10px;">
       <div style="font-weight:800;margin-bottom:10px;">${f.mode === "edit" ? "עריכת אתגר" : "אתגר חדש"}<span class="admin-tag">ניהול</span></div>
       ${typePicker}
-      ${field("communityChallengeForm", "title", "שם האתגר", `<input class="text-input" name="title" value="${safeText(f.title)}" maxlength="120" required/>`)}
-      ${field("communityChallengeForm", "description", "תיאור", `<textarea class="text-input" name="description" maxlength="2000">${safeText(f.description)}</textarea>`)}
-      ${field("communityChallengeForm", "metricType", "מדד", `<input class="text-input" name="metricType" value="${safeText(f.metricType)}" placeholder="למשל session_count" required/>`)}
-      ${showTarget ? field("communityChallengeForm", "targetValue", "יעד", `<input class="text-input" name="targetValue" type="number" step="any" value="${safeText(f.targetValue)}"/>`) : ""}
+      ${field("communityChallengeForm", "title", "שם האתגר", `<input class="text-input" name="title" value="${esc(f.title)}" maxlength="120" required/>`)}
+      ${field("communityChallengeForm", "description", "תיאור", `<textarea class="text-input" name="description" maxlength="2000">${esc(f.description)}</textarea>`)}
+      ${field("communityChallengeForm", "metricType", "מדד", `<input class="text-input" name="metricType" value="${esc(f.metricType)}" placeholder="למשל session_count" required/>`)}
+      ${showTarget ? field("communityChallengeForm", "targetValue", "יעד", `<input class="text-input" name="targetValue" type="number" step="any" value="${esc(f.targetValue)}"/>`) : ""}
       <div class="flex gap-16 field">
-        ${field("communityChallengeForm", "startAt", "תאריך התחלה", `<input class="text-input" name="startAt" type="date" value="${safeText(f.startAt)}" required/>`)}
-        ${field("communityChallengeForm", "endAt", "תאריך סיום", `<input class="text-input" name="endAt" type="date" value="${safeText(f.endAt)}" required/>`)}
+        ${field("communityChallengeForm", "startAt", "תאריך התחלה", `<input class="text-input" name="startAt" type="date" value="${esc(f.startAt)}" required/>`)}
+        ${field("communityChallengeForm", "endAt", "תאריך סיום", `<input class="text-input" name="endAt" type="date" value="${esc(f.endAt)}" required/>`)}
       </div>
       ${typeFields}
       ${f.mode === "create" ? `<label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="publishNow"/><span style="font-size:12.5px;color:var(--steel);">פרסום מיידי (אחרת יישמר כטיוטה)</span></label>` : ""}
-      ${f.error ? `<div class="field-error" role="alert">${safeText(f.error)}</div>` : ""}
+      ${f.error ? `<div class="field-error" role="alert">${esc(f.error)}</div>` : ""}
       <div class="chip-row" style="margin-top:10px;">
         <button class="chip-btn primary" type="submit"${f.saving ? " disabled" : ""}>${f.saving ? "שומר…" : "שמירה"}</button>
         <button class="chip-btn" type="button" data-community-action="challenge-form-cancel">ביטול</button>
-        ${f.mode === "edit" && f.status === "draft" ? `<button class="chip-btn" type="button" data-community-action="challenge-publish" data-id="${safeText(f.id)}">פרסום</button>` : ""}
-        ${f.mode === "edit" && f.status === "draft" ? `<button class="chip-btn danger" type="button" data-community-action="challenge-delete" data-id="${safeText(f.id)}">מחיקת טיוטה</button>` : ""}
-        ${f.mode === "edit" && (f.status === "active" || f.status === "completed") ? `<button class="chip-btn" type="button" data-community-action="challenge-archive" data-id="${safeText(f.id)}">העברה לארכיון</button>` : ""}
+        ${f.mode === "edit" && f.status === "draft" ? `<button class="chip-btn" type="button" data-community-action="challenge-publish" data-id="${esc(f.id)}">פרסום</button>` : ""}
+        ${f.mode === "edit" && f.status === "draft" ? `<button class="chip-btn danger" type="button" data-community-action="challenge-delete" data-id="${esc(f.id)}">מחיקת טיוטה</button>` : ""}
+        ${f.mode === "edit" && (f.status === "active" || f.status === "completed") ? `<button class="chip-btn" type="button" data-community-action="challenge-archive" data-id="${esc(f.id)}">העברה לארכיון</button>` : ""}
       </div>
     </form>`;
   }
@@ -6341,19 +6470,19 @@
     if (c.status === "completed" || c.status === "archived") return "";
     if (c.status === "draft") return `<div class="footer-note" style="margin-bottom:10px;">האתגר עדיין בטיוטה ואינו פתוח להצטרפות.</div>`;
     if (v.myParticipant) {
-      return `<div class="chip-row" style="margin-bottom:10px;"><button class="chip-btn" data-community-action="leave-challenge" data-id="${safeText(c.id)}"${v.leaving ? " disabled" : ""}>${v.leaving ? "עוזב/ת…" : "עזיבת האתגר"}</button></div>`;
+      return `<div class="chip-row" style="margin-bottom:10px;"><button class="chip-btn" data-community-action="leave-challenge" data-id="${esc(c.id)}"${v.leaving ? " disabled" : ""}>${v.leaving ? "עוזב/ת…" : "עזיבת האתגר"}</button></div>`;
     }
-    return `<div class="chip-row" style="margin-bottom:10px;"><button class="chip-btn primary" data-community-action="join-challenge" data-id="${safeText(c.id)}"${v.joining ? " disabled" : ""}>${v.joining ? "מצטרפ/ת…" : "הצטרפות לאתגר"}</button></div>`;
+    return `<div class="chip-row" style="margin-bottom:10px;"><button class="chip-btn primary" data-community-action="join-challenge" data-id="${esc(c.id)}"${v.joining ? " disabled" : ""}>${v.joining ? "מצטרפ/ת…" : "הצטרפות לאתגר"}</button></div>`;
   }
   function renderChallengeLogForm(v) {
     const lf = v.logForm;
     return `<div class="chart-card" style="margin-bottom:10px;">
       <div class="field-label" style="margin-bottom:6px;">עדכון התקדמות</div>
       <div class="flex gap-10" style="align-items:flex-end;">
-        <label class="field" style="flex:1;margin-bottom:0;"><span class="field-label">כמות</span><input class="text-input" type="number" step="any" data-challenge-log-delta value="${safeText(lf.delta)}"/></label>
+        <label class="field" style="flex:1;margin-bottom:0;"><span class="field-label">כמות</span><input class="text-input" type="number" step="any" data-challenge-log-delta value="${esc(lf.delta)}"/></label>
         <button class="chip-btn primary" data-community-action="challenge-log-submit"${lf.busy ? " disabled" : ""}>${lf.busy ? "שומר…" : "עדכון"}</button>
       </div>
-      ${lf.error ? `<div class="field-error" role="alert" style="margin-top:6px;">${safeText(lf.error)}</div>` : ""}
+      ${lf.error ? `<div class="field-error" role="alert" style="margin-top:6px;">${esc(lf.error)}</div>` : ""}
     </div>`;
   }
   function renderMyChallengeProgress(v) {
@@ -6363,7 +6492,7 @@
     const pct = c.target_value ? (Number(part.progress_value || 0) / c.target_value) * 100 : null;
     return `<div class="chart-card" style="margin-bottom:10px;">
       <div class="field-label" style="margin-bottom:4px;">ההתקדמות שלי</div>
-      ${part.progress_value ? `<div class="mono" style="color:var(--brass);font-size:16px;">${safeText(part.progress_value)}${c.target_value != null ? ` / ${safeText(c.target_value)}` : ""}</div>` : `<div class="empty">עדיין לא נרשמה התקדמות.</div>`}
+      ${part.progress_value ? `<div class="mono" style="color:var(--brass);font-size:16px;">${esc(part.progress_value)}${c.target_value != null ? ` / ${esc(c.target_value)}` : ""}</div>` : `<div class="empty">עדיין לא נרשמה התקדמות.</div>`}
       ${pct != null ? challengeProgressBarHtml(pct) : ""}
       ${completed ? `<div style="color:var(--brass);font-weight:800;margin-top:6px;">האתגר הושלם 🎉</div>` : ""}
     </div>${(!completed && c.challenge_type !== "coach") ? renderChallengeLogForm(v) : ""}`;
@@ -6378,12 +6507,12 @@
       ? `<div class="log-list" style="margin-top:8px;">${contributors.map((row) => {
           const prof = row.profiles || {};
           const name = prof.display_name || (prof.handle ? "@" + prof.handle : "חבר/ה");
-          return `<div class="log-row"><span>${safeText(name)}</span><span class="mono" style="color:var(--brass);">+${safeText(row.delta)}</span></div>`;
+          return `<div class="log-row"><span>${esc(name)}</span><span class="mono" style="color:var(--brass);">+${esc(row.delta)}</span></div>`;
         }).join("")}</div>`
       : `<div class="empty">עדיין לא נאספה התקדמות משותפת.</div>`;
     return `<div class="chart-card" style="margin-bottom:10px;">
       <div class="field-label" style="margin-bottom:4px;">התקדמות המועדון</div>
-      <div class="mono" style="color:var(--brass);font-size:18px;">${safeText(p.club_total)}${c.target_value != null ? ` / ${safeText(c.target_value)}` : ""}</div>
+      <div class="mono" style="color:var(--brass);font-size:18px;">${esc(p.club_total)}${c.target_value != null ? ` / ${esc(c.target_value)}` : ""}</div>
       ${challengeProgressBarHtml(pct)}
       <div style="color:var(--steel);font-size:12px;margin-top:4px;">${Math.round(Math.min(100, pct))}% מהיעד${days != null ? ` · ${days} ימים נותרו` : ""}</div>
       <div class="field-label" style="margin:10px 0 4px;">תורמים אחרונים</div>
@@ -6429,19 +6558,19 @@
       const captainOptions = `<option value="">ללא קפטן/ית</option>` + teamMembers.map((p) => {
         const prof = p.profiles || {};
         const name = prof.display_name || (prof.handle ? "@" + prof.handle : "חבר/ה");
-        return `<option value="${safeText(p.user_id)}"${t.captain_id === p.user_id ? " selected" : ""}>${safeText(name)}</option>`;
+        return `<option value="${esc(p.user_id)}"${t.captain_id === p.user_id ? " selected" : ""}>${esc(name)}</option>`;
       }).join("");
       const renameBusy = !!tm.renameBusy[t.id], deleteBusy = !!tm.deleteBusy[t.id], captainBusy = !!tm.captainBusy[t.id];
       const nameValue = tm.renameDrafts[t.id] != null ? tm.renameDrafts[t.id] : t.name;
-      return `<div class="log-row" style="flex-direction:column;align-items:stretch;gap:6px;" data-team-mgmt-row="${safeText(t.id)}">
+      return `<div class="log-row" style="flex-direction:column;align-items:stretch;gap:6px;" data-team-mgmt-row="${esc(t.id)}">
         <div class="flex gap-6" style="align-items:center;">
-          <input class="text-input" type="text" data-challenge-team-rename-name="${safeText(t.id)}" value="${safeText(nameValue)}" maxlength="80" style="flex:1;" aria-label="שם הקבוצה"/>
-          <button class="chip-btn" data-community-action="challenge-team-rename" data-id="${safeText(t.id)}"${renameBusy ? " disabled" : ""}>${renameBusy ? "שומר…" : "שמירה"}</button>
-          <button class="chip-btn" data-community-action="challenge-team-delete" data-id="${safeText(t.id)}"${(deleteBusy || memberCount > 0) ? " disabled" : ""}${memberCount > 0 ? ` title="יש לפנות את הקבוצה מחברים לפני מחיקתה"` : ""}>${deleteBusy ? "מוחק…" : "מחיקה"}</button>
+          <input class="text-input" type="text" data-challenge-team-rename-name="${esc(t.id)}" value="${esc(nameValue)}" maxlength="80" style="flex:1;" aria-label="שם הקבוצה"/>
+          <button class="chip-btn" data-community-action="challenge-team-rename" data-id="${esc(t.id)}"${renameBusy ? " disabled" : ""}>${renameBusy ? "שומר…" : "שמירה"}</button>
+          <button class="chip-btn" data-community-action="challenge-team-delete" data-id="${esc(t.id)}"${(deleteBusy || memberCount > 0) ? " disabled" : ""}${memberCount > 0 ? ` title="יש לפנות את הקבוצה מחברים לפני מחיקתה"` : ""}>${deleteBusy ? "מוחק…" : "מחיקה"}</button>
         </div>
-        <div style="font-size:12px;color:var(--steel);">${memberCount} משתתפים · ${safeText(total)} סה״כ${captainName ? ` · 👑 ${safeText(captainName)}` : ""}</div>
+        <div style="font-size:12px;color:var(--steel);">${memberCount} משתתפים · ${esc(total)} סה״כ${captainName ? ` · 👑 ${esc(captainName)}` : ""}</div>
         <div class="flex gap-6" style="align-items:center;">
-          <select class="text-input" data-challenge-team-captain-select="${safeText(t.id)}" style="flex:1;"${(captainBusy || !teamMembers.length) ? " disabled" : ""} aria-label="קפטן/ית הקבוצה">${captainOptions}</select>
+          <select class="text-input" data-challenge-team-captain-select="${esc(t.id)}" style="flex:1;"${(captainBusy || !teamMembers.length) ? " disabled" : ""} aria-label="קפטן/ית הקבוצה">${captainOptions}</select>
         </div>
       </div>`;
     }).join("");
@@ -6452,10 +6581,10 @@
         const prof = p.profiles || {};
         const name = prof.display_name || (prof.handle ? "@" + prof.handle : "חבר/ה");
         const busy = !!tm.reassignBusy[p.user_id];
-        const options = `<option value="">ללא קבוצה</option>` + rawTeams.map((t) => `<option value="${safeText(t.id)}"${p.team_id === t.id ? " selected" : ""}>${safeText(t.name)}</option>`).join("");
+        const options = `<option value="">ללא קבוצה</option>` + rawTeams.map((t) => `<option value="${esc(t.id)}"${p.team_id === t.id ? " selected" : ""}>${esc(t.name)}</option>`).join("");
         return `<div class="log-row" style="justify-content:space-between;gap:8px;">
-          <span>${safeText(name)}</span>
-          <select class="text-input" data-challenge-team-reassign-select="${safeText(p.user_id)}"${busy ? " disabled" : ""} style="max-width:160px;" aria-label="קבוצה של ${safeText(name)}">${options}</select>
+          <span>${esc(name)}</span>
+          <select class="text-input" data-challenge-team-reassign-select="${esc(p.user_id)}"${busy ? " disabled" : ""} style="max-width:160px;" aria-label="קבוצה של ${esc(name)}">${options}</select>
         </div>`;
       }).join("")}</div>
     </div>` : "";
@@ -6464,11 +6593,11 @@
       <div class="field-label" style="margin-bottom:6px;">ניהול קבוצות<span class="admin-tag">ניהול</span></div>
       ${teamRows ? `<div class="log-list">${teamRows}</div>` : ""}
       <div class="flex gap-6" style="align-items:flex-end;margin-top:8px;">
-        <label class="field" style="flex:1;margin-bottom:0;"><span class="field-label">קבוצה חדשה</span><input class="text-input" type="text" data-challenge-team-create-name value="${safeText(tm.createName)}" maxlength="80"/></label>
+        <label class="field" style="flex:1;margin-bottom:0;"><span class="field-label">קבוצה חדשה</span><input class="text-input" type="text" data-challenge-team-create-name value="${esc(tm.createName)}" maxlength="80"/></label>
         <button class="chip-btn primary" data-community-action="challenge-team-create"${tm.createBusy ? " disabled" : ""}>${tm.createBusy ? "יוצר…" : "צור קבוצה"}</button>
       </div>
-      ${tm.createError ? `<div class="field-error" role="alert" style="margin-top:6px;">${safeText(tm.createError)}</div>` : ""}
-      ${tm.error ? `<div class="field-error" role="alert" style="margin-top:6px;">${safeText(tm.error)}</div>` : ""}
+      ${tm.createError ? `<div class="field-error" role="alert" style="margin-top:6px;">${esc(tm.createError)}</div>` : ""}
+      ${tm.error ? `<div class="field-error" role="alert" style="margin-top:6px;">${esc(tm.error)}</div>` : ""}
       ${reassignHtml}
     </div>`;
   }
@@ -6480,9 +6609,9 @@
     const myTeamId = v.myParticipant && v.myParticipant.team_id;
     const canPick = v.myParticipant && !myTeamId;
     const cols = teams.map((t) => `<div class="chart-card" style="flex:1;min-width:130px;${t.team_id === myTeamId ? "border-color:var(--energy);" : ""}">
-        <div style="font-weight:800;font-size:13px;">${safeText(t.name)}${t.team_id === myTeamId ? " · הקבוצה שלי" : ""}</div>
-        <div class="mono" style="color:var(--brass);font-size:16px;margin-top:4px;">${safeText(t.total)}</div>
-        ${canPick ? `<button class="chip-btn" data-community-action="challenge-pick-team" data-id="${safeText(c.id)}" data-team="${safeText(t.team_id)}"${v.teamJoining === t.team_id ? " disabled" : ""} style="margin-top:6px;">${v.teamJoining === t.team_id ? "מצטרפ/ת…" : "הצטרפות לקבוצה"}</button>` : ""}
+        <div style="font-weight:800;font-size:13px;">${esc(t.name)}${t.team_id === myTeamId ? " · הקבוצה שלי" : ""}</div>
+        <div class="mono" style="color:var(--brass);font-size:16px;margin-top:4px;">${esc(t.total)}</div>
+        ${canPick ? `<button class="chip-btn" data-community-action="challenge-pick-team" data-id="${esc(c.id)}" data-team="${esc(t.team_id)}"${v.teamJoining === t.team_id ? " disabled" : ""} style="margin-top:6px;">${v.teamJoining === t.team_id ? "מצטרפ/ת…" : "הצטרפות לקבוצה"}</button>` : ""}
       </div>`).join("");
     return `<div class="flex gap-10" style="flex-wrap:wrap;margin-bottom:10px;">${cols}</div>${staff ? renderTeamManagementPanel(v) : ""}${(v.myParticipant && myTeamId) ? renderChallengeLogForm(v) : ""}`;
   }
@@ -6500,7 +6629,7 @@
       <div>${boxes}</div>
       ${emptyMsg}${completeMsg}
       ${part.status !== "completed" ? `<button class="chip-btn" data-community-action="challenge-log-week-hit" style="margin-top:8px;"${v.logForm.busy ? " disabled" : ""}>${v.logForm.busy ? "שומר…" : "סימון שבוע שהושלם"}</button>` : ""}
-      ${v.logForm.error ? `<div class="field-error" role="alert" style="margin-top:6px;">${safeText(v.logForm.error)}</div>` : ""}
+      ${v.logForm.error ? `<div class="field-error" role="alert" style="margin-top:6px;">${esc(v.logForm.error)}</div>` : ""}
     </div>`;
   }
   // COMM-211. This panel used to rank chal_progress()'s own simpler
@@ -6520,7 +6649,7 @@
       limit: b.limit,
       emptyText: "עדיין אין תוצאות לדירוג.",
       retryAction: "challenge-board-retry",
-      formatValue: (r) => safeText(r.value),
+      formatValue: (r) => esc(r.value),
     });
     const canExpand = !b.loading && !b.error && leaderboardRows(b).length && b.limit < CHALLENGE_BOARD_FULL_LIMIT;
     const expand = canExpand ? `<div class="chip-row" style="margin-top:6px;"><button class="chip-btn" data-community-action="challenge-board-full">צפייה בטבלה המלאה</button></div>` : "";
@@ -6539,17 +6668,17 @@
       const d = v.coachEntry.drafts[p.user_id] || { delta: "", note: "" };
       const busy = !!v.coachEntry.busy[p.user_id];
       return `<div class="log-row" style="flex-direction:column;align-items:stretch;gap:6px;">
-        <div class="flex" style="justify-content:space-between;"><span>${safeText(name)}</span><span class="mono" style="color:var(--brass);">${safeText(p.progress_value)}</span></div>
+        <div class="flex" style="justify-content:space-between;"><span>${esc(name)}</span><span class="mono" style="color:var(--brass);">${esc(p.progress_value)}</span></div>
         <div class="flex gap-6">
-          <input class="text-input" type="number" step="any" data-challenge-coach-delta="${safeText(p.user_id)}" value="${safeText(d.delta)}" placeholder="כמות" style="flex:1;"/>
-          <button class="chip-btn primary" data-community-action="challenge-coach-submit" data-id="${safeText(p.user_id)}"${busy ? " disabled" : ""}>${busy ? "שומר…" : "עדכון"}</button>
+          <input class="text-input" type="number" step="any" data-challenge-coach-delta="${esc(p.user_id)}" value="${esc(d.delta)}" placeholder="כמות" style="flex:1;"/>
+          <button class="chip-btn primary" data-community-action="challenge-coach-submit" data-id="${esc(p.user_id)}"${busy ? " disabled" : ""}>${busy ? "שומר…" : "עדכון"}</button>
         </div>
       </div>`;
     }).join("") : `<div class="empty">אף אחד עדיין לא הצטרף לאתגר.</div>`;
     return `<div class="chart-card" style="margin-bottom:10px;">
       <div class="field-label" style="margin-bottom:6px;">עדכון התקדמות משתתפים</div>
       <div class="log-list">${rosterHtml}</div>
-      ${v.coachEntry.error ? `<div class="field-error" role="alert" style="margin-top:6px;">${safeText(v.coachEntry.error)}</div>` : ""}
+      ${v.coachEntry.error ? `<div class="field-error" role="alert" style="margin-top:6px;">${esc(v.coachEntry.error)}</div>` : ""}
     </div>`;
   }
   function renderChallengeParticipants(v) {
@@ -6557,11 +6686,11 @@
     if (!list.length) return "";
     const count = (v.progress && v.progress.participant_count != null) ? v.progress.participant_count : list.length;
     return `<div style="margin-top:12px;">
-      <div class="field-label" style="margin-bottom:6px;">משתתפים (${safeText(count)})</div>
+      <div class="field-label" style="margin-bottom:6px;">משתתפים (${esc(count)})</div>
       <div class="log-list">${list.map((p) => {
         const prof = p.profiles || {};
         const name = prof.display_name || (prof.handle ? "@" + prof.handle : "חבר/ה");
-        return `<div class="log-row"><span>${safeText(name)}</span>${p.status === "completed" ? `<span class="tag tag-brass">הושלם</span>` : ""}</div>`;
+        return `<div class="log-row"><span>${esc(name)}</span>${p.status === "completed" ? `<span class="tag tag-brass">הושלם</span>` : ""}</div>`;
       }).join("")}</div>
     </div>`;
   }
@@ -6569,10 +6698,10 @@
     const c = v.challenge;
     const def = challengeTypeDef(c.challenge_type);
     const staff = hasPerm(PERM.CHALLENGE_CREATE);
-    const meta = `<div style="color:var(--steel);font-size:12px;margin-bottom:10px;">${safeText(def.label)} · ${formatChallengeDate(c.start_at)}–${formatChallengeDate(c.end_at)} · ${safeText(challengeStatusLabel(c))}</div>`;
-    const description = c.description ? `<div style="font-size:13.5px;line-height:1.6;margin-bottom:10px;white-space:pre-wrap;">${safeText(c.description)}</div>` : "";
-    const rules = (c.config && c.config.rules_text) ? `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">חוקי האתגר</div><div style="font-size:13px;white-space:pre-wrap;">${safeText(c.config.rules_text)}</div></div>` : "";
-    const staffToolbar = staff ? `<div class="chip-row" style="margin-bottom:10px;"><button class="chip-btn" data-community-action="challenge-edit" data-id="${safeText(c.id)}">עריכה</button></div>` : "";
+    const meta = `<div style="color:var(--steel);font-size:12px;margin-bottom:10px;">${esc(def.label)} · ${formatChallengeDate(c.start_at)}–${formatChallengeDate(c.end_at)} · ${esc(challengeStatusLabel(c))}</div>`;
+    const description = c.description ? `<div style="font-size:13.5px;line-height:1.6;margin-bottom:10px;white-space:pre-wrap;">${esc(c.description)}</div>` : "";
+    const rules = (c.config && c.config.rules_text) ? `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">חוקי האתגר</div><div style="font-size:13px;white-space:pre-wrap;">${esc(c.config.rules_text)}</div></div>` : "";
+    const staffToolbar = staff ? `<div class="chip-row" style="margin-bottom:10px;"><button class="chip-btn" data-community-action="challenge-edit" data-id="${esc(c.id)}">עריכה</button></div>` : "";
     const myProgress = renderMyChallengeProgress(v);
     const typePanel = c.challenge_type === "cooperative" ? renderCooperativePanel(v)
       : c.challenge_type === "team" ? renderTeamPanel(v)
@@ -6594,7 +6723,7 @@
     return `${meta}${staffToolbar}${description}${rules}${actions}${myProgress}${typePanel}${coachPanel}${shareBtn}${participantsHtml}${commentsNote}`;
   }
   function renderChallengeViewOverlay() {
-    const v = state.challengeView;
+    const v = state.challenges.view;
     if (!v) return "";
     const bodyHtml = v.loading ? `<div class="empty">טוען את האתגר…</div>`
       : (v.error || !v.challenge) ? `<div class="empty">לא ניתן היה לטעון את האתגר. נסו שוב.</div>`
@@ -6603,7 +6732,7 @@
       <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:560px;">
         <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
           <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:12px;">
-            <div id="challengeViewTitle" style="font-weight:800;font-size:17px;">${v.challenge ? safeText(v.challenge.title) : "אתגר"}</div>
+            <div id="challengeViewTitle" style="font-weight:800;font-size:17px;">${v.challenge ? esc(v.challenge.title) : "אתגר"}</div>
             <button class="chip-btn" data-community-action="close-challenge-view" aria-label="סגירה">✕</button>
           </div>
           ${bodyHtml}
@@ -6649,7 +6778,7 @@
   // marked cancelled".
   function isUpcomingEvent(e) { return !!e && e.status === "published" && !!e.start_at && new Date(e.start_at).getTime() > Date.now(); }
   function isPastEvent(e) { return !!e && (e.status === "past" || e.status === "cancelled" || (e.status === "published" && !isUpcomingEvent(e))); }
-  function eventAttendeeRows(id) { return state.eventAttendees[id] || []; }
+  function eventAttendeeRows(id) { return state.events.attendees[id] || []; }
   // COMM-213/214. Read straight off the event_attendees rows RLS actually
   // handed back for the caller - event_attendees_read (202608280010)
   // already excludes another member's row when they opted out of
@@ -6670,32 +6799,32 @@
   function eventIsFull(e) { return !!(e && e.capacity != null && eventGoingCount(e.id) >= e.capacity && myEventResponse(e.id) !== "going"); }
 
   async function loadEvents() {
-    if (!state.user) { state.events = []; state.eventsById = {}; state.eventAttendees = {}; state.eventsLoaded = false; return; }
-    state.eventsLoading = true;
+    if (!state.user) { state.events.items = []; state.events.byId = {}; state.events.attendees = {}; state.events.loaded = false; return; }
+    state.events.loading = true;
     rerender();
     const { data, error } = await client.from("events").select("*").order("start_at", { ascending: true });
-    if (error) { state.eventsLoading = false; state.eventsError = true; return rerender(); }
-    state.events = data || [];
-    state.eventsById = {};
-    for (const e of state.events) state.eventsById[e.id] = e;
-    state.eventsError = false;
-    const ids = state.events.map((e) => e.id);
-    state.eventAttendees = {};
+    if (error) { state.events.loading = false; state.events.error = true; return rerender(); }
+    state.events.items = data || [];
+    state.events.byId = {};
+    for (const e of state.events.items) state.events.byId[e.id] = e;
+    state.events.error = false;
+    const ids = state.events.items.map((e) => e.id);
+    state.events.attendees = {};
     if (ids.length) {
       const { data: rows, error: aErr } = await client.from("event_attendees")
         .select("event_id,user_id,response,registered_at,profiles(display_name,handle,avatar_url)")
         .in("event_id", ids);
-      if (!aErr) for (const row of (rows || [])) (state.eventAttendees[row.event_id] = state.eventAttendees[row.event_id] || []).push(row);
+      if (!aErr) for (const row of (rows || [])) (state.events.attendees[row.event_id] = state.events.attendees[row.event_id] || []).push(row);
     }
-    state.eventsLoading = false;
-    state.eventsLoaded = true;
+    state.events.loading = false;
+    state.events.loaded = true;
     rerender();
   }
 
   // ---- List (COMM-213) ------------------------------------------------------
   function eventCardImageHtml(e) {
     return e.image_url
-      ? `<img src="${safeText(e.image_url)}" alt="" style="width:56px;height:56px;border-radius:12px;object-fit:cover;"/>`
+      ? `<img src="${esc(e.image_url)}" alt="" style="width:56px;height:56px;border-radius:12px;object-fit:cover;"/>`
       : `<span aria-hidden="true" style="width:56px;height:56px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:24px;background:var(--border);">${eventTypeDef(e.event_type).icon}</span>`;
   }
   function renderEventCard(e) {
@@ -6708,16 +6837,16 @@
     if (e.status === "draft") meta.push(eventStatusLabel(e));
     if (cancelled) meta.push("בוטל");
     const mineLabel = mine === "going" ? "הולכ/ת" : mine === "interested" ? "מעוניינ/ת" : mine === "not_going" ? "לא הולכ/ת" : "";
-    return `<article class="chart-card" data-event-id="${safeText(e.id)}" data-event-status="${safeText(e.status)}" style="margin-bottom:10px;${cancelled ? "opacity:.7;" : ""}">
+    return `<article class="chart-card" data-event-id="${esc(e.id)}" data-event-status="${esc(e.status)}" style="margin-bottom:10px;${cancelled ? "opacity:.7;" : ""}">
       <div class="flex gap-10" style="align-items:flex-start;">
         ${eventCardImageHtml(e)}
         <div style="flex:1;min-width:0;">
-          <button class="link-btn" data-community-action="open-event" data-id="${safeText(e.id)}" data-source="boards" style="padding:0;text-align:right;font-weight:800;font-size:15px;color:inherit;display:block;">${safeText(e.title)}</button>
-          <div style="color:var(--steel);font-size:11.5px;margin-top:2px;">${meta.map(safeText).join(" · ")}</div>
+          <button class="link-btn" data-community-action="open-event" data-id="${esc(e.id)}" data-source="boards" style="padding:0;text-align:right;font-weight:800;font-size:15px;color:inherit;display:block;">${esc(e.title)}</button>
+          <div style="color:var(--steel);font-size:11.5px;margin-top:2px;">${meta.map(esc).join(" · ")}</div>
         </div>
       </div>
       <div class="chip-row" style="margin-top:8px;">
-        <button class="chip-btn" data-community-action="open-event" data-id="${safeText(e.id)}" data-source="boards">פרטים</button>
+        <button class="chip-btn" data-community-action="open-event" data-id="${esc(e.id)}" data-source="boards">פרטים</button>
         ${mineLabel ? `<span class="tag tag-brass">${mineLabel}</span>` : ""}
       </div>
     </article>`;
@@ -6728,21 +6857,21 @@
     // included, once this module is off.
     if (!isModuleEnabled("events")) return "";
     const staff = hasPerm(PERM.EVENT_MANAGE);
-    const upcoming = state.events.filter((e) => isUpcomingEvent(e) || (staff && e.status === "draft"));
-    const past = state.events.filter(isPastEvent).slice().sort((a, b) => (a.start_at < b.start_at ? 1 : -1));
+    const upcoming = state.events.items.filter((e) => isUpcomingEvent(e) || (staff && e.status === "draft"));
+    const past = state.events.items.filter(isPastEvent).slice().sort((a, b) => (a.start_at < b.start_at ? 1 : -1));
     const createBtn = staff ? `<button class="chip-btn primary" data-community-action="open-event-form" style="margin-bottom:10px;">אירוע חדש</button>` : "";
-    const list = (state.eventsLoading && !state.eventsLoaded)
+    const list = (state.events.loading && !state.events.loaded)
       ? `<div aria-busy="true">${`<div class="chart-card" style="height:64px;background:var(--border);opacity:.35;margin-bottom:10px;"></div>`.repeat(2)}</div>`
-      : state.eventsError
+      : state.events.error
       ? `<div class="empty">לא ניתן היה לטעון את האירוע. נסו שוב.<div class="chip-row" style="justify-content:center;"><button class="chip-btn" data-community-action="events-retry">ניסיון חוזר</button></div></div>`
       : upcoming.length ? upcoming.map(renderEventCard).join("") : `<div class="empty">אין אירועים קרובים כרגע.</div>`;
     const pastHtml = past.length ? `<div style="margin-top:16px;"><div class="field-label" style="margin-bottom:6px;">אירועים שהסתיימו</div>${past.map(renderEventCard).join("")}</div>` : "";
-    return `<div class="ach-section">${sectionHead("var(--blue)", "אירועי המועדון")}${createBtn}${state.eventForm ? renderEventForm() : ""}${list}${pastHtml}</div>`;
+    return `<div class="ach-section">${sectionHead("var(--blue)", "אירועי המועדון")}${createBtn}${state.events.form ? renderEventForm() : ""}${list}${pastHtml}</div>`;
   }
 
   // ---- Create/edit form (COMM-213) ------------------------------------------
   function openEventForm(existing) {
-    state.eventForm = existing ? {
+    state.events.form = existing ? {
       mode: "edit", id: existing.id, status: existing.status, eventType: existing.event_type,
       title: existing.title, description: existing.description || "",
       imageUrl: existing.image_url || "", location: existing.location || "", mapLink: existing.map_link || "",
@@ -6759,10 +6888,10 @@
     };
     rerender();
   }
-  function closeEventForm() { state.eventForm = null; setFieldErrors("communityEventForm", {}); rerender(); }
-  function setEventFormType(type) { if (state.eventForm && EVENT_TYPES.some((t) => t.id === type)) { state.eventForm.eventType = type; rerender(); } }
+  function closeEventForm() { state.events.form = null; setFieldErrors("communityEventForm", {}); rerender(); }
+  function setEventFormType(type) { if (state.events.form && EVENT_TYPES.some((t) => t.id === type)) { state.events.form.eventType = type; rerender(); } }
   async function submitEventForm(form) {
-    const f = state.eventForm;
+    const f = state.events.form;
     if (!f || f.saving) return;
     const fd = new FormData(form);
     const title = String(fd.get("title") || "").trim();
@@ -6809,7 +6938,7 @@
     // draft-to-published toggle (publishEventDraft, below) - never at draft
     // save, since a draft has no attendees to discuss it with yet.
     if (publishNow) await ensureEventCompanionPost(Object.assign({}, payload));
-    state.eventForm = null;
+    state.events.form = null;
     setMessage("האירוע נשמר");
     await loadEvents();
     rerender();
@@ -6817,12 +6946,12 @@
   async function publishEventDraft(id) {
     const { error } = await client.from("events").update({ status: "published" }).eq("id", id);
     if (error) return setMessage("הפעולה נכשלה");
-    const event = state.eventsById[id];
+    const event = state.events.byId[id];
     if (event) await ensureEventCompanionPost(Object.assign({}, event, { status: "published" }));
-    state.eventForm = null;
+    state.events.form = null;
     setMessage("האירוע פורסם");
     await loadEvents();
-    if (state.eventView && state.eventView.id === id) await refreshEventView(id);
+    if (state.events.view && state.events.view.id === id) await refreshEventView(id);
     rerender();
   }
   function confirmCancelEvent(id) {
@@ -6836,7 +6965,7 @@
     if (error) return setMessage("הפעולה נכשלה");
     setMessage("האירוע בוטל");
     await loadEvents();
-    if (state.eventView && state.eventView.id === id) await refreshEventView(id);
+    if (state.events.view && state.events.view.id === id) await refreshEventView(id);
     rerender();
   }
 
@@ -6890,38 +7019,38 @@
   async function openEvent(id, source) {
     if (!id) return;
     track(A.EVENT_VIEWED, { event_id: id, source: source || "events" });
-    state.eventView = { id, loading: true, error: false, event: null, attendees: [], organizer: null, companionPostId: null, rsvpBusy: null, rsvpError: "", icsBusy: false, icsError: "" };
+    state.events.view = { id, loading: true, error: false, event: null, attendees: [], organizer: null, companionPostId: null, rsvpBusy: null, rsvpError: "", icsBusy: false, icsError: "" };
     rerender();
     await refreshEventView(id);
   }
-  function closeEventView() { state.eventView = null; rerender(); }
+  function closeEventView() { state.events.view = null; rerender(); }
   async function refreshEventView(id) {
-    const v = state.eventView;
+    const v = state.events.view;
     if (!v || v.id !== id) return;
     const { data: event, error } = await client.from("events").select("*").eq("id", id).maybeSingle();
-    if (!state.eventView || state.eventView.id !== id) return;
-    if (error || !event) { state.eventView.loading = false; state.eventView.error = true; return rerender(); }
-    state.eventView.event = event;
-    state.eventsById[id] = event;
+    if (!state.events.view || state.events.view.id !== id) return;
+    if (error || !event) { state.events.view.loading = false; state.events.view.error = true; return rerender(); }
+    state.events.view.event = event;
+    state.events.byId[id] = event;
     const { data: attendees } = await client.from("event_attendees")
       .select("user_id,response,registered_at,profiles(display_name,handle,avatar_url)")
       .eq("event_id", id).order("registered_at", { ascending: true });
-    state.eventView.attendees = attendees || [];
-    state.eventView.organizer = null;
+    state.events.view.attendees = attendees || [];
+    state.events.view.organizer = null;
     if (event.created_by) {
       const { data: organizer } = await client.from("profiles").select("id,display_name,handle").eq("id", event.created_by).maybeSingle();
-      state.eventView.organizer = organizer || null;
+      state.events.view.organizer = organizer || null;
     }
     // COMM-216. Opens the companion post's thread by default - there is no
     // separate "toggle comments" affordance on an event, the thread IS the
     // event's discussion.
     const companion = await findEventCompanionPost(id);
-    state.eventView.companionPostId = companion ? companion.id : null;
-    if (state.eventView.companionPostId) {
-      state.openComments[state.eventView.companionPostId] = true;
-      await loadCommentsFor(state.eventView.companionPostId);
+    state.events.view.companionPostId = companion ? companion.id : null;
+    if (state.events.view.companionPostId) {
+      state.engagement.openComments[state.events.view.companionPostId] = true;
+      await loadCommentsFor(state.events.view.companionPostId);
     }
-    state.eventView.loading = false;
+    state.events.view.loading = false;
     rerender();
   }
   function eventRsvpErrorMessage(msg) {
@@ -6938,7 +7067,7 @@
   // feed still tells the member why it failed.
   async function rsvpEvent(eventId, response) {
     if (!state.user || !eventId || !response) return;
-    const v = state.eventView && state.eventView.id === eventId ? state.eventView : null;
+    const v = state.events.view && state.events.view.id === eventId ? state.events.view : null;
     if (v) { v.rsvpBusy = response; v.rsvpError = ""; }
     rerender();
     const { error } = await client.rpc("event_rsvp", { p_event_id: eventId, p_response: response });
@@ -6954,7 +7083,7 @@
     }
     setMessage(response === "going" ? "נרשמת/ה לאירוע" : response === "interested" ? "סומנת/ה כמעוניינ/ת" : "עודכן כלא משתתפ/ת");
     await loadEvents();
-    if (state.eventView && state.eventView.id === eventId) await refreshEventView(eventId);
+    if (state.events.view && state.events.view.id === eventId) await refreshEventView(eventId);
     rerender();
   }
   function renderEventActions(v) {
@@ -6966,7 +7095,7 @@
     const btn = (response, label) => {
       const disabled = closed || !!v.rsvpBusy || (response === "going" && full);
       const active = mine === response;
-      return `<button class="chip-btn${active ? " selected" : ""}" data-community-action="event-rsvp" data-id="${safeText(e.id)}" data-response="${response}"${disabled ? " disabled" : ""}>${v.rsvpBusy === response ? "מעדכנ/ת…" : label}</button>`;
+      return `<button class="chip-btn${active ? " selected" : ""}" data-community-action="event-rsvp" data-id="${esc(e.id)}" data-response="${response}"${disabled ? " disabled" : ""}>${v.rsvpBusy === response ? "מעדכנ/ת…" : label}</button>`;
     };
     const notes = [];
     // COMM-214: "past its registration deadline disables any RSVP change".
@@ -6976,8 +7105,8 @@
     if (closed) notes.push("ההרשמה נסגרה");
     else if (full) notes.push("האירוע מלא");
     return `<div class="chip-row" style="margin-bottom:6px;">${btn("going", "משתתפ/ת")}${btn("interested", "מעוניינ/ת")}${btn("not_going", "לא משתתפ/ת")}</div>
-      ${notes.length ? `<div class="footer-note" style="margin-bottom:8px;">${notes.map(safeText).join(" · ")}</div>` : ""}
-      ${v.rsvpError ? `<div class="field-error" role="alert" style="margin-bottom:8px;">${safeText(v.rsvpError)}</div>` : ""}`;
+      ${notes.length ? `<div class="footer-note" style="margin-bottom:8px;">${notes.map(esc).join(" · ")}</div>` : ""}
+      ${v.rsvpError ? `<div class="field-error" role="alert" style="margin-bottom:8px;">${esc(v.rsvpError)}</div>` : ""}`;
   }
   function renderEventAttendees(v) {
     const rows = v.attendees || [];
@@ -6987,7 +7116,7 @@
       const prof = r.profiles || {};
       const name = prof.display_name || (prof.handle ? "@" + prof.handle : "חבר/ה");
       const label = r.response === "going" ? "הולכ/ת" : r.response === "interested" ? "מעוניינ/ת" : "לא הולכ/ת";
-      return `<div class="log-row"><span>${safeText(name)}</span><span style="color:var(--steel);font-size:12px;">${safeText(label)}</span></div>`;
+      return `<div class="log-row"><span>${esc(name)}</span><span style="color:var(--steel);font-size:12px;">${esc(label)}</span></div>`;
     };
     // Already scoped by event_attendees_read (202608280010) to rows the
     // caller may see: their own, every row if they hold
@@ -7037,8 +7166,8 @@
   // entirely from the event row already on state, and works offline once
   // the detail has loaded, per the ticket.
   function downloadEventIcs(eventId) {
-    const v = state.eventView && state.eventView.id === eventId ? state.eventView : null;
-    const event = (v && v.event) || state.eventsById[eventId];
+    const v = state.events.view && state.events.view.id === eventId ? state.events.view : null;
+    const event = (v && v.event) || state.events.byId[eventId];
     if (!event) return;
     if (v) { v.icsBusy = true; v.icsError = ""; }
     rerender();
@@ -7071,22 +7200,22 @@
     if (e.end_at) meta.push("עד " + formatEventTime(e.end_at));
     const statusLabel = eventStatusLabel(e);
     if (statusLabel) meta.push(statusLabel);
-    const metaHtml = `<div style="color:var(--steel);font-size:12px;margin-bottom:10px;">${meta.map(safeText).join(" · ")}</div>`;
-    const image = e.image_url ? `<img src="${safeText(e.image_url)}" alt="" style="width:100%;max-height:200px;object-fit:cover;border-radius:12px;margin-bottom:10px;"/>` : "";
-    const description = e.description ? `<div style="font-size:13.5px;line-height:1.6;margin-bottom:10px;white-space:pre-wrap;">${safeText(e.description)}</div>` : "";
-    const locationHtml = e.location ? `<div style="font-size:13px;color:var(--steel);margin-bottom:4px;">📍 ${safeText(e.location)}${e.map_link ? ` · <a class="link-btn" href="${safeText(e.map_link)}" target="_blank" rel="noopener noreferrer">מפה</a>` : ""}</div>` : "";
+    const metaHtml = `<div style="color:var(--steel);font-size:12px;margin-bottom:10px;">${meta.map(esc).join(" · ")}</div>`;
+    const image = e.image_url ? `<img src="${esc(e.image_url)}" alt="" style="width:100%;max-height:200px;object-fit:cover;border-radius:12px;margin-bottom:10px;"/>` : "";
+    const description = e.description ? `<div style="font-size:13.5px;line-height:1.6;margin-bottom:10px;white-space:pre-wrap;">${esc(e.description)}</div>` : "";
+    const locationHtml = e.location ? `<div style="font-size:13px;color:var(--steel);margin-bottom:4px;">📍 ${esc(e.location)}${e.map_link ? ` · <a class="link-btn" href="${esc(e.map_link)}" target="_blank" rel="noopener noreferrer">מפה</a>` : ""}</div>` : "";
     const going = eventGoingCount(e.id);
     const capacityHtml = `<div style="font-size:13px;color:var(--steel);margin-bottom:4px;">${e.capacity != null ? `${going} / ${e.capacity} משתתפים` : `${going} משתתפים`}</div>`;
-    const deadlineHtml = e.registration_deadline ? `<div style="font-size:12px;color:var(--steel);margin-bottom:4px;">מועד אחרון להרשמה: ${safeText(formatEventDate(e.registration_deadline))} ${safeText(formatEventTime(e.registration_deadline))}</div>` : "";
+    const deadlineHtml = e.registration_deadline ? `<div style="font-size:12px;color:var(--steel);margin-bottom:4px;">מועד אחרון להרשמה: ${esc(formatEventDate(e.registration_deadline))} ${esc(formatEventTime(e.registration_deadline))}</div>` : "";
     const organizerName = v.organizer ? (v.organizer.display_name || (v.organizer.handle ? "@" + v.organizer.handle : "")) : "";
-    const organizerHtml = organizerName ? `<div style="font-size:12px;color:var(--steel);margin-bottom:10px;">מארגנ/ת: ${safeText(organizerName)}</div>` : "";
+    const organizerHtml = organizerName ? `<div style="font-size:12px;color:var(--steel);margin-bottom:10px;">מארגנ/ת: ${esc(organizerName)}</div>` : "";
     const staffToolbar = staff ? `<div class="chip-row" style="margin-bottom:10px;">
-        <button class="chip-btn" data-community-action="event-edit" data-id="${safeText(e.id)}">עריכה</button>
-        ${e.status === "draft" ? `<button class="chip-btn" data-community-action="event-publish" data-id="${safeText(e.id)}">פרסום</button>` : ""}
-        ${e.status === "published" ? `<button class="chip-btn danger" data-community-action="event-cancel-confirm" data-id="${safeText(e.id)}">ביטול האירוע</button>` : ""}
+        <button class="chip-btn" data-community-action="event-edit" data-id="${esc(e.id)}">עריכה</button>
+        ${e.status === "draft" ? `<button class="chip-btn" data-community-action="event-publish" data-id="${esc(e.id)}">פרסום</button>` : ""}
+        ${e.status === "published" ? `<button class="chip-btn danger" data-community-action="event-cancel-confirm" data-id="${esc(e.id)}">ביטול האירוע</button>` : ""}
       </div>` : "";
     const actions = renderEventActions(v);
-    const icsBtn = `<div class="chip-row" style="margin:8px 0;"><button class="chip-btn" data-community-action="event-ics" data-id="${safeText(e.id)}"${v.icsBusy ? " disabled" : ""}>${v.icsBusy ? "יוצר…" : "הוספה ליומן"}</button></div>${v.icsError ? `<div class="field-error" role="alert">${safeText(v.icsError)}</div>` : ""}`;
+    const icsBtn = `<div class="chip-row" style="margin:8px 0;"><button class="chip-btn" data-community-action="event-ics" data-id="${esc(e.id)}"${v.icsBusy ? " disabled" : ""}>${v.icsBusy ? "יוצר…" : "הוספה ליומן"}</button></div>${v.icsError ? `<div class="field-error" role="alert">${esc(v.icsError)}</div>` : ""}`;
     const attendeesHtml = renderEventAttendees(v);
     // COMM-216: the companion post's own thread, reusing renderComments()
     // untouched - same empty state, same loading skeleton, same retry
@@ -7097,7 +7226,7 @@
     return `${metaHtml}${staffToolbar}${image}${description}${locationHtml}${capacityHtml}${deadlineHtml}${organizerHtml}${actions}${icsBtn}${attendeesHtml}<div style="margin-top:14px;">${commentsHtml}</div>`;
   }
   function renderEventViewOverlay() {
-    const v = state.eventView;
+    const v = state.events.view;
     if (!v) return "";
     const bodyHtml = v.loading ? `<div class="empty">טוען את האירוע…</div>`
       : (v.error || !v.event) ? `<div class="empty">לא ניתן היה לטעון את האירוע. נסו שוב.</div>`
@@ -7106,7 +7235,7 @@
       <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:560px;">
         <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
           <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:12px;">
-            <div id="eventViewTitle" style="font-weight:800;font-size:17px;">${v.event ? safeText(v.event.title) : "אירוע"}</div>
+            <div id="eventViewTitle" style="font-weight:800;font-size:17px;">${v.event ? esc(v.event.title) : "אירוע"}</div>
             <button class="chip-btn" data-community-action="close-event-view" aria-label="סגירה">✕</button>
           </div>
           ${bodyHtml}
@@ -7117,26 +7246,26 @@
 
   // ---- Create/edit form markup (COMM-213) ------------------------------------
   function renderEventForm() {
-    const f = state.eventForm;
-    const typePicker = `<div class="chip-row" role="group" aria-label="סוג אירוע" style="margin-bottom:10px;flex-wrap:wrap;">${EVENT_TYPES.map((t) => `<button type="button" class="chip-btn${f.eventType === t.id ? " selected" : ""}" data-community-action="event-form-type" data-type="${t.id}">${t.icon} ${safeText(t.label)}</button>`).join("")}</div>`;
+    const f = state.events.form;
+    const typePicker = `<div class="chip-row" role="group" aria-label="סוג אירוע" style="margin-bottom:10px;flex-wrap:wrap;">${EVENT_TYPES.map((t) => `<button type="button" class="chip-btn${f.eventType === t.id ? " selected" : ""}" data-community-action="event-form-type" data-type="${t.id}">${t.icon} ${esc(t.label)}</button>`).join("")}</div>`;
     return `<form id="communityEventForm" class="chart-card admin-card" style="margin-top:10px;">
       <div style="font-weight:800;margin-bottom:10px;">${f.mode === "edit" ? "עריכת אירוע" : "אירוע חדש"}<span class="admin-tag">ניהול</span></div>
       ${typePicker}
-      ${field("communityEventForm", "title", "שם האירוע", `<input class="text-input" name="title" value="${safeText(f.title)}" maxlength="120" required/>`)}
-      ${field("communityEventForm", "description", "תיאור", `<textarea class="text-input" name="description" maxlength="4000">${safeText(f.description)}</textarea>`)}
-      ${field("communityEventForm", "imageUrl", "קישור לתמונה", `<input class="text-input" name="imageUrl" value="${safeText(f.imageUrl)}" maxlength="500" placeholder="https://..."/>`)}
-      ${field("communityEventForm", "location", "מיקום", `<input class="text-input" name="location" value="${safeText(f.location)}" maxlength="240"/>`)}
-      ${field("communityEventForm", "mapLink", "קישור למפה", `<input class="text-input" name="mapLink" value="${safeText(f.mapLink)}" maxlength="500" placeholder="https://..."/>`)}
+      ${field("communityEventForm", "title", "שם האירוע", `<input class="text-input" name="title" value="${esc(f.title)}" maxlength="120" required/>`)}
+      ${field("communityEventForm", "description", "תיאור", `<textarea class="text-input" name="description" maxlength="4000">${esc(f.description)}</textarea>`)}
+      ${field("communityEventForm", "imageUrl", "קישור לתמונה", `<input class="text-input" name="imageUrl" value="${esc(f.imageUrl)}" maxlength="500" placeholder="https://..."/>`)}
+      ${field("communityEventForm", "location", "מיקום", `<input class="text-input" name="location" value="${esc(f.location)}" maxlength="240"/>`)}
+      ${field("communityEventForm", "mapLink", "קישור למפה", `<input class="text-input" name="mapLink" value="${esc(f.mapLink)}" maxlength="500" placeholder="https://..."/>`)}
       <div class="flex gap-16 field">
-        ${field("communityEventForm", "startAt", "התחלה", `<input class="text-input" name="startAt" type="datetime-local" value="${safeText(f.startAt)}" required/>`)}
-        ${field("communityEventForm", "endAt", "סיום", `<input class="text-input" name="endAt" type="datetime-local" value="${safeText(f.endAt)}"/>`)}
+        ${field("communityEventForm", "startAt", "התחלה", `<input class="text-input" name="startAt" type="datetime-local" value="${esc(f.startAt)}" required/>`)}
+        ${field("communityEventForm", "endAt", "סיום", `<input class="text-input" name="endAt" type="datetime-local" value="${esc(f.endAt)}"/>`)}
       </div>
       <div class="flex gap-16 field">
-        ${field("communityEventForm", "capacity", "מקומות (ריק = ללא הגבלה)", `<input class="text-input" name="capacity" type="number" min="1" value="${safeText(f.capacity)}"/>`)}
-        ${field("communityEventForm", "registrationDeadline", "מועד אחרון להרשמה", `<input class="text-input" name="registrationDeadline" type="datetime-local" value="${safeText(f.registrationDeadline)}"/>`)}
+        ${field("communityEventForm", "capacity", "מקומות (ריק = ללא הגבלה)", `<input class="text-input" name="capacity" type="number" min="1" value="${esc(f.capacity)}"/>`)}
+        ${field("communityEventForm", "registrationDeadline", "מועד אחרון להרשמה", `<input class="text-input" name="registrationDeadline" type="datetime-local" value="${esc(f.registrationDeadline)}"/>`)}
       </div>
       ${f.mode === "create" ? `<label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="publishNow"/><span style="font-size:12.5px;color:var(--steel);">פרסום מיידי (אחרת יישמר כטיוטה)</span></label>` : ""}
-      ${f.error ? `<div class="field-error" role="alert">${safeText(f.error)}</div>` : ""}
+      ${f.error ? `<div class="field-error" role="alert">${esc(f.error)}</div>` : ""}
       <div class="chip-row" style="margin-top:10px;">
         <button class="chip-btn primary" type="submit"${f.saving ? " disabled" : ""}>${f.saving ? "שומר…" : "שמירה"}</button>
         <button class="chip-btn" type="button" data-community-action="event-form-cancel">ביטול</button>
@@ -7146,14 +7275,14 @@
 
   // ---- Upcoming-event card in the feed top area (COMM-217) -------------------
   // The soonest published, non-cancelled event with start_at > now(), or
-  // nothing at all - never an empty placeholder. state.events is loaded
+  // nothing at all - never an empty placeholder. state.events.items is loaded
   // alongside the feed (loadEvents() sits in the same Promise.all as
   // loadFeed()), so this needs no realtime subscription of its own: it
   // refreshes exactly when the rest of the feed top area does.
   function upcomingFeedEvent() {
-    // state.events is sorted start_at ascending by the query itself
+    // state.events.items is sorted start_at ascending by the query itself
     // (loadEvents()'s order()), so the first match is the soonest one.
-    return state.events.find(isUpcomingEvent) || null;
+    return state.events.items.find(isUpcomingEvent) || null;
   }
   function renderUpcomingEventCard() {
     const e = upcomingFeedEvent();
@@ -7162,14 +7291,14 @@
     const mine = myEventResponse(e.id);
     const closed = eventRegistrationClosed(e);
     const full = eventIsFull(e);
-    return `<div class="chart-card" style="margin-top:10px;" data-event-id="${safeText(e.id)}">
-      <button class="link-btn" data-community-action="open-event" data-id="${safeText(e.id)}" data-source="club_top" style="padding:0;text-align:right;display:block;width:100%;">
-        <div style="font-weight:800;font-size:14px;">📅 ${safeText(e.title)}</div>
-        <div style="color:var(--steel);font-size:12px;margin-top:2px;">${safeText(formatEventDate(e.start_at))} ${safeText(formatEventTime(e.start_at))} · ${going} משתתפים</div>
+    return `<div class="chart-card" style="margin-top:10px;" data-event-id="${esc(e.id)}">
+      <button class="link-btn" data-community-action="open-event" data-id="${esc(e.id)}" data-source="club_top" style="padding:0;text-align:right;display:block;width:100%;">
+        <div style="font-weight:800;font-size:14px;">📅 ${esc(e.title)}</div>
+        <div style="color:var(--steel);font-size:12px;margin-top:2px;">${esc(formatEventDate(e.start_at))} ${esc(formatEventTime(e.start_at))} · ${going} משתתפים</div>
       </button>
       <div class="chip-row" style="margin-top:8px;">
-        <button class="chip-btn${mine === "going" ? " selected" : ""}" data-community-action="event-rsvp" data-id="${safeText(e.id)}" data-response="going"${closed || full ? " disabled" : ""}>משתתפ/ת</button>
-        <button class="chip-btn${mine === "interested" ? " selected" : ""}" data-community-action="event-rsvp" data-id="${safeText(e.id)}" data-response="interested"${closed ? " disabled" : ""}>מעוניינ/ת</button>
+        <button class="chip-btn${mine === "going" ? " selected" : ""}" data-community-action="event-rsvp" data-id="${esc(e.id)}" data-response="going"${closed || full ? " disabled" : ""}>משתתפ/ת</button>
+        <button class="chip-btn${mine === "interested" ? " selected" : ""}" data-community-action="event-rsvp" data-id="${esc(e.id)}" data-response="interested"${closed ? " disabled" : ""}>מעוניינ/ת</button>
       </div>
     </div>`;
   }
@@ -7228,7 +7357,7 @@
     // attendance_classmates_today() raises 'not authorized' for a session
     // with no profile row, which the signup screens were hitting.
     if (!client || !state.user || !state.profile) return;
-    const s = state.classmatesToday;
+    const s = state.members.classmatesToday;
     s.loading = true; s.error = false;
     classmatesCardViewLogged = false;
     rerender();
@@ -7263,16 +7392,16 @@
     // "עדכון המעקב נכשל" message every other follow button in this file
     // produces. No new follow mechanism, no new error path, no pre-filter
     // that would leak another member's setting into the card.
-    return `<div class="log-row" data-classmate-user="${safeText(item.user_id)}">
-      <button class="link-btn" data-community-action="view-profile" data-id="${safeText(item.user_id)}" style="padding:0;display:flex;gap:10px;align-items:center;color:inherit;text-align:right;">
+    return `<div class="log-row" data-classmate-user="${esc(item.user_id)}">
+      <button class="link-btn" data-community-action="view-profile" data-id="${esc(item.user_id)}" style="padding:0;display:flex;gap:10px;align-items:center;color:inherit;text-align:right;">
         ${avatarHtml(name, 32, item.avatar_url)}
-        <span style="min-width:0;"><span style="font-weight:700;display:block;">${safeText(name)}</span>${item.handle ? `<span style="color:var(--steel);font-size:12px;"><bdi>@${safeText(item.handle)}</bdi></span>` : ""}</span>
+        <span style="min-width:0;"><span style="font-weight:700;display:block;">${esc(name)}</span>${item.handle ? `<span style="color:var(--steel);font-size:12px;"><bdi>@${esc(item.handle)}</bdi></span>` : ""}</span>
       </button>
-      <div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="follow" data-id="${safeText(item.user_id)}">מעקב</button></div>
+      <div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="follow" data-id="${esc(item.user_id)}">מעקב</button></div>
     </div>`;
   }
   function renderClassmatesTodayCard() {
-    const s = state.classmatesToday;
+    const s = state.members.classmatesToday;
     // The three no-card branches, all of which return the same empty string:
     // a failed fetch, a load that has not answered yet, and an answer with no
     // rows. The middle one is why there is no skeleton here - see below.
@@ -7318,7 +7447,7 @@
     if (!state.user || !state.profile) return;
     if (!document.querySelector('[data-classmates-today="ready"]')) return;
     classmatesCardViewLogged = true;
-    track(A.CLASSMATES_CARD_VIEWED, { rows: state.classmatesToday.items.length, source: "feed" });
+    track(A.CLASSMATES_CARD_VIEWED, { rows: state.members.classmatesToday.items.length, source: "feed" });
   }
 
   // ---- COMM-221 weekly recap surface + share ---------------------------
@@ -7337,18 +7466,18 @@
     // and what was in it, is not a prop - the recap row itself is the
     // record of that, and the figures are the member's own numbers.
     track(A.WEEKLY_RECAP_OPENED, { source: source || "account" });
-    state.recapView = { weekStart: weekStart || null, loading: true, error: false, row: null, olderWeekStart: null, newerWeekStart: null, sharing: null };
+    state.recaps.view = { weekStart: weekStart || null, loading: true, error: false, row: null, olderWeekStart: null, newerWeekStart: null, sharing: null };
     rerender();
     await refreshRecapView(weekStart || null);
   }
-  function closeRecapView() { state.recapView = null; rerender(); }
+  function closeRecapView() { state.recaps.view = null; rerender(); }
   // weekStart === null asks for the most recent row; otherwise a specific
   // ISO week. Either way, once the row is known, the two adjacent-week
   // existence checks (COMM-221: "past weeks are browsable") run off its
   // real week_start, not the possibly-null argument this call started
   // with.
   async function refreshRecapView(weekStart) {
-    const v = state.recapView;
+    const v = state.recaps.view;
     if (!v) return;
     v.loading = true; v.error = false; rerender();
     let row = null, err = null;
@@ -7360,7 +7489,7 @@
       err = res.error;
       row = (!err && Array.isArray(res.data) && res.data.length) ? res.data[0] : null;
     }
-    if (!state.recapView || state.recapView !== v) return; // closed/reopened mid-flight
+    if (!state.recaps.view || state.recaps.view !== v) return; // closed/reopened mid-flight
     if (err) { v.loading = false; v.error = true; return rerender(); }
     v.row = row;
     v.weekStart = row ? row.week_start : weekStart;
@@ -7370,15 +7499,15 @@
         client.from("weekly_recaps").select("week_start").eq("user_id", state.user.id).lt("week_start", row.week_start).order("week_start", { ascending: false }),
         client.from("weekly_recaps").select("week_start").eq("user_id", state.user.id).gt("week_start", row.week_start).order("week_start", { ascending: true }),
       ]);
-      if (!state.recapView || state.recapView !== v) return;
+      if (!state.recaps.view || state.recaps.view !== v) return;
       v.olderWeekStart = (!olderRes.error && olderRes.data && olderRes.data[0]) ? olderRes.data[0].week_start : null;
       v.newerWeekStart = (!newerRes.error && newerRes.data && newerRes.data[0]) ? newerRes.data[0].week_start : null;
     }
     v.loading = false;
     rerender();
   }
-  function recapGoOlder() { const v = state.recapView; if (v && v.olderWeekStart) refreshRecapView(v.olderWeekStart); }
-  function recapGoNewer() { const v = state.recapView; if (v && v.newerWeekStart) refreshRecapView(v.newerWeekStart); }
+  function recapGoOlder() { const v = state.recaps.view; if (v && v.olderWeekStart) refreshRecapView(v.olderWeekStart); }
+  function recapGoNewer() { const v = state.recaps.view; if (v && v.newerWeekStart) refreshRecapView(v.newerWeekStart); }
   function recapWeekRangeLabel(weekStart) {
     if (!weekStart) return "";
     const start = new Date(weekStart + "T00:00:00Z");
@@ -7406,7 +7535,7 @@
     return opts;
   }
   async function shareRecapFigure(key) {
-    const v = state.recapView;
+    const v = state.recaps.view;
     if (!v || !v.row || v.sharing) return;
     const opt = recapShareOptions(v.row).find((o) => o.key === key);
     if (!opt) return;
@@ -7435,13 +7564,13 @@
       && !(Array.isArray(row.prs) && row.prs.length) && !(Array.isArray(row.achievements) && row.achievements.length);
     const quietNote = isQuiet ? `<div class="empty">שבוע שקט - בלי אימונים שנרשמו. השבוע הבא הוא הזדמנות חדשה.</div>` : "";
     const prsHtml = Array.isArray(row.prs) && row.prs.length
-      ? `<div class="log-list">${row.prs.map((pr) => `<div class="log-row"><span>${safeText(pr.movement)}</span><span class="mono" style="color:var(--brass);">${safeText(pr.result)}</span></div>`).join("")}</div>`
+      ? `<div class="log-list">${row.prs.map((pr) => `<div class="log-row"><span>${esc(pr.movement)}</span><span class="mono" style="color:var(--brass);">${esc(pr.result)}</span></div>`).join("")}</div>`
       : `<div class="empty">אין שיאים חדשים השבוע</div>`;
     const achHtml = Array.isArray(row.achievements) && row.achievements.length
-      ? `<div class="log-list">${row.achievements.map((a) => `<div class="log-row"><span>${safeText(a.badge_icon || "🏅")} ${safeText(a.title)}</span></div>`).join("")}</div>`
+      ? `<div class="log-list">${row.achievements.map((a) => `<div class="log-row"><span>${esc(a.badge_icon || "🏅")} ${esc(a.title)}</span></div>`).join("")}</div>`
       : `<div class="empty">אין הישגים חדשים השבוע</div>`;
     const challengeHtml = Array.isArray(row.challenge_progress) && row.challenge_progress.length
-      ? `<div class="log-list">${row.challenge_progress.map((c) => `<div class="log-row"><span>${safeText(c.title)}</span><span class="mono" style="color:var(--brass);">${safeText(c.progress)}${c.target != null ? ` / ${safeText(c.target)}` : ""}</span></div>`).join("")}</div>`
+      ? `<div class="log-list">${row.challenge_progress.map((c) => `<div class="log-row"><span>${esc(c.title)}</span><span class="mono" style="color:var(--brass);">${esc(c.progress)}${c.target != null ? ` / ${esc(c.target)}` : ""}</span></div>`).join("")}</div>`
       : `<div class="empty">לא נרשמה השתתפות באתגר השבוע</div>`;
     // COMM-316 (closing COMM-P06). weekly_recaps.classmates is up to 5
     // {user_id, display_name, handle, avatar_url} objects, already fully
@@ -7464,20 +7593,20 @@
     const classmatesHtml = classmatesList.length
       ? `<div data-recap-classmates="ready">${classmatesList.map((m) => {
           const name = m.display_name || (m.handle ? "@" + m.handle : "חבר/ה");
-          return `<button class="link-btn" data-community-action="view-profile" data-id="${safeText(m.user_id)}" style="padding:0;color:inherit;font-weight:700;text-decoration:underline;">${safeText(name)}</button>`;
+          return `<button class="link-btn" data-community-action="view-profile" data-id="${esc(m.user_id)}" style="padding:0;color:inherit;font-weight:700;text-decoration:underline;">${esc(name)}</button>`;
         }).join(", ")} התאמנו איתכם השבוע.</div>`
       : `<div class="empty" data-recap-classmates="empty">אין חברים משותפים השבוע</div>`;
     const club = row.club_challenge_progress && row.club_challenge_progress.title
-      ? `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">${safeText(row.club_challenge_progress.title)}</div><div class="mono" style="color:var(--brass);">${safeText(row.club_challenge_progress.total)}${row.club_challenge_progress.target != null ? ` / ${safeText(row.club_challenge_progress.target)}` : ""}</div>${row.club_challenge_progress.participants != null ? `<div style="color:var(--steel);font-size:12px;">${safeText(row.club_challenge_progress.participants)} משתתפים</div>` : ""}</div>`
+      ? `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">${esc(row.club_challenge_progress.title)}</div><div class="mono" style="color:var(--brass);">${esc(row.club_challenge_progress.total)}${row.club_challenge_progress.target != null ? ` / ${esc(row.club_challenge_progress.target)}` : ""}</div>${row.club_challenge_progress.participants != null ? `<div style="color:var(--steel);font-size:12px;">${esc(row.club_challenge_progress.participants)} משתתפים</div>` : ""}</div>`
       : "";
     const event = row.upcoming_event
-      ? `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">האירוע הקרוב</div><button class="link-btn" data-community-action="open-event" data-id="${safeText(row.upcoming_event.id)}" data-source="recap" style="padding:0;text-align:right;display:block;">${safeText(row.upcoming_event.title)}</button>${row.upcoming_event.start_at ? `<div style="color:var(--steel);font-size:12px;">${safeText(formatChallengeDate(row.upcoming_event.start_at))}</div>` : ""}</div>`
+      ? `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">האירוע הקרוב</div><button class="link-btn" data-community-action="open-event" data-id="${esc(row.upcoming_event.id)}" data-source="recap" style="padding:0;text-align:right;display:block;">${esc(row.upcoming_event.title)}</button>${row.upcoming_event.start_at ? `<div style="color:var(--steel);font-size:12px;">${esc(formatChallengeDate(row.upcoming_event.start_at))}</div>` : ""}</div>`
       : `<div class="empty">אין אירוע קרוב לציין</div>`;
     const shareOptions = recapShareOptions(row);
-    const shareHtml = `<div class="field-label" style="margin:10px 0 4px;">שיתוף הסיכום</div><div class="chip-row" style="flex-wrap:wrap;">${shareOptions.map((o) => `<button class="chip-btn" data-community-action="share-recap" data-figure="${o.key}"${v.sharing === o.key ? " disabled" : ""}>${v.sharing === o.key ? "משתף…" : "שיתוף " + safeText(o.label)}</button>`).join("")}</div>`;
+    const shareHtml = `<div class="field-label" style="margin:10px 0 4px;">שיתוף הסיכום</div><div class="chip-row" style="flex-wrap:wrap;">${shareOptions.map((o) => `<button class="chip-btn" data-community-action="share-recap" data-figure="${o.key}"${v.sharing === o.key ? " disabled" : ""}>${v.sharing === o.key ? "משתף…" : "שיתוף " + esc(o.label)}</button>`).join("")}</div>`;
     return `${quietNote}
-      <div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">אימונים השבוע</div><div class="mono" style="color:var(--brass);font-size:18px;">${safeText(row.sessions_completed)}</div></div>
-      <div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">רצף נוכחי</div><div class="mono" style="color:var(--brass);font-size:18px;">🔥 ${safeText(row.streak)}</div></div>
+      <div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">אימונים השבוע</div><div class="mono" style="color:var(--brass);font-size:18px;">${esc(row.sessions_completed)}</div></div>
+      <div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">רצף נוכחי</div><div class="mono" style="color:var(--brass);font-size:18px;">🔥 ${esc(row.streak)}</div></div>
       <div class="field-label" style="margin:10px 0 4px;">שיאים</div>${prsHtml}
       <div class="field-label" style="margin:10px 0 4px;">הישגים</div>${achHtml}
       <div class="field-label" style="margin:10px 0 4px;">ההתקדמות שלי באתגר</div>${challengeHtml}
@@ -7487,7 +7616,7 @@
       ${shareHtml}`;
   }
   function renderRecapViewOverlay() {
-    const v = state.recapView;
+    const v = state.recaps.view;
     if (!v) return "";
     const weekLabel = v.weekStart ? recapWeekRangeLabel(v.weekStart) : "";
     // COMM-221 frontend states: empty ("אין עדיין סיכום שבועי"), loading
@@ -7506,7 +7635,7 @@
       <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:560px;">
         <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
           <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:12px;">
-            <div id="recapViewTitle" style="font-weight:800;font-size:17px;">${weekLabel ? "סיכום השבוע · " + safeText(weekLabel) : "סיכום שבועי"}</div>
+            <div id="recapViewTitle" style="font-weight:800;font-size:17px;">${weekLabel ? "סיכום השבוע · " + esc(weekLabel) : "סיכום שבועי"}</div>
             <button class="chip-btn" data-community-action="close-recap-view" aria-label="סגירה">✕</button>
           </div>
           ${nav}
@@ -7518,30 +7647,30 @@
 
   // ---- Composer (COMM-102, COMM-103) --------------------------------------
   function openComposer(triggerEl) {
-    state.composerTrigger = triggerEl || null;
-    state.composer = { body: "", visibility: "club", photos: [], links: {}, error: "", publishing: false };
-    state.openPostMenu = null;
+    state.posts.composerTrigger = triggerEl || null;
+    state.posts.composer = { body: "", visibility: "club", photos: [], links: {}, error: "", publishing: false };
+    state.posts.openMenu = null;
     rerender();
     setTimeout(() => { const t = document.querySelector("[data-composer-body]"); if (t && t.focus) t.focus(); }, 0);
   }
   window.openPostComposer = openComposer;
   function closeComposer() {
-    const trigger = state.composerTrigger;
-    state.composer = null;
-    state.composerTrigger = null;
+    const trigger = state.posts.composerTrigger;
+    state.posts.composer = null;
+    state.posts.composerTrigger = null;
     rerender();
     if (trigger && trigger.focus) setTimeout(() => trigger.focus(), 0);
   }
   function tryCloseComposer() {
-    if (state.composer && (cleanPostBody(state.composer.body) || state.composer.photos.length)) {
+    if (state.posts.composer && (cleanPostBody(state.posts.composer.body) || state.posts.composer.photos.length)) {
       askConfirm({ title: "לבטל את הפוסט?", message: "מה שכתבתם לא יישמר.", confirmLabel: "ביטול הפוסט", destructive: true, action: "composer-discard" });
     } else {
       closeComposer();
     }
   }
   function composerSetBody(v) {
-    if (!state.composer) return;
-    state.composer.body = v;
+    if (!state.posts.composer) return;
+    state.posts.composer.body = v;
     const dlg = document.getElementById("postComposer");
     if (!dlg) return;
     const btn = dlg.querySelector('[data-community-action="composer-publish"]');
@@ -7550,41 +7679,41 @@
     if (c) { const n = cleanPostBody(v).length; c.textContent = n >= 900 ? `${n}/${POST_BODY_MAX}` : ""; }
   }
   function composerSetAlt(id, v) {
-    if (!state.composer) return;
-    const p = state.composer.photos.find((x) => x.id === id);
+    if (!state.posts.composer) return;
+    const p = state.posts.composer.photos.find((x) => x.id === id);
     if (p) p.altText = v;
     const dlg = document.getElementById("postComposer");
     if (dlg) { const btn = dlg.querySelector('[data-community-action="composer-publish"]'); if (btn) btn.disabled = !composerCanPublish(); }
   }
   function composerToggleDecorative(id, checked) {
-    if (!state.composer) return;
-    const p = state.composer.photos.find((x) => x.id === id);
+    if (!state.posts.composer) return;
+    const p = state.posts.composer.photos.find((x) => x.id === id);
     if (p) { p.decorative = !!checked; if (checked) p.altText = ""; }
     rerender();
   }
   function composerSetVisibility(v) {
-    if (state.composer && POST_VISIBILITY_OPTIONS.some((o) => o.value === v)) state.composer.visibility = v;
+    if (state.posts.composer && POST_VISIBILITY_OPTIONS.some((o) => o.value === v)) state.posts.composer.visibility = v;
   }
   function composerRemovePhoto(id) {
-    if (!state.composer) return;
-    state.composer.photos = state.composer.photos.filter((p) => p.id !== id);
+    if (!state.posts.composer) return;
+    state.posts.composer.photos = state.posts.composer.photos.filter((p) => p.id !== id);
     rerender();
   }
   function composerRetryPhoto(id) {
-    if (!state.composer) return;
-    const p = state.composer.photos.find((x) => x.id === id);
+    if (!state.posts.composer) return;
+    const p = state.posts.composer.photos.find((x) => x.id === id);
     const file = p && p._file;
     composerRemovePhoto(id);
     if (file) composerAddPhoto(file);
   }
   // COMM-103. Every photo goes through prepareImage (COMM-015) before upload.
   async function composerAddPhoto(file) {
-    if (!state.composer) return;
-    if (state.composer.photos.length >= POST_MEDIA_MAX) { state.composer.error = `אפשר לצרף עד ${POST_MEDIA_MAX} תמונות`; return rerender(); }
+    if (!state.posts.composer) return;
+    if (state.posts.composer.photos.length >= POST_MEDIA_MAX) { state.posts.composer.error = `אפשר לצרף עד ${POST_MEDIA_MAX} תמונות`; return rerender(); }
     const id = "ph" + Date.now() + Math.random().toString(36).slice(2, 6);
     const photo = { id, status: "processing", altText: "", decorative: false, storagePath: null, previewUrl: null, error: null, width: null, height: null, _file: file };
-    state.composer.photos.push(photo);
-    state.composer.error = "";
+    state.posts.composer.photos.push(photo);
+    state.posts.composer.error = "";
     rerender();
     try {
       const prepared = await window.HaimuniaImage.prepareImage(file);
@@ -7686,9 +7815,9 @@
     state.avatarUpload = { status: "idle", error: "" };
     rerender();
   }
-  function composerReadyPhotos() { return state.composer ? state.composer.photos.filter((p) => p.status === "ready") : []; }
+  function composerReadyPhotos() { return state.posts.composer ? state.posts.composer.photos.filter((p) => p.status === "ready") : []; }
   function composerCanPublish() {
-    const c = state.composer;
+    const c = state.posts.composer;
     if (!c || c.publishing) return false;
     if (c.photos.some((p) => p.status === "processing" || p.status === "failed")) return false;
     if (c.photos.length > POST_MEDIA_MAX) return false;
@@ -7699,7 +7828,7 @@
     return true;
   }
   function composerBlockReason() {
-    const c = state.composer;
+    const c = state.posts.composer;
     if (!c) return "";
     if (c.photos.some((p) => p.status === "processing")) return "יש להמתין לסיום עיבוד התמונות";
     if (c.photos.some((p) => p.status === "failed")) return "יש להסיר או לנסות שוב תמונה שנכשלה";
@@ -7707,7 +7836,7 @@
     return "צריך טקסט או לפחות תמונה אחת";
   }
   async function publishComposer() {
-    const c = state.composer;
+    const c = state.posts.composer;
     if (!c || c.publishing) return;
     if (!composerCanPublish()) { c.error = composerBlockReason(); return rerender(); }
     c.publishing = true;
@@ -7754,9 +7883,9 @@
       reaction_count: 0,
       comment_count: 0,
     };
-    if (Array.isArray(state.feed)) state.feed.unshift(optimistic);
-    state.composer = null;
-    state.composerTrigger = null;
+    if (Array.isArray(state.feed.items)) state.feed.items.unshift(optimistic);
+    state.posts.composer = null;
+    state.posts.composerTrigger = null;
     setMessage("הפוסט פורסם");
     if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.POST_CREATED) {
       try { window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.POST_CREATED, { post_id: data, post_type: optimistic.post_type }); } catch (e) {}
@@ -7764,22 +7893,22 @@
     rerender();
   }
   function renderPostComposer() {
-    const c = state.composer;
+    const c = state.posts.composer;
     if (!c) return "";
     const bodyLen = cleanPostBody(c.body).length;
     const canPublish = composerCanPublish();
     const tiles = c.photos.map((p) => `
-      <div class="composer-photo-tile" data-photo-id="${safeText(p.id)}" style="border:1px solid var(--border);border-radius:12px;padding:8px;margin-bottom:8px;">
+      <div class="composer-photo-tile" data-photo-id="${esc(p.id)}" style="border:1px solid var(--border);border-radius:12px;padding:8px;margin-bottom:8px;">
         <div class="flex" style="justify-content:space-between;align-items:center;gap:8px;">
-          <span style="font-size:12px;color:var(--steel);">${p.status === "processing" ? "מעבד תמונה…" : p.status === "failed" ? safeText(p.error || "נכשל") : "תמונה מוכנה"}</span>
-          <button class="link-btn" data-community-action="composer-remove-photo" data-id="${safeText(p.id)}" aria-label="הסרת תמונה">הסרה</button>
+          <span style="font-size:12px;color:var(--steel);">${p.status === "processing" ? "מעבד תמונה…" : p.status === "failed" ? esc(p.error || "נכשל") : "תמונה מוכנה"}</span>
+          <button class="link-btn" data-community-action="composer-remove-photo" data-id="${esc(p.id)}" aria-label="הסרת תמונה">הסרה</button>
         </div>
-        ${p.previewUrl ? `<img src="${safeText(p.previewUrl)}" alt="" style="max-width:100%;border-radius:8px;margin:6px 0;"/>` : ""}
-        ${p.status === "failed" ? `<button class="chip-btn" data-community-action="composer-retry-photo" data-id="${safeText(p.id)}">ניסיון חוזר</button>` : ""}
+        ${p.previewUrl ? `<img src="${esc(p.previewUrl)}" alt="" style="max-width:100%;border-radius:8px;margin:6px 0;"/>` : ""}
+        ${p.status === "failed" ? `<button class="chip-btn" data-community-action="composer-retry-photo" data-id="${esc(p.id)}">ניסיון חוזר</button>` : ""}
         <label class="field" style="margin-top:6px;"><span class="field-label">תיאור לקורא מסך</span>
-          <input class="text-input" type="text" maxlength="${ALT_TEXT_MAX}" data-composer-alt="${safeText(p.id)}" value="${safeText(p.altText || "")}"${p.decorative ? " disabled" : ""} placeholder="תיאור קצר של התמונה"/></label>
+          <input class="text-input" type="text" maxlength="${ALT_TEXT_MAX}" data-composer-alt="${esc(p.id)}" value="${esc(p.altText || "")}"${p.decorative ? " disabled" : ""} placeholder="תיאור קצר של התמונה"/></label>
         <label class="flex gap-6" style="align-items:center;font-size:12px;color:var(--steel);margin-top:4px;">
-          <input type="checkbox" data-composer-decorative="${safeText(p.id)}"${p.decorative ? " checked" : ""}/> התמונה דקורטיבית, אין צורך בתיאור
+          <input type="checkbox" data-composer-decorative="${esc(p.id)}"${p.decorative ? " checked" : ""}/> התמונה דקורטיבית, אין צורך בתיאור
         </label>
       </div>`).join("");
     return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="postComposerTitle" data-composer-overlay data-cloud-dialog="composer" style="align-items:center;padding:0 16px;">
@@ -7787,7 +7916,7 @@
         <div style="padding:22px 20px calc(env(safe-area-inset-bottom,0px) + 18px);">
           <div id="postComposerTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:12px;">פוסט חדש</div>
           <label class="field"><span class="field-label">מה תרצו לשתף?</span>
-            <textarea class="text-input" data-composer-body maxlength="${POST_BODY_MAX}" rows="4" placeholder="כתבו משהו לקהילה" aria-describedby="postComposerCounter">${safeText(c.body || "")}</textarea></label>
+            <textarea class="text-input" data-composer-body maxlength="${POST_BODY_MAX}" rows="4" placeholder="כתבו משהו לקהילה" aria-describedby="postComposerCounter">${esc(c.body || "")}</textarea></label>
           <div id="postComposerCounter" data-composer-counter style="text-align:left;font-size:11px;color:var(--steel);min-height:14px;">${bodyLen >= 900 ? `${bodyLen}/${POST_BODY_MAX}` : ""}</div>
           <div style="margin-top:8px;">${tiles}</div>
           ${c.photos.length < POST_MEDIA_MAX
@@ -7797,7 +7926,7 @@
             <select class="text-input" data-composer-visibility>
               ${POST_VISIBILITY_OPTIONS.map((o) => `<option value="${o.value}"${c.visibility === o.value ? " selected" : ""}>${o.label}</option>`).join("")}
             </select></label>
-          ${c.error ? `<div class="field-error" role="alert" style="margin-top:8px;">${safeText(c.error)}</div>` : ""}
+          ${c.error ? `<div class="field-error" role="alert" style="margin-top:8px;">${esc(c.error)}</div>` : ""}
           <div class="chip-row" style="margin-top:16px;">
             <button class="chip-btn" data-community-action="composer-cancel">ביטול</button>
             <button class="chip-btn primary" data-community-action="composer-publish"${canPublish ? "" : " disabled"}>${c.publishing ? "מפרסם…" : "פרסום"}</button>
@@ -7809,78 +7938,78 @@
 
   // ---- Per-post action menu (COMM-108) ----------------------------------
   function togglePostMenu(id) {
-    state.openPostMenu = state.openPostMenu === id ? null : id;
+    state.posts.openMenu = state.posts.openMenu === id ? null : id;
     rerender();
   }
   async function postSaveToggle(postId) {
     if (!state.user) return;
-    state.openPostMenu = null;
-    state.savedPostIds = state.savedPostIds || {};
-    const wasSaved = !!state.savedPostIds[postId];
+    state.posts.openMenu = null;
+    state.posts.savedIds = state.posts.savedIds || {};
+    const wasSaved = !!state.posts.savedIds[postId];
     if (wasSaved) {
-      delete state.savedPostIds[postId];
+      delete state.posts.savedIds[postId];
       rerender();
       const { error } = await client.from("saved_posts").delete().eq("user_id", state.user.id).eq("post_id", postId);
-      if (error) { state.savedPostIds[postId] = true; setMessage("לא ניתן לעדכן את השמורים"); rerender(); }
+      if (error) { state.posts.savedIds[postId] = true; setMessage("לא ניתן לעדכן את השמורים"); rerender(); }
       else setMessage("הוסר מהשמורים");
     } else {
-      state.savedPostIds[postId] = true;
+      state.posts.savedIds[postId] = true;
       rerender();
       const { error } = await client.from("saved_posts").insert({ user_id: state.user.id, post_id: postId });
-      if (error && error.code !== "23505") { delete state.savedPostIds[postId]; setMessage("לא ניתן לשמור את הפוסט"); rerender(); }
+      if (error && error.code !== "23505") { delete state.posts.savedIds[postId]; setMessage("לא ניתן לשמור את הפוסט"); rerender(); }
       else setMessage("הפוסט נשמר");
     }
   }
   async function postHide(postId) {
     if (!state.user) return;
-    state.openPostMenu = null;
-    if (Array.isArray(state.feed)) state.feed = state.feed.filter((p) => p && p.id !== postId);
+    state.posts.openMenu = null;
+    if (Array.isArray(state.feed.items)) state.feed.items = state.feed.items.filter((p) => p && p.id !== postId);
     rerender();
     const { error } = await client.from("hidden_posts").insert({ user_id: state.user.id, post_id: postId });
     if (error && error.code !== "23505") setMessage("לא ניתן להסתיר את הפוסט");
     else setMessage("הפוסט הוסתר מהפיד שלך");
   }
   function postStartCaptionEdit(postId) {
-    state.openPostMenu = null;
+    state.posts.openMenu = null;
     const post = findFeedPost(postId);
-    state.captionEdit = { postId, body: (post && post.body) || "" };
-    state.visibilityEdit = null;
+    state.posts.captionEdit = { postId, body: (post && post.body) || "" };
+    state.posts.visibilityEdit = null;
     rerender();
   }
   async function postSaveCaption() {
-    const e = state.captionEdit;
+    const e = state.posts.captionEdit;
     if (!e) return;
     const body = cleanPostBody(e.body);
     const { error } = await client.rpc("post_edit_caption", { post_id: e.postId, body });
     if (error) { setMessage("עריכת הכיתוב נכשלה"); return; }
     const post = findFeedPost(e.postId);
     if (post) post.body = body;
-    state.captionEdit = null;
+    state.posts.captionEdit = null;
     setMessage("הכיתוב עודכן");
     rerender();
   }
   function postStartVisibilityEdit(postId) {
-    state.openPostMenu = null;
+    state.posts.openMenu = null;
     const post = findFeedPost(postId);
-    state.visibilityEdit = { postId, visibility: normalizeVisibility(post && post.visibility) };
-    state.captionEdit = null;
+    state.posts.visibilityEdit = { postId, visibility: normalizeVisibility(post && post.visibility) };
+    state.posts.captionEdit = null;
     rerender();
   }
   async function postApplyVisibility(visibility) {
-    const e = state.visibilityEdit;
+    const e = state.posts.visibilityEdit;
     if (!e || !POST_VISIBILITY_OPTIONS.some((o) => o.value === visibility)) return;
     const { error } = await client.rpc("post_set_visibility", { post_id: e.postId, visibility });
     if (error) { setMessage("שינוי הנראוּת נכשל"); return; }
     const post = findFeedPost(e.postId);
     if (post) post.visibility = visibility;
-    state.visibilityEdit = null;
+    state.posts.visibilityEdit = null;
     setMessage("הנראוּת עודכנה");
     rerender();
   }
   async function postDeleteViaMenu(postId) {
     const { error } = await client.rpc("post_delete", { post_id: postId });
     if (error) { setMessage("מחיקת הפוסט נכשלה"); return; }
-    if (Array.isArray(state.feed)) state.feed = state.feed.filter((p) => p && p.id !== postId);
+    if (Array.isArray(state.feed.items)) state.feed.items = state.feed.items.filter((p) => p && p.id !== postId);
     setMessage("הפוסט נמחק");
     rerender();
   }
@@ -7912,16 +8041,16 @@
     if (!recordId) return;
     if (prPromptDismissedSet().has(String(recordId))) return;
     if (!window.isCommunitySignedIn || !window.isCommunitySignedIn()) return;
-    state.prPrompt = { record: Object.assign({}, record, { record_id: recordId }), note: "", showNote: false, photo: null, publishing: false, error: "" };
+    state.posts.prPrompt = { record: Object.assign({}, record, { record_id: recordId }), note: "", showNote: false, photo: null, publishing: false, error: "" };
     rerender();
   }
   function dismissPrPrompt() {
-    if (state.prPrompt) rememberPrDismissed(state.prPrompt.record.record_id);
-    state.prPrompt = null;
+    if (state.posts.prPrompt) rememberPrDismissed(state.posts.prPrompt.record.record_id);
+    state.posts.prPrompt = null;
     rerender();
   }
   async function prPromptAddPhoto(file) {
-    const p = state.prPrompt;
+    const p = state.posts.prPrompt;
     if (!p) return;
     p.photo = { status: "processing", altText: "", decorative: false, storagePath: null, error: null, width: null, height: null, _file: file };
     rerender();
@@ -7940,7 +8069,7 @@
     rerender();
   }
   async function sharePrPrompt() {
-    const p = state.prPrompt;
+    const p = state.posts.prPrompt;
     if (!p || p.publishing) return;
     if (p.photo && p.photo.status === "processing") return;
     p.publishing = true;
@@ -7952,7 +8081,7 @@
     const { data, error } = await client.rpc("pr_share", { record_id: p.record.record_id, note: cleanPostBody(p.note), media });
     if (error || !data) { p.publishing = false; p.error = "השיתוף נכשל, אפשר לנסות שוב"; return rerender(); }
     rememberPrDismissed(p.record.record_id);
-    state.prPrompt = null;
+    state.posts.prPrompt = null;
     setMessage("השיא שותף לקהילה");
     if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.POST_CREATED) {
       try { window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.POST_CREATED, { post_id: data, post_type: "POST_PR" }); } catch (e) {}
@@ -7960,10 +8089,10 @@
     rerender();
   }
   function renderPrSharePrompt() {
-    const p = state.prPrompt;
+    const p = state.posts.prPrompt;
     if (!p) return "";
     const r = p.record;
-    const line = (label, val) => (val != null && val !== "") ? `<div style="font-size:12.5px;color:var(--steel);">${safeText(label)}: <span class="mono" style="color:var(--brass);">${safeText(val)}</span></div>` : "";
+    const line = (label, val) => (val != null && val !== "") ? `<div style="font-size:12.5px;color:var(--steel);">${esc(label)}: <span class="mono" style="color:var(--brass);">${esc(val)}</span></div>` : "";
     return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="prPromptTitle" data-cloud-dialog="prPrompt" style="align-items:center;padding:0 16px;">
       <div class="modal-sheet" id="prPrompt" style="border-radius:22px;max-height:90vh;overflow:auto;">
         <div style="padding:22px 20px calc(env(safe-area-inset-bottom,0px) + 18px);">
@@ -7973,10 +8102,10 @@
           ${line("תוצאה חדשה", r.new_result || r.new_value)}
           ${line("תוצאה קודמת", r.previous_result || r.previous_value)}
           ${line("שיפור", r.improvement)}
-          ${p.photo ? `<div style="font-size:12px;color:var(--steel);margin-top:6px;">${p.photo.status === "ready" ? "תמונה צורפה" : p.photo.status === "processing" ? "מעבד תמונה…" : safeText(p.photo.error || "העלאת התמונה נכשלה")}</div>` : ""}
-          ${p.photo && p.photo.status === "ready" && !p.photo.decorative ? `<label class="field" style="margin-top:6px;"><span class="field-label">תיאור התמונה לקורא מסך</span><input class="text-input" data-pr-alt maxlength="${ALT_TEXT_MAX}" value="${safeText(p.photo.altText || "")}"/></label>` : ""}
-          ${p.showNote ? `<label class="field" style="margin-top:8px;"><span class="field-label">הערה</span><textarea class="text-input" data-pr-note maxlength="${POST_BODY_MAX}" rows="3">${safeText(p.note || "")}</textarea></label>` : ""}
-          ${p.error ? `<div class="field-error" role="alert" style="margin-top:8px;">${safeText(p.error)}</div>` : ""}
+          ${p.photo ? `<div style="font-size:12px;color:var(--steel);margin-top:6px;">${p.photo.status === "ready" ? "תמונה צורפה" : p.photo.status === "processing" ? "מעבד תמונה…" : esc(p.photo.error || "העלאת התמונה נכשלה")}</div>` : ""}
+          ${p.photo && p.photo.status === "ready" && !p.photo.decorative ? `<label class="field" style="margin-top:6px;"><span class="field-label">תיאור התמונה לקורא מסך</span><input class="text-input" data-pr-alt maxlength="${ALT_TEXT_MAX}" value="${esc(p.photo.altText || "")}"/></label>` : ""}
+          ${p.showNote ? `<label class="field" style="margin-top:8px;"><span class="field-label">הערה</span><textarea class="text-input" data-pr-note maxlength="${POST_BODY_MAX}" rows="3">${esc(p.note || "")}</textarea></label>` : ""}
+          ${p.error ? `<div class="field-error" role="alert" style="margin-top:8px;">${esc(p.error)}</div>` : ""}
           <div class="chip-row" style="margin-top:14px;">
             <button class="chip-btn primary" data-community-action="pr-share"${p.publishing || (p.photo && p.photo.status === "processing") ? " disabled" : ""}>${p.publishing ? "משתף…" : "שיתוף"}</button>
             ${p.photo ? "" : `<label class="chip-btn" style="cursor:pointer;">הוספת תמונה<input type="file" accept="image/*" data-pr-file style="display:none;"/></label>`}
@@ -8038,7 +8167,7 @@
       .select("id,visibility,shared_at,unlocked_at,achievement_id,achievement_definitions(code,name,icon)")
       .eq("user_id", state.user.id)
       .order("unlocked_at", { ascending: false });
-    state.myAchievements = error ? [] : (data || []);
+    state.achievements.mine = error ? [] : (data || []);
   }
 
   // Called from app.js (window.claimCommunityAchievements) with the codes it
@@ -8052,10 +8181,10 @@
     const { data, error } = await client.rpc("ach_claim", { p_codes: list });
     if (error) return [];
     const written = Array.isArray(data) ? data : (data ? [data] : []);
-    if (written.length && Array.isArray(state.myAchievements)) {
+    if (written.length && Array.isArray(state.achievements.mine)) {
       for (const r of written) {
-        if (!state.myAchievements.some((x) => x.id === r.member_achievement_id)) {
-          state.myAchievements.unshift({ id: r.member_achievement_id, visibility: r.visibility, shared_at: null, unlocked_at: new Date().toISOString(), achievement_definitions: { code: r.code } });
+        if (!state.achievements.mine.some((x) => x.id === r.member_achievement_id)) {
+          state.achievements.mine.unshift({ id: r.member_achievement_id, visibility: r.visibility, shared_at: null, unlocked_at: new Date().toISOString(), achievement_definitions: { code: r.code } });
         }
       }
     }
@@ -8073,7 +8202,7 @@
     const code = payload && payload.code;
     if (!code) return;
     const meta = achMeta(code);
-    state.achUnlock = {
+    state.achievements.unlock = {
       code,
       memberAchievementId: (payload && payload.member_achievement_id) || null,
       visibility: (payload && payload.visibility) || "club",
@@ -8087,9 +8216,9 @@
     };
     rerender();
   }
-  function dismissAchievementUnlock() { state.achUnlock = null; rerender(); }
+  function dismissAchievementUnlock() { state.achievements.unlock = null; rerender(); }
   async function shareAchievementUnlock() {
-    const a = state.achUnlock;
+    const a = state.achievements.unlock;
     if (!a || a.sharing) return;
     if (!a.memberAchievementId || a.visibility === "only_me") { a.error = "לא ניתן לשתף. נסו שוב."; return rerender(); }
     a.sharing = true;
@@ -8097,8 +8226,8 @@
     rerender();
     const { data, error } = await client.rpc("ach_share", { member_achievement_id: a.memberAchievementId, caption: cleanPostBody(a.note), media: [] });
     if (error || !data) { a.sharing = false; a.error = "לא ניתן לשתף. נסו שוב."; return rerender(); }
-    if (Array.isArray(state.myAchievements)) {
-      const row = state.myAchievements.find((r) => r.id === a.memberAchievementId);
+    if (Array.isArray(state.achievements.mine)) {
+      const row = state.achievements.mine.find((r) => r.id === a.memberAchievementId);
       if (row) row.shared_at = new Date().toISOString();
     }
     // COMM-170. Sharing an achievement is a WCAM-qualifying action in its
@@ -8106,7 +8235,7 @@
     // POST_CREATED bridge below: the bus event records that a post exists,
     // this records that a member chose to share a decoration.
     track(A.ACHIEVEMENT_SHARED, { member_achievement_id: a.memberAchievementId, code: a.code || null, source: "unlock_sheet" });
-    state.achUnlock = null;
+    state.achievements.unlock = null;
     setMessage("העיטור שותף למועדון");
     if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.POST_CREATED) {
       try { window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.POST_CREATED, { post_id: data, post_type: "POST_ACHIEVEMENT" }); } catch (e) {}
@@ -8114,23 +8243,23 @@
     rerender();
   }
   function shareEarnedAchievement(memberAchievementId, code) {
-    const row = (state.myAchievements || []).find((r) => r.id === memberAchievementId);
+    const row = (state.achievements.mine || []).find((r) => r.id === memberAchievementId);
     onAchievementUnlocked({ code: code || achCodeOf(row), member_achievement_id: memberAchievementId, visibility: row ? row.visibility : "club" });
   }
 
   function renderAchievementUnlockCelebration() {
-    const a = state.achUnlock;
+    const a = state.achievements.unlock;
     if (!a) return "";
     const canShare = !!a.memberAchievementId && a.visibility !== "only_me";
     return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="achUnlockTitle" data-cloud-dialog="achUnlock" style="align-items:center;padding:0 16px;">
       <div class="modal-sheet" id="achUnlock" style="border-radius:22px;max-height:90vh;overflow:auto;">
         <div style="padding:22px 20px calc(env(safe-area-inset-bottom,0px) + 18px);text-align:center;">
-          <div style="font-size:44px;line-height:1;margin-bottom:8px;" aria-hidden="true">${safeText(a.icon)}</div>
+          <div style="font-size:44px;line-height:1;margin-bottom:8px;" aria-hidden="true">${esc(a.icon)}</div>
           <div id="achUnlockTitle" style="color:var(--chalk);font-weight:800;font-size:18px;margin-bottom:4px;">עיטור חדש נפתח</div>
-          <div style="color:var(--brass);font-weight:800;font-size:15px;">${safeText(a.title)}</div>
-          ${a.explanation ? `<div style="color:var(--steel);font-size:12.5px;margin-top:6px;">${safeText(a.explanation)}</div>` : ""}
-          ${a.showNote ? `<label class="field" style="margin-top:10px;text-align:right;"><span class="field-label">הערה</span><textarea class="text-input" data-ach-note maxlength="${POST_BODY_MAX}" rows="3">${safeText(a.note || "")}</textarea></label>` : ""}
-          ${a.error ? `<div class="field-error" role="alert" style="margin-top:8px;">${safeText(a.error)}</div>` : ""}
+          <div style="color:var(--brass);font-weight:800;font-size:15px;">${esc(a.title)}</div>
+          ${a.explanation ? `<div style="color:var(--steel);font-size:12.5px;margin-top:6px;">${esc(a.explanation)}</div>` : ""}
+          ${a.showNote ? `<label class="field" style="margin-top:10px;text-align:right;"><span class="field-label">הערה</span><textarea class="text-input" data-ach-note maxlength="${POST_BODY_MAX}" rows="3">${esc(a.note || "")}</textarea></label>` : ""}
+          ${a.error ? `<div class="field-error" role="alert" style="margin-top:8px;">${esc(a.error)}</div>` : ""}
           <div class="chip-row" style="margin-top:14px;justify-content:center;">
             ${canShare ? `<button class="chip-btn primary" data-community-action="ach-share"${a.sharing ? " disabled" : ""}>${a.sharing ? "משתף…" : "שיתוף למועדון"}</button>` : ""}
             ${canShare && !a.showNote ? `<button class="chip-btn" data-community-action="ach-add-note">הוספת הערה</button>` : ""}
@@ -8147,7 +8276,7 @@
     // unlocks, on purpose) - this keeps the section shell/header from
     // showing beside an always-empty list.
     if (!isModuleEnabled("achievements")) return "";
-    const list = Array.isArray(state.myAchievements) ? state.myAchievements : [];
+    const list = Array.isArray(state.achievements.mine) ? state.achievements.mine : [];
     const rowsHtml = list.map((r) => {
       const code = achCodeOf(r);
       const meta = achMeta(code);
@@ -8155,8 +8284,8 @@
         ? `<span style="color:var(--steel);font-size:12px;">שותף</span>`
         : r.visibility === "only_me"
           ? ""
-          : `<button class="chip-btn" data-community-action="ach-share-later" data-id="${safeText(r.id)}" data-code="${safeText(code)}">שיתוף</button>`;
-      return `<div class="log-row"><span>${safeText(meta.icon)} ${safeText(meta.title)}</span>${share}</div>`;
+          : `<button class="chip-btn" data-community-action="ach-share-later" data-id="${esc(r.id)}" data-code="${esc(code)}">שיתוף</button>`;
+      return `<div class="log-row"><span>${esc(meta.icon)} ${esc(meta.title)}</span>${share}</div>`;
     }).join("");
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--brass)", "ההישגים שלי")}${list.length ? `<div class="log-list">${rowsHtml}</div>` : `<div class="empty">אין עדיין הישגים במועדון</div>`}</div>`;
   }
@@ -8164,7 +8293,7 @@
   // ---- Member profile community section (COMM-180) --------------------
   async function viewCommunityProfile(userId) {
     if (!userId) return;
-    state.openPostMenu = null;
+    state.posts.openMenu = null;
     // COMM-170. Counted on the open, not on the RPC answering: a member who
     // opened a profile that then failed to load still opened it. The
     // overlay is torn down and rebuilt on each open, so a re-render of an
@@ -8175,7 +8304,7 @@
     // collapsed/loaded/erroring. Reset on every open, same as the rest of
     // profileView, so a stale expanded list from a previously viewed member
     // never bleeds into the next one.
-    state.profileView = {
+    state.members.profileView = {
       userId, loading: true, tab: "overview", data: null, error: false,
       followLists: {
         followers: { open: false, loading: false, loaded: false, error: false, items: [] },
@@ -8189,21 +8318,21 @@
     };
     rerender();
     const { data, error } = await client.rpc("community_profile", { user_id: userId });
-    if (!state.profileView || state.profileView.userId !== userId) return;
-    state.profileView.loading = false;
-    if (error || !data) state.profileView.error = true;
+    if (!state.members.profileView || state.members.profileView.userId !== userId) return;
+    state.members.profileView.loading = false;
+    if (error || !data) state.members.profileView.error = true;
     else {
-      state.profileView.data = data;
+      state.members.profileView.data = data;
       // COMM-160. community_profile already returns the server role; seed the
       // shared cache so the same badge shows here and on any surface opened
       // next, and resolve the roles of the authors on the Posts tab.
-      if (data.role != null) state.memberRoles[userId] = data.role;
+      if (data.role != null) state.members.roles[userId] = data.role;
       loadMemberRoles((Array.isArray(data.posts) ? data.posts : []).map((p) => p && p.author_id)).then(() => rerender());
     }
     rerender();
   }
-  function closeCommunityProfile() { state.profileView = null; rerender(); }
-  function setProfileViewTab(tab) { if (state.profileView) { state.profileView.tab = tab; rerender(); } }
+  function closeCommunityProfile() { state.members.profileView = null; rerender(); }
+  function setProfileViewTab(tab) { if (state.members.profileView) { state.members.profileView.tab = tab; rerender(); } }
   const PROFILE_ROLE_LABELS = { owner: "בעלים", admin: "מנהל/ת", staff: "צוות", head_coach: "מאמן/ת ראשי/ת", coach: "מאמן/ת", member: "חבר/ה" };
 
   // ==========================================================================
@@ -8240,13 +8369,13 @@
     const matchCol = side === "followers" ? "followed_id" : "follower_id";
     const idCol = side === "followers" ? "follower_id" : "followed_id";
     const { data, error } = await client.from("follows").select(idCol + ",created_at").eq(matchCol, pv.userId).order("created_at", { ascending: false });
-    if (state.profileView !== pv) return; // the profile closed or moved on while this was in flight
+    if (state.members.profileView !== pv) return; // the profile closed or moved on while this was in flight
     st.loading = false;
     if (error) { st.error = true; st.items = []; rerender(); return; }
     const ids = (Array.isArray(data) ? data : []).map((r) => r[idCol]).filter(Boolean);
     if (!ids.length) { st.items = []; st.loaded = true; rerender(); return; }
     const { map: byId, error: perr } = await loadProfilesById(ids, "allow_follows");
-    if (state.profileView !== pv) return;
+    if (state.members.profileView !== pv) return;
     if (perr) { st.error = true; st.items = []; rerender(); return; }
     // Preserve the follows-table order (most recent edge first); a member
     // hidden from this caller by RLS (blocked, or - not applicable to self,
@@ -8258,7 +8387,7 @@
     loadMemberRoles(st.items.map((m) => m.id)).then(() => rerender());
   }
   function toggleFollowListSection(side) {
-    const pv = state.profileView;
+    const pv = state.members.profileView;
     if (!followListCanExpand(pv) || (side !== "followers" && side !== "following")) return;
     const st = pv.followLists[side];
     st.open = !st.open;
@@ -8266,7 +8395,7 @@
     rerender();
   }
   function retryFollowList(side) {
-    const pv = state.profileView;
+    const pv = state.members.profileView;
     if (!followListCanExpand(pv) || (side !== "followers" && side !== "following")) return;
     loadFollowList(pv, side);
   }
@@ -8278,7 +8407,7 @@
   // immediately and is put back with the shared error copy if the write
   // failed - never a silent drop.
   async function unfollowFromFollowingList(userId) {
-    const pv = state.profileView;
+    const pv = state.members.profileView;
     if (!pv || !userId) return;
     const st = pv.followLists.following;
     const idx = st.items.findIndex((m) => m && m.id === userId);
@@ -8288,7 +8417,7 @@
     st.actionError = false;
     rerender();
     const result = await follow(userId); // same single toggle every follow control uses
-    if (state.profileView !== pv) return;
+    if (state.members.profileView !== pv) return;
     if (result && result.error) {
       // Put the row back exactly where it was and say so - the list itself
       // is fine (st.error stays false), only this one tap failed, so tapping
@@ -8309,17 +8438,17 @@
     const name = m.display_name || (m.handle ? "@" + m.handle : "חבר/ה");
     const badge = isCoachRole(memberRole(m.id)) ? " " + coachBadgeHtml(memberRole(m.id)) : "";
     const actionBtn = side === "following"
-      ? `<button class="chip-btn" data-community-action="following-unfollow" data-id="${safeText(m.id)}">הפסקת מעקב</button>`
-      : (m.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${safeText(m.id)}">מעקב</button>`);
-    return `<div class="log-row"><button class="link-btn" data-community-action="view-profile" data-id="${safeText(m.id)}" style="padding:0;display:flex;gap:10px;align-items:center;color:inherit;text-align:right;">${avatarHtml(name, 32, m.avatar_url)}<span style="font-weight:700;">${safeText(name)}${badge}</span></button><div class="chip-row" style="margin-top:0;">${actionBtn}</div></div>`;
+      ? `<button class="chip-btn" data-community-action="following-unfollow" data-id="${esc(m.id)}">הפסקת מעקב</button>`
+      : (m.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${esc(m.id)}">מעקב</button>`);
+    return `<div class="log-row"><button class="link-btn" data-community-action="view-profile" data-id="${esc(m.id)}" style="padding:0;display:flex;gap:10px;align-items:center;color:inherit;text-align:right;">${avatarHtml(name, 32, m.avatar_url)}<span style="font-weight:700;">${esc(name)}${badge}</span></button><div class="chip-row" style="margin-top:0;">${actionBtn}</div></div>`;
   }
   function followListSectionHtml(pv, side, label, count) {
     if (count == null) return "";
     if (!followListCanExpand(pv)) {
-      return `<div class="log-row"><span>${safeText(label)}</span><span class="mono" style="color:var(--brass);">${Number(count) || 0}</span></div>`;
+      return `<div class="log-row"><span>${esc(label)}</span><span class="mono" style="color:var(--brass);">${Number(count) || 0}</span></div>`;
     }
     const st = pv.followLists[side];
-    const toggleBtn = `<button class="chip-btn" data-community-action="following-toggle" data-side="${side}" aria-expanded="${st.open ? "true" : "false"}">${safeText(label)} (${Number(count) || 0})${st.open ? " ▲" : " ▼"}</button>`;
+    const toggleBtn = `<button class="chip-btn" data-community-action="following-toggle" data-side="${side}" aria-expanded="${st.open ? "true" : "false"}">${esc(label)} (${Number(count) || 0})${st.open ? " ▲" : " ▼"}</button>`;
     if (!st.open) return `<div style="margin-bottom:8px;">${toggleBtn}</div>`;
     let body;
     if (st.loading && !st.loaded) body = followListSkeletonHtml();
@@ -8346,11 +8475,11 @@
       + followListSectionHtml(pv, "following", "עוקב/ת אחרי", d.following_count);
   }
   function renderCommunityProfileOverlay() {
-    const pv = state.profileView;
+    const pv = state.members.profileView;
     if (!pv) return "";
     const d = pv.data || {};
     const name = [d.first_name, d.last_name].filter(Boolean).join(" ") || d.display_name || (d.handle ? "@" + d.handle : "חבר/ה");
-    const roleLabel = PROFILE_ROLE_LABELS[d.role] || (d.role ? safeText(d.role) : "");
+    const roleLabel = PROFILE_ROLE_LABELS[d.role] || (d.role ? esc(d.role) : "");
     const profileTabs = [
       { id: "overview", label: "סקירה" },
       { id: "progress", label: "התקדמות" },
@@ -8373,18 +8502,18 @@
       if (d.active_challenge) rows.push(["אתגר פעיל", d.active_challenge.title || d.active_challenge]);
       if (d.recent_achievement) rows.push(["הישג אחרון", d.recent_achievement.title || d.recent_achievement]);
       const recent = Array.isArray(d.recent_workouts) ? d.recent_workouts : [];
-      const rowsHtml = rows.length ? `<div class="log-list">${rows.map(([k, v]) => `<div class="log-row"><span>${safeText(k)}</span><span class="mono" style="color:var(--brass);">${safeText(v)}</span></div>`).join("")}</div>` : "";
-      const recentHtml = recent.length ? `<div class="log-list" style="margin-top:8px;">${recent.map((w) => `<div class="log-row"><span>${safeText(w.title || w.name || "")}</span><span style="color:var(--steel);font-size:12px;">${safeText(String(w.date || w.occurred_on || "").slice(0, 10))}</span></div>`).join("")}</div>` : "";
+      const rowsHtml = rows.length ? `<div class="log-list">${rows.map(([k, v]) => `<div class="log-row"><span>${esc(k)}</span><span class="mono" style="color:var(--brass);">${esc(v)}</span></div>`).join("")}</div>` : "";
+      const recentHtml = recent.length ? `<div class="log-list" style="margin-top:8px;">${recent.map((w) => `<div class="log-row"><span>${esc(w.title || w.name || "")}</span><span style="color:var(--steel);font-size:12px;">${esc(String(w.date || w.occurred_on || "").slice(0, 10))}</span></div>`).join("")}</div>` : "";
       bodyHtml = (rowsHtml + recentHtml) || `<div class="empty">אין מידע להצגה</div>`;
     } else if (active === "progress") {
       const prs = Array.isArray(d.prs) ? d.prs : null;
       bodyHtml = prs == null ? `<div class="empty">ההתקדמות מוסתרת</div>`
-        : prs.length ? `<div class="log-list">${prs.map((x) => `<div class="log-row"><span>${safeText(x.movement || x.title || "")}</span><span class="mono" style="color:var(--brass);">${safeText(x.result || x.value || "")}</span></div>`).join("")}</div>`
+        : prs.length ? `<div class="log-list">${prs.map((x) => `<div class="log-row"><span>${esc(x.movement || x.title || "")}</span><span class="mono" style="color:var(--brass);">${esc(x.result || x.value || "")}</span></div>`).join("")}</div>`
         : `<div class="empty">אין עדיין שיאים</div>`;
     } else if (active === "achievements") {
       const ach = Array.isArray(d.achievements) ? d.achievements : null;
       bodyHtml = ach == null ? `<div class="empty">ההישגים מוסתרים</div>`
-        : ach.length ? `<div class="badge-grid">${ach.map((a) => `<div class="chart-card" style="flex:0 0 auto;padding:8px 10px;">${safeText(a.badge_icon || "🏅")} ${safeText(a.title || "")}</div>`).join("")}</div>`
+        : ach.length ? `<div class="badge-grid">${ach.map((a) => `<div class="chart-card" style="flex:0 0 auto;padding:8px 10px;">${esc(a.badge_icon || "🏅")} ${esc(a.title || "")}</div>`).join("")}</div>`
         : `<div class="empty">אין עדיין הישגים</div>`;
     } else if (active === "posts") {
       const posts = Array.isArray(d.posts) ? d.posts : [];
@@ -8394,7 +8523,7 @@
       // pushed it above.
       bodyHtml = renderFollowingTab(pv, d);
     }
-    const followBtn = d.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${safeText(pv.userId)}">מעקב</button>`;
+    const followBtn = d.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${esc(pv.userId)}">מעקב</button>`;
     return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="profileViewTitle" data-cloud-dialog="profileView" style="align-items:flex-start;padding:20px 12px;">
       <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:520px;">
         <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
@@ -8402,8 +8531,8 @@
             <div class="flex gap-10" style="align-items:center;min-width:0;">
               ${avatarHtml(name, 44, d.avatar_url)}
               <div style="min-width:0;">
-                <div id="profileViewTitle" style="font-weight:800;font-size:16px;">${safeText(name)}${isCoachRole(d.role) ? " " + coachBadgeHtml(d.role) : ""}</div>
-                <div style="color:var(--steel);font-size:12px;">${roleLabel ? safeText(roleLabel) : ""}${d.member_since ? ` · חבר/ה מאז ${safeText(String(d.member_since).slice(0, 10))}` : ""}</div>
+                <div id="profileViewTitle" style="font-weight:800;font-size:16px;">${esc(name)}${isCoachRole(d.role) ? " " + coachBadgeHtml(d.role) : ""}</div>
+                <div style="color:var(--steel);font-size:12px;">${roleLabel ? esc(roleLabel) : ""}${d.member_since ? ` · חבר/ה מאז ${esc(String(d.member_since).slice(0, 10))}` : ""}</div>
               </div>
             </div>
             <button class="link-btn" data-community-action="close-profile" aria-label="סגירה">סגירה</button>
@@ -8522,7 +8651,7 @@
   async function loadNotifUnread() {
     if (!state.user || !client) return;
     const { data, error } = await client.rpc("notif_unread_count");
-    if (!error) { state.notifUnread = Number(data) || 0; state.notifUnreadLoaded = true; rerender(); }
+    if (!error) { state.notif.unread = Number(data) || 0; state.notif.unreadLoaded = true; rerender(); }
   }
 
   // --- COMM-144 per-type preferences (direct own-row RLS upsert) -------
@@ -8532,8 +8661,8 @@
       .select("type,channel").eq("user_id", state.user.id);
     const next = {};
     if (!error && Array.isArray(data)) for (const r of data) next[r.type] = r.channel;
-    state.notifPrefs = next;
-    state.notifPrefsLoaded = !error;
+    state.notif.prefs = next;
+    state.notif.prefsLoaded = !error;
     rerender();
   }
   // --- COMM-229 web push (behind state.featureFlags.notifPush) ---------
@@ -8588,8 +8717,8 @@
   // every session - the same lazy-load pattern the other flag-gated
   // Phase 2 reads use (coachEngage).
   async function loadNotifPushStatus() {
-    state.notifPushChecked = true;
-    if (!state.user || !client || !notifPushEnabled() || notifPushUnsupportedReason()) { state.notifPushSub = null; return; }
+    state.notif.pushChecked = true;
+    if (!state.user || !client || !notifPushEnabled() || notifPushUnsupportedReason()) { state.notif.pushSub = null; return; }
     try {
       const hasSw = "serviceWorker" in navigator;
       const reg = hasSw ? await navigator.serviceWorker.ready : null;
@@ -8597,10 +8726,10 @@
       if (sub) {
         const { data, error } = await client.from("push_subscriptions")
           .select("id,endpoint").eq("endpoint", sub.endpoint).is("revoked_at", null).maybeSingle();
-        state.notifPushSub = (!error && data) ? { endpoint: sub.endpoint } : null;
-        if (state.notifPushSub) { try { localStorage.setItem(NOTIF_PUSH_ENDPOINT_KEY, sub.endpoint); } catch (e) {} }
+        state.notif.pushSub = (!error && data) ? { endpoint: sub.endpoint } : null;
+        if (state.notif.pushSub) { try { localStorage.setItem(NOTIF_PUSH_ENDPOINT_KEY, sub.endpoint); } catch (e) {} }
       } else {
-        state.notifPushSub = null;
+        state.notif.pushSub = null;
         // The browser has no live subscription right now. If this device
         // previously had one - permission revoked outside the app, or the
         // browser otherwise dropped it - the endpoint is gone for good
@@ -8616,7 +8745,7 @@
         }
       }
     } catch (err) {
-      state.notifPushSub = null;
+      state.notif.pushSub = null;
     }
     rerender();
   }
@@ -8645,7 +8774,7 @@
         { user_id: state.user.id, endpoint: json.endpoint, keys: json.keys || {}, revoked_at: null },
         { onConflict: "endpoint" });
       if (error) { setMessage("לא אושרה הרשאת התראות"); return false; }
-      state.notifPushSub = { endpoint: json.endpoint };
+      state.notif.pushSub = { endpoint: json.endpoint };
       try { localStorage.setItem(NOTIF_PUSH_ENDPOINT_KEY, json.endpoint); } catch (e) {}
       // COMM-233. Only once the subscription row is actually written -
       // a granted browser permission whose upsert then failed is not an
@@ -8677,7 +8806,7 @@
       }
     } catch (err) { /* best-effort; the device just no longer reports itself active */ }
     try { localStorage.removeItem(NOTIF_PUSH_ENDPOINT_KEY); } catch (e) {}
-    state.notifPushSub = null;
+    state.notif.pushSub = null;
     rerender();
   }
 
@@ -8687,22 +8816,22 @@
     if (channel === "push") {
       if (!notifPushEnabled()) return;                              // push is disabled in V1 default
       if (notifPushUnsupportedReason()) return;                     // the control itself renders disabled for this case
-      if (!state.notifPushSub) {
+      if (!state.notif.pushSub) {
         const ok = await enableNotifPush("notif_pref", type);
         if (!ok) return;                                            // permission denied/failed: leaves the stored channel untouched
       }
     }
-    const prev = state.notifPrefs[type];
+    const prev = state.notif.prefs[type];
     if (prev === channel) return;
-    state.notifPrefs[type] = channel;
-    state.notifPrefSaving[type] = true;
+    state.notif.prefs[type] = channel;
+    state.notif.prefSaving[type] = true;
     rerender();
     const { error } = await client.from("notification_preferences").upsert(
       { user_id: state.user.id, type: type, channel: channel, updated_at: new Date().toISOString() },
       { onConflict: "user_id,type" });
-    delete state.notifPrefSaving[type];
+    delete state.notif.prefSaving[type];
     if (error) {
-      if (prev == null) delete state.notifPrefs[type]; else state.notifPrefs[type] = prev;
+      if (prev == null) delete state.notif.prefs[type]; else state.notif.prefs[type] = prev;
       setMessage("לא ניתן לשמור העדפה זו");
       return;
     }
@@ -8712,7 +8841,7 @@
   // --- COMM-140 the centre: open, page, mark read --------------------
   async function openNotifCenter() {
     if (!state.user || !client) return;
-    state.notifCenter = {
+    state.notif.center = {
       loading: true, error: false, rows: [], cursor: null, end: false, hasOlder: false,
       loadingMore: false, moreError: false, expanded: {}, showOlder: false, _focused: false,
       returnFocus: "feed-notifications",
@@ -8721,8 +8850,8 @@
     await fetchNotifPage(true);
   }
   function closeNotifCenter() {
-    const back = state.notifCenter && state.notifCenter.returnFocus;
-    state.notifCenter = null;
+    const back = state.notif.center && state.notif.center.returnFocus;
+    state.notif.center = null;
     rerender();
     if (back) {
       const el = document.querySelector('[data-community-action="' + back + '"]');
@@ -8730,13 +8859,13 @@
     }
   }
   async function fetchNotifPage(first) {
-    const c = state.notifCenter;
+    const c = state.notif.center;
     if (!c) return;
     if (!first && (c.loadingMore || c.end)) return;
     if (first) { c.loading = true; c.error = false; } else { c.loadingMore = true; c.moreError = false; }
     rerender();
     const { data, error } = await client.rpc("notif_list", { p_cursor: c.cursor, p_limit: NOTIF_PAGE_SIZE });
-    if (!state.notifCenter || state.notifCenter !== c) return;
+    if (!state.notif.center || state.notif.center !== c) return;
     if (error) {
       if (first) { c.loading = false; c.error = true; } else { c.loadingMore = false; c.moreError = true; }
       rerender();
@@ -8762,7 +8891,7 @@
   }
   async function loadMoreNotifs() { await fetchNotifPage(false); }
   async function notifShowOlder() {
-    const c = state.notifCenter;
+    const c = state.notif.center;
     if (!c) return;
     c.showOlder = true; c.end = false; c.hasOlder = false;
     await fetchNotifPage(false);
@@ -8773,42 +8902,42 @@
     const ids = targets.map((r) => r.id);
     const stamp = new Date().toISOString();
     for (const r of targets) r.read_at = stamp;
-    const prevUnread = Number(state.notifUnread) || 0;
-    state.notifUnread = Math.max(0, prevUnread - ids.length);
+    const prevUnread = Number(state.notif.unread) || 0;
+    state.notif.unread = Math.max(0, prevUnread - ids.length);
     rerender();
     for (let i = 0; i < ids.length; i += 100) {
       const { error } = await client.rpc("notif_mark_read", { p_ids: ids.slice(i, i + 100) });
-      if (error) { for (const r of targets) r.read_at = null; state.notifUnread = prevUnread; rerender(); return; }
+      if (error) { for (const r of targets) r.read_at = null; state.notif.unread = prevUnread; rerender(); return; }
     }
   }
   async function markAllNotifsRead() {
-    const c = state.notifCenter;
+    const c = state.notif.center;
     if (!c) return;
     const targets = c.rows.filter((r) => !r.read_at);
     if (!targets.length) return;
     const ids = targets.map((r) => r.id);
     const stamp = new Date().toISOString();
     for (const r of targets) r.read_at = stamp;
-    const prevUnread = Number(state.notifUnread) || 0;
-    state.notifUnread = Math.max(0, prevUnread - ids.length);
+    const prevUnread = Number(state.notif.unread) || 0;
+    state.notif.unread = Math.max(0, prevUnread - ids.length);
     rerender();
     for (let i = 0; i < ids.length; i += 100) {
       const { error } = await client.rpc("notif_mark_read", { p_ids: ids.slice(i, i + 100) });
-      if (error) { for (const r of targets) r.read_at = null; state.notifUnread = prevUnread; loadNotifUnread(); rerender(); return; }
+      if (error) { for (const r of targets) r.read_at = null; state.notif.unread = prevUnread; loadNotifUnread(); rerender(); return; }
     }
   }
   async function markNotifRead(id) {
-    const c = state.notifCenter;
+    const c = state.notif.center;
     const row = c && c.rows.find((r) => r.id === id);
     if (!row || row.read_at) return;
     // Optimistic with rollback (COMM-141).
     row.read_at = new Date().toISOString();
-    state.notifUnread = Math.max(0, (Number(state.notifUnread) || 0) - 1);
+    state.notif.unread = Math.max(0, (Number(state.notif.unread) || 0) - 1);
     rerender();
     const { error } = await client.rpc("notif_mark_read", { p_ids: [id] });
     if (error) {
       row.read_at = null;
-      state.notifUnread = (Number(state.notifUnread) || 0) + 1;
+      state.notif.unread = (Number(state.notif.unread) || 0) + 1;
       setMessage("לא ניתן לסמן כנקרא");
       rerender();
     }
@@ -8859,8 +8988,8 @@
   function navigateToNotifTarget(target) {
     setCommunityTab(target.tab || "feed");
     if (target.post) {
-      state.openComments[target.post] = true;
-      if (target.comment) state.openReplies[target.comment] = true;
+      state.engagement.openComments[target.post] = true;
+      if (target.comment) state.engagement.openReplies[target.comment] = true;
       rerender();
       setTimeout(() => {
         const sel = '[data-post-id="' + String(target.post).replace(/"/g, '\\"') + '"]';
@@ -8878,7 +9007,7 @@
     }
   }
   async function openNotif(id) {
-    const c = state.notifCenter;
+    const c = state.notif.center;
     const row = c && c.rows.find((r) => r.id === id);
     if (!row) return;
     const target = resolveNotifTarget(row);
@@ -8964,29 +9093,29 @@
   function challengeRealtimeNames(id) { return ["chal-progress-" + id, "chal-participants-" + id]; }
   function ensureChallengeRealtime() {
     if (!state.user || !client || !window.HaimuniaRealtime) return;
-    const openId = state.challengeView && state.challengeView.id;
-    if (state._chalRtId && state._chalRtId !== openId) {
-      for (const name of challengeRealtimeNames(state._chalRtId)) window.HaimuniaRealtime.unsubscribe(name);
-      state._chalRtId = null;
+    const openId = state.challenges.view && state.challenges.view.id;
+    if (state.challenges._rtId && state.challenges._rtId !== openId) {
+      for (const name of challengeRealtimeNames(state.challenges._rtId)) window.HaimuniaRealtime.unsubscribe(name);
+      state.challenges._rtId = null;
     }
     if (!openId) return;
     const [progressName, participantsName] = challengeRealtimeNames(openId);
     // Re-arm after teardownAll() the same way the notification channel
     // does: the registry, not a local flag, is the source of truth for
     // whether a channel is actually open.
-    if (state._chalRtId === openId && realtimeChannelOpen(progressName) && realtimeChannelOpen(participantsName)) return;
+    if (state.challenges._rtId === openId && realtimeChannelOpen(progressName) && realtimeChannelOpen(participantsName)) return;
     window.HaimuniaRealtime.subscribe(progressName,
       { table: "challenge_progress", event: "INSERT", filter: "challenge_id=eq." + openId },
       function () { onChallengeRealtime(openId); });
     window.HaimuniaRealtime.subscribe(participantsName,
       { table: "challenge_participants", event: "UPDATE", filter: "challenge_id=eq." + openId },
       function () { onChallengeRealtime(openId); });
-    state._chalRtId = openId;
+    state.challenges._rtId = openId;
   }
   function onChallengeRealtime(id) {
     realtimeDebounce("chal-" + id, function () {
       // The detail may have closed between the event and this timer.
-      if (!state.challengeView || state.challengeView.id !== id) return;
+      if (!state.challenges.view || state.challenges.view.id !== id) return;
       // chal_progress() is the server's aggregation; re-reading it is what
       // keeps the bar and the leaderboard equal to what a refresh shows,
       // rather than a client-side sum of deltas that drifts.
@@ -9000,7 +9129,7 @@
   // Incoming rows are filtered here against what is actually rendered.
   function ensureFeedRealtime() {
     if (!state.user || !client || !window.HaimuniaRealtime) return;
-    if (state.communityTab !== "feed") return;
+    if (state.ui.tab !== "feed") return;
     if (!realtimeChannelOpen("feed-comments")) {
       window.HaimuniaRealtime.subscribe("feed-comments", { table: "post_comments", event: "INSERT" }, onFeedCommentRealtime);
     }
@@ -9019,9 +9148,9 @@
     const postId = realtimePostId(payload);
     // Only a thread the member has open. A closed thread has nothing to
     // append to and re-fetching it would be a query nobody asked for.
-    if (!postId || !state.openComments[postId]) return;
+    if (!postId || !state.engagement.openComments[postId]) return;
     realtimeDebounce("comments-" + postId, function () {
-      if (!state.openComments[postId] || !findFeedPost(postId)) return;
+      if (!state.engagement.openComments[postId] || !findFeedPost(postId)) return;
       // loadCommentsFor() is the initial load path, so the new rows get the
       // same block-edge and moderation-status handling (and the same author
       // profile join and coach-role lookup) the first render applied.
@@ -9035,7 +9164,7 @@
       if (!findFeedPost(postId)) return;
       // A card whose strip was never loaded (no reactions yet) needs the
       // first load; one already loaded needs a re-read of the same query.
-      if (state.reactions[postId]) loadReactionsFor(postId);
+      if (state.engagement.reactions[postId]) loadReactionsFor(postId);
       else ensureReactionsLoaded(postId);
     });
   }
@@ -9046,18 +9175,18 @@
     const name = "notif-" + state.user.id;
     const listed = typeof window.HaimuniaRealtime.list === "function"
       ? window.HaimuniaRealtime.list().some((ch) => ch.name === name) : false;
-    if (state._notifRtUid === state.user.id && listed) return;
+    if (state.notif._rtUid === state.user.id && listed) return;
     window.HaimuniaRealtime.subscribe(name,
       { table: "notifications", event: "*", filter: "user_id=eq." + state.user.id },
       onNotifRealtime);
-    state._notifRtUid = state.user.id;
+    state.notif._rtUid = state.user.id;
   }
   function onNotifRealtime(payload) {
     const evt = payload && (payload.eventType || payload.type);
     const rec = payload && (payload.new || payload.record);
     if (evt === "INSERT" && rec) {
-      if (!rec.read_at) state.notifUnread = (Number(state.notifUnread) || 0) + 1;
-      const c = state.notifCenter;
+      if (!rec.read_at) state.notif.unread = (Number(state.notif.unread) || 0) + 1;
+      const c = state.notif.center;
       if (c && !c.rows.some((r) => r.id === rec.id)) { rec._wasUnread = !rec.read_at; c.rows.unshift(rec); }
       rerender();
       return;
@@ -9079,14 +9208,14 @@
     // NOTIF_TYPES marks it serverTitle. r.title remains the last resort for
     // a future type this client does not know, the same fallback
     // renderNotifBatchGroup already relies on.
-    const title = safeText((def.serverTitle && r.title) || def.title || r.title || "");
-    const bodyHtml = r.body ? `<span style="display:block;color:var(--steel);font-size:12.5px;margin-top:2px;">${safeText(r.body)}</span>` : "";
-    return `<button class="log-row" data-community-action="notif-open" data-id="${safeText(r.id)}" data-notif-mode="${safeText(def.mode || "immediate")}" style="width:100%;text-align:right;background:none;border:0;border-inline-start:3px solid ${emphasise ? "var(--energy)" : "transparent"};padding:8px 10px;cursor:pointer;display:flex;gap:10px;align-items:flex-start;">
-      <span aria-hidden="true" style="font-size:18px;line-height:1.2;">${safeText(def.icon)}</span>
+    const title = esc((def.serverTitle && r.title) || def.title || r.title || "");
+    const bodyHtml = r.body ? `<span style="display:block;color:var(--steel);font-size:12.5px;margin-top:2px;">${esc(r.body)}</span>` : "";
+    return `<button class="log-row" data-community-action="notif-open" data-id="${esc(r.id)}" data-notif-mode="${esc(def.mode || "immediate")}" style="width:100%;text-align:right;background:none;border:0;border-inline-start:3px solid ${emphasise ? "var(--energy)" : "transparent"};padding:8px 10px;cursor:pointer;display:flex;gap:10px;align-items:flex-start;">
+      <span aria-hidden="true" style="font-size:18px;line-height:1.2;">${esc(def.icon)}</span>
       <span style="flex:1;min-width:0;">
         <span style="display:block;font-weight:${emphasise ? "800" : "600"};font-size:13px;">${title}</span>
         ${bodyHtml}
-        <span style="display:block;color:var(--steel);font-size:11px;margin-top:3px;">${safeText(relativeTime(r.created_at))}</span>
+        <span style="display:block;color:var(--steel);font-size:11px;margin-top:3px;">${esc(relativeTime(r.created_at))}</span>
       </span>
     </button>`;
   }
@@ -9098,12 +9227,12 @@
     const key = group[0].type + ":" + group[0].id;
     const open = !!c.expanded[key];
     const emphasise = group.some((g) => g._wasUnread);
-    return `<div class="notif-group${emphasise ? " emphasise" : ""}" data-notif-group="${safeText(key)}">
-      <button class="link-btn" data-community-action="notif-toggle-group" data-key="${safeText(key)}" aria-expanded="${open ? "true" : "false"}" style="display:flex;gap:10px;align-items:center;width:100%;text-align:right;padding:8px 10px;">
-        <span aria-hidden="true" style="font-size:18px;">${safeText(def.icon)}</span>
+    return `<div class="notif-group${emphasise ? " emphasise" : ""}" data-notif-group="${esc(key)}">
+      <button class="link-btn" data-community-action="notif-toggle-group" data-key="${esc(key)}" aria-expanded="${open ? "true" : "false"}" style="display:flex;gap:10px;align-items:center;width:100%;text-align:right;padding:8px 10px;">
+        <span aria-hidden="true" style="font-size:18px;">${esc(def.icon)}</span>
         <span style="flex:1;min-width:0;">
-          <span style="display:block;font-weight:${emphasise ? "800" : "600"};font-size:13px;">${safeText(def.title)}${group.length > 1 ? " · " + group.length : ""}</span>
-          <span style="display:block;color:var(--steel);font-size:11px;margin-top:3px;">${safeText(relativeTime(group[0].created_at))}</span>
+          <span style="display:block;font-weight:${emphasise ? "800" : "600"};font-size:13px;">${esc(def.title)}${group.length > 1 ? " · " + group.length : ""}</span>
+          <span style="display:block;color:var(--steel);font-size:11px;margin-top:3px;">${esc(relativeTime(group[0].created_at))}</span>
         </span>
         <span aria-hidden="true">${open ? "▲" : "▼"}</span>
       </button>
@@ -9129,7 +9258,7 @@
     return (def && def.category) || r.category || "community";
   }
   function renderNotificationCenter() {
-    const c = state.notifCenter;
+    const c = state.notif.center;
     if (!c) return "";
     let body;
     if (c.loading && !c.rows.length) {
@@ -9182,27 +9311,27 @@
     const pushReason = pushOn ? notifPushUnsupportedReason() : "בקרוב";
     const pushDisabled = !!pushReason;
     const rowFor = (t) => {
-      const stored = state.notifPrefs[t.key] || "in_app";
+      const stored = state.notif.prefs[t.key] || "in_app";
       const eff = (stored === "push" && !pushOn) ? "in_app" : stored;
-      const saving = !!state.notifPrefSaving[t.key];
+      const saving = !!state.notif.prefSaving[t.key];
       const btn = (ch, label, disabled, title) =>
-        `<button type="button" class="chip-btn${eff === ch ? " selected" : ""}" data-community-action="notif-pref" data-type="${t.key}" data-channel="${ch}"${(disabled || saving) ? " disabled" : ""}${disabled && title ? ` aria-disabled="true" title="${safeText(title)}"` : ""}>${label}</button>`;
-      const noteHtml = t.note ? `<span style="color:var(--steel);font-size:11px;">${safeText(t.note)}</span>` : "";
+        `<button type="button" class="chip-btn${eff === ch ? " selected" : ""}" data-community-action="notif-pref" data-type="${t.key}" data-channel="${ch}"${(disabled || saving) ? " disabled" : ""}${disabled && title ? ` aria-disabled="true" title="${esc(title)}"` : ""}>${label}</button>`;
+      const noteHtml = t.note ? `<span style="color:var(--steel);font-size:11px;">${esc(t.note)}</span>` : "";
       // Populated (COMM-229 frontend states): an active subscription on
       // THIS device shows "פעיל" next to the push option, only for a row
       // whose effective channel actually is push. Empty (push never opted
       // into) renders no badge at all - the row looks exactly like any
       // other channel, per the ticket's own wording.
-      const pushBadge = (pushOn && eff === "push" && state.notifPushSub)
+      const pushBadge = (pushOn && eff === "push" && state.notif.pushSub)
         ? `<span style="color:var(--green);font-size:11px;">פעיל</span>` : "";
       // Explanatory text, visible (not just a tooltip), only when the flag
       // is on but this browser genuinely cannot do push right now.
       const explainHtml = (pushOn && pushDisabled)
-        ? `<span style="color:var(--steel);font-size:11px;">${safeText(pushReason)}</span>` : "";
+        ? `<span style="color:var(--steel);font-size:11px;">${esc(pushReason)}</span>` : "";
       return `<div class="log-row" style="flex-direction:column;align-items:stretch;gap:6px;">
-        <span style="font-size:13px;">${safeText(t.label)}</span>
+        <span style="font-size:13px;">${esc(t.label)}</span>
         ${noteHtml}
-        <div class="chip-row" role="group" aria-label="${safeText(t.label)}" style="margin-top:0;">
+        <div class="chip-row" role="group" aria-label="${esc(t.label)}" style="margin-top:0;">
           ${btn("push", pushOn ? "התראת דחיפה" : "התראת דחיפה · בקרוב", pushDisabled, pushDisabled ? pushReason : null)}
           ${pushBadge}
           ${btn("in_app", "באפליקציה", false)}
@@ -9211,14 +9340,14 @@
         ${explainHtml}
       </div>`;
     };
-    const rows = state.notifPrefsLoaded
+    const rows = state.notif.prefsLoaded
       ? NOTIF_PREF_TYPES.map(rowFor).join("")
       : `<div class="log-row" aria-hidden="true"><span style="height:12px;width:60%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`.repeat(4);
     // COMM-229. One device-level control, not one per row: a
     // PushSubscription is per browser/device, so "turn push off" is a
     // single action here rather than duplicated ten times. Shown only once
     // the flag is on and this device actually has an active subscription.
-    const deviceStatusHtml = (pushOn && state.notifPushSub)
+    const deviceStatusHtml = (pushOn && state.notif.pushSub)
       ? `<div class="chip-row" style="margin-top:0;margin-bottom:8px;align-items:center;"><span style="font-size:12px;color:var(--steel);">התראות דחיפה פעילות במכשיר זה.</span><button type="button" class="link-btn" data-community-action="notif-push-disable">כיבוי במכשיר זה</button></div>`
       : "";
     const introHtml = pushOn
@@ -9261,7 +9390,7 @@
   // capped free-text note, and a plain acknowledgement that discloses
   // nothing about what happens next.
   function renderReportSheet() {
-    const s = state.reportSheet;
+    const s = state.admin.reportSheet;
     if (!s) return "";
     if (s.done) {
       return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="reportSheetTitle" data-cloud-dialog="reportSheet" style="align-items:center;padding:0 20px;">
@@ -9275,7 +9404,7 @@
     }
     const reasons = REPORT_REASONS.map((r) => `<label class="log-row" style="justify-content:space-between;gap:12px;cursor:pointer;">
       <span style="font-size:13px;">${r.label}</span>
-      <input type="radio" name="reportReason" data-report-reason="${r.id}"${s.reason === r.id ? " checked" : ""} aria-label="${safeText(r.label)}"/>
+      <input type="radio" name="reportReason" data-report-reason="${r.id}"${s.reason === r.id ? " checked" : ""} aria-label="${esc(r.label)}"/>
     </label>`).join("");
     return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="reportSheetTitle" data-cloud-dialog="reportSheet" style="align-items:center;padding:0 20px;">
       <div class="modal-sheet" style="border-radius:22px;max-height:none;">
@@ -9283,8 +9412,8 @@
           <div id="reportSheetTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:12px;">דיווח על ${s.targetType === "comment" ? "תגובה" : "פוסט"}</div>
           <div class="log-list">${reasons}</div>
           <label class="field" style="margin-top:12px;"><span class="field-label">פרטים נוספים (רשות)</span>
-            <textarea class="text-input" data-report-note maxlength="500" placeholder="אפשר להוסיף הקשר">${safeText(s.note || "")}</textarea></label>
-          ${s.error ? `<div class="footer-note" role="alert" style="color:var(--red);">${safeText(s.error)}</div>` : ""}
+            <textarea class="text-input" data-report-note maxlength="500" placeholder="אפשר להוסיף הקשר">${esc(s.note || "")}</textarea></label>
+          ${s.error ? `<div class="footer-note" role="alert" style="color:var(--red);">${esc(s.error)}</div>` : ""}
           <div class="chip-row" style="margin-top:12px;">
             <button class="chip-btn" data-community-action="report-close">ביטול</button>
             <button class="chip-btn primary" data-community-action="report-submit"${s.saving ? " disabled" : ""}>${s.saving ? "שולח…" : "שליחת דיווח"}</button>
@@ -9297,7 +9426,7 @@
   // a duration picker for a temporary restriction. Every decision here is
   // handed to mod_review().
   function renderModActionSheet() {
-    const a = state.modAction;
+    const a = state.admin.modAction;
     if (!a) return "";
     const def = MOD_DECISIONS.find((d) => d.id === a.decision) || { label: a.decision };
     const days = a.decision === "restrict_temp" ? `<label class="field" style="margin-top:10px;"><span class="field-label">משך ההגבלה</span>
@@ -9305,11 +9434,11 @@
     return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="modActionTitle" data-cloud-dialog="modAction" style="align-items:center;padding:0 20px;">
       <div class="modal-sheet" style="border-radius:22px;max-height:none;">
         <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
-          <div id="modActionTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">${safeText(def.label)}</div>
+          <div id="modActionTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">${esc(def.label)}</div>
           ${days}
           <label class="field" style="margin-top:10px;"><span class="field-label">הערה (רשות)</span>
-            <textarea class="text-input" data-mod-note maxlength="500" placeholder="נרשמת ביומן">${safeText(a.note || "")}</textarea></label>
-          ${a.error ? `<div class="footer-note" role="alert" style="color:var(--red);">${safeText(a.error)}</div>` : ""}
+            <textarea class="text-input" data-mod-note maxlength="500" placeholder="נרשמת ביומן">${esc(a.note || "")}</textarea></label>
+          ${a.error ? `<div class="footer-note" role="alert" style="color:var(--red);">${esc(a.error)}</div>` : ""}
           <div class="chip-row" style="margin-top:12px;">
             <button class="chip-btn" data-community-action="mod-action-cancel">ביטול</button>
             <button class="chip-btn primary${def.destructive ? " danger" : ""}" data-community-action="mod-action-run"${a.saving ? " disabled" : ""}>${a.saving ? "מבצע…" : "אישור"}</button>
@@ -9322,15 +9451,15 @@
   // design: the excerpt the queue row already carries plus a shortcut into
   // the feed for a post.
   function renderModContextOverlay() {
-    const c = state.modContext;
+    const c = state.admin.modContext;
     if (!c) return "";
     return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="modContextTitle" data-cloud-dialog="modContext" style="align-items:center;padding:0 20px;">
       <div class="modal-sheet" style="border-radius:22px;max-height:none;">
         <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
           <div id="modContextTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">הקשר הדיווח</div>
-          <div style="color:var(--steel);font-size:12.5px;">${safeText(c.target_type === "comment" ? "תגובה" : "פוסט")} מאת ${safeText(c.content_author_name || "חבר/ה שהוסר/ה")}</div>
-          <div class="chart-card" style="margin-top:8px;white-space:pre-wrap;">${safeText(String(c.content_excerpt || "התוכן הוסר"))}</div>
-          ${Array.isArray(c.reporters) && c.reporters.length ? `<div style="color:var(--steel);font-size:12px;margin-top:8px;">דווח ע״י: ${c.reporters.map((r) => safeText(r.name || r.id)).join(", ")}</div>` : ""}
+          <div style="color:var(--steel);font-size:12.5px;">${esc(c.target_type === "comment" ? "תגובה" : "פוסט")} מאת ${esc(c.content_author_name || "חבר/ה שהוסר/ה")}</div>
+          <div class="chart-card" style="margin-top:8px;white-space:pre-wrap;">${esc(String(c.content_excerpt || "התוכן הוסר"))}</div>
+          ${Array.isArray(c.reporters) && c.reporters.length ? `<div style="color:var(--steel);font-size:12px;margin-top:8px;">דווח ע״י: ${c.reporters.map((r) => esc(r.name || r.id)).join(", ")}</div>` : ""}
           <div class="chip-row" style="margin-top:12px;">
             <button class="chip-btn" data-community-action="mod-context-close">סגירה</button>
             ${c.target_type === "post" ? `<button class="chip-btn primary" data-community-action="mod-context-open-feed">פתיחה בפיד</button>` : ""}
@@ -9355,17 +9484,17 @@
       // skipping straight to "enter your invite code" as if they had
       // clicked start-signup — ensureAnonymousSession() below still
       // no-ops for them since a session already exists.
-      if (!state.signupStarted) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">כניסה לקהילה</div><div style="color:var(--steel);font-size:12.5px;line-height:1.7;margin-bottom:14px;">התחברות עם שם המשתמש והסיסמה משחזרת את הפרופיל, העוקבים, הסנכרון הפרטי והרשאות הצוות — גם ממכשיר חדש או אחרי מחיקת נתונים.</div><form id="communityLogin">${field("communityLogin", "username", "שם משתמש", `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="שם משתמש" required/>`)}${field("communityLogin", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="current-password" placeholder="סיסמה" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">התחברות ושחזור החשבון</button></form><button class="link-btn" data-community-action="start-signup" style="display:block;margin:18px auto 0;">חבר/ה חדש/ה? התחלת הרשמה עם קוד הזמנה</button>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
+      if (!state.signupStarted) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">כניסה לקהילה</div><div style="color:var(--steel);font-size:12.5px;line-height:1.7;margin-bottom:14px;">התחברות עם שם המשתמש והסיסמה משחזרת את הפרופיל, העוקבים, הסנכרון הפרטי והרשאות הצוות — גם ממכשיר חדש או אחרי מחיקת נתונים.</div><form id="communityLogin">${field("communityLogin", "username", "שם משתמש", `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="שם משתמש" required/>`)}${field("communityLogin", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="current-password" placeholder="סיסמה" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">התחברות ושחזור החשבון</button></form><button class="link-btn" data-community-action="start-signup" style="display:block;margin:18px auto 0;">חבר/ה חדש/ה? התחלת הרשמה עם קוד הזמנה</button>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
       ensureAnonymousSession();
-      return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">מתחברים לקהילה…</div><div style="color:var(--steel);font-size:13px;">שנייה אחת.</div>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
+      return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">מתחברים לקהילה…</div><div style="color:var(--steel);font-size:13px;">שנייה אחת.</div>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     }
-    if (!state.redemption) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">קוד הזמנה למועדון</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">הקהילה פתוחה רק למי שקיבל/ה קוד הזמנה מהמאמן/ת. הקוד לא נוגע לרישום האימונים עצמו — הוא רק פותח את לשונית הקהילה.</div><form id="communityInviteCode">${field("communityInviteCode", "code", "קוד הזמנה", `<input class="text-input" name="code" dir="ltr" placeholder="קוד הזמנה" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">אישור קוד</button></form>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
+    if (!state.redemption) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">קוד הזמנה למועדון</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">הקהילה פתוחה רק למי שקיבל/ה קוד הזמנה מהמאמן/ת. הקוד לא נוגע לרישום האימונים עצמו — הוא רק פותח את לשונית הקהילה.</div><form id="communityInviteCode">${field("communityInviteCode", "code", "קוד הזמנה", `<input class="text-input" name="code" dir="ltr" placeholder="קוד הזמנה" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">אישור קוד</button></form>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     // Right after the code, before anything else — this is what turns the
     // bootstrap anonymous session into a real, log-in-from-any-device
     // account. state.user.is_anonymous flips to false the moment
     // setCredentials() succeeds, so a returning user (who logged in with
     // real credentials to begin with) never sees this screen at all.
-    if (state.user.is_anonymous) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">יצירת חשבון</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">שם משתמש וסיסמה — כדי שתוכלו להתחבר שוב מכל מכשיר.</div><form id="communityCredentials">${field("communityCredentials", "username", "שם משתמש", `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="אותיות אנגליות, ספרות או קו תחתון" required/>`)}${field("communityCredentials", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="new-password" placeholder="לפחות 8 תווים" required/>`)}${field("communityCredentials", "passwordConfirm", "אימות סיסמה", `<input class="text-input" name="passwordConfirm" type="password" dir="ltr" autocomplete="new-password" placeholder="הקלידו שוב" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">יצירת חשבון</button></form>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
+    if (state.user.is_anonymous) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">יצירת חשבון</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">שם משתמש וסיסמה — כדי שתוכלו להתחבר שוב מכל מכשיר.</div><form id="communityCredentials">${field("communityCredentials", "username", "שם משתמש", `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="אותיות אנגליות, ספרות או קו תחתון" required/>`)}${field("communityCredentials", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="new-password" placeholder="לפחות 8 תווים" required/>`)}${field("communityCredentials", "passwordConfirm", "אימות סיסמה", `<input class="text-input" name="passwordConfirm" type="password" dir="ltr" autocomplete="new-password" placeholder="הקלידו שוב" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">יצירת חשבון</button></form>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     // Without this gate, a fresh code-redeemer landed straight on the Feed
     // sub-tab — mostly empty, nothing prompting them to the profile form
     // buried in Account — with no clear signal anything had actually been
@@ -9373,7 +9502,7 @@
     // gates above it: this screen is all there is until a profile exists,
     // and the whole screen changing to the real tabbed UI afterward is the
     // confirmation, not just a toast that's easy to miss.
-    if (!state.profile) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">השלמת פרופיל</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">כמעט סיימתם — עוד רגע אחד ותהיו בפנים.</div><form id="communityProfile">${field("communityProfile", "handle", "שם משתמש (handle)", `<input class="text-input" name="handle" dir="auto" placeholder="למשל דנה_כהן" required/>`)}<label class="field"><span class="field-label">שם תצוגה</span><input class="text-input" name="displayName" placeholder="שם תצוגה"/></label><label class="field"><span class="field-label">קצת עליי</span><textarea class="text-input" name="bio" maxlength="160" placeholder="כמה מילים עליי"></textarea></label><button class="save-btn" type="submit" style="margin-top:12px;">שמירת פרופיל</button></form>${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
+    if (!state.profile) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">השלמת פרופיל</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">כמעט סיימתם — עוד רגע אחד ותהיו בפנים.</div><form id="communityProfile">${field("communityProfile", "handle", "שם משתמש (handle)", `<input class="text-input" name="handle" dir="auto" placeholder="למשל דנה_כהן" required/>`)}<label class="field"><span class="field-label">שם תצוגה</span><input class="text-input" name="displayName" placeholder="שם תצוגה"/></label><label class="field"><span class="field-label">קצת עליי</span><textarea class="text-input" name="bio" maxlength="160" placeholder="כמה מילים עליי"></textarea></label><button class="save-btn" type="submit" style="margin-top:12px;">שמירת פרופיל</button></form>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     // COMM-016. Credentials are set and the profile row exists, but the
     // account has not been stamped recoverable yet, so is_community_member()
     // still blocks every write. Try once automatically (guarded inside
@@ -9386,7 +9515,7 @@
       return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">אבטחת החשבון</div>
         <div style="color:var(--steel);font-size:13px;line-height:1.7;margin-bottom:14px;">כדי להשתתף בקהילה — לפרסם, להגיב, לעודד ולהצטרף לאתגרים — נדרש חשבון שאפשר לשחזר. שם המשתמש והסיסמה שהגדרתם הם דרך השחזור: הם מאפשרים להתחבר לאותו פרופיל מכל מכשיר, גם אחרי החלפת טלפון או מחיקת נתונים. עד להשלמת האימות אפשר לצפות בקהילה בלבד.</div>
         <button class="save-btn" data-community-action="verify-recovery" style="margin-top:2px;">אימות והמשך</button>
-        ${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}</div>`;
+        ${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     }
     const p = state.profile || {};
     const staff = isStaff();
@@ -9397,21 +9526,21 @@
     // see isAnnouncementExpired(). RLS is the real boundary; this only
     // keeps a long-open session from showing a since-expired row without a
     // refetch.
-    const liveAnnouncements = state.announcements.filter((a) => !isAnnouncementExpired(a));
+    const liveAnnouncements = state.club.announcements.filter((a) => !isAnnouncementExpired(a));
     const pinnedToday = liveAnnouncements.find((a) => a.pinned_date === todayIso());
-    const pinnedHtml = pinnedToday ? `<div class="chart-card admin-card" style="margin-bottom:12px;${announcementAccentStyle(pinnedToday)}"><div style="font-weight:800;margin-bottom:6px;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">📌 הערת האימון להיום${announcementPriorityBadge(pinnedToday)}</div><div style="font-weight:700;">${safeText(pinnedToday.title)}</div><div style="color:var(--steel);font-size:13px;margin-top:4px;">${safeText(pinnedToday.body)}</div></div>` : "";
+    const pinnedHtml = pinnedToday ? `<div class="chart-card admin-card" style="margin-bottom:12px;${announcementAccentStyle(pinnedToday)}"><div style="font-weight:800;margin-bottom:6px;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">📌 הערת האימון להיום${announcementPriorityBadge(pinnedToday)}</div><div style="font-weight:700;">${esc(pinnedToday.title)}</div><div style="color:var(--steel);font-size:13px;margin-top:4px;">${esc(pinnedToday.body)}</div></div>` : "";
     // COMM-321. announcements_read already empties liveAnnouncements above
     // once the module is off; the composer form has no data of its own to
     // fall silent through, so it needs its own explicit gate.
-    const announceComposer = staff ? (!isModuleEnabled("announcements") ? "" : `<form id="communityAnnouncement" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">הודעה חדשה למועדון<span class="admin-tag">ניהול</span></div>${field("communityAnnouncement", "title", "כותרת", `<input class="text-input" name="title" placeholder="כותרת" required/>`)}${field("communityAnnouncement", "body", "תוכן", `<textarea class="text-input" name="body" maxlength="2000" placeholder="תוכן ההודעה" required></textarea>`)}<label class="field"><span class="field-label">רמת חשיבות</span><select class="text-input" name="priority">${ANNOUNCEMENT_PRIORITY_OPTIONS.map((o) => `<option value="${o.value}"${o.value === "normal" ? " selected" : ""}>${o.label}</option>`).join("")}</select></label>${field("communityAnnouncement", "expiresAt", "תפוגה (אופציונלי)", `<input class="text-input" name="expiresAt" type="datetime-local" placeholder="ללא תפוגה"/>`)}<label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="pinToday"/><span style="font-size:12.5px;color:var(--steel);">סמן כהערת האימון להיום</span></label><button class="chip-btn primary" type="submit"${state.announcementSaving ? " disabled" : ""} style="margin-top:10px;">${state.announcementSaving ? "מפרסם…" : "פרסום הודעה"}</button></form>`) : "";
+    const announceComposer = staff ? (!isModuleEnabled("announcements") ? "" : `<form id="communityAnnouncement" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">הודעה חדשה למועדון<span class="admin-tag">ניהול</span></div>${field("communityAnnouncement", "title", "כותרת", `<input class="text-input" name="title" placeholder="כותרת" required/>`)}${field("communityAnnouncement", "body", "תוכן", `<textarea class="text-input" name="body" maxlength="2000" placeholder="תוכן ההודעה" required></textarea>`)}<label class="field"><span class="field-label">רמת חשיבות</span><select class="text-input" name="priority">${ANNOUNCEMENT_PRIORITY_OPTIONS.map((o) => `<option value="${o.value}"${o.value === "normal" ? " selected" : ""}>${o.label}</option>`).join("")}</select></label>${field("communityAnnouncement", "expiresAt", "תפוגה (אופציונלי)", `<input class="text-input" name="expiresAt" type="datetime-local" placeholder="ללא תפוגה"/>`)}<label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="pinToday"/><span style="font-size:12.5px;color:var(--steel);">סמן כהערת האימון להיום</span></label><button class="chip-btn primary" type="submit"${state.club.announcementSaving ? " disabled" : ""} style="margin-top:10px;">${state.club.announcementSaving ? "מפרסם…" : "פרסום הודעה"}</button></form>`) : "";
     const otherAnnouncements = liveAnnouncements.filter((a) => a !== pinnedToday);
     // COMM-155. A staff holder of community.content.pin gets a pin toggle on
     // each announcement. Post, challenge and event pin affordances live on
     // their own surfaces (posts and Phase 2 clusters); the strip and unpin
     // control render for every one of the four target types.
     const canPinContent = hasPerm(PERM.CONTENT_PIN);
-    const isPinned = (type, id) => state.pins.some((p) => p.target_type === type && p.target_id === id);
-    const announcementsList = otherAnnouncements.length ? `<div class="log-list">${otherAnnouncements.map((a) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:4px;${announcementAccentStyle(a)}"><div style="font-weight:700;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">${safeText(a.title)}${announcementPriorityBadge(a)}</div><div style="color:var(--steel);font-size:13px;">${safeText(a.body)}</div><div style="color:var(--steel);font-size:11px;">${safeText(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div>${canPinContent ? `<button class="link-btn" data-community-action="${isPinned("announcement", a.id) ? "unpin" : "pin"}" data-type="announcement" data-id="${safeText(a.id)}" data-note="${safeText(a.title)}" style="margin:2px 0 0;">${isPinned("announcement", a.id) ? "ביטול הצמדה" : "הצמדה למעלה"}</button>` : ""}</div>`).join("")}</div>` : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
+    const isPinned = (type, id) => state.admin.pins.some((p) => p.target_type === type && p.target_id === id);
+    const announcementsList = otherAnnouncements.length ? `<div class="log-list">${otherAnnouncements.map((a) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:4px;${announcementAccentStyle(a)}"><div style="font-weight:700;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">${esc(a.title)}${announcementPriorityBadge(a)}</div><div style="color:var(--steel);font-size:13px;">${esc(a.body)}</div><div style="color:var(--steel);font-size:11px;">${esc(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div>${canPinContent ? `<button class="link-btn" data-community-action="${isPinned("announcement", a.id) ? "unpin" : "pin"}" data-type="announcement" data-id="${esc(a.id)}" data-note="${esc(a.title)}" style="margin:2px 0 0;">${isPinned("announcement", a.id) ? "ביטול הצמדה" : "הצמדה למעלה"}</button>` : ""}</div>`).join("")}</div>` : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
     const announcementsHtml = `<div class="ach-section">${sectionHead("var(--brass)", "הודעות מהמועדון")}${pinnedHtml}${announcementsList}${announceComposer}</div>`;
 
     // Sharing itself no longer lives here - it was a standing list of the
@@ -9424,16 +9553,16 @@
     // COMM-115. The club strip: mark, name, member count, the active
     // challenge shortcut and the notification bell. Every value comes from
     // club_summary(); a failed read degrades to the compose button alone,
-    // which is why this whole block is behind `state.club`.
-    const club = state.club || null;
+    // which is why this whole block is behind `state.club.row`.
+    const club = state.club.row || null;
     const clubMark = club && club.image_url
-      ? `<img src="${safeText(club.image_url)}" alt="" style="width:44px;height:44px;border-radius:14px;object-fit:cover;"/>`
+      ? `<img src="${esc(club.image_url)}" alt="" style="width:44px;height:44px;border-radius:14px;object-fit:cover;"/>`
       : avatarHtml((club && club.name) || "המועדון", 44);
     const activeChallenge = club && club.active_challenge ? club.active_challenge : null;
     // COMM-141. notif_unread_count() drives the badge; club_summary's
     // count is only a first-paint fallback until that RPC resolves.
-    const unread = state.notifUnreadLoaded
-      ? Number(state.notifUnread) || 0
+    const unread = state.notif.unreadLoaded
+      ? Number(state.notif.unread) || 0
       : Number((club && club.unread_notifications) || 0);
     // COMM-140. The bell opens the notification centre.
     const bellHtml = `<button class="chip-btn" data-community-action="feed-notifications" aria-label="התראות${unread ? `, ${unread} חדשות` : ""}" aria-haspopup="dialog" style="position:relative;">🔔${unread ? `<span class="tab-badge" aria-hidden="true">${unread}</span>` : ""}</button>`;
@@ -9442,13 +9571,13 @@
         <div class="flex gap-10" style="align-items:center;min-width:0;">
           ${clubMark}
           <div style="min-width:0;">
-            <div style="font-weight:800;font-size:16px;">${safeText(club.name || "המועדון")}</div>
+            <div style="font-weight:800;font-size:16px;">${esc(club.name || "המועדון")}</div>
             <div style="color:var(--steel);font-size:12px;">${Number(club.member_count || 0)} חברי מועדון</div>
           </div>
         </div>
         ${bellHtml}
       </div>
-      ${activeChallenge ? `<div class="chip-row" style="margin-top:10px;"><button class="chip-btn primary" data-community-action="open-active-challenge" data-id="${safeText(activeChallenge.id || "")}">🏆 ${safeText(activeChallenge.title || "אתגר פעיל")}</button></div>` : ""}
+      ${activeChallenge ? `<div class="chip-row" style="margin-top:10px;"><button class="chip-btn primary" data-community-action="open-active-challenge" data-id="${esc(activeChallenge.id || "")}">🏆 ${esc(activeChallenge.title || "אתגר פעיל")}</button></div>` : ""}
     </div>` : "";
     // COMM-217: the soonest published, non-cancelled upcoming event, or
     // nothing at all - never an empty placeholder.
@@ -9466,35 +9595,35 @@
     // COMM-111 filter chips. My Classes is rendered disabled, tied to
     // COMM-P01, and setFeedScope refuses it on the way in as well.
     const filterHtml = `<div class="chip-row" id="communityFeedFilters" role="tablist" aria-label="סינון הפיד" style="margin:0 0 10px;">${FEED_SCOPES.map((s) => s.parked
-      ? `<button class="chip-btn" data-community-action="feed-scope" data-scope="${s.id}" disabled aria-disabled="true" title="בקרוב, ממתין למודול הנוכחות">${safeText(s.label)} · בקרוב</button>`
-      : `<button class="chip-btn${state.feedScope === s.id ? " selected" : ""}" data-community-action="feed-scope" data-scope="${s.id}" role="tab" aria-selected="${state.feedScope === s.id ? "true" : "false"}" tabindex="${state.feedScope === s.id ? "0" : "-1"}">${safeText(s.label)}</button>`).join("")}</div>`;
+      ? `<button class="chip-btn" data-community-action="feed-scope" data-scope="${s.id}" disabled aria-disabled="true" title="בקרוב, ממתין למודול הנוכחות">${esc(s.label)} · בקרוב</button>`
+      : `<button class="chip-btn${state.feed.scope === s.id ? " selected" : ""}" data-community-action="feed-scope" data-scope="${s.id}" role="tab" aria-selected="${state.feed.scope === s.id ? "true" : "false"}" tabindex="${state.feed.scope === s.id ? "0" : "-1"}">${esc(s.label)}</button>`).join("")}</div>`;
 
-    const feed = state.feedLoading && !state.feed.length
+    const feed = state.feed.loading && !state.feed.items.length
       ? `<div class="log-list" aria-busy="true">${renderPostCardSkeleton().repeat(3)}</div>`
-      : state.feedError && !state.feed.length
+      : state.feed.error && !state.feed.items.length
       ? `<div class="empty">לא ניתן לטעון את פיד המועדון.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="feed-retry">ניסיון חוזר</button></div></div>`
-      : state.feed.length ? `<div class="log-list" id="communityFeedList">${state.feed.map((post) => post && post.post_type ? renderPostCard(post) : `<article class="chart-card post-card">
+      : state.feed.items.length ? `<div class="log-list" id="communityFeedList">${state.feed.items.map((post) => post && post.post_type ? renderPostCard(post) : `<article class="chart-card post-card">
       <div class="post-head">${avatarHtml(post.display_name || post.handle, 36, (post.author && post.author.avatar_url) || post.avatar_url)}<div class="post-head-text"><div class="post-author">${nameHtml(post.display_name, post.handle)}</div><div class="post-time">${relativeTime(post.published_at)}</div></div></div>
-      <div class="post-title">${safeText(post.title)}</div>
-      <div class="mono post-result">${safeText(post.result_text)}</div>
+      <div class="post-title">${esc(post.title)}</div>
+      <div class="mono post-result">${esc(post.result_text)}</div>
       ${post.photo_path && photoUrlCache[post.photo_path] ? `<img src="${photoUrlCache[post.photo_path]}" alt="" class="post-photo"/>` : ""}
       <div class="chip-row post-actions">
-        <button class="chip-btn" data-community-action="cheer" data-id="${safeText(post.id)}" aria-label="עידוד, ${Number(post.cheer_count || 0)} עידודים">🔥 ${Number(post.cheer_count || 0)}</button>
-        <button class="chip-btn" data-community-action="toggle-comments" data-id="${safeText(post.id)}" aria-label="תגובות, ${Number(post.comment_count || 0)}">💬 ${Number(post.comment_count || 0)}</button>
-        ${post.comparison_key ? `<button class="chip-btn${state.comparisonForPostId === post.id ? " selected" : ""}" data-community-action="compare" data-key="${safeText(post.comparison_key)}" data-id="${safeText(post.id)}">השוואה</button>` : ""}
-        ${post.author_id === (state.user && state.user.id) ? `<button class="chip-btn" data-community-action="delete-post" data-id="${safeText(post.id)}">הסרה</button>` : `<button class="chip-btn" data-community-action="report" data-id="${safeText(post.id)}">דיווח</button>`}
+        <button class="chip-btn" data-community-action="cheer" data-id="${esc(post.id)}" aria-label="עידוד, ${Number(post.cheer_count || 0)} עידודים">🔥 ${Number(post.cheer_count || 0)}</button>
+        <button class="chip-btn" data-community-action="toggle-comments" data-id="${esc(post.id)}" aria-label="תגובות, ${Number(post.comment_count || 0)}">💬 ${Number(post.comment_count || 0)}</button>
+        ${post.comparison_key ? `<button class="chip-btn${state.posts.comparisonForPostId === post.id ? " selected" : ""}" data-community-action="compare" data-key="${esc(post.comparison_key)}" data-id="${esc(post.id)}">השוואה</button>` : ""}
+        ${post.author_id === (state.user && state.user.id) ? `<button class="chip-btn" data-community-action="delete-post" data-id="${esc(post.id)}">הסרה</button>` : `<button class="chip-btn" data-community-action="report" data-id="${esc(post.id)}">דיווח</button>`}
       </div>
-      ${state.comparisonForPostId === post.id ? `<div class="log-list" style="margin-top:10px;">${state.comparison.length ? state.comparison.map((item, index) => `<div class="log-row"><span>${index + 1}. ${nameHtml(item.display_name, item.handle)}</span><span class="mono" style="color:var(--brass);">${safeText(item.result_text)}</span></div>`).join("") : `<div class="empty">אין עדיין תוצאות להשוואה</div>`}</div>` : ""}
-      ${renderComments(post)}</article>`).join("")}</div>` : `<div class="empty">${safeText(feedScopeDef(state.feedScope).empty || "פעילות המועדון תופיע כאן.")}</div>`;
+      ${state.posts.comparisonForPostId === post.id ? `<div class="log-list" style="margin-top:10px;">${state.posts.comparison.length ? state.posts.comparison.map((item, index) => `<div class="log-row"><span>${index + 1}. ${nameHtml(item.display_name, item.handle)}</span><span class="mono" style="color:var(--brass);">${esc(item.result_text)}</span></div>`).join("") : `<div class="empty">אין עדיין תוצאות להשוואה</div>`}</div>` : ""}
+      ${renderComments(post)}</article>`).join("")}</div>` : `<div class="empty">${esc(feedScopeDef(state.feed.scope).empty || "פעילות המועדון תופיע כאן.")}</div>`;
     // COMM-113. The sentinel is what IntersectionObserver watches; the
     // button under it is the same call for keyboard and for anywhere the
     // observer is unavailable. Reaching the end is a quiet marker, never an
     // error.
-    const feedMoreHtml = !state.feed.length ? ""
-      : state.feedEnd ? `<div class="footer-note" style="text-align:center;margin-top:10px;">הגעתם לסוף. הכול מעודכן.</div>`
+    const feedMoreHtml = !state.feed.items.length ? ""
+      : state.feed.end ? `<div class="footer-note" style="text-align:center;margin-top:10px;">הגעתם לסוף. הכול מעודכן.</div>`
       : `<div id="communityFeedSentinel" style="height:1px;"></div>
-        ${state.feedMoreError ? `<div class="footer-note" role="alert" style="text-align:center;color:var(--red);">לא ניתן היה לטעון עוד.</div>` : ""}
-        <div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="feed-load-more"${state.feedLoadingMore ? " disabled" : ""}>${state.feedLoadingMore ? "טוען…" : state.feedMoreError ? "ניסיון חוזר" : "טעינת עוד"}</button></div>`;
+        ${state.feed.moreError ? `<div class="footer-note" role="alert" style="text-align:center;color:var(--red);">לא ניתן היה לטעון עוד.</div>` : ""}
+        <div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="feed-load-more"${state.feed.loadingMore ? " disabled" : ""}>${state.feed.loadingMore ? "טוען…" : state.feed.moreError ? "ניסיון חוזר" : "טעינת עוד"}</button></div>`;
     const composeBtn = `<button class="chip-btn primary" data-community-action="open-composer" style="margin:0 0 10px;">כתיבת פוסט</button>`;
     const feedHtml = `<div class="ach-section">${sectionHead("var(--blue)", "הפיד שלי")}${composeBtn}${filterHtml}${classmatesTodayHtml}${feed}${upcomingEventHtml}${feedMoreHtml}</div>`;
 
@@ -9503,7 +9632,7 @@
 
     // ---- Boards tab: weekly challenge + streaks, top-3-plus-your-rank ----
     const challengeSetter = staff ? `<form id="communityWeeklyChallenge" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">קביעת אתגר שבועי<span class="admin-tag">ניהול</span></div>${field("communityWeeklyChallenge", "title", "שם האתגר", `<input class="text-input" name="title" placeholder="שם האתגר" required/>`)}${field("communityWeeklyChallenge", "comparisonKey", "מפתח השוואה", `<input class="text-input" name="comparisonKey" dir="ltr" placeholder="movement:back-squat:est1rm" required/>`)}<div style="color:var(--steel);font-size:11px;margin:-6px 0 10px;">חייב להתחיל ב-movement: (תרגיל) או wod: (אימון) — בדיוק כמו שהוא נשמר בשיתופים, למשל movement:back-squat:est1rm או wod:fran:time:rx</div><div class="flex gap-16 field">${field("communityWeeklyChallenge", "startsOn", "תאריך התחלה", `<input class="text-input" name="startsOn" type="date" required/>`)}${field("communityWeeklyChallenge", "endsOn", "תאריך סיום", `<input class="text-input" name="endsOn" type="date" required/>`)}</div><button class="chip-btn primary" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
-    const weeklyLeaderboardList = state.weeklyChallenge ? renderRankedList(state.weeklyLeaderboard, (it) => it.author_id, (it) => safeText(it.result_text)) : `<div class="empty">אין אתגר פעיל כרגע</div>`;
+    const weeklyLeaderboardList = state.club.weeklyChallenge ? renderRankedList(state.club.weeklyLeaderboard, (it) => it.author_id, (it) => esc(it.result_text)) : `<div class="empty">אין אתגר פעיל כרגע</div>`;
     // COMM-018. A quick "hide my result" affordance right on the board.
     // It flips in_leaderboards, the same column the Privacy panel toggles;
     // full removal from the ranked views is enforced server-side once the
@@ -9511,7 +9640,7 @@
     const hideMyResult = state.profile && state.profile.in_leaderboards
       ? `<button class="link-btn" data-community-action="hide-my-leaderboard-result" style="display:block;margin:8px auto 0;">הסתרת התוצאה שלי מהטבלאות</button>`
       : (state.profile ? `<div class="footer-note" style="margin:8px 0 0;">התוצאה שלך מוסתרת מהטבלאות. אפשר להחזיר אותה בהגדרות הפרטיות.</div>` : "");
-    const weeklyChallengeHtml = `<div class="ach-section">${sectionHead("var(--teal)", state.weeklyChallenge ? `אתגר השבוע: ${safeText(state.weeklyChallenge.title)}` : "אתגר השבוע")}${weeklyLeaderboardList}${hideMyResult}${challengeSetter}</div>`;
+    const weeklyChallengeHtml = `<div class="ach-section">${sectionHead("var(--teal)", state.club.weeklyChallenge ? `אתגר השבוע: ${esc(state.club.weeklyChallenge.title)}` : "אתגר השבוע")}${weeklyLeaderboardList}${hideMyResult}${challengeSetter}</div>`;
 
     // COMM-210/212. The consistency board, server-ranked through
     // feed_leaderboard, replaces the old community_streaks strip that used to
@@ -9532,12 +9661,12 @@
         ${p.avatar_url ? `<button class="chip-btn" type="button" data-community-action="avatar-remove"${avatarBusy ? " disabled" : ""}>הסרת תמונה</button>` : ""}
       </div>
     </div>
-    ${au.error ? `<div class="field-error" role="alert" style="margin-bottom:10px;">${safeText(au.error)}</div>` : ""}`;
+    ${au.error ? `<div class="field-error" role="alert" style="margin-bottom:10px;">${esc(au.error)}</div>` : ""}`;
     const account = `<form id="communityProfile" class="chart-card"><div style="font-weight:800;font-size:16px;margin-bottom:12px;">הפרופיל שלי</div>
       ${avatarControl}
-      ${field("communityProfile", "handle", "שם משתמש (handle)", `<input class="text-input" name="handle" dir="auto" value="${safeText(p.handle || "")}" placeholder="למשל דנה_כהן" required/>`)}
-      <label class="field"><span class="field-label">שם תצוגה</span><input class="text-input" name="displayName" value="${safeText(p.display_name || "")}" placeholder="שם תצוגה"/></label>
-      <label class="field"><span class="field-label">קצת עליי</span><textarea class="text-input" name="bio" maxlength="160" placeholder="כמה מילים עליי">${safeText(p.bio || "")}</textarea></label>
+      ${field("communityProfile", "handle", "שם משתמש (handle)", `<input class="text-input" name="handle" dir="auto" value="${esc(p.handle || "")}" placeholder="למשל דנה_כהן" required/>`)}
+      <label class="field"><span class="field-label">שם תצוגה</span><input class="text-input" name="displayName" value="${esc(p.display_name || "")}" placeholder="שם תצוגה"/></label>
+      <label class="field"><span class="field-label">קצת עליי</span><textarea class="text-input" name="bio" maxlength="160" placeholder="כמה מילים עליי">${esc(p.bio || "")}</textarea></label>
       <div class="chip-row"><button class="chip-btn primary" type="submit">שמירת פרופיל</button><button class="chip-btn" type="button" data-community-action="migrate">סנכרון היסטוריה פרטית</button></div>
     </form>`;
 
@@ -9547,7 +9676,7 @@
     // skeleton branch is a formality - the gates above guarantee a loaded
     // profile before this tab renders.
     const privacyRows = state.profile
-      ? PRIVACY_FIELDS.map((f) => `<label class="log-row" style="justify-content:space-between;gap:12px;cursor:pointer;"><span style="font-size:13px;">${f.label}</span><input type="checkbox" data-privacy-field="${f.key}"${state.profile[f.key] ? " checked" : ""} aria-label="${safeText(f.label)}"/></label>`).join("")
+      ? PRIVACY_FIELDS.map((f) => `<label class="log-row" style="justify-content:space-between;gap:12px;cursor:pointer;"><span style="font-size:13px;">${f.label}</span><input type="checkbox" data-privacy-field="${f.key}"${state.profile[f.key] ? " checked" : ""} aria-label="${esc(f.label)}"/></label>`).join("")
       : `<div class="log-row" aria-hidden="true"><span style="height:12px;width:62%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`.repeat(4);
     const privacyPanel = `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--blue)", "פרטיות")}
       <div style="color:var(--steel);font-size:12px;line-height:1.6;margin-bottom:8px;">כל שינוי נשמר מיד ונאכף בשרת. הגדרות הנוכחות והרישום לשיעור ייכנסו לתוקף כשמודול הנוכחות יעלה.</div>
@@ -9569,8 +9698,8 @@
     // Post-Phase-3 Hebrew copy fix: "חברים חדשים" - the exact phrase COMM-107's
     // welcome post and the coach-tools "Welcome" section already use for the
     // same concept (מתאמנים was this list's own one-off).
-    const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "חברים חדשים", true)}${state.newMembers.length ? `<div class="log-list">${state.newMembers.map((m) => `<div class="log-row"><span>${nameHtml(m.display_name, m.handle)}</span><span style="color:var(--steel);font-size:12px;">${safeText(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין חברים חדשים לאחרונה</div>`}</div>` : "";
-    const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.inactiveMembers.length ? `<div class="log-list">${state.inactiveMembers.map((m) => `<div class="log-row"><span>${nameHtml(m.display_name, m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? safeText(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
+    const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "חברים חדשים", true)}${state.club.newMembers.length ? `<div class="log-list">${state.club.newMembers.map((m) => `<div class="log-row"><span>${nameHtml(m.display_name, m.handle)}</span><span style="color:var(--steel);font-size:12px;">${esc(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין חברים חדשים לאחרונה</div>`}</div>` : "";
+    const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.club.inactiveMembers.length ? `<div class="log-list">${state.club.inactiveMembers.map((m) => `<div class="log-row"><span>${nameHtml(m.display_name, m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? esc(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
     const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderClubModulesPanel() + renderAdminAnalyticsDashboard() + renderRetentionCorrelations() + renderCommunityHealthScore() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
@@ -9582,7 +9711,7 @@
     // COMM-152. The badge counts open queue items for a holder of the
     // moderation permission (or a real admin), not the legacy reports list.
     const pendingReports = (hasPerm(PERM.COMMENT_MODERATE) || isAdmin())
-      ? state.modQueue.filter((r) => r.status === "open").length : 0;
+      ? state.admin.modQueue.filter((r) => r.status === "open").length : 0;
     const tabs = [
       { id: "feed", label: "פיד", html: feedTab },
       { id: "boards", label: "לוחות", html: boardsTab },
@@ -9596,9 +9725,9 @@
     // than a slice of one, so it stays out of that count on purpose) - so a
     // non-staff caller's tabs array has no "coach" entry at all, and the
     // activeTab lookup below falls back to the feed tab even if something
-    // forced state.communityTab to "coach" directly.
+    // forced state.ui.tab to "coach" directly.
     if (staff) tabs.push({ id: "coach", label: "לוח מאמנים", html: renderCoachTab() });
-    const activeTab = tabs.find((t) => t.id === state.communityTab) || tabs[0];
+    const activeTab = tabs.find((t) => t.id === state.ui.tab) || tabs[0];
     const tabBar = `<div class="subtabbar">${tabs.map((t) => `<button class="subtabbtn${t.id === activeTab.id ? " active" : ""}" data-community-action="set-tab" data-tab="${t.id}">${t.label}${t.badge ? `<span class="tab-badge" aria-label="${t.badge} דיווחים ממתינים">${t.badge}</span>` : ""}</button>`).join("")}</div>`;
 
     // COMM-329 (remaining scope). The Community tab was the one solo tab
@@ -9613,7 +9742,7 @@
     // render(), well after both scripts have executed.
     return renderTabHeader("community")
       + tabBar
-      + (state.message ? `<div class="footer-note" role="status" style="color:var(--brass);margin-bottom:14px;">${safeText(state.message)}</div>` : "")
+      + (state.ui.message ? `<div class="footer-note" role="status" style="color:var(--brass);margin-bottom:14px;">${esc(state.ui.message)}</div>` : "")
       + activeTab.html;
   };
   // Sharing (see renderShareControl) can now be triggered from the
@@ -9651,7 +9780,7 @@
     const credentialsCta = state.user.is_anonymous
       ? `<div style="margin-top:12px;"><div class="footer-note" style="margin-bottom:6px;">גישה לאותם נתונים ממכשיר אחר דורשת שם משתמש וסיסמה.</div><form id="backupCredentials">${field("backupCredentials", "username", "שם משתמש", `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="אותיות אנגליות, ספרות או קו תחתון" required/>`)}${field("backupCredentials", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="new-password" placeholder="לפחות 8 תווים" required/>`)}${field("backupCredentials", "passwordConfirm", "אימות סיסמה", `<input class="text-input" name="passwordConfirm" type="password" dir="ltr" autocomplete="new-password" placeholder="הקלידו שוב" required/>`)}<button class="chip-btn primary" type="submit" style="margin-top:6px;">שמירת גישה ממכשיר אחר</button></form></div>`
       : "";
-    return `<div class="footer-note" style="margin-bottom:8px;">${safeText(state.syncEnabled ? "האימונים שלכם מגובים אוטומטית ופרטית לענן — רק אתם רואים אותם." : "גיבוי מוגדר אך טרם הופעל.")}</div><button class="link-btn" data-community-action="backup-optout">כיבוי גיבוי אוטומטי</button>${credentialsCta}${state.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${safeText(state.message)}</div>` : ""}`;
+    return `<div class="footer-note" style="margin-bottom:8px;">${esc(state.syncEnabled ? "האימונים שלכם מגובים אוטומטית ופרטית לענן — רק אתם רואים אותם." : "גיבוי מוגדר אך טרם הופעל.")}</div><button class="link-btn" data-community-action="backup-optout">כיבוי גיבוי אוטומטי</button>${credentialsCta}${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}`;
   };
   // ---- Shared Phase 1 dialog focus + keyboard management (COMM-190) -----
   // Every Phase 1 overlay dialog behaves the same way: focus moves in on
@@ -9662,18 +9791,27 @@
   // stacking order used when more than one state flag is set at once. It
   // matches the Escape handler's precedence: a sheet stacked over another
   // dialog is the one that closes and the one that traps Tab.
+  //
+  // COMM-365. `key` is the DOM key (the data-cloud-dialog attribute value on
+  // the overlay, and the key cloudDialogOpeners is keyed by) and is unchanged
+  // by the state namespacing - it is markup, not a state path. `isOpen` is how
+  // this registry now reads the flag: before namespacing it could do
+  // state[key], which only worked because every dialog flag happened to be a
+  // top-level sibling. A getter per entry keeps the registry the single place
+  // that knows where a dialog's flag lives, so a dialog whose state moves
+  // domains needs a change here and nowhere else.
   const CLOUD_DIALOGS = [
-    { key: "reportSheet", close: function () { closeReportSheet(); } },
-    { key: "modAction", close: function () { closeModAction(); } },
-    { key: "modContext", close: function () { closeModContext(); } },
-    { key: "notifCenter", close: function () { closeNotifCenter(); } },
-    { key: "achUnlock", close: function () { dismissAchievementUnlock(); } },
-    { key: "prPrompt", close: function () { dismissPrPrompt(); } },
-    { key: "composer", close: function () { tryCloseComposer(); } },
-    { key: "profileView", close: function () { closeCommunityProfile(); } },
-    { key: "challengeView", close: function () { closeChallengeView(); } },
-    { key: "eventView", close: function () { closeEventView(); } },
-    { key: "recapView", close: function () { closeRecapView(); } },
+    { key: "reportSheet", isOpen: () => state.admin.reportSheet, close: function () { closeReportSheet(); } },
+    { key: "modAction", isOpen: () => state.admin.modAction, close: function () { closeModAction(); } },
+    { key: "modContext", isOpen: () => state.admin.modContext, close: function () { closeModContext(); } },
+    { key: "notifCenter", isOpen: () => state.notif.center, close: function () { closeNotifCenter(); } },
+    { key: "achUnlock", isOpen: () => state.achievements.unlock, close: function () { dismissAchievementUnlock(); } },
+    { key: "prPrompt", isOpen: () => state.posts.prPrompt, close: function () { dismissPrPrompt(); } },
+    { key: "composer", isOpen: () => state.posts.composer, close: function () { tryCloseComposer(); } },
+    { key: "profileView", isOpen: () => state.members.profileView, close: function () { closeCommunityProfile(); } },
+    { key: "challengeView", isOpen: () => state.challenges.view, close: function () { closeChallengeView(); } },
+    { key: "eventView", isOpen: () => state.events.view, close: function () { closeEventView(); } },
+    { key: "recapView", isOpen: () => state.recaps.view, close: function () { closeRecapView(); } },
   ];
   const cloudDialogOpeners = {};
   let cloudOpenDialogKey = null;
@@ -9729,8 +9867,8 @@
   }
   function currentCloudDialog() {
     for (let i = 0; i < CLOUD_DIALOGS.length; i++) {
-      const k = CLOUD_DIALOGS[i].key;
-      if (state[k] && cloudDialogEl(k)) return k;
+      const spec = CLOUD_DIALOGS[i];
+      if (spec.isOpen() && cloudDialogEl(spec.key)) return spec.key;
     }
     return null;
   }
@@ -9821,47 +9959,47 @@
     }
     // COMM-154. The audit view is lazy: fetched the first time an analytics
     // holder lands on the Account tab, not on every session.
-    if (state.communityTab === "account" && hasPerm(PERM.ANALYTICS_VIEW) && !state.auditLoaded && !state.auditLoading) loadAuditLog(true);
+    if (state.ui.tab === "account" && hasPerm(PERM.ANALYTICS_VIEW) && !state.admin.auditLoaded && !state.admin.auditLoading) loadAuditLog(true);
     // COMM-310. Same lazy pattern as the audit view just above: the
     // dashboard's default period (this ISO week) is fetched the first time
     // an analytics holder or real admin lands on the Account tab.
-    if (state.communityTab === "account" && (hasPerm(PERM.ANALYTICS_VIEW) || isAdmin()) && !state.adminAnalytics.loaded && !state.adminAnalytics.loading) loadAdminAnalyticsDashboard();
+    if (state.ui.tab === "account" && (hasPerm(PERM.ANALYTICS_VIEW) || isAdmin()) && !state.analytics.dashboard.loaded && !state.analytics.dashboard.loading) loadAdminAnalyticsDashboard();
     // COMM-313. Same lazy pattern, its OWN gate: real is_admin() alone, not
     // the ANALYTICS_VIEW-or-admin pair the two lazy loads just above use -
     // so a community.analytics.view holder who is not an admin never even
     // triggers the three retention RPCs, matching that this section must not
     // render for them at all.
-    if (state.communityTab === "account" && isAdmin() && !state.retention.loaded && !state.retention.loading) loadRetentionCorrelations();
+    if (state.ui.tab === "account" && isAdmin() && !state.analytics.retention.loaded && !state.analytics.retention.loading) loadRetentionCorrelations();
     // COMM-312. Same lazy pattern and same is_admin()-only gate as COMM-313's
     // load just above, its own independent trigger (not piggybacked on
     // loadRetentionCorrelations() even though the two sections sit side by
     // side and share a gate) - the two RPCs have nothing to do with each
     // other from the client's point of view.
-    if (state.communityTab === "account" && isAdmin() && !state.communityHealth.loaded && !state.communityHealth.loading) loadCommunityHealth();
+    if (state.ui.tab === "account" && isAdmin() && !state.analytics.health.loaded && !state.analytics.health.loading) loadCommunityHealth();
     // COMM-309. The monthly club recap's member-facing card: fetched the
     // first time a member lands on the Account tab, same lazy pattern as
     // the audit view just above (and every other tab-scoped load in this
     // block) rather than in refreshSession()'s boot Promise.all - most
     // months this answers "nothing published yet", so it is not worth a
     // boot round-trip for every session.
-    if (state.communityTab === "account" && state.user && !state.monthlyRecap.loaded && !state.monthlyRecap.loading) loadMonthlyRecap();
+    if (state.ui.tab === "account" && state.user && !state.recaps.monthly.loaded && !state.recaps.monthly.loading) loadMonthlyRecap();
     // COMM-229. Same lazy pattern: this device's push subscription status
     // is only worth checking once the flag is on and a member actually
     // lands on the Account tab where the preferences panel lives - never
     // on every session, and never at all while the flag is off (the V1
     // default), so no serviceWorker.ready wait is introduced for anyone
     // who cannot act on it anyway.
-    if (state.communityTab === "account" && state.user && notifPushEnabled() && !state.notifPushChecked) loadNotifPushStatus();
+    if (state.ui.tab === "account" && state.user && notifPushEnabled() && !state.notif.pushChecked) loadNotifPushStatus();
     // COMM-210. Same lazy pattern for the consistency board: one
     // feed_leaderboard() call the first time a member lands on the Boards
     // sub-tab, not on every session boot.
-    if (state.communityTab === "boards" && state.user && !state.leaderboard.loaded && !state.leaderboard.loading) loadConsistencyLeaderboard();
+    if (state.ui.tab === "boards" && state.user && !state.leaderboard.loaded && !state.leaderboard.loading) loadConsistencyLeaderboard();
     // COMM-231. The directory's own paginated roster, fetched the first time
     // a member lands on the Directory sub-tab.
-    if (state.communityTab === "directory" && state.user && !state.directory.loaded && !state.directory.loading) loadDirectory(true);
+    if (state.ui.tab === "directory" && state.user && !state.members.directory.loaded && !state.members.directory.loading) loadDirectory(true);
     // COMM-232. The suggestions strip now renders on the Directory sub-tab -
     // see the PLACEMENT NOTE above renderPeopleSuggestions().
-    if (state.communityTab === "directory" && state.user && !state.peopleSuggestions.loaded && !state.peopleSuggestions.loading) loadPeopleSuggestions();
+    if (state.ui.tab === "directory" && state.user && !state.members.suggestions.loaded && !state.members.suggestions.loading) loadPeopleSuggestions();
     // COMM-307. The trained-with-you card, on the same lazy sub-tab pattern
     // as the four loads above rather than in refreshSession()'s boot
     // Promise.all beside loadEvents(). Three reasons, all of them about this
@@ -9874,14 +10012,14 @@
     // that anchors the whole join exists. Asking when the Feed sub-tab is
     // actually on screen asks once, late enough, and only of members looking
     // at the surface the card lives on.
-    if (state.communityTab === "feed" && state.user && !state.classmatesToday.loaded && !state.classmatesToday.loading) loadClassmatesToday();
+    if (state.ui.tab === "feed" && state.user && !state.members.classmatesToday.loaded && !state.members.classmatesToday.loading) loadClassmatesToday();
     // COMM-316. Same lazy, same-subtab, same after-boot-batch pattern as
     // loadClassmatesToday just above, and for the identical reason: this
     // reads the member's own attendance_log rows, which the private_records
     // trigger behind flushOutbox() only finishes writing after the boot
     // Promise.all. Only the two attendance-tied onboarding steps depend on
     // this; welcome/first_week/first_month never look at it.
-    if (state.communityTab === "feed" && state.user && !state.onboardingAttendance.loaded && !state.onboardingAttendance.loading) loadOnboardingAttendance();
+    if (state.ui.tab === "feed" && state.user && !state.onboarding.attendance.loaded && !state.onboarding.attendance.loading) loadOnboardingAttendance();
     // COMM-212. The hide-my-result checkbox persists per device on change,
     // the same no-save-button pattern the privacy toggles below use - except
     // this one writes localStorage, never the server.
@@ -9893,26 +10031,26 @@
     // sub-tab, not on every session, and Engage only once its flag is on
     // too (COMM-226: no code path reaches coach_engagement_flags outside
     // the flag-gated staff surface).
-    if (state.communityTab === "coach" && isStaff()) {
-      if (!state.coachCelebrate.loaded && !state.coachCelebrate.loading) loadCoachCelebrate();
-      if (!state.coachWelcome.loaded && !state.coachWelcome.loading) loadCoachWelcome();
-      if (!state.coachMemberOfWeek.loaded && !state.coachMemberOfWeek.loading) loadCoachMemberOfWeek();
+    if (state.ui.tab === "coach" && isStaff()) {
+      if (!state.coach.celebrate.loaded && !state.coach.celebrate.loading) loadCoachCelebrate();
+      if (!state.coach.welcome.loaded && !state.coach.welcome.loading) loadCoachWelcome();
+      if (!state.coach.memberOfWeek.loaded && !state.coach.memberOfWeek.loading) loadCoachMemberOfWeek();
       // COMM-309. The staff preview, same lazy sub-tab pattern as the three
       // loads above it - no flag gate, since this section renders for every
       // isStaff() caller (the button inside it is what is permission-gated,
       // not the section itself).
-      if (!state.coachMonthlyRecap.loaded && !state.coachMonthlyRecap.loading) loadCoachMonthlyRecap();
-      if (state.featureFlags.coachEngage && !state.coachEngage.loaded && !state.coachEngage.loading) loadCoachEngageFlags();
+      if (!state.coach.monthlyRecap.loaded && !state.coach.monthlyRecap.loading) loadCoachMonthlyRecap();
+      if (state.featureFlags.coachEngage && !state.coach.engage.loaded && !state.coach.engage.loading) loadCoachEngageFlags();
     }
     // COMM-224. The assign-by-handle and mark-contacted note fields are
     // read only at click time (coachAssignByHandle/coachMarkContacted), so
     // this only stores the draft - never rerenders - which is what keeps
     // typing from losing focus or the caret on every keystroke.
     document.querySelectorAll("[data-coach-assign-handle]").forEach((el) => {
-      el.addEventListener("input", () => { state.coachWelcome.assignDrafts[el.dataset.coachAssignHandle] = el.value; });
+      el.addEventListener("input", () => { state.coach.welcome.assignDrafts[el.dataset.coachAssignHandle] = el.value; });
     });
     document.querySelectorAll("[data-coach-contact-note]").forEach((el) => {
-      el.addEventListener("input", () => { state.coachWelcome.contactDrafts[el.dataset.coachContactNote] = el.value; });
+      el.addEventListener("input", () => { state.coach.welcome.contactDrafts[el.dataset.coachContactNote] = el.value; });
     });
     // COMM-315. Same no-rerender-on-input shape as the two listeners just
     // above. The reason field's live 500-char counter is DOM-patched
@@ -9921,18 +10059,18 @@
     // and caret position on every keystroke, exactly what those two
     // listeners already avoid.
     document.querySelectorAll("[data-mow-pick-handle]").forEach((el) => {
-      el.addEventListener("input", () => { state.coachMemberOfWeek.pickHandle = el.value; });
+      el.addEventListener("input", () => { state.coach.memberOfWeek.pickHandle = el.value; });
     });
     document.querySelectorAll("[data-mow-pick-reason]").forEach((el) => {
       el.addEventListener("input", () => {
-        state.coachMemberOfWeek.pickReason = el.value;
+        state.coach.memberOfWeek.pickReason = el.value;
         const counter = document.querySelector("[data-mow-pick-counter]");
         if (counter) counter.textContent = `${el.value.length}/500`;
       });
     });
     // COMM-222. Same lazy pattern: the first-month summary is only worth
     // fetching once that onboarding step is actually due.
-    if (currentOnboardingStep() === "first_month" && !state.onboardingFirstMonth) loadOnboardingFirstMonthSummary();
+    if (currentOnboardingStep() === "first_month" && !state.onboarding.firstMonth) loadOnboardingFirstMonthSummary();
     // COMM-018. Each privacy toggle persists on change, no save button.
     document.querySelectorAll("[data-privacy-field]").forEach((el) => {
       el.addEventListener("change", () => savePrivacyField(el.dataset.privacyField, el.checked));
@@ -10018,8 +10156,8 @@
     else if (action === "share-achievement") publishAchievement(el.dataset.id, el.dataset.title, el.dataset.rule);
     else if (action === "toggle-comments") toggleComments(el.dataset.id);
     else if (action === "delete-comment") askConfirm({ title: "מחיקת תגובה", message: "למחוק את התגובה? הפעולה לא ניתנת לביטול.", confirmLabel: "מחיקה", destructive: true, action: "delete-comment", payload: { commentId: el.dataset.id, postId: el.dataset.post } });
-    else if (action === "comment-reply") { const p = el.dataset.post; state.replyTo[p] = state.replyTo[p] === el.dataset.id ? null : el.dataset.id; if (state.replyTo[p]) state.openReplies[el.dataset.id] = true; rerender(); }
-    else if (action === "toggle-replies") { const id = el.dataset.id; if (state.openReplies[id]) delete state.openReplies[id]; else state.openReplies[id] = true; rerender(); }
+    else if (action === "comment-reply") { const p = el.dataset.post; state.engagement.replyTo[p] = state.engagement.replyTo[p] === el.dataset.id ? null : el.dataset.id; if (state.engagement.replyTo[p]) state.engagement.openReplies[el.dataset.id] = true; rerender(); }
+    else if (action === "toggle-replies") { const id = el.dataset.id; if (state.engagement.openReplies[id]) delete state.engagement.openReplies[id]; else state.engagement.openReplies[id] = true; rerender(); }
     else if (action === "comment-edit") startCommentEdit(el.dataset.id, el.dataset.post);
     else if (action === "comment-edit-save") saveCommentEdit();
     else if (action === "comment-edit-cancel") cancelCommentEdit();
@@ -10035,7 +10173,7 @@
     else if (action === "leaderboard-scope") setLeaderboardScope(el.dataset.scope);
     else if (action === "leaderboard-retry") loadConsistencyLeaderboard();
     else if (action === "challenge-board-scope") setChallengeBoardScope(el.dataset.scope);
-    else if (action === "challenge-board-retry") { if (state.challengeView) loadChallengeBoard(state.challengeView.id, { rerender: true }); }
+    else if (action === "challenge-board-retry") { if (state.challenges.view) loadChallengeBoard(state.challenges.view.id, { rerender: true }); }
     else if (action === "challenge-board-full") expandChallengeBoard();
     // COMM-212 / COMM-231. The friends-scope empty state routes to the
     // members directory now that it exists, rather than the Account tab's
@@ -10059,7 +10197,7 @@
     else if (action === "mod-action") openModAction(el.dataset.id, el.dataset.decision);
     else if (action === "mod-action-cancel") closeModAction();
     else if (action === "mod-action-run") runModAction();
-    else if (action === "mod-action-days") { if (state.modAction) { state.modAction.days = Number(el.dataset.days) || 7; rerender(); } }
+    else if (action === "mod-action-days") { if (state.admin.modAction) { state.admin.modAction.days = Number(el.dataset.days) || 7; rerender(); } }
     // COMM-154 audit view.
     else if (action === "audit-filter") setAuditFilter("action_type", el.dataset.type || "");
     else if (action === "audit-more") loadAuditLog(false);
@@ -10101,11 +10239,11 @@
     else if (action === "post-save") postSaveToggle(el.dataset.id);
     else if (action === "post-hide") postHide(el.dataset.id);
     else if (action === "post-edit-caption") postStartCaptionEdit(el.dataset.id);
-    else if (action === "caption-cancel") { state.captionEdit = null; rerender(); }
+    else if (action === "caption-cancel") { state.posts.captionEdit = null; rerender(); }
     else if (action === "caption-save") postSaveCaption();
     else if (action === "post-change-visibility") postStartVisibilityEdit(el.dataset.id);
     else if (action === "visibility-pick") postApplyVisibility(el.dataset.value);
-    else if (action === "visibility-cancel") { state.visibilityEdit = null; rerender(); }
+    else if (action === "visibility-cancel") { state.posts.visibilityEdit = null; rerender(); }
     else if (action === "post-delete") askConfirm({ title: "מחיקת פוסט", message: "הפוסט יוסר מהפיד. הפעולה אינה ניתנת לביטול מיידי.", confirmLabel: "מחיקה", destructive: true, action: "post-delete-rpc", payload: { postId: el.dataset.id } });
     else if (action === "welcome-member") welcomeNewMember(el.dataset.id);
     else if (action === "view-profile") viewCommunityProfile(el.dataset.id);
@@ -10117,14 +10255,14 @@
     else if (action === "following-unfollow") unfollowFromFollowingList(el.dataset.id);
     else if (action === "pr-share") sharePrPrompt();
     else if (action === "pr-not-now") dismissPrPrompt();
-    else if (action === "pr-add-note") { if (state.prPrompt) { state.prPrompt.showNote = true; rerender(); } }
+    else if (action === "pr-add-note") { if (state.posts.prPrompt) { state.posts.prPrompt.showNote = true; rerender(); } }
     else if (action === "ach-share") shareAchievementUnlock();
     else if (action === "ach-not-now") dismissAchievementUnlock();
-    else if (action === "ach-add-note") { if (state.achUnlock) { state.achUnlock.showNote = true; rerender(); } }
+    else if (action === "ach-add-note") { if (state.achievements.unlock) { state.achievements.unlock.showNote = true; rerender(); } }
     else if (action === "ach-share-later") shareEarnedAchievement(el.dataset.id, el.dataset.code);
     else if (action === "feed-scope") setFeedScope(el.dataset.scope);
     else if (action === "feed-load-more") loadMoreFeed();
-    else if (action === "feed-retry") { state.feedPagesLoaded = 0; loadFeed().then(rerender); rerender(); }
+    else if (action === "feed-retry") { state.feed.pagesLoaded = 0; loadFeed().then(rerender); rerender(); }
     // COMM-140..142 notification centre.
     else if (action === "feed-notifications") openNotifCenter();
     else if (action === "notif-close") closeNotifCenter();
@@ -10133,7 +10271,7 @@
     else if (action === "notif-show-older") notifShowOlder();
     else if (action === "notif-mark-all") markAllNotifsRead();
     else if (action === "notif-open") openNotif(el.dataset.id);
-    else if (action === "notif-toggle-group") { const c = state.notifCenter; if (c) { c.expanded[el.dataset.key] = !c.expanded[el.dataset.key]; rerender(); } }
+    else if (action === "notif-toggle-group") { const c = state.notif.center; if (c) { c.expanded[el.dataset.key] = !c.expanded[el.dataset.key]; rerender(); } }
     else if (action === "notif-pref") setNotifPref(el.dataset.type, el.dataset.channel);
     else if (action === "notif-push-disable") disableNotifPush();
     // COMM-201/207. The club-top shortcut opens the real challenge detail
@@ -10171,7 +10309,7 @@
     else if (action === "share-challenge-progress") shareChallengeProgress();
     else if (action === "challenges-retry") loadChallenges();
     else if (action === "open-challenge-form") openChallengeForm(null);
-    else if (action === "challenge-edit") { const existing = state.challenges.find((x) => x.id === el.dataset.id) || (state.challengeView && state.challengeView.challenge); openChallengeForm(existing); }
+    else if (action === "challenge-edit") { const existing = state.challenges.items.find((x) => x.id === el.dataset.id) || (state.challenges.view && state.challenges.view.challenge); openChallengeForm(existing); }
     else if (action === "challenge-form-cancel") closeChallengeForm();
     else if (action === "challenge-form-type") setChallengeFormType(el.dataset.type);
     else if (action === "challenge-publish") publishChallengeDraft(el.dataset.id);
@@ -10189,7 +10327,7 @@
     else if (action === "event-rsvp") rsvpEvent(el.dataset.id, el.dataset.response);
     else if (action === "events-retry") loadEvents();
     else if (action === "open-event-form") openEventForm(null);
-    else if (action === "event-edit") { const existing = state.eventsById[el.dataset.id] || (state.eventView && state.eventView.event); openEventForm(existing); }
+    else if (action === "event-edit") { const existing = state.events.byId[el.dataset.id] || (state.events.view && state.events.view.event); openEventForm(existing); }
     else if (action === "event-form-cancel") closeEventForm();
     else if (action === "event-form-type") setEventFormType(el.dataset.type);
     else if (action === "event-publish") publishEventDraft(el.dataset.id);
@@ -10202,12 +10340,12 @@
     else if (action === "close-recap-view") closeRecapView();
     else if (action === "recap-older") recapGoOlder();
     else if (action === "recap-newer") recapGoNewer();
-    else if (action === "recap-retry") refreshRecapView(state.recapView && state.recapView.weekStart);
+    else if (action === "recap-retry") refreshRecapView(state.recaps.view && state.recaps.view.weekStart);
     else if (action === "share-recap") shareRecapFigure(el.dataset.figure);
     // COMM-223..226 coach-tools cluster.
     else if (action === "coach-celebrate-retry") loadCoachCelebrate();
     else if (action === "coach-congratulate") {
-      const item = state.coachCelebrate.items.find((it) => celebrateItemKey(it) === el.dataset.key);
+      const item = state.coach.celebrate.items.find((it) => celebrateItemKey(it) === el.dataset.key);
       if (item) congratulateCelebrateItem(item);
     }
     else if (action === "coach-welcome-retry") loadCoachWelcome();
@@ -10244,7 +10382,7 @@
   window.getCommunityNavPreview = function () {
     const staff = isStaff();
     const pendingReports = (hasPerm(PERM.COMMENT_MODERATE) || isAdmin())
-      ? state.modQueue.filter((r) => r.status === "open").length : 0;
+      ? state.admin.modQueue.filter((r) => r.status === "open").length : 0;
     const tabs = [
       { id: "feed", label: "פיד" },
       { id: "boards", label: "לוחות" },
@@ -10334,11 +10472,63 @@
         // would otherwise outlive the session that opened them.
         if (window.HaimuniaRealtime) window.HaimuniaRealtime.teardownAll();
         clearRealtimeDebounces();
-        state.feedScope = "for_you"; state.feedCursor = null; state.feedEnd = false; state.feedPagesLoaded = 0;
-        state.feedSessionId = null; state.feedSeen = {}; state.feedPending = []; state.club = null;
-        state.feedLoading = false; state.feedError = false; state.feedLoadingMore = false; state.feedMoreError = false;
+        state.feed.scope = "for_you"; state.feed.cursor = null; state.feed.end = false; state.feed.pagesLoaded = 0;
+        state.feed.sessionId = null; state.feed.seen = {}; state.feed.pending = []; state.club.row = null;
+        state.feed.loading = false; state.feed.error = false; state.feed.loadingMore = false; state.feed.moreError = false;
         state.communityDataLoaded = false; state.communityDataLoading = false;
-        state.profile = null; state.feed = []; state.streaks = []; state.announcements = []; state.announcementSaving = false; state.weeklyChallenge = null; state.weeklyLeaderboard = []; state.inactiveMembers = []; state.newMembers = []; state.redemption = null; state.reports = []; state.fieldErrors = {}; state.confirmDialog = null; state.signupStarted = false; state.memberSearch = ""; state.memberResults = []; state.openShare = {}; state.avatarUpload = { status: "idle", error: "" }; state.clubModuleBusy = null; state.comparisonForPostId = null; state.comparison = []; state.composer = null; state.composerTrigger = null; state.openPostMenu = null; state.savedPostIds = {}; state.captionEdit = null; state.visibilityEdit = null; state.prPrompt = null; state.profileView = null; state.myAchievements = []; state.achUnlock = null; state.comments = {}; state.openComments = {}; state.commentDrafts = {}; state.commentErrors = {}; state.commentSending = null; state.commentEdit = null; state.openReplies = {}; state.replyTo = {}; state.memberRoles = {}; state.reactions = {}; state.reactionError = null; state.blockedIds = []; state.blocksLoaded = false; state.mentionPicker = null; state.notifCenter = null; state.notifUnread = 0; state.notifPrefs = {}; state.notifPrefsLoaded = false; state.notifPrefSaving = {}; state._notifRtUid = null; state.notifPushSub = null; state.notifPushChecked = false; state.permissions = []; state.permissionsLoaded = false; state.clubFeatures = {}; state.clubFeaturesLoaded = false; state.modQueue = []; state.modQueueLoaded = false; state.modQueueStatus = "open"; state.modQueueLoading = false; state.modQueueError = false; state.modAction = null; state.modContext = null; state.reportSheet = null; state.pins = []; state.pinsLoaded = false; state.pinError = ""; state.auditLog = []; state.auditCursor = null; state.auditLoaded = false; state.auditLoading = false; state.auditError = false; state.auditEnd = false; state.auditFilters = {}; state.challenges = []; state.challengesLoaded = false; state.challengesLoading = false; state.challengesError = false; state.challengeParticipation = {}; state.challengeAggregates = {}; state.challengeView = null; state.challengeForm = null; state._chalRtId = null; state.searchEvents = []; state.searchChallenges = []; state.searchQuery = ""; state.searchLoading = false; state._consistencyWeekLogged = {}; state._consistencySessionCounts = {}; state.events = []; state.eventsById = {}; state.eventsLoaded = false; state.eventsLoading = false; state.eventsError = false; state.eventAttendees = {}; state.eventView = null; state.eventForm = null; state.onboardingProgress = null; state.onboardingFirstMonth = null; state.recapView = null; state.coachCelebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null }; state.coachWelcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null }; state.coachEngage = { items: [], loading: false, loaded: false, error: false, profiles: {}, reachedOut: {}, busy: null }; state.coachMemberOfWeek = { loading: false, loaded: false, error: false, envelope: null, publishedProfile: null, previousProfile: null, pickHandle: "", pickReason: "", busy: null, publishErr: "" }; state.coachMonthlyRecap = { loading: false, loaded: false, error: false, row: null, busy: null, publishErr: "" }; state.monthlyRecap = { loading: false, loaded: false, error: false, row: null }; state.leaderboard = { scope: "club", rows: [], loading: false, loaded: false, error: false }; state.peopleSuggestions = { items: [], loading: false, loaded: false, error: false, busy: {} }; state.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false }; state.classmatesToday = { items: [], loading: false, loaded: false, error: false }; classmatesCardViewLogged = false; /* COMM-307: the next member to sign in on this device gets a fresh card and a fresh classmates_card_viewed, never the previous session's rows or its already-counted view. */ state.onboardingAttendance = { count: 0, loading: false, loaded: false, error: false }; /* COMM-316: same reset reasoning as classmatesToday just above - the next member on this device gets a fresh count, never the previous member's. */
+        // The sign-out reset, one namespace per group since COMM-365 (it was
+        // one 2.4KB line before). Deliberately NOT a wholesale
+        // `state.<ns> = { ...defaults }` per namespace: this list is not the
+        // full state literal, and several keys are meant to SURVIVE a sign-out
+        // (state.ui.tab, state.leaderboard.hideMine, the two localStorage-
+        // backed switches, featureFlags). Assign leaves, never a namespace.
+        state.profile = null; state.redemption = null; state.signupStarted = false;
+        state.avatarUpload = { status: "idle", error: "" }; state.permissions = []; state.permissionsLoaded = false;
+        state.ui.fieldErrors = {}; state.ui.confirmDialog = null;
+        // hideMine is per-device and outlives the session - see the literal.
+        state.leaderboard.scope = "club"; state.leaderboard.rows = []; state.leaderboard.loading = false;
+        state.leaderboard.loaded = false; state.leaderboard.error = false;
+        state.feed.items = [];
+        state.posts.openShare = {}; state.posts.comparisonForPostId = null; state.posts.comparison = [];
+        state.posts.composer = null; state.posts.composerTrigger = null; state.posts.openMenu = null; state.posts.savedIds = {};
+        state.posts.captionEdit = null; state.posts.visibilityEdit = null; state.posts.prPrompt = null;
+        state.engagement.comments = {}; state.engagement.openComments = {}; state.engagement.commentDrafts = {};
+        state.engagement.commentErrors = {}; state.engagement.commentSending = null; state.engagement.commentEdit = null;
+        state.engagement.openReplies = {}; state.engagement.replyTo = {}; state.engagement.reactions = {};
+        state.engagement.reactionError = null; state.engagement.mentionPicker = null;
+        state.members.search = ""; state.members.results = []; state.members.profileView = null; state.members.roles = {};
+        state.members.blockedIds = []; state.members.blocksLoaded = false;
+        state.members.suggestions = { items: [], loading: false, loaded: false, error: false, busy: {} };
+        state.members.directory = { items: [], loading: false, loadingMore: false, loaded: false, error: false, end: false, cursor: null, query: "", searchResults: null, searchLoading: false };
+        state.members.classmatesToday = { items: [], loading: false, loaded: false, error: false };
+        state.club.streaks = []; state.club.announcements = []; state.club.announcementSaving = false;
+        state.club.weeklyChallenge = null; state.club.weeklyLeaderboard = []; state.club.inactiveMembers = [];
+        state.club.newMembers = []; state.club.moduleBusy = null; state.club.features = {}; state.club.featuresLoaded = false;
+        state.admin.reports = []; state.admin.modQueue = []; state.admin.modQueueLoaded = false;
+        state.admin.modQueueStatus = "open"; state.admin.modQueueLoading = false; state.admin.modQueueError = false;
+        state.admin.modAction = null; state.admin.modContext = null; state.admin.reportSheet = null; state.admin.pins = [];
+        state.admin.pinsLoaded = false; state.admin.pinError = ""; state.admin.auditLog = []; state.admin.auditCursor = null;
+        state.admin.auditLoaded = false; state.admin.auditLoading = false; state.admin.auditError = false;
+        state.admin.auditEnd = false; state.admin.auditFilters = {};
+        state.challenges.items = []; state.challenges.loaded = false; state.challenges.loading = false;
+        state.challenges.error = false; state.challenges.participation = {}; state.challenges.aggregates = {};
+        state.challenges.view = null; state.challenges.form = null; state.challenges._rtId = null;
+        state.challenges._consistencyWeekLogged = {}; state.challenges._consistencySessionCounts = {};
+        state.events.items = []; state.events.byId = {}; state.events.loaded = false; state.events.loading = false;
+        state.events.error = false; state.events.attendees = {}; state.events.view = null; state.events.form = null;
+        state.search.events = []; state.search.challenges = []; state.search.query = ""; state.search.loading = false;
+        state.achievements.mine = []; state.achievements.unlock = null;
+        state.notif.center = null; state.notif.unread = 0; state.notif.prefs = {}; state.notif.prefsLoaded = false;
+        state.notif.prefSaving = {}; state.notif._rtUid = null; state.notif.pushSub = null; state.notif.pushChecked = false;
+        state.onboarding.progress = null; state.onboarding.firstMonth = null;
+        state.onboarding.attendance = { count: 0, loading: false, loaded: false, error: false }; /* COMM-316: same reset reasoning as members.classmatesToday above - the next member on this device gets a fresh count, never the previous member's. */
+        state.recaps.view = null; state.recaps.monthly = { loading: false, loaded: false, error: false, row: null };
+        state.coach.celebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null };
+        state.coach.welcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null };
+        state.coach.engage = { items: [], loading: false, loaded: false, error: false, profiles: {}, reachedOut: {}, busy: null };
+        state.coach.memberOfWeek = { loading: false, loaded: false, error: false, envelope: null, publishedProfile: null, previousProfile: null, pickHandle: "", pickReason: "", busy: null, publishErr: "" };
+        state.coach.monthlyRecap = { loading: false, loaded: false, error: false, row: null, busy: null, publishErr: "" };
+        classmatesCardViewLogged = false; /* COMM-307: the next member to sign in on this device gets a fresh card and a fresh classmates_card_viewed, never the previous session's rows or its already-counted view. */
         anonSignInAttempted = false;
         recoveryVerifyAttempted = false;
         rerender();
@@ -10356,43 +10546,43 @@
     if (!t || !t.dataset) return;
     if ("composerBody" in t.dataset) composerSetBody(t.value);
     else if ("commentInput" in t.dataset) onCommentInput(t);
-    else if ("commentEditInput" in t.dataset && state.commentEdit) state.commentEdit.body = t.value;
+    else if ("commentEditInput" in t.dataset && state.engagement.commentEdit) state.engagement.commentEdit.body = t.value;
     else if ("composerAlt" in t.dataset) composerSetAlt(t.dataset.composerAlt, t.value);
-    else if ("captionEdit" in t.dataset && state.captionEdit) state.captionEdit.body = t.value;
-    else if ("prNote" in t.dataset && state.prPrompt) state.prPrompt.note = t.value;
-    else if ("prAlt" in t.dataset && state.prPrompt && state.prPrompt.photo) state.prPrompt.photo.altText = t.value;
-    else if ("achNote" in t.dataset && state.achUnlock) state.achUnlock.note = t.value;
+    else if ("captionEdit" in t.dataset && state.posts.captionEdit) state.posts.captionEdit.body = t.value;
+    else if ("prNote" in t.dataset && state.posts.prPrompt) state.posts.prPrompt.note = t.value;
+    else if ("prAlt" in t.dataset && state.posts.prPrompt && state.posts.prPrompt.photo) state.posts.prPrompt.photo.altText = t.value;
+    else if ("achNote" in t.dataset && state.achievements.unlock) state.achievements.unlock.note = t.value;
     // COMM-151 / COMM-153. Free-text notes on the report and moderation
     // sheets. Kept in state, not read off the DOM at submit, so a rerender
     // never drops what was typed.
-    else if ("reportNote" in t.dataset && state.reportSheet) state.reportSheet.note = t.value;
-    else if ("modNote" in t.dataset && state.modAction) state.modAction.note = t.value;
+    else if ("reportNote" in t.dataset && state.admin.reportSheet) state.admin.reportSheet.note = t.value;
+    else if ("modNote" in t.dataset && state.admin.modAction) state.admin.modAction.note = t.value;
     // COMM-202..206. The manual progress form and the coach entry roster,
     // both inside the challenge detail dialog. Kept in state, not read off
     // the DOM at submit, same reasoning as every other note/body field
     // above: a rerender (a progress refresh, a sibling row's own submit)
     // never drops what was already typed here.
-    else if ("challengeLogDelta" in t.dataset && state.challengeView) state.challengeView.logForm.delta = t.value;
-    else if ("challengeLogNote" in t.dataset && state.challengeView) state.challengeView.logForm.note = t.value;
-    else if ("challengeCoachDelta" in t.dataset && state.challengeView) {
+    else if ("challengeLogDelta" in t.dataset && state.challenges.view) state.challenges.view.logForm.delta = t.value;
+    else if ("challengeLogNote" in t.dataset && state.challenges.view) state.challenges.view.logForm.note = t.value;
+    else if ("challengeCoachDelta" in t.dataset && state.challenges.view) {
       const uid = t.dataset.challengeCoachDelta;
-      const d = state.challengeView.coachEntry.drafts[uid] || (state.challengeView.coachEntry.drafts[uid] = { delta: "", note: "" });
+      const d = state.challenges.view.coachEntry.drafts[uid] || (state.challenges.view.coachEntry.drafts[uid] = { delta: "", note: "" });
       d.delta = t.value;
     }
-    else if ("challengeCoachNote" in t.dataset && state.challengeView) {
+    else if ("challengeCoachNote" in t.dataset && state.challenges.view) {
       const uid = t.dataset.challengeCoachNote;
-      const d = state.challengeView.coachEntry.drafts[uid] || (state.challengeView.coachEntry.drafts[uid] = { delta: "", note: "" });
+      const d = state.challenges.view.coachEntry.drafts[uid] || (state.challenges.view.coachEntry.drafts[uid] = { delta: "", note: "" });
       d.note = t.value;
     }
     // COMM-308. The team-rename text input's own draft, same shape as
     // challengeLogDelta/challengeCoachDelta above - kept in state so a
     // sibling row's own save (which re-renders the whole management block)
     // never drops what was already typed here.
-    else if ("challengeTeamRenameName" in t.dataset && state.challengeView) {
-      state.challengeView.teamMgmt.renameDrafts[t.dataset.challengeTeamRenameName] = t.value;
+    else if ("challengeTeamRenameName" in t.dataset && state.challenges.view) {
+      state.challenges.view.teamMgmt.renameDrafts[t.dataset.challengeTeamRenameName] = t.value;
     }
-    else if ("challengeTeamCreateName" in t.dataset && state.challengeView) {
-      state.challengeView.teamMgmt.createName = t.value;
+    else if ("challengeTeamCreateName" in t.dataset && state.challenges.view) {
+      state.challenges.view.teamMgmt.createName = t.value;
     }
   });
   document.addEventListener("change", (e) => {
@@ -10410,21 +10600,21 @@
     // extra "save" button, since a <select> only fires change when its
     // value actually moved.
     else if ("challengeTeamCaptainSelect" in t.dataset) setChallengeTeamCaptain(t.dataset.challengeTeamCaptainSelect, t.value || null);
-    else if ("challengeTeamReassignSelect" in t.dataset && state.challengeView && state.challengeView.challenge) {
-      reassignChallengeParticipant(state.challengeView.challenge.id, t.dataset.challengeTeamReassignSelect, t.value || null);
+    else if ("challengeTeamReassignSelect" in t.dataset && state.challenges.view && state.challenges.view.challenge) {
+      reassignChallengeParticipant(state.challenges.view.challenge.id, t.dataset.challengeTeamReassignSelect, t.value || null);
     }
   });
   document.addEventListener("keydown", (e) => {
     // COMM-123. Mention picker keyboard navigation while a comment input has
     // focus and its picker is open.
-    if (state.mentionPicker) {
+    if (state.engagement.mentionPicker) {
       const t = e.target;
-      if (t && t.dataset && "commentInput" in t.dataset && t.dataset.commentKey === state.mentionPicker.key) {
-        const items = state.mentionPicker.results || [];
-        if (e.key === "ArrowDown") { e.preventDefault(); state.mentionPicker.index = Math.min(Math.max(items.length - 1, 0), (state.mentionPicker.index || 0) + 1); rerender(); restoreCommentFocus(state.mentionPicker.key, t.selectionStart); return; }
-        if (e.key === "ArrowUp") { e.preventDefault(); state.mentionPicker.index = Math.max(0, (state.mentionPicker.index || 0) - 1); rerender(); restoreCommentFocus(state.mentionPicker.key, t.selectionStart); return; }
-        if (e.key === "Enter" && items.length) { e.preventDefault(); const m = items[state.mentionPicker.index || 0]; mentionPick(state.mentionPicker.key, m.id, m.display_name || m.handle); return; }
-        if (e.key === "Escape") { e.preventDefault(); const k = state.mentionPicker.key; state.mentionPicker = null; rerender(); restoreCommentFocus(k, t.selectionStart); return; }
+      if (t && t.dataset && "commentInput" in t.dataset && t.dataset.commentKey === state.engagement.mentionPicker.key) {
+        const items = state.engagement.mentionPicker.results || [];
+        if (e.key === "ArrowDown") { e.preventDefault(); state.engagement.mentionPicker.index = Math.min(Math.max(items.length - 1, 0), (state.engagement.mentionPicker.index || 0) + 1); rerender(); restoreCommentFocus(state.engagement.mentionPicker.key, t.selectionStart); return; }
+        if (e.key === "ArrowUp") { e.preventDefault(); state.engagement.mentionPicker.index = Math.max(0, (state.engagement.mentionPicker.index || 0) - 1); rerender(); restoreCommentFocus(state.engagement.mentionPicker.key, t.selectionStart); return; }
+        if (e.key === "Enter" && items.length) { e.preventDefault(); const m = items[state.engagement.mentionPicker.index || 0]; mentionPick(state.engagement.mentionPicker.key, m.id, m.display_name || m.handle); return; }
+        if (e.key === "Escape") { e.preventDefault(); const k = state.engagement.mentionPicker.key; state.engagement.mentionPicker = null; rerender(); restoreCommentFocus(k, t.selectionStart); return; }
       }
     }
     // COMM-190. Every Phase 1 overlay dialog traps Tab within itself.
@@ -10443,18 +10633,18 @@
       return;
     }
     if (e.key !== "Escape") return;
-    if (state.reportSheet) { e.preventDefault(); closeReportSheet(); return; }
-    if (state.modAction) { e.preventDefault(); closeModAction(); return; }
-    if (state.modContext) { e.preventDefault(); closeModContext(); return; }
-    if (state.notifCenter) { e.preventDefault(); closeNotifCenter(); return; }
-    if (state.achUnlock) { e.preventDefault(); dismissAchievementUnlock(); return; }
-    if (state.prPrompt) { e.preventDefault(); dismissPrPrompt(); return; }
-    if (state.composer) { e.preventDefault(); tryCloseComposer(); return; }
-    if (state.profileView) { e.preventDefault(); closeCommunityProfile(); return; }
-    if (state.challengeView) { e.preventDefault(); closeChallengeView(); return; }
-    if (state.eventView) { e.preventDefault(); closeEventView(); return; }
-    if (state.recapView) { e.preventDefault(); closeRecapView(); return; }
-    if (state.openPostMenu) { state.openPostMenu = null; rerender(); }
+    if (state.admin.reportSheet) { e.preventDefault(); closeReportSheet(); return; }
+    if (state.admin.modAction) { e.preventDefault(); closeModAction(); return; }
+    if (state.admin.modContext) { e.preventDefault(); closeModContext(); return; }
+    if (state.notif.center) { e.preventDefault(); closeNotifCenter(); return; }
+    if (state.achievements.unlock) { e.preventDefault(); dismissAchievementUnlock(); return; }
+    if (state.posts.prPrompt) { e.preventDefault(); dismissPrPrompt(); return; }
+    if (state.posts.composer) { e.preventDefault(); tryCloseComposer(); return; }
+    if (state.members.profileView) { e.preventDefault(); closeCommunityProfile(); return; }
+    if (state.challenges.view) { e.preventDefault(); closeChallengeView(); return; }
+    if (state.events.view) { e.preventDefault(); closeEventView(); return; }
+    if (state.recaps.view) { e.preventDefault(); closeRecapView(); return; }
+    if (state.posts.openMenu) { state.posts.openMenu = null; rerender(); }
   });
   // COMM-190. A click on the dim backdrop - the overlay element itself, not
   // its sheet or any control inside - closes the dialog, same as Escape.

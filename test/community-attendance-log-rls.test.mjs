@@ -45,6 +45,11 @@ import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 const migration = fs.readFileSync(new URL("../supabase/migrations/202608310001_attendance_log.sql", import.meta.url), "utf8");
 const cloudSrc = fs.readFileSync(new URL("../cloud.js", import.meta.url), "utf8");
 const sanitizeSrc = fs.readFileSync(new URL("../src/sanitize.js", import.meta.url), "utf8");
+// COMM-368 moved cleanISODate (and the rest of the low-level clean*/esc/uid
+// set) out of src/sanitize.js into the shared, versioned safe-helpers module.
+// The per-record sanitizers that CALL it still live in src/sanitize.js, so the
+// assertions below read from whichever file now owns the thing they check.
+const safeHelpersSrc = fs.readFileSync(new URL("../src/shared/safe-helpers.js", import.meta.url), "utf8");
 
 // ---------------------------------------------------------------------------
 // The table and its RLS
@@ -123,10 +128,10 @@ test("attendance trigger [faithful]: occurred_on comes from payload->>'date', pa
   assert.doesNotMatch(migration, /new\.payload ->> 'date'\)::date/);
 });
 
-test("attendance parse [faithful]: the accepted date shape is exactly the one src/sanitize.js guarantees, and the parser never raises", () => {
+test("attendance parse [faithful]: the accepted date shape is exactly the one cleanISODate guarantees, and the parser never raises", () => {
   // cleanISODate() is the client-side gate. If its regex ever changes, this
   // assertion fails and the server-side copy has to change with it.
-  assert.match(sanitizeSrc, /function cleanISODate\(v\) \{\s*\n\s*if \(typeof v !== "string" \|\| !\/\^\\d\{4\}-\\d\{2\}-\\d\{2\}\$\/\.test\(v\)\) return null;/);
+  assert.match(safeHelpersSrc, /function cleanISODate\(v\) \{\s*\n\s*if \(typeof v !== "string" \|\| !\/\^\\d\{4\}-\\d\{2\}-\\d\{2\}\$\/\.test\(v\)\) return null;/);
   assert.match(migration, /if p_raw is null or p_raw !~ '\^\\d\{4\}-\\d\{2\}-\\d\{2\}\$' then return null; end if;/);
   assert.match(migration, /exception when others then\s*\n\s*return null;/);
 });

@@ -20,7 +20,10 @@ test("a shared field() helper wires aria-invalid/aria-describedby onto the input
 test("state carries per-form field errors, cleared on successful submit and on sign-out", () => {
   assert.match(src, /fieldErrors: \{\}/);
   assert.match(src, /function setFieldErrors\(formId, errors\)/);
-  assert.match(src, /state\.reports = \[\]; state\.fieldErrors = \{\};/);
+  // COMM-365 split the one-line sign-out reset into per-namespace lines, so
+  // these two assignments no longer sit side by side.
+  assert.match(src, /state\.ui\.fieldErrors = \{\};/);
+  assert.match(src, /state\.admin\.reports = \[\];/);
 });
 
 test("the invite code field uses field() instead of a bare labelless input", () => {

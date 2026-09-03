@@ -1069,6 +1069,11 @@
   </div>
 </div>
 
+<!-- COMM-368. The shared low-level safety helpers (esc/cssSel/bag/clean*/uid)
+     are the one thing EVERYTHING below depends on, so they load first:
+     src/constants.js binds them as bare identifiers for app.js, and cloud.js
+     reads window.BoxLogSafe.esc directly (COMM-367). See src/shared/README.md. -->
+<script src="./src/shared/safe-helpers.js"></script>
 <script src="./vendor/supabase.js"></script>
 <script src="./cloud-config.js"></script>
 <!-- Shared platform modules (COMM-012 to COMM-015). Loaded before
