@@ -2,7 +2,7 @@
 
 Phase: 4
 Agent: schema
-Status: todo
+Status: review — schema shipped (see docs/community/backlog.md Phase 4 section and contracts.md for final signatures)
 Attendance-blocked: no
 
 Reads across the tables this whole ticket cluster touches

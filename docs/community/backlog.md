@@ -2299,17 +2299,191 @@ COMM-191/234/317/338 played for every earlier phase.
 
 | ID | Title | Agent | Status |
 |---|---|---|---|
-| COMM-370 | Per-person invite table and admin create/list/revoke RPCs | schema | todo |
-| COMM-371 | Shared invite-code admin RPCs | schema | todo |
-| COMM-372 | redeem_invite_code accepts a per-person invite | schema | todo |
-| COMM-373 | Editable onboarding step content | schema | todo |
-| COMM-374 | Paginated member roster RPC | schema | todo |
-| COMM-375 | Registration funnel analytics RPC | schema | todo |
+| COMM-370 | Per-person invite table and admin create/list/revoke RPCs | schema | review |
+| COMM-371 | Shared invite-code admin RPCs | schema | review |
+| COMM-372 | redeem_invite_code accepts a per-person invite | schema | review |
+| COMM-373 | Editable onboarding step content | schema | review |
+| COMM-374 | Paginated member roster RPC | schema | review |
+| COMM-375 | Registration funnel analytics RPC | schema | review |
 
-Full signatures, return shapes, and RLS for all six are in
-`docs/community/contracts.md` under "Needs from schema, registration and
-invite management (Phase 4)", written before any of them is built, per
-this file's own standing rule.
+**All six are in review, and the five client tickets they gate are
+unblocked.** Built 2026-09-03 as migrations 202609030001 through
+202609030006, with pgTAP 0056 through 0061. `supabase db reset` applies
+every migration clean and `supabase test db` passes 63 files / 2274
+assertions locally, with no regression in any of the 55 pre-existing
+suites.
+
+`docs/community/contracts.md`'s "Needs from schema, registration and
+invite management (Phase 4)" section has been **rewritten to describe what
+shipped**, per this file's standing rule that contracts reflect final
+reality rather than the original proposal. Read that section, not this
+one, for exact signatures. The paragraphs below record what changed from
+the pre-build proposal and why.
+
+**The one root cause behind four of the five signature deviations.** Every
+proposed signature in this cluster was written against `public.invite_codes`
+*as it looked in 202608270003* — a plaintext `code text primary key` with a
+`^[A-Za-z0-9_-]{4,32}$` CHECK. That column has not existed since Phase 0:
+`202608270006_security_hardening.sql` dropped it ("Replace plaintext invite
+codes with opaque IDs and hashes"), replaced it with `code_hash`, re-keyed
+the table on a uuid `id`, and left `redeem_invite_code` refusing anything
+outside `^[a-f0-9]{40,128}$` before it looks in any table. So the proposed
+8-character per-person code and the proposed hand-picked "print it on a
+flyer" shared code could each have been minted, handed to a real person,
+and never redeemed — and making them redeemable would have meant widening
+that format gate for the whole redemption path, which is exactly the online
+guessing surface 202608270006 closed. Hashing a short code would not have
+helped either: 36^8 unsalted sha256 candidates is minutes on one GPU, so
+the real choice was never "plaintext versus hash" but
+"short-and-plaintext-equivalent versus long-and-opaque". Both new code
+minters therefore reuse `create_member_invite`'s existing 24-random-byte
+hex generator byte-for-byte. The upside is large and was not obvious in
+advance: because a per-person code now has the *same shape* as a code the
+signup field already accepts, COMM-372 needed **no change to the format
+gate at all**, and COMM-380 stays the copy-review-only ticket it was scoped
+as. The cost, stated plainly: a raw code is retrievable exactly once, from
+the create call, and never again — neither list function returns a `code`
+key, so `label` (per-person) and `id`/`created_at` (shared) are what tell
+two rows apart.
+
+**COMM-370.** `public.invites` shipped as specified except for
+`code_hash text not null unique` in place of the proposed plaintext `code`
+column, per the above. RLS enabled with **zero policies and zero grants** —
+the same shape `invite_codes` and `invite_attempts` hold; RLS on with no
+policy is deny-all, so the table is unreachable, which is the outcome the
+"every table gets a policy" rule protects. `admin_invite_create` returns
+`jsonb` rather than the `public.invites` row type, because a row type
+cannot carry a value that is not a column and the one-time code reveal is
+the whole point of the return value. `admin_invite_list` carries no `code`
+key for the same reason. One function was added that the proposal did not
+name: `invite_status(revoked_at, redeemed_at, expires_at, now)`, immutable,
+the single definition of the four-state lifecycle, read by
+`admin_invite_list`'s filter *and* its returned `status` key *and*
+`registration_funnel`'s two as-of-now counts — so no two surfaces can
+disagree about what "pending" means. Its precedence is redeemed > revoked >
+expired > pending: what happened to an invite beats a deadline it never
+reached.
+
+**COMM-371.** The user outcome ships in full — an admin can see every
+shared code, how many people joined through each, create one, and turn one
+on or off, all from the app. Three signature deviations, all forced rather
+than chosen: no `p_code` parameter (codes are server-generated, per the
+above); `set_active` is keyed on the uuid `id` rather than a text code,
+which also lets the audit row carry a real `target_id` and corrects the
+proposal's note that it would have to be null "since `invite_codes`'
+primary key is text" — it has been a uuid since 202608270006; and
+`p_role = 'coach'` is refused with its own error, because
+`redeem_invite_code`'s shared branch still inserts the literal `'member'`
+(202608270006: "Ordinary redemption never grants or upgrades to coach") and
+COMM-372 leaves that branch untouched, so a coach shared code would be a
+guaranteed-dead row. Coach access keeps its two live paths:
+`admin_grant_coach` on an existing member, and a per-person coach invite.
+`redemption_count` is read from `invite_redemptions` and is deliberately a
+*different* number from `use_count` — the latter is the rate-limit counter
+the redemption path bumps, the former is how many people actually joined;
+0057 asserts they differ rather than assuming they agree.
+
+**COMM-372.** Both overload signatures are unchanged, and the one-argument
+wrapper was not redefined at all — it already delegates with a null actor
+key, so it picked the widening up for free. The shared branch is
+byte-for-byte 202608280013 and still runs first. The one correction to the
+proposal is the new column: `invite_redemptions.invite_id` could not be
+reused as specified, because it already exists, is NOT NULL, and points at
+`invite_codes(id)`. Shipped instead is a separate nullable
+`person_invite_id -> invites(id)`, `invite_id` relaxed to nullable, and
+`check (num_nonnulls(invite_id, person_invite_id) = 1)` — satisfied by
+every existing row with no backfill, and giving `registration_funnel` a
+total, disjoint partition to count on. The per-person branch claims its
+invite with a single `UPDATE ... RETURNING` rather than a read-then-write,
+so two simultaneous redemptions of one code cannot both win. It grants the
+invite row's own role, member or coach, which is the cluster's one real
+privilege widening and is deliberate: the row names one person, was minted
+by a named permission holder, is audited on creation, and is single-use.
+
+**COMM-373.** Shipped as proposed, with two additions found while building.
+The pin trigger pins **`step`** as well as `updated_by` and `updated_at`:
+`step` is the primary key and the client holds UPDATE on the whole row, so
+without it a staff member could rename a card and break this ticket's own
+"five rows always exist" criterion through the one grant that *is* given.
+The audit trigger skips two cases — a session-less update (`log_admin_action`
+raises on a null `auth.uid()`, so a service-role copy fix would otherwise
+fail outright) and an update that changed neither title nor body (the pin
+trigger rewrites `updated_at` every time, so every idempotent save from the
+editor screen would otherwise log a change that did not happen). One seed
+detail worth knowing before COMM-378 renders it: **`first_week` and
+`first_month` are seeded with their fixed title and an *empty* body.** That
+is the byte-for-byte-correct seed, not an omission — both of those cards'
+visible bodies are computed entirely at render time today, so there is no
+fixed lead copy to move, and seeding one would change what a member sees.
+The empty string is where a staff-authored standing lead can go later,
+which is what the "computed sentence appended after this table's body"
+split is for. Also worth knowing for the editor screen: a member's UPDATE
+against this table **does not raise** — a failing RLS `USING` clause on
+UPDATE makes the row invisible and matches zero rows, so the client must
+verify by reading back, not by catching an error.
+
+**COMM-374.** Shipped as specified, returning `table(...)` rather than the
+proposed `setof jsonb` — the ticket's own migration outline said table, and
+it makes the "exactly `admin_search_members`' shape" claim checkable by the
+type system; 0060 asserts the two `pg_get_function_result` strings are
+byte-identical. One addition: `profiles.id` as a tie-break after the
+coalesced join date, because that date is not unique (a club that imported
+its members shares one timestamp across many rows) and a cursor paginator
+whose sort key repeats can loop or skip rows.
+
+**COMM-375.** Shipped exactly as proposed, response shape included. Its two
+as-of-now invite counts route through COMM-370's `invite_status()` so the
+dashboard and the invite screen cannot disagree. Two behaviours COMM-379
+should render rather than "fix": `redeemed` can legitimately exceed
+`invites_issued` and `redeemed_rate` can exceed 1 (the denominator is
+per-person invites only, per open question 7, while the numerator counts
+every account) — 0061 asserts that shape holds; and "profile completed"
+deliberately does not filter `deleted_at`, because a member who completed
+their profile in a period and later left still completed that step, and
+excluding them would silently rewrite a past period's funnel every time
+someone deletes their account.
+
+**One privilege boundary flagged for confirmation, built as specified.**
+`invites.role` admits `coach` and `community.member.invite` is seeded to
+`coach`, so a coach can mint an invite that makes a stranger a coach — and
+coach is a real elevated tier (`is_staff()` gates the roster, attendance
+reads and the coach tools). That is what COMM-370's acceptance criteria and
+open question 6's chosen default jointly specify, and it is audited on
+creation, so it was built rather than quietly narrowed. Narrowing it later
+is a one-line CHECK change plus a permission re-seed. Related: open
+question 6's parenthetical, "the same tier `community.member.restrict`
+already uses", does not describe the live mapping —
+`community.member.restrict` is seeded to `head_coach`, `admin` and `owner`
+only, not to `coach`. The explicit role list in the ticket was built, and
+it does include `coach`.
+
+**A pre-existing production bug found while building COMM-374, and fixed:
+`admin_search_members` has never worked.** It raised `42702 column
+reference "id" is ambiguous` for *every* caller including a real admin,
+from 202608270011 (Phase 0) until `202609030007`. The function is declared
+`returns table(id uuid, ..., is_admin boolean, ...)`, and in PL/pgSQL those
+OUT parameters are in scope for the whole body, so `where id = auth.uid()
+and is_admin and deleted_at is null` in its own authorization guard is
+ambiguous three times over; PL/pgSQL's default `variable_conflict = error`
+refuses rather than guessing, and refuses *before* the permission check can
+pass or fail — which is why the failure has always looked like a permission
+denial. `admin_grant_coach` and `admin_revoke_coach` carry the
+byte-identical guard and were always fine, because they return void and so
+have no OUT parameters to collide with; that is exactly why the defect
+survived a copy-paste into three functions. It went unnoticed because every
+existing test asserts only the *refusal* path for a non-admin, and a
+non-admin got an exception either way, just with a different SQLSTATE than
+the one asserted — there has never been an assertion that an admin gets
+rows back. The fix aliases the table in the guard; signature, returned
+columns, query, ordering, limit and grants are all unchanged, so no client
+needs to change. This is filed under Phase 4 because **COMM-377 is
+specified to reuse this exact surface** (its row renderer and the
+`admin_grant_coach`/`admin_revoke_coach`/`GRANTABLE_ROLES` machinery), and
+COMM-376 through COMM-379 should be built against the fixed version. pgTAP
+0062 leads with the assertion that was missing for the defect's whole life.
+Worth a separate look by `qa` during COMM-381: the same "OUT parameter
+shadows a column in a guard" shape may exist in other `returns table(...)`
+definer functions in this schema.
 
 ### admin-moderation
 
