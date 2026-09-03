@@ -2395,7 +2395,7 @@ Filed from `2026-09-02-design-sync-and-cross-repo-audit.md`, a 10-agent cross-re
 | ID | Title | Agent | Priority | Status |
 |---|---|---|---|---|
 | COMM-322 | Restore --shadow-sm design token | cross-cutting (UI/design) | P0 | done |
-| COMM-323 | Port Noam's card-based Settings screen redesign | cross-cutting (UI/design) | P0 | todo |
+| COMM-323 | Port Noam's card-based Settings screen redesign | cross-cutting (UI/design) | P0 | done |
 | COMM-324 | Port Noam's two-card WOD Builder layout with pinned footer | cross-cutting (UI/design) | P0 | todo |
 | COMM-325 | Finish the .chip-btn.primary / .selected migration for filter and toggle chips | cross-cutting (UI/design) | P0 | done |
 | COMM-326 | Fix hardcoded dark popover background in post menu and mention picker | cross-cutting (UI/design) | P0 | done |
@@ -2414,26 +2414,26 @@ Filed from `2026-09-02-design-sync-and-cross-repo-audit.md`, a 10-agent cross-re
 | COMM-339 | Reset confirmClear when the Settings modal closes | unassigned (app.js core, outside the 15-agent community roster) | P1 | todo |
 | COMM-340 | Add interactive-widget=resizes-content to the viewport meta | unassigned (app.js core, outside the 15-agent community roster) | P1 | todo |
 | COMM-341 | Add a monthly stats summary, legend, and card chrome to the calendar screen | cross-cutting (UI/design) | P1 | todo |
-| COMM-342 | Fix reversed prev/next month chevron icons on the calendar | cross-cutting (UI/design) | P1 | todo |
+| COMM-342 | Fix reversed prev/next month chevron icons on the calendar | cross-cutting (UI/design) | P1 | done |
 | COMM-343 | Port the chosen/unchosen exercise-select state and stat-hero cards to the Home/log screen | cross-cutting (UI/design) | P1 | todo |
-| COMM-344 | Fix onboarding modal subtitle to match the 5 screens now listed | cross-cutting (UI/design) | P1 | todo |
-| COMM-345 | Give the notification bell a consistent icon-button class matching the nav-menu button | cross-cutting (UI/design) | P1 | todo |
-| COMM-346 | Add a .chip-btn.danger modifier and remove inline destructive-button styling | cross-cutting (UI/design) | P1 | todo |
-| COMM-347 | Promote high-traffic classless inline components in cloud.js into real CSS classes | cross-cutting (UI/design) | P1 | todo |
-| COMM-348 | Give .post-media-grid an actual grid layout | cross-cutting (UI/design) | P1 | todo |
+| COMM-344 | Fix onboarding modal subtitle to match the 5 screens now listed | cross-cutting (UI/design) | P1 | done |
+| COMM-345 | Give the notification bell a consistent icon-button class matching the nav-menu button | cross-cutting (UI/design) | P1 | done |
+| COMM-346 | Add a .chip-btn.danger modifier and remove inline destructive-button styling | cross-cutting (UI/design) | P1 | done |
+| COMM-347 | Promote high-traffic classless inline components in cloud.js into real CSS classes | cross-cutting (UI/design) | P1 | done |
+| COMM-348 | Give .post-media-grid an actual grid layout | cross-cutting (UI/design) | P1 | done |
 | COMM-349 | Migrate the remaining 8 dialogs onto Community's dialog registry and narrow the focusable selector | unassigned (app.js core, outside the 15-agent community roster) | P1 | todo |
-| COMM-350 | Reconcile active-tab visual language once Community's nav IA is final | cross-cutting (UI/design) | P1 | todo |
-| COMM-351 | Reconcile --shadow-card formula across repos | cross-cutting (UI/design) | P1 | todo |
-| COMM-352 | Restore the --text-scale token and unify the Large Text magnitude | cross-cutting (UI/design) | P1 | todo |
-| COMM-353 | Align .page-title typography treatment | cross-cutting (UI/design) | P1 | todo |
-| COMM-354 | Reconcile the --steel token value between repos | cross-cutting (UI/design) | P1 | todo |
-| COMM-355 | Preserve the cloud-aware backup staleness threshold when porting the Settings redesign | cross-cutting (UI/design) | P1 | todo |
-| COMM-356 | Give the challenge-joined status its own tag style instead of overriding .admin-tag | cross-cutting (UI/design) | P1 | todo |
-| COMM-357 | Replace hardcoded rgba tints in announcement badges and coach comment highlight with color-mix() | cross-cutting (UI/design) | P1 | todo |
-| COMM-358 | Add roving-tabindex and Arrow-key support to all role="tablist" groups | cross-cutting (UI/design) | P1 | todo |
-| COMM-359 | Give the est-1RM trend chart an accessible name or data alternative | cross-cutting (UI/design) | P1 | todo |
+| COMM-350 | Reconcile active-tab visual language once Community's nav IA is final | cross-cutting (UI/design) | P1 | done |
+| COMM-351 | Reconcile --shadow-card formula across repos | cross-cutting (UI/design) | P1 | partial |
+| COMM-352 | Restore the --text-scale token and unify the Large Text magnitude | cross-cutting (UI/design) | P1 | done |
+| COMM-353 | Align .page-title typography treatment | cross-cutting (UI/design) | P1 | partial |
+| COMM-354 | Reconcile the --steel token value between repos | cross-cutting (UI/design) | P1 | partial |
+| COMM-355 | Preserve the cloud-aware backup staleness threshold when porting the Settings redesign | cross-cutting (UI/design) | P1 | done |
+| COMM-356 | Give the challenge-joined status its own tag style instead of overriding .admin-tag | cross-cutting (UI/design) | P1 | done |
+| COMM-357 | Replace hardcoded rgba tints in announcement badges and coach comment highlight with color-mix() | cross-cutting (UI/design) | P1 | done |
+| COMM-358 | Add roving-tabindex and Arrow-key support to all role="tablist" groups | cross-cutting (UI/design) | P1 | done |
+| COMM-359 | Give the est-1RM trend chart an accessible name or data alternative | cross-cutting (UI/design) | P1 | done |
 | COMM-360 | Default selectedId/selectedWodId to unset with an explicit pick-one empty state | unassigned (app.js core, outside the 15-agent community roster) | P1 | todo |
-| COMM-361 | Darken light-theme --brass or add a higher-contrast text variant | cross-cutting (UI/design) | P1 | todo |
+| COMM-361 | Darken light-theme --brass or add a higher-contrast text variant | cross-cutting (UI/design) | P1 | done |
 | COMM-362 | Add a session-expiry / refresh-failure auth test | qa | P1 | todo |
 | COMM-363 | Add browser-check scenarios for post composition and report moderation | qa | P1 | todo |
 | COMM-364 | Add a quota-exceeded regression test for noteStorageError | qa | P1 | todo |
@@ -2442,3 +2442,152 @@ Filed from `2026-09-02-design-sync-and-cross-repo-audit.md`, a 10-agent cross-re
 | COMM-367 | Remove the duplicate safeText() implementation in cloud.js, use the shared esc() | platform | P1 | todo |
 | COMM-368 | Extract shared low-level safety helpers into a package or submodule used by both repos | platform | P1 | todo |
 | COMM-369 | Backfill CHANGES.md with the missing 2026-08-28 through 2026-09-01 entries | planner | P1 | todo |
+
+**COMM-352 is done.** `--text-scale` is back as a real custom property
+(`1.2`) instead of a hardcoded `zoom:1.12`. `scripts/browser-check/text-
+scale.mjs`'s own comment ("large is 1.2x") turned out to be leftover
+evidence the intended magnitude was always 1.2 — the code had silently
+drifted to 1.12 without the comment (or Noam's reference value) being
+updated, exactly the kind of drift the audit flagged. Restored to 1.2
+rather than keeping the smaller regressed value.
+
+**COMM-361 is done, with a new automated check.** Light-theme `--brass`
+darkened from `#A6702E` (4.22:1 on `--surface`, 3.86:1 on `--bg` — both
+below the 4.5:1 AA floor) to `#956529` (5.03:1 / 4.61:1). `test/brass-
+contrast.test.mjs` computes the real relative-luminance contrast from the
+tokens as shipped, so a future edit to `--brass`/`--surface`/`--bg` gets
+caught here instead of by eyeballing it. Dark-theme `--brass` already
+cleared AA (7.25:1 / 8.69:1) and was left untouched.
+
+**COMM-351, COMM-353 and COMM-354 are partial** — all three ask to
+"reconcile" or "align" a value between this repo and `crossfit-pwa-Noam`,
+which is not checked out in this workspace, so the Noam side of each
+literally cannot be touched or even read from here. For each, this session
+established (from this repo's own git history, not guesswork) that
+Community's current value is a deliberate, already-shipped decision rather
+than accidental drift, and left it as-is:
+- **COMM-351** (`--shadow-card`): the token's own in-code comment already
+  says it's "a light rim highlight plus a soft, low-contrast drop, tuned
+  per theme" — a deliberate redesign, not drift.
+- **COMM-353** (`.page-title` Anton/400+tracking): commit `28819f7`
+  ("Page titles on all 4 solo tabs") shows this shipped as Phase 6 of a
+  named app-form redesign plan, not an accident.
+- **COMM-354** (`--steel`): commit `e3a5a5f` ("Accessibility fixes...")
+  shows Community's `--steel` was deliberately darkened/lightened per theme
+  specifically to clear 4.5:1 contrast (`#68748C`→`#57627A` light,
+  `#8891A6`→`#A8B3C9` dark) — the audit's "unintentional drift" read is a
+  false positive; this is the *fixed* value, and Noam is almost certainly
+  the one carrying the stale, lower-contrast one.
+
+None of these three needed a code change in this repo as a result. Porting
+the decision to Noam (or re-verifying that read against Noam's actual code)
+is real remaining work, just not work this workspace can do.
+
+**COMM-342, COMM-344, COMM-345, COMM-346, COMM-347, COMM-348, COMM-350,
+COMM-356 and COMM-357 are done** — a batch of small, self-contained
+CSS/markup fixes, shipped together since none touches the other's code:
+
+- **COMM-342**: `cal-prev`/`cal-next`'s SVG `path` values were swapped —
+  prev drew a right-pointing chevron, next drew a left-pointing one.
+  Swapped back to the prev=left/next=right convention.
+- **COMM-344**: the onboarding subtitle said "ארבעה מסכים" (four screens)
+  while listing five rows (רישום/התקדמות/לוח שנה/אימונים/קהילה) — updated to
+  "חמישה מסכים".
+- **COMM-345**: `#notificationsBellBtn` had no class at all (bare inline
+  styles, no background/border/shadow) while `#navMenuBtn` used
+  `.icon-chip.icon-chip-steel` — the bell now carries the same class, so
+  the two header icons finally match each other.
+- **COMM-346**: added `.chip-btn.danger` (plus `.chip-btn.primary.danger`
+  for the two full-fill confirm/run buttons) and replaced every inline
+  `color:var(--red)`/`background:var(--red)` override on a `.chip-btn` in
+  `cloud.js` (6 call sites: dialog confirm-yes, mod-action-run, mod-action
+  item, admin-remove-member, challenge-delete draft, event-cancel-confirm)
+  with the new modifier. `grep` for inline red overrides on `.chip-btn` in
+  `cloud.js` now returns 0 results.
+- **COMM-347**: promoted the highest-traffic classless inline components
+  into real CSS classes in `index.html` — `.reaction-strip`, `.badge-tag`
+  (shared by `.coach-badge` and `.pr-badge`, which keep their own class
+  names for the existing test selectors/semantics but now carry no styling
+  of their own), `.post-menu-wrap`/`.post-menu`/`.post-menu-item`,
+  `.progress-track`, `.notif-group`/`.notif-group-body`, `.badge-grid`.
+  Inline `style=` on these elements now carries only genuinely dynamic
+  values (a computed width, the danger/emphasise state).
+- **COMM-348**: `.post-media-grid` had zero `display:grid` rule anywhere —
+  a multi-photo post's images stacked as plain blocks. Now a real 2-column
+  grid, matching `.ach-grid`'s visual weight; the per-image inline
+  `margin-bottom:6px` stacking hack is gone in favor of the grid's own gap.
+- **COMM-350**: `.navrow.tabbtn.active` (nav-menu rows) now uses the same
+  14% energy tint and `--shadow-sm` as `.tabbtn.active` (bottom tab bar),
+  now that COMM-327 settled the nav IA — both are the same "which section
+  am I in" idiom. `.subtabbtn` (WOD Rx/Scaled) deliberately keeps its own
+  solid-pill segmented-control look, a different widget convention from a
+  nav tab, not an oversight.
+- **COMM-356**: the challenge/event "joined"/"completed"/"mine" pills
+  (3 call sites, all the identical bug) only overrode `.admin-tag`'s
+  background to brass, leaving its energy-orange text/border showing
+  through underneath — a two-tone badge with no admin meaning at all. New
+  `.tag`/`.tag-brass` pill used instead; `.admin-tag` itself is now only
+  ever used unmodified, for real admin-context ("ניהול") labels.
+- **COMM-357**: replaced every hardcoded rgba tint named in this ticket
+  with `color-mix()`. `announcementPriorityBadge`'s urgent/important
+  backgrounds (`rgba(194,57,44,.16)` / `rgba(166,112,46,.14)`, literal
+  light-theme `--red`/`--brass` values that silently stopped matching
+  their own token once dark mode changed it) are now `color-mix(in srgb,
+  var(--red) 16%, transparent)` / `color-mix(in srgb, var(--brass) 14%,
+  transparent)`. `announcementAccentStyle`'s urgent banner background
+  (`rgba(194,57,44,.07)`) is now the same `--red` color-mix at 7%. The
+  coach-comment highlight's `rgba(191,167,106,.06)` (a literal tint that
+  didn't even match `--brass`'s actual RGB) is now `color-mix(in srgb,
+  var(--brass) 6%, transparent)`.
+
+**COMM-358 is done, with new test coverage.** Every `role="tablist"` group
+(bottom tab bar, WOD's Rx/Scaled subtabbar, the community feed-scope
+filter) now has a real roving tabindex (only the selected tab is a Tab
+stop, baked into each render so a re-render can't get it out of sync) and
+one shared, generic keydown handler (`app.js`) for Arrow/Home/End: Right/
+Left follow the visual direction (checked via the `dir` attribute, since
+jsdom doesn't resolve an inherited CSS `direction` the way a real browser
+does — this app is RTL-only, so Right/Left are swapped from the LTR
+default), Up/Down and Home/End are direction-agnostic, and moving focus
+also switches the tab (automatic activation, matching how every tab here
+already switches on click). `test/tablist-keyboard.test.mjs` covers the
+roving tabindex and all four navigation keys against two of the three
+groups for real, in jsdom, through the production render path — the third
+(community feed scope) shares the exact same handler and is exercised
+indirectly by the existing feed-client tests, which still pass.
+
+**COMM-359 is done, with new test coverage.** `renderChart()` (the shared
+SVG progression chart behind est1RM, bodyweight and body-measurement
+history) now gets `role="img"` and a computed `aria-label` summarizing the
+point count, first/last values and PR count — nothing assumes a unit,
+since one function renders all three chart kinds. `test/chart-accessible-
+name.test.mjs` checks both the multi-point and single-point cases.
+
+**COMM-329 has more of its remaining scope closed.** The Community tab
+itself now opens with `renderTabHeader("community")` — the same shared
+function the other 4 solo tabs already use, reading "קהילה" from the one
+`getNavItems()` registry entry rather than inventing a second name. Still
+`partial`: the other three remaining-scope items from the 2026-09-02 pass
+(cloud.js sub-section headings beyond `sectionHead()`, Noam's own
+`.page-title`/`.ach-section-title` still being `<div>`/`<span>`, and a real
+automated axe/heading-outline scan) are unchanged — see the ticket file's
+own "Not done" section.
+
+**COMM-323 and COMM-355 are done together**, as COMM-355 required.
+`crossfit-pwa-Noam` is not checked out in this workspace, so Noam's actual
+`.settings-*` CSS couldn't be copied — the redesign instead reuses this
+app's own established components: `.settings-pane` (a card list replacing
+the old `.divider-label` + bare `.card` alternation), `.who` for the
+profile card (the exact same avatar+name component the nav menu already
+renders, not a near-duplicate) with a trailing `.icon-chip.icon-chip-steel`
+edit button, `.settings-block`/`.settings-block-title` for each grouped
+section (Appearance, cloud/backup, Data & Backup, Legal, Danger Zone — every
+Community-only row preserved, nothing dropped), and `.chip-btn.danger`
+(COMM-346, built alongside this ticket) for the danger-zone confirm instead
+of hand-rolled inline red styles. The cloud-aware 5/30-day backup-staleness
+logic (COMM-355) is byte-identical to before, just re-skinned into the new
+`.settings-warn` icon+box component. `test/audit-ux-fixes.test.mjs`'s
+destructive-button test used to regex-match the old inline style string;
+rewritten to render the real screen and assert the `.danger` class instead.
+`test/community-backup-sync.test.mjs`'s source-slice check of the threshold
+logic needed no change.
