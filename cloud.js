@@ -9601,7 +9601,18 @@
     const activeTab = tabs.find((t) => t.id === state.communityTab) || tabs[0];
     const tabBar = `<div class="subtabbar">${tabs.map((t) => `<button class="subtabbtn${t.id === activeTab.id ? " active" : ""}" data-community-action="set-tab" data-tab="${t.id}">${t.label}${t.badge ? `<span class="tab-badge" aria-label="${t.badge} דיווחים ממתינים">${t.badge}</span>` : ""}</button>`).join("")}</div>`;
 
-    return tabBar
+    // COMM-329 (remaining scope). The Community tab was the one solo tab
+    // with no top-level <h1> of its own - it never calls renderTabHeader(),
+    // the shared function the other 4 solo tabs already use. "קהילה" is the
+    // same label getNavItems() already gives this tab everywhere else
+    // (bottom-bar/nav-menu icon caption); this just reads that one
+    // registry entry instead of inventing a second name (e.g. the club's
+    // own name, which is a per-club value, not this screen's identity).
+    // renderTabHeader lives in app.js, loaded after cloud.js in index.html -
+    // safe here since this whole function body only runs on an actual
+    // render(), well after both scripts have executed.
+    return renderTabHeader("community")
+      + tabBar
       + (state.message ? `<div class="footer-note" role="status" style="color:var(--brass);margin-bottom:14px;">${safeText(state.message)}</div>` : "")
       + activeTab.html;
   };
