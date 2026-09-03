@@ -98,7 +98,7 @@ function renderBottomTabBar() {
   return getNavItems().filter((item) => item.main).map((item) => {
     const isActive = tab === item.tab;
     return `
-      <button class="tabbtn${isActive ? " active" : ""}" id="${item.rowId}" data-action="switch-tab" data-tab="${item.tab}" role="tab" aria-selected="${isActive}" aria-controls="content">
+      <button class="tabbtn${isActive ? " active" : ""}" id="${item.rowId}" data-action="switch-tab" data-tab="${item.tab}" role="tab" aria-selected="${isActive}" aria-controls="content" tabindex="${isActive ? "0" : "-1"}">
         ${item.icon}
         <span>${esc(item.label)}</span>
       </button>`;
@@ -3405,9 +3405,9 @@ function renderWodTab() {
   return `
     ${renderTabHeader("wod")}
     <div class="subtabbar" role="tablist">
-      <button class="subtabbtn ${wodSubTab === "log" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="log" role="tab" aria-selected="${wodSubTab === "log"}" aria-controls="wodContent">רישום</button>
-      <button class="subtabbtn ${wodSubTab === "history" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="history" role="tab" aria-selected="${wodSubTab === "history"}" aria-controls="wodContent">היסטוריה</button>
-      <button class="subtabbtn ${wodSubTab === "benchmarks" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="benchmarks" role="tab" aria-selected="${wodSubTab === "benchmarks"}" aria-controls="wodContent">Benchmarks</button>
+      <button class="subtabbtn ${wodSubTab === "log" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="log" role="tab" aria-selected="${wodSubTab === "log"}" aria-controls="wodContent" tabindex="${wodSubTab === "log" ? "0" : "-1"}">רישום</button>
+      <button class="subtabbtn ${wodSubTab === "history" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="history" role="tab" aria-selected="${wodSubTab === "history"}" aria-controls="wodContent" tabindex="${wodSubTab === "history" ? "0" : "-1"}">היסטוריה</button>
+      <button class="subtabbtn ${wodSubTab === "benchmarks" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="benchmarks" role="tab" aria-selected="${wodSubTab === "benchmarks"}" aria-controls="wodContent" tabindex="${wodSubTab === "benchmarks" ? "0" : "-1"}">Benchmarks</button>
     </div>
     <div id="wodContent"></div>
   `;
@@ -3531,6 +3531,60 @@ document.addEventListener("keydown", (e) => {
   const first = focusables[0], last = focusables[focusables.length - 1];
   if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
   else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
+
+// COMM-358. Every role="tablist" group in this app (the fixed bottom tab
+// bar, WOD's Rx/Scaled-style subtabbar, Community's feed-scope filter)
+// already pairs role="tab" with aria-selected - that markup sets an
+// assistive-tech user's expectation of Arrow/Home/End navigation with only
+// the selected tab as a Tab stop, which nothing implemented before this.
+// One shared, generic handler rather than one per widget: it only cares
+// that the focused element is role="tab" inside a role="tablist", never
+// which feature rendered it, so a future tablist gets this for free by
+// following the same two roles + tabindex convention documented below.
+// Automatic activation (moving focus also switches the tab) matches how
+// every tab here already switches on click, not on a separate confirm step.
+function tablistTabs(tablist) {
+  // Unlike a dialog's focus trap, a tablist here never mixes visible and
+  // hidden tabs in the same DOM query - every rendered [role="tab"] in a
+  // given tablist is on-screen whenever the tablist itself is, so this
+  // only needs to skip a parked/disabled one (the feed scope filter's
+  // "coming soon" chip carries no role="tab" at all, but stay defensive).
+  return Array.from(tablist.querySelectorAll('[role="tab"]')).filter((t) => !t.disabled);
+}
+document.addEventListener("keydown", (e) => {
+  const tab = e.target.closest && e.target.closest('[role="tab"]');
+  if (!tab) return;
+  const tablist = tab.closest('[role="tablist"]');
+  if (!tablist) return;
+  const tabs = tablistTabs(tablist);
+  const i = tabs.indexOf(tab);
+  if (i === -1) return;
+  // Right/Left follow the visual direction (swapped under RTL, this app's
+  // only direction - checked via the dir attribute directly, since jsdom's
+  // getComputedStyle doesn't resolve an inherited `direction` the way a
+  // real browser does); Up/Down and Home/End are direction-agnostic.
+  const rtl = (tablist.closest("[dir]") || document.documentElement).dir === "rtl";
+  let next;
+  if (e.key === "ArrowRight") next = tabs[i + (rtl ? -1 : 1)];
+  else if (e.key === "ArrowLeft") next = tabs[i + (rtl ? 1 : -1)];
+  else if (e.key === "ArrowDown") next = tabs[i + 1];
+  else if (e.key === "ArrowUp") next = tabs[i - 1];
+  else if (e.key === "Home") next = tabs[0];
+  else if (e.key === "End") next = tabs[tabs.length - 1];
+  else return;
+  e.preventDefault();
+  if (!next || next === tab) return;
+  next.click();
+  // The click above may fully re-render the tablist's own container
+  // (bottomTabBar/communityFeedFilters do; the WOD subtabbar mutates its
+  // existing buttons in place) - re-find "the now-selected tab" inside the
+  // same container by id rather than trusting `next` is still the live
+  // node, then focus it. render()/rerender() here are synchronous, so the
+  // new markup already exists by the time this runs.
+  const container = tablist.id ? document.getElementById(tablist.id) : tablist;
+  const selected = container && container.querySelector('[role="tab"][aria-selected="true"]');
+  if (selected) selected.focus();
 });
 
 let navMenuOpen = false;
@@ -3910,6 +3964,7 @@ document.addEventListener("click", (e) => {
       const active = btn.dataset.subtab === wodSubTab;
       btn.classList.toggle("active", active);
       btn.setAttribute("aria-selected", String(active));
+      btn.setAttribute("tabindex", active ? "0" : "-1");
     });
     renderWodContent();
     // Same reasoning as the pill highlight above: the fixed bottom bar's
