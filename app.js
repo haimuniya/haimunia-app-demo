@@ -2207,6 +2207,23 @@ function ladderRoundSummary(r, showExercise) {
 
 function renderLogTab() {
   const selected = movementById(selectedId);
+  // COMM-343. selectedId always defaults to a real movement today
+  // (MOVEMENTS[0].id), so this branch is currently dead in practice - the
+  // data-correctness half of "default to unset" is COMM-360's own scope,
+  // deliberately not touched here (this ticket's own acceptance criteria
+  // say so explicitly). This just makes renderLogTab() safe and gives an
+  // explicit empty-state prompt for whenever COMM-360 actually starts
+  // leaving selectedId unset, instead of the unconditional selected.name/
+  // selected.category reads below throwing on a null selection.
+  if (!selected) {
+    return `
+      ${renderTabHeader("add")}
+      <button class="exercise-select log-empty-hint" data-action="open-picker">
+        <span style="font-weight:800; font-size:16px;">מה עשינו היום?</span>
+        <span class="flex items-center gap-6" style="color:var(--steel); font-size:12px; font-weight:600;">בחירת תרגיל${ICONS.chevronsLeft}</span>
+      </button>
+    `;
+  }
   const isDuration = logEntryType === "duration";
   const isBarbell = isBarbellMovement(selectedId);
   const est = isDuration ? null : bestEst1RM(selectedId);
@@ -2246,9 +2263,9 @@ function renderLogTab() {
 
     ${(est || bestHold || last) ? `
     <div class="stat-row">
-      ${est ? `<div class="stat-card"><div class="stat-label">1RM משוער</div><div class="stat-value mono" style="color:var(--brass);">${est} kg</div></div>` : ""}
-      ${bestHold ? `<div class="stat-card"><div class="stat-label">שיא החזקה</div><div class="stat-value mono" style="color:var(--brass);">${formatDuration(bestHold)}</div></div>` : ""}
-      ${last ? `<button data-action="prefill-last" class="stat-card" style="text-align:right;" aria-label="מילוי הנתונים מהאימון האחרון — ${isDuration ? formatDuration(last.durationSeconds) : `${last.weight} על ${last.reps}`}">
+      ${est ? `<div class="stat-card stat-hero"><div class="stat-label">1RM משוער</div><div class="stat-value mono" style="color:var(--brass);">${est} kg</div></div>` : ""}
+      ${bestHold ? `<div class="stat-card stat-hero"><div class="stat-label">שיא החזקה</div><div class="stat-value mono" style="color:var(--brass);">${formatDuration(bestHold)}</div></div>` : ""}
+      ${last ? `<button data-action="prefill-last" class="stat-card stat-hero" style="text-align:right;" aria-label="מילוי הנתונים מהאימון האחרון — ${isDuration ? formatDuration(last.durationSeconds) : `${last.weight} על ${last.reps}`}">
         <div class="flex items-center justify-between gap-6">
           <span class="stat-label">אימון אחרון</span>
           <span style="color:var(--steel);">${ICONS.repeat}</span>

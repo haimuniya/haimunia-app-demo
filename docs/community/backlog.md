@@ -2415,7 +2415,7 @@ Filed from `2026-09-02-design-sync-and-cross-repo-audit.md`, a 10-agent cross-re
 | COMM-340 | Add interactive-widget=resizes-content to the viewport meta | unassigned (app.js core, outside the 15-agent community roster) | P1 | todo |
 | COMM-341 | Add a monthly stats summary, legend, and card chrome to the calendar screen | cross-cutting (UI/design) | P1 | done |
 | COMM-342 | Fix reversed prev/next month chevron icons on the calendar | cross-cutting (UI/design) | P1 | done |
-| COMM-343 | Port the chosen/unchosen exercise-select state and stat-hero cards to the Home/log screen | cross-cutting (UI/design) | P1 | todo |
+| COMM-343 | Port the chosen/unchosen exercise-select state and stat-hero cards to the Home/log screen | cross-cutting (UI/design) | P1 | done |
 | COMM-344 | Fix onboarding modal subtitle to match the 5 screens now listed | cross-cutting (UI/design) | P1 | done |
 | COMM-345 | Give the notification bell a consistent icon-button class matching the nav-menu button | cross-cutting (UI/design) | P1 | done |
 | COMM-346 | Add a .chip-btn.danger modifier and remove inline destructive-button styling | cross-cutting (UI/design) | P1 | done |
@@ -2616,3 +2616,15 @@ dates in the month with a strength or WOD entry), total sets (count of
 strength entries — a WOD session is a different unit of work), and PR days
 (distinct dates with a PR). Recomputed on every month nav the grid already
 handles.
+
+**COMM-343 is done.** `renderLogTab()` now guards on `movementById
+(selectedId)` and returns a `.exercise-select.log-empty-hint` prompt ("מה
+עשינו היום?") instead of reading `selected.name`/`selected.category`
+unconditionally. COMM-360 (data-correctness half, not built in this batch)
+hasn't shipped, so `selectedId` still always defaults to a real movement —
+this branch is currently dead in production, existing so the UI is already
+correct the moment COMM-360 starts leaving it unset, rather than crashing.
+Not runtime-testable today for the same reason; verified by code review and
+the existing log-tab test suite passing unchanged. The log screen's own
+est-1RM/best-hold/last-session cards get `.stat-hero` (brass accent, larger
+value) — scoped to this screen, not every `.stat-card` app-wide.
