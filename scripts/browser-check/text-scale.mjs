@@ -14,7 +14,7 @@
 //   TARGET_URL=<url> node text-scale.mjs # a deployed site
 import { chromium } from "playwright";
 import { resolveTarget } from "./lib/target.mjs";
-import { switchTab, openSettings, dismissWelcomeModal, consoleErrorCollector } from "./lib/actions.mjs";
+import { switchTab, openSettings, dismissWelcomeModal, selectBenchmarkWod, consoleErrorCollector } from "./lib/actions.mjs";
 import { installMockCloud } from "./lib/mockCloud.mjs";
 
 let failed = false;
@@ -93,10 +93,10 @@ check("preference persists across a reload", attrAfterReload === "large", attrAf
 // the content inside it still visibly scales with the rest of the page.
 await switchTab(page, "tabWodBtn");
 await page.waitForTimeout(150);
-// A WOD is always pre-selected (selectedWodId's module-level default) —
-// reaching the builder now goes through the WOD picker overlay (tap the
-// current WOD to open it, then its own "build a custom WOD" button),
-// not a direct empty-state button.
+await selectBenchmarkWod(page, "fran");
+// Reaching the builder now goes through the WOD picker overlay (tap the
+// current WOD to open it, then its own "build a custom WOD" button), not
+// a direct empty-state button.
 await page.click("[data-action='open-wod-picker']");
 await page.waitForSelector("#wodPickerOverlay.open");
 await page.click("[data-action='open-wod-builder']");

@@ -38,6 +38,20 @@ export async function selectMovement(page, partialQuery) {
   await page.waitForFunction(() => !document.getElementById("pickerOverlay").classList.contains("open"), { timeout: 5000 });
 }
 
+// COMM-360: selectedWodId now defaults to unset (was WOD_LIBRARY[0]/"Fran"),
+// so a fresh visit to the WOD tab's log subtab shows a pick-a-WOD empty
+// state with no exercise-select/open-wod-picker button of its own (same
+// shape as the log tab's own pick-a-movement state) - anything that needs
+// a real WOD selected (the picker, the builder, an actual log/save) has to
+// pick one first. Goes through the benchmarks subtab, same as a real user
+// would, and lands back on the log subtab with that WOD selected.
+export async function selectBenchmarkWod(page, id) {
+  await page.click("button.subtabbtn[data-subtab='benchmarks']");
+  await page.waitForTimeout(150);
+  await page.click(`[data-action='select-benchmark'][data-id='${id}']`);
+  await page.waitForTimeout(150);
+}
+
 // The PR-celebration popup blocks every click behind it until dismissed.
 // Returns whether it was actually open, so callers can assert on that too.
 export async function dismissCelebrationIfOpen(page) {

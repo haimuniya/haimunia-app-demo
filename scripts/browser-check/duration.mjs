@@ -39,13 +39,15 @@ await page.goto(target.url, { waitUntil: "networkidle" });
 await page.waitForSelector("#app", { state: "visible" });
 await dismissWelcomeModal(page);
 
-// The default-selected exercise (Back Squat) is a barbell movement, so this
-// checks the reps/duration toggle itself, not a movement-specific quirk —
+// COMM-360: nothing is pre-selected on a fresh load anymore - pick Back
+// Squat explicitly first. It's a barbell movement, so the check below is
+// on the reps/duration toggle itself, not a movement-specific quirk —
 // Weighted Plank below is `barbell: false` and never shows the barbell
 // visual in either mode, which would make that check pass for the wrong
 // reason.
+await selectMovement(page, "Back Squat");
 const barbellVisibleBefore = await page.evaluate(() => !!document.getElementById("barbellVisual"));
-check("reps mode shows the barbell visual by default", barbellVisibleBefore);
+check("reps mode shows the barbell visual for a barbell movement", barbellVisibleBefore);
 
 await page.click("[data-action='set-log-entry-type'][data-type='duration']");
 await page.waitForTimeout(150);
