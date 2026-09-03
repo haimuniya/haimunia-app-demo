@@ -2,7 +2,7 @@
 
 Phase: Design sync & audit remediation (2026-09-02)
 Agent: cross-cutting (UI/design)
-Status: todo
+Status: done
 Priority: P1
 Attendance-blocked: no
 
@@ -15,8 +15,15 @@ be preserved, not reverted, when COMM-323 ports the Settings redesign.
 
 ## Acceptance criteria
 
-- [ ] The 5/30-day cloud-aware threshold logic is carried into the new `.settings-
+- [x] The 5/30-day cloud-aware threshold logic is carried into the new `.settings-
   warn` component as part of COMM-323, not reverted to Noam's flat 21-day rule.
+
+## Shipped 2026-09-03
+
+Done together with COMM-323. `renderSettingsBody()`'s `cloudCovered ? 30 : 5`
+logic is untouched (byte-identical); only the wrapping markup changed, from
+a plain `.footer-note` colored line to `.settings-warn` (icon + box,
+`index.html`) - same threshold, same message, new chrome.
 
 ## Location / evidence
 

@@ -2873,30 +2873,43 @@ function renderSettingsBody() {
   // export nudge stays the old, far less urgent 30-day cadence.
   const cloudCovered = typeof window.cloudSyncActive === "function" && window.cloudSyncActive();
   const staleThreshold = cloudCovered ? 30 : 5;
+  // COMM-355: same threshold, now in the .settings-warn icon+box treatment
+  // (COMM-323) instead of a plain colored line.
   const staleBackupNote = hasData && (days === null || days >= staleThreshold)
-    ? `<div class="footer-note" style="color:var(--yellow); margin-bottom:8px;">${esc(days === null ? "עדיין לא ביצעתם גיבוי" : `הגיבוי האחרון לפני ${days} ימים`)} — ייצוא גיבוי למטה</div>`
+    ? `<div class="settings-warn" role="status">⚠️<span>${esc(days === null ? "עדיין לא ביצעתם גיבוי" : `הגיבוי האחרון לפני ${days} ימים`)} — ייצוא גיבוי למטה</span></div>`
     : "";
   const backupSettingsPanel = typeof window.renderBackupSettingsPanel === "function" ? window.renderBackupSettingsPanel() : "";
+  const initial = userName ? userName.trim().charAt(0) : "";
+  // COMM-323: card-based redesign - .settings-pane of .settings-block
+  // cards instead of the old flat .divider-label + bare .card list. The
+  // profile card reuses .who (the exact same avatar+name component the nav
+  // menu already renders) rather than a near-duplicate; every
+  // Community-only row (cloud/backup panel, legal links) is preserved as
+  // its own section, not dropped.
   return `
-    <div class="footer" style="margin-top:0;">
-      <div class="divider-label" style="padding-top:0;">פרופיל</div>
-      <div class="card" style="margin-bottom:18px;">
-        <button class="link-btn" data-action="edit-user-name">עריכת פרופיל</button>
+    <div class="settings-pane">
+      <div class="who" style="margin:0;">
+        <div class="who-avatar">${esc(initial)}</div>
+        <div style="flex:1; min-width:0;">
+          <div class="who-name">${userName ? esc(userName) : "אורח/ת"}</div>
+          <div class="who-sub">פרופיל אישי</div>
+        </div>
+        <button class="icon-chip icon-chip-steel" data-action="edit-user-name" aria-label="עריכת פרופיל">${ICONS.edit}</button>
       </div>
 
-      <div class="divider-label">מראה</div>
-      <div class="card" style="margin-bottom:18px;">
+      <div class="settings-block">
+        <div class="settings-block-title">מראה</div>
         ${renderThemeRow()}
         ${renderTextScaleRow()}
       </div>
 
-      ${backupSettingsPanel ? `<div class="divider-label">הגנה על הנתונים שלי</div>
-      <div class="card" style="margin-bottom:18px;">
+      ${backupSettingsPanel ? `<div class="settings-block">
+        <div class="settings-block-title">הגנה על הנתונים שלי</div>
         ${backupSettingsPanel}
       </div>` : ""}
 
-      <div class="divider-label">נתונים וגיבוי</div>
-      <div class="card" style="margin-bottom:18px;">
+      <div class="settings-block">
+        <div class="settings-block-title">נתונים וגיבוי</div>
         <div class="footer-note"${storageOK ? "" : ' style="color:var(--red);" role="alert"'}>${storageOK ? esc(typeof cloudStorageStatusText === "function" ? cloudStorageStatusText() : "נשמר במכשיר הזה בלבד, ללא שרת") : esc(storageErrMsg || "שמירה נכשלה — בדקו את מקום האחסון")}</div>
         ${staleBackupNote}
         <div class="flex items-center justify-center gap-10" style="margin-bottom:8px; flex-wrap:wrap;">
@@ -2908,21 +2921,23 @@ function renderSettingsBody() {
         <div class="footer-note" style="margin-bottom:0;">קובץ הגיבוי הוא טקסט פשוט (JSON) וכולל שם, היסטוריית משקל גוף ויומן אימונים מלא — שמרו אותו במקום בטוח</div>
       </div>
 
-      <div class="divider-label">משפטי</div>
-      <div class="card" style="margin-bottom:18px;">
+      <div class="settings-block">
+        <div class="settings-block-title">משפטי</div>
         <div class="flex items-center justify-center gap-8"><a class="link-btn" href="./PRIVACY.md" target="_blank" rel="noopener">פרטיות</a><span aria-hidden="true">·</span><a class="link-btn" href="./TERMS.md" target="_blank" rel="noopener">כללי קהילה</a></div>
       </div>
 
-      <div class="divider-label">אזור מסוכן</div>
-      ${!confirmClear
-        ? `<div style="text-align:center; margin-top:4px;"><button data-action="ask-clear" style="color:var(--red); font-size:11px; font-weight:700; border:1px solid var(--red); border-radius:10px; padding:8px 16px;">מחיקת כל הנתונים</button></div>`
-        : `
-        <div class="flex items-center justify-center gap-10">
-          <span style="color:var(--steel); font-size:11px;">למחוק הכל?</span>
-          <button data-action="do-clear" style="color:#fff; background:var(--red); border:1px solid var(--red); border-radius:10px; padding:6px 14px; font-size:11px; font-weight:700;">כן, מחיקה</button>
-          <button data-action="cancel-clear" style="color:var(--steel); font-size:11px;">ביטול</button>
-        </div>`}
-      <div class="footer-note" style="margin-top:18px;">© ${new Date().getFullYear()} Shahaf Rachmany · v${APP_VERSION}</div>
+      <div class="settings-block">
+        <div class="settings-block-title" style="color:var(--red);">אזור מסוכן</div>
+        ${!confirmClear
+          ? `<div style="text-align:center;"><button class="chip-btn danger" data-action="ask-clear">מחיקת כל הנתונים</button></div>`
+          : `
+          <div class="flex items-center justify-center gap-10">
+            <span style="color:var(--steel); font-size:11px;">למחוק הכל?</span>
+            <button class="chip-btn primary danger" data-action="do-clear">כן, מחיקה</button>
+            <button class="chip-btn" data-action="cancel-clear">ביטול</button>
+          </div>`}
+      </div>
+      <div class="footer-note" style="text-align:center; margin-top:2px;">© ${new Date().getFullYear()} Shahaf Rachmany · v${APP_VERSION}</div>
     </div>`;
 }
 
