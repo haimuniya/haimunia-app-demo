@@ -1,3 +1,210 @@
+# Small fixes and content additions, closing out Phase 3 — 2026-09-01
+
+Independent items that landed the same day as the Phase 3 merge gate, batched
+here since each is small and self-contained:
+
+- Hebrew copy review: mechanical agreement/punctuation fixes, plus a real fix
+  for two drifting terms — "חברים" collapsing "members" and "friends" into one
+  word depending on screen, and "מתאמן"/"חבר" (trainee/member) used
+  inconsistently across the app. Both now read as one consistent term each.
+- Fixed `activity_pings` and `onboarding_progress` writes silently never
+  reaching the server.
+- Fixed the desktop sidebar (added earlier the same day, see below) not
+  actually sticking on scroll.
+- Fixed the calendar's prev/next month chevrons pointing the wrong way.
+- The service worker now forces an update check on every foreground regain,
+  instead of only at load.
+- Added Squat Clusters to the built-in movement list, plus other
+  movement/WOD gaps found in a follow-up research pass.
+- Consolidated three hand-rolled batch-profile-lookup call sites into one.
+- Widened the gap between two-up date/number field pairs.
+- Fixed the nav-menu and Settings screen's close button and title sitting
+  behind the status bar — the same class of collision fixed for
+  `.brand-stripe` on 2026-08-27, now hitting the new nav menu and Settings
+  screen built the same day (see below).
+- Six smaller fixes from a design audit, batched as one commit: contrast, an
+  icon, bidi text handling, and interaction states.
+- The "what's new" bell's release-notes list was refreshed for the next real
+  release (v4.0.0).
+- Fixed a stale code comment in `mockSupabase.mjs` claiming the real
+  Supabase query builder supports `.catch()`.
+
+# App navigation redesign: hamburger menu, Settings screen, desktop sidebar, and a bottom-sheet install prompt — 2026-09-01
+
+A UI-restructuring pass across the whole app shell, not scoped to Community:
+
+- A hamburger + full-page nav menu replaces the old top tabbar as the
+  primary navigation, with two new exports (`window.setCommunityTab`,
+  `window.getCommunityNavPreview`) so the nav menu can drive and preview the
+  Community sub-tab from outside `cloud.js`.
+- A dedicated Settings screen replaces the footer that used to sit glued
+  under every tab.
+- Wide viewports (desktop) now get a persistent sidebar instead of
+  reflowing the mobile layout.
+- The install prompt moved from a top colored strip to a bottom sheet.
+- Page titles were added to all four solo tabs, additive above existing
+  content.
+- A visual polish pass: card shadows, the radius scale, and the plate/CTA
+  gradients.
+- A new app icon for the installed PWA's home-screen icon.
+
+This entry pairs with the small-fixes entry above — several of those fixes
+(sidebar sticking, the nav-menu/status-bar collision) are follow-up
+corrections to this same redesign, landed the same day.
+
+# Community Phase 3: intelligence features on verified attendance — 2026-08-31 to 2026-09-01
+
+Phase 3 (COMM-300 to COMM-317) adds attendance as a real signal without ever
+building a check-in flow: `attendance_log` (COMM-300) is populated by a
+trigger on the existing offline training log's own sync store — logging any
+workout doubles as "I was here." Every later feature calls this
+"self-reported, not physically verified" attendance, the same trust boundary
+the training log already had, documented in each surface's own copy where it
+matters (a stale "verified attendance data will be added later" leftover
+from the Phase 2 consistency board's Phase-2-era copy was one of the few
+contradictions found, and fixed, by the closing QA sweep below).
+
+Built on top of it:
+
+- **Feed**: `relationship_score()` extracted as a pure refactor (COMM-301, no
+  ranking change), a recurring-classmate signal once two members'
+  `attendance_log` rows overlap (COMM-302), a consistency leaderboard now
+  ranked on real attendance instead of feed posts (COMM-306), a "who trained
+  with you today" feed-top-area card (COMM-307), and per-user feed weight
+  storage/reader — the derivation itself is a deliberate, documented stub
+  returning the same fixed defaults for everyone until a real weighting job
+  exists (COMM-303).
+- **Achievements**: the four `ATTENDANCE_RECORDED` achievement definitions
+  (seeded empty back in Phase 0) are enabled, with a club-visible milestone
+  post at 25 and 100 sessions (COMM-305).
+- **Coach tools**: `coach_engagement_flags` (empty since Phase 0) gets its
+  first producer, a scheduled decline-detection job comparing an 8-week
+  baseline to a 2-week recent window, surfaced in the Engage section
+  COMM-226 had already built hidden behind a flag, now flipped on by
+  default (COMM-304); a "member of the week" rotation across four
+  recognition categories — consistency streak, most PRs, challenge
+  completion, coach's pick — publishing a real announcement post (COMM-315).
+- **Recaps**: a monthly, club-wide recap with an admin preview/publish step
+  (COMM-309), and the weekly recap gains a named classmates line plus two
+  attendance-based onboarding steps that COMM-222 had explicitly deferred
+  (COMM-316).
+- **Challenges**: advanced team management — coach-driven team CRUD, member
+  reassignment, a captain label — on top of the existing team-challenge
+  shape, with a real trigger closing a gap where a plain member could
+  otherwise have moved themselves onto any team (COMM-308).
+- **Admin moderation**: a full admin analytics dashboard (COMM-310), member
+  engagement segmentation into six buckets (COMM-311), a retention-cohort
+  view (COMM-313), and an internal-only weighted community health score that
+  reads the retention signal (COMM-312) — built in real dependency order
+  (310 → 311 → 313 → 312), corrected mid-build once the actual read
+  direction between 312 and 313 was checked against the shipped code rather
+  than the ticket text.
+- **Identity/privacy**: a versioned abandoned-profile purge Edge Function
+  and runbook, for anonymous accounts that never redeemed an invite or
+  verified recovery (COMM-314) — a different cleanup from the existing
+  30-day deletion-request purge.
+
+**COMM-317, the Phase 3 QA sweep and merge gate**, cross-referenced every
+ticket's acceptance criteria against the shipped code from a genuinely fresh
+state (a local Docker Supabase stack, clean reset), rather than trusting
+each agent's own report — the same discipline COMM-234 held for Phase 2. It
+found and fixed the stale consistency-board copy above, added three pgTAP
+assertions proving `attendance_log`'s "only a trigger can write this"
+boundary at runtime (not just by reading grants), and added five new
+browser-check scenarios. Every "storage exists, no scheduler runs it yet"
+gap this phase logged individually (`recompute_feed_weights`,
+`coach_detect_engagement_decline`, `recap_monthly_generate`,
+`community_health_generate`, `purge_abandoned_profiles`) was consolidated
+into one table rather than left scattered. Final counts: `npm test` 907 →
+914, `supabase test db` 1955 → 1958 assertions across 54 migrations,
+`scripts/browser-check` 19 → 24 scripts, all green.
+
+# Community Phase 2: challenges, events, announcements, coach tools, realtime, search, leaderboards, and web push — 2026-08-30 to 2026-08-31
+
+Phase 2 (COMM-201 to COMM-234) generalizes the Phase 1 weekly challenge into
+a real challenge model (individual target/performance, cooperative with a
+club aggregate, team, consistency, and coach custom-rules types —
+COMM-201-207), adds a full events system with RSVP/capacity and an `.ics`
+download (COMM-213-217), gives announcements three priority tiers and an
+expiry (COMM-218), a batched/urgent notification split (COMM-219), and a
+weekly member recap Edge Function with a share action (COMM-220-221) — the
+two onboarding steps that need real class attendance were explicitly
+deferred to Phase 3 (COMM-222). A new Coach Dashboard ships with a
+Celebrate section, a Welcome section, one-tap congratulate, and an Engage
+section shipped hidden behind a default-off flag pending Phase 3's
+attendance data (COMM-223-226). Realtime channels (challenge
+progress/participants, feed comments/reactions, notifications) and a
+member/event/challenge search RPC land together (COMM-209/227/228), plus
+three new leaderboard modes (consistency, progress, friends-with-hide) and a
+"people you train with" suggestions strip (COMM-210-212, 232), a following
+system and members directory (COMM-230-231), and web push subscription
+storage behind a feature flag — actually sending a push still needs a
+scheduled sender, not built here (COMM-229). COMM-233 confirmed the Phase 2
+analytics bridge was already firing correctly with nothing left to wire.
+
+**COMM-234, the Phase 2 QA sweep and merge gate**, found and fixed a real
+bug: `renderConfirmDialog()` concatenated the confirm sheet before the
+challenge/event/composer overlays it can nest inside, so in a real browser
+its button was rendered but pointer-events-unreachable behind the
+still-open parent dialog — invisible to jsdom's non-hit-testing `.click()`,
+caught only by a real-Chromium browser-check built for this sweep. Final
+counts: `npm test` 764 → 769, `supabase test db` 884 → 940 assertions,
+`scripts/browser-check` 10 → 17 scripts including 7 new Community
+scenarios.
+
+# Community Phase 1: posts, feed, engagement, achievements, notifications, moderation, coach identity, analytics — 2026-08-28 to 2026-08-30
+
+Phase 1 (COMM-101 to COMM-191) is the first real Community V1 build on top
+of Phase 0's schema: post rendering across every type (text, photo,
+workout, PR, achievement, new-member/system) with a save/hide/edit/
+visibility/delete action menu (COMM-101-108, 180), a ranked feed with
+filters, diversity rules, cursor pagination, and impression/interaction
+tracking (COMM-110-115), reactions and two-level comment threads with
+mentions and coach visual priority (COMM-120-125), an achievement engine
+with non-attendance triggers, PR detection and a share prompt, and unlock
+celebrations (COMM-130-134), a notification center with immediate/batched
+routing and per-type preferences (COMM-140-144), RBAC permission strings, a
+report flow, an admin moderation queue with an audit trail, and pinned
+content (COMM-150-156), and coach identity shown consistently across every
+surface (COMM-160). Three schema follow-ups landed the same window to
+unblock the client work as it was built: achievements/mentions/profile-view
+columns, `post_create` plus a moderation reshape, and server-side
+notification triggers.
+
+COMM-143 (notifications wiring) is `partial`: the client renders every
+Phase 1 notification type correctly, but the server trigger set that
+creates them is documented separately rather than built as its own ticket —
+one open item there, a `post_comments` trigger being unable to see the
+client-only mention list, was closed by routing mention notifications
+through a trigger on the new `comment_mentions` table instead.
+
+**The Phase 1 QA sweep (COMM-190/191)** added the dialog keyboard/focus
+contract and closed a coverage gap before the phase gate. COMM-020 also
+landed in this window: the last 2 remaining pgTAP failures were fixed and
+the migration-check CI job flipped from advisory back to blocking, plus
+three rounds of pgTAP behavioral coverage were added across migrations
+202608280014-028, and a tenure-claim gaming gap in `ach_claim` found while
+writing that coverage was fixed.
+
+# Community module Phase 0: foundations — 2026-08-28
+
+The first Community-module-specific commit on the `community/phase-0`
+branch: eleven schema migrations (post types/visibility, post media, feed
+impressions/interactions, achievements, notifications, challenges, events,
+roles/permissions, an admin-actions audit table, profile privacy columns,
+and an empty `coach_engagement_flags` table — COMM-001 to COMM-011), a
+product event bus and typed event list, an analytics helper with the WCAM
+definition, a Supabase Realtime harness, and client-side image compression
+(COMM-012-015), a required recovery method at invite redemption and an
+actor-level invite throttle (COMM-016-017), a privacy toggle model enforced
+by RLS (COMM-018), and one static-assertion RLS test per new table
+(COMM-019). Wires no producer, no consumer, and no upload path yet — zero
+user-facing change until Phase 1 builds on top of it. CI's pgTAP step was
+marked advisory (`continue-on-error`) the same day, to mark Phase 0
+validated despite unresolved failures at the time — hardened back to a
+blocking gate on 2026-08-30 once COMM-020 fixed the remaining two failures
+(see above).
+
 # Fix status bar colliding with the top of the page on Android — 2026-08-27
 
 Reported with a screenshot: on an installed (Add to Home Screen) Android

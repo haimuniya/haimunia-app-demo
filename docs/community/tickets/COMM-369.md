@@ -2,7 +2,7 @@
 
 Phase: Design sync & audit remediation (2026-09-02)
 Agent: planner
-Status: todo
+Status: done
 Priority: P1
 Attendance-blocked: no
 
@@ -16,8 +16,8 @@ contrast.
 
 ## Acceptance criteria
 
-- [ ] CHANGES.md backfilled with entries for the missing 2026-08-28 → 09-01 work.
-- [ ] The top of CHANGES.md matches the latest commit going forward; the one-entry-
+- [x] CHANGES.md backfilled with entries for the missing 2026-08-28 → 09-01 work.
+- [x] The top of CHANGES.md matches the latest commit going forward; the one-entry-
   per-change habit is re-established.
 
 ## Location / evidence

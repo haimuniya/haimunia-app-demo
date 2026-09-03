@@ -2441,4 +2441,19 @@ Filed from `2026-09-02-design-sync-and-cross-repo-audit.md`, a 10-agent cross-re
 | COMM-366 | Spike scoped/keyed rendering as an alternative to cloud.js's full-tree innerHTML rerender | platform | P1 | todo |
 | COMM-367 | Remove the duplicate safeText() implementation in cloud.js, use the shared esc() | platform | P1 | todo |
 | COMM-368 | Extract shared low-level safety helpers into a package or submodule used by both repos | platform | P1 | todo |
-| COMM-369 | Backfill CHANGES.md with the missing 2026-08-28 through 2026-09-01 entries | planner | P1 | todo |
+| COMM-369 | Backfill CHANGES.md with the missing 2026-08-28 through 2026-09-01 entries | planner | P1 | done |
+
+COMM-369: CHANGES.md's top entry was stale at 2026-08-27 while `git log`
+(reconstructed from `.git/logs/HEAD`, since no live `git` execution was
+available in this pass) showed real work through 2026-09-01. Backfilled six
+new entries, newest first, covering 2026-08-28 through 2026-09-01: two
+2026-09-01 grab-bags (small independent fixes, and the hamburger-nav/
+Settings/desktop-sidebar UI restructuring), then one entry each for the
+Phase 3, Phase 2, and Phase 1 builds, and a Phase 0 foundations entry. The
+Phase 1/2/3 entries are sourced from this backlog file's own narrative
+paragraphs for those phases (the authoritative record of what each ticket
+actually delivered), not invented; the two 2026-09-01 UI-restructuring
+entries, which have no matching narrative here since that track sits outside
+the Community ticket system, are sourced from commit messages only and kept
+correspondingly shorter. CHANGES.md's top entry now matches the latest
+commit prior to this session's own work.
