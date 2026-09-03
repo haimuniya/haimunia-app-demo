@@ -98,7 +98,7 @@ function renderBottomTabBar() {
   return getNavItems().filter((item) => item.main).map((item) => {
     const isActive = tab === item.tab;
     return `
-      <button class="tabbtn${isActive ? " active" : ""}" id="${item.rowId}" data-action="switch-tab" data-tab="${item.tab}" role="tab" aria-selected="${isActive}" aria-controls="content">
+      <button class="tabbtn${isActive ? " active" : ""}" id="${item.rowId}" data-action="switch-tab" data-tab="${item.tab}" role="tab" aria-selected="${isActive}" aria-controls="content" tabindex="${isActive ? "0" : "-1"}">
         ${item.icon}
         <span>${esc(item.label)}</span>
       </button>`;
@@ -2197,7 +2197,17 @@ function renderChart(data) {
   const dots = pts.map((p) => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${p.isPR ? 5 : 2.5}" fill="${p.isPR ? "var(--brass)" : "var(--chalk)"}" ${p.isPR ? 'stroke="var(--surface)" stroke-width="2"' : ""}/>`).join("");
   const labelY = padTop + plotH + 12;
   const labels = pts.map((p) => `<text x="${p.x.toFixed(1)}" y="${labelY}" font-size="9" fill="var(--steel)" text-anchor="end" transform="rotate(-45 ${p.x.toFixed(1)} ${labelY})">${esc(p.label)}</text>`).join("");
-  const svg = `<svg viewBox="0 0 ${w} ${h}" style="${wide ? `width:${w}px;` : "width:100%;"} height:${h}px; display:block;">
+  // COMM-359. This SVG carries the same progression a sighted user reads
+  // visually (range, trend, which points are PRs) with nothing exposed to
+  // assistive tech before this - role="img" + a computed summary stands in
+  // for the actual chart; no unit is assumed here since this one function
+  // renders est1RM, bodyweight and body-measurement charts alike.
+  const prCount = pts.filter((p) => p.isPR).length;
+  const first = data[0], lastPoint = data[n - 1];
+  const chartLabel = n === 1
+    ? `גרף התקדמות: נתון יחיד, ${lastPoint.dateLabel}: ${lastPoint.est1RM}`
+    : `גרף התקדמות: ${n} נתונים בין ${first.dateLabel} (${first.est1RM}) ל-${lastPoint.dateLabel} (${lastPoint.est1RM})` + (prCount ? `, כולל ${prCount === 1 ? "שיא אישי אחד" : `${prCount} שיאים אישיים`}` : "");
+  const svg = `<svg role="img" aria-label="${esc(chartLabel)}" viewBox="0 0 ${w} ${h}" style="${wide ? `width:${w}px;` : "width:100%;"} height:${h}px; display:block;">
     <polyline points="${polyline}" fill="none" stroke="var(--brass)" stroke-width="2"/>
     ${dots}${labels}
   </svg>`;
@@ -2265,9 +2275,9 @@ function renderLogTab() {
 
     ${(est || bestHold || last) ? `
     <div class="stat-row">
-      ${est ? `<div class="stat-card"><div class="stat-label">1RM משוער</div><div class="stat-value mono" style="color:var(--brass);">${est} kg</div></div>` : ""}
-      ${bestHold ? `<div class="stat-card"><div class="stat-label">שיא החזקה</div><div class="stat-value mono" style="color:var(--brass);">${formatDuration(bestHold)}</div></div>` : ""}
-      ${last ? `<button data-action="prefill-last" class="stat-card" style="text-align:right;" aria-label="מילוי הנתונים מהאימון האחרון — ${isDuration ? formatDuration(last.durationSeconds) : `${last.weight} על ${last.reps}`}">
+      ${est ? `<div class="stat-card stat-hero"><div class="stat-label">1RM משוער</div><div class="stat-value mono" style="color:var(--brass);">${est} kg</div></div>` : ""}
+      ${bestHold ? `<div class="stat-card stat-hero"><div class="stat-label">שיא החזקה</div><div class="stat-value mono" style="color:var(--brass);">${formatDuration(bestHold)}</div></div>` : ""}
+      ${last ? `<button data-action="prefill-last" class="stat-card stat-hero" style="text-align:right;" aria-label="מילוי הנתונים מהאימון האחרון — ${isDuration ? formatDuration(last.durationSeconds) : `${last.weight} על ${last.reps}`}">
         <div class="flex items-center justify-between gap-6">
           <span class="stat-label">אימון אחרון</span>
           <span style="color:var(--steel);">${ICONS.repeat}</span>
@@ -2513,6 +2523,21 @@ function updateStreakLabel() {
   el.style.display = "flex";
   el.setAttribute("aria-label", `${streak} ימים ברצף`);
 }
+// COMM-341. Training days / total sets / PR days for the month currently
+// shown - a real feature (a monthly summary), not just decoration, so it
+// lives next to renderCalendarGrid() and is recomputed on every month nav
+// the grid itself already handles. "Total sets" counts strength entries
+// only (one row in `entries` is one logged set); a WOD session is a
+// different unit of work and isn't folded into that count. "PR days"
+// counts a day once even if it carried multiple PRs.
+function computeCalendarMonthStats(year, month) {
+  const prefix = `${year}-${String(month + 1).padStart(2, "0")}-`;
+  const monthEntries = entries.filter((e) => e.date.startsWith(prefix));
+  const monthWods = wodEntries.filter((e) => e.date.startsWith(prefix));
+  const trainingDays = new Set([...monthEntries, ...monthWods].map((e) => e.date)).size;
+  const prDays = new Set([...monthEntries, ...monthWods].filter((e) => e.isPR).map((e) => e.date)).size;
+  return { trainingDays, totalSets: monthEntries.length, prDays };
+}
 function renderCalendarGrid() {
   const grid = document.getElementById("calGrid");
   const label = document.getElementById("calMonthLabel");
@@ -2539,6 +2564,15 @@ function renderCalendarGrid() {
     </button>`;
   }
   grid.innerHTML = cells;
+  const statsEl = document.getElementById("calMonthStats");
+  if (statsEl) {
+    const stats = computeCalendarMonthStats(calYear, calMonth);
+    statsEl.innerHTML = `
+      <div class="cal-month-stat"><div class="cal-month-stat-value">${stats.trainingDays}</div><div class="cal-month-stat-label">ימי אימון</div></div>
+      <div class="cal-month-stat"><div class="cal-month-stat-value">${stats.totalSets}</div><div class="cal-month-stat-label">סטים</div></div>
+      <div class="cal-month-stat"><div class="cal-month-stat-value">${stats.prDays}</div><div class="cal-month-stat-label">ימי שיא</div></div>
+    `;
+  }
   renderCalDetail();
 }
 
@@ -2724,17 +2758,24 @@ function renderVolumeReport() {
 function renderCalendarTab() {
   return `
     ${renderTabHeader("calendar")}
-    <div class="cal-header">
-      <button class="cal-nav-btn" data-action="cal-prev" aria-label="חודש קודם">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--chalk)" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
-      </button>
-      <span class="cal-month-label" id="calMonthLabel"></span>
-      <button class="cal-nav-btn" data-action="cal-next" aria-label="חודש הבא">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--chalk)" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
-      </button>
+    <div class="cal-panel">
+      <div class="cal-header">
+        <button class="cal-nav-btn" data-action="cal-prev" aria-label="חודש קודם">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--chalk)" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+        </button>
+        <span class="cal-month-label" id="calMonthLabel"></span>
+        <button class="cal-nav-btn" data-action="cal-next" aria-label="חודש הבא">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--chalk)" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+      </div>
+      <div class="cal-weekdays">${["א","ב","ג","ד","ה","ו","ש"].map((d) => `<div class="cal-weekday">${d}</div>`).join("")}</div>
+      <div class="cal-grid" id="calGrid"></div>
+      <div class="cal-legend">
+        <span class="cal-legend-item"><span class="cal-dot" aria-hidden="true"></span>יש נתונים</span>
+        <span class="cal-legend-item"><span class="cal-dot pr" aria-hidden="true"></span>שיא אישי</span>
+      </div>
+      <div class="cal-month-stats" id="calMonthStats"></div>
     </div>
-    <div class="cal-weekdays">${["א","ב","ג","ד","ה","ו","ש"].map((d) => `<div class="cal-weekday">${d}</div>`).join("")}</div>
-    <div class="cal-grid" id="calGrid"></div>
     <div id="calDetail" style="margin-bottom:20px;"></div>
     ${renderVolumeReport()}
   `;
@@ -2893,30 +2934,43 @@ function renderSettingsBody() {
   // export nudge stays the old, far less urgent 30-day cadence.
   const cloudCovered = typeof window.cloudSyncActive === "function" && window.cloudSyncActive();
   const staleThreshold = cloudCovered ? 30 : 5;
+  // COMM-355: same threshold, now in the .settings-warn icon+box treatment
+  // (COMM-323) instead of a plain colored line.
   const staleBackupNote = hasData && (days === null || days >= staleThreshold)
-    ? `<div class="footer-note" style="color:var(--yellow); margin-bottom:8px;">${esc(days === null ? "עדיין לא ביצעתם גיבוי" : `הגיבוי האחרון לפני ${days} ימים`)} — ייצוא גיבוי למטה</div>`
+    ? `<div class="settings-warn" role="status">⚠️<span>${esc(days === null ? "עדיין לא ביצעתם גיבוי" : `הגיבוי האחרון לפני ${days} ימים`)} — ייצוא גיבוי למטה</span></div>`
     : "";
   const backupSettingsPanel = typeof window.renderBackupSettingsPanel === "function" ? window.renderBackupSettingsPanel() : "";
+  const initial = userName ? userName.trim().charAt(0) : "";
+  // COMM-323: card-based redesign - .settings-pane of .settings-block
+  // cards instead of the old flat .divider-label + bare .card list. The
+  // profile card reuses .who (the exact same avatar+name component the nav
+  // menu already renders) rather than a near-duplicate; every
+  // Community-only row (cloud/backup panel, legal links) is preserved as
+  // its own section, not dropped.
   return `
-    <div class="footer" style="margin-top:0;">
-      <div class="divider-label" style="padding-top:0;">פרופיל</div>
-      <div class="card" style="margin-bottom:18px;">
-        <button class="link-btn" data-action="edit-user-name">עריכת פרופיל</button>
+    <div class="settings-pane">
+      <div class="who" style="margin:0;">
+        <div class="who-avatar">${esc(initial)}</div>
+        <div style="flex:1; min-width:0;">
+          <div class="who-name">${userName ? esc(userName) : "אורח/ת"}</div>
+          <div class="who-sub">פרופיל אישי</div>
+        </div>
+        <button class="icon-chip icon-chip-steel" data-action="edit-user-name" aria-label="עריכת פרופיל">${ICONS.edit}</button>
       </div>
 
-      <div class="divider-label">מראה</div>
-      <div class="card" style="margin-bottom:18px;">
+      <div class="settings-block">
+        <div class="settings-block-title">מראה</div>
         ${renderThemeRow()}
         ${renderTextScaleRow()}
       </div>
 
-      ${backupSettingsPanel ? `<div class="divider-label">הגנה על הנתונים שלי</div>
-      <div class="card" style="margin-bottom:18px;">
+      ${backupSettingsPanel ? `<div class="settings-block">
+        <div class="settings-block-title">הגנה על הנתונים שלי</div>
         ${backupSettingsPanel}
       </div>` : ""}
 
-      <div class="divider-label">נתונים וגיבוי</div>
-      <div class="card" style="margin-bottom:18px;">
+      <div class="settings-block">
+        <div class="settings-block-title">נתונים וגיבוי</div>
         <div class="footer-note"${storageOK ? "" : ' style="color:var(--red);" role="alert"'}>${storageOK ? esc(typeof cloudStorageStatusText === "function" ? cloudStorageStatusText() : "נשמר במכשיר הזה בלבד, ללא שרת") : esc(storageErrMsg || "שמירה נכשלה — בדקו את מקום האחסון")}</div>
         ${staleBackupNote}
         <div class="flex items-center justify-center gap-10" style="margin-bottom:8px; flex-wrap:wrap;">
@@ -2928,21 +2982,23 @@ function renderSettingsBody() {
         <div class="footer-note" style="margin-bottom:0;">קובץ הגיבוי הוא טקסט פשוט (JSON) וכולל שם, היסטוריית משקל גוף ויומן אימונים מלא — שמרו אותו במקום בטוח</div>
       </div>
 
-      <div class="divider-label">משפטי</div>
-      <div class="card" style="margin-bottom:18px;">
+      <div class="settings-block">
+        <div class="settings-block-title">משפטי</div>
         <div class="flex items-center justify-center gap-8"><a class="link-btn" href="./PRIVACY.md" target="_blank" rel="noopener">פרטיות</a><span aria-hidden="true">·</span><a class="link-btn" href="./TERMS.md" target="_blank" rel="noopener">כללי קהילה</a></div>
       </div>
 
-      <div class="divider-label">אזור מסוכן</div>
-      ${!confirmClear
-        ? `<div style="text-align:center; margin-top:4px;"><button data-action="ask-clear" style="color:var(--red); font-size:11px; font-weight:700; border:1px solid var(--red); border-radius:10px; padding:8px 16px;">מחיקת כל הנתונים</button></div>`
-        : `
-        <div class="flex items-center justify-center gap-10">
-          <span style="color:var(--steel); font-size:11px;">למחוק הכל?</span>
-          <button data-action="do-clear" style="color:#fff; background:var(--red); border:1px solid var(--red); border-radius:10px; padding:6px 14px; font-size:11px; font-weight:700;">כן, מחיקה</button>
-          <button data-action="cancel-clear" style="color:var(--steel); font-size:11px;">ביטול</button>
-        </div>`}
-      <div class="footer-note" style="margin-top:18px;">© ${new Date().getFullYear()} Shahaf Rachmany · v${APP_VERSION}</div>
+      <div class="settings-block">
+        <div class="settings-block-title" style="color:var(--red);">אזור מסוכן</div>
+        ${!confirmClear
+          ? `<div style="text-align:center;"><button class="chip-btn danger" data-action="ask-clear">מחיקת כל הנתונים</button></div>`
+          : `
+          <div class="flex items-center justify-center gap-10">
+            <span style="color:var(--steel); font-size:11px;">למחוק הכל?</span>
+            <button class="chip-btn primary danger" data-action="do-clear">כן, מחיקה</button>
+            <button class="chip-btn" data-action="cancel-clear">ביטול</button>
+          </div>`}
+      </div>
+      <div class="footer-note" style="text-align:center; margin-top:2px;">© ${new Date().getFullYear()} Shahaf Rachmany · v${APP_VERSION}</div>
     </div>`;
 }
 
@@ -3441,9 +3497,9 @@ function renderWodTab() {
   return `
     ${renderTabHeader("wod")}
     <div class="subtabbar" role="tablist">
-      <button class="subtabbtn ${wodSubTab === "log" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="log" role="tab" aria-selected="${wodSubTab === "log"}" aria-controls="wodContent">רישום</button>
-      <button class="subtabbtn ${wodSubTab === "history" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="history" role="tab" aria-selected="${wodSubTab === "history"}" aria-controls="wodContent">היסטוריה</button>
-      <button class="subtabbtn ${wodSubTab === "benchmarks" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="benchmarks" role="tab" aria-selected="${wodSubTab === "benchmarks"}" aria-controls="wodContent">Benchmarks</button>
+      <button class="subtabbtn ${wodSubTab === "log" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="log" role="tab" aria-selected="${wodSubTab === "log"}" aria-controls="wodContent" tabindex="${wodSubTab === "log" ? "0" : "-1"}">רישום</button>
+      <button class="subtabbtn ${wodSubTab === "history" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="history" role="tab" aria-selected="${wodSubTab === "history"}" aria-controls="wodContent" tabindex="${wodSubTab === "history" ? "0" : "-1"}">היסטוריה</button>
+      <button class="subtabbtn ${wodSubTab === "benchmarks" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="benchmarks" role="tab" aria-selected="${wodSubTab === "benchmarks"}" aria-controls="wodContent" tabindex="${wodSubTab === "benchmarks" ? "0" : "-1"}">Benchmarks</button>
     </div>
     <div id="wodContent"></div>
   `;
@@ -3568,6 +3624,60 @@ document.addEventListener("keydown", (e) => {
   const first = focusables[0], last = focusables[focusables.length - 1];
   if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
   else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
+
+// COMM-358. Every role="tablist" group in this app (the fixed bottom tab
+// bar, WOD's Rx/Scaled-style subtabbar, Community's feed-scope filter)
+// already pairs role="tab" with aria-selected - that markup sets an
+// assistive-tech user's expectation of Arrow/Home/End navigation with only
+// the selected tab as a Tab stop, which nothing implemented before this.
+// One shared, generic handler rather than one per widget: it only cares
+// that the focused element is role="tab" inside a role="tablist", never
+// which feature rendered it, so a future tablist gets this for free by
+// following the same two roles + tabindex convention documented below.
+// Automatic activation (moving focus also switches the tab) matches how
+// every tab here already switches on click, not on a separate confirm step.
+function tablistTabs(tablist) {
+  // Unlike a dialog's focus trap, a tablist here never mixes visible and
+  // hidden tabs in the same DOM query - every rendered [role="tab"] in a
+  // given tablist is on-screen whenever the tablist itself is, so this
+  // only needs to skip a parked/disabled one (the feed scope filter's
+  // "coming soon" chip carries no role="tab" at all, but stay defensive).
+  return Array.from(tablist.querySelectorAll('[role="tab"]')).filter((t) => !t.disabled);
+}
+document.addEventListener("keydown", (e) => {
+  const tab = e.target.closest && e.target.closest('[role="tab"]');
+  if (!tab) return;
+  const tablist = tab.closest('[role="tablist"]');
+  if (!tablist) return;
+  const tabs = tablistTabs(tablist);
+  const i = tabs.indexOf(tab);
+  if (i === -1) return;
+  // Right/Left follow the visual direction (swapped under RTL, this app's
+  // only direction - checked via the dir attribute directly, since jsdom's
+  // getComputedStyle doesn't resolve an inherited `direction` the way a
+  // real browser does); Up/Down and Home/End are direction-agnostic.
+  const rtl = (tablist.closest("[dir]") || document.documentElement).dir === "rtl";
+  let next;
+  if (e.key === "ArrowRight") next = tabs[i + (rtl ? -1 : 1)];
+  else if (e.key === "ArrowLeft") next = tabs[i + (rtl ? 1 : -1)];
+  else if (e.key === "ArrowDown") next = tabs[i + 1];
+  else if (e.key === "ArrowUp") next = tabs[i - 1];
+  else if (e.key === "Home") next = tabs[0];
+  else if (e.key === "End") next = tabs[tabs.length - 1];
+  else return;
+  e.preventDefault();
+  if (!next || next === tab) return;
+  next.click();
+  // The click above may fully re-render the tablist's own container
+  // (bottomTabBar/communityFeedFilters do; the WOD subtabbar mutates its
+  // existing buttons in place) - re-find "the now-selected tab" inside the
+  // same container by id rather than trusting `next` is still the live
+  // node, then focus it. render()/rerender() here are synchronous, so the
+  // new markup already exists by the time this runs.
+  const container = tablist.id ? document.getElementById(tablist.id) : tablist;
+  const selected = container && container.querySelector('[role="tab"][aria-selected="true"]');
+  if (selected) selected.focus();
 });
 
 let navMenuOpen = false;
@@ -3956,6 +4066,7 @@ document.addEventListener("click", (e) => {
       const active = btn.dataset.subtab === wodSubTab;
       btn.classList.toggle("active", active);
       btn.setAttribute("aria-selected", String(active));
+      btn.setAttribute("tabindex", active ? "0" : "-1");
     });
     renderWodContent();
     // Same reasoning as the pill highlight above: the fixed bottom bar's

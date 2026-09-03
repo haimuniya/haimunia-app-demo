@@ -46,9 +46,16 @@ test("submitting the WOD builder with an empty name shows a real error and marks
   assert.equal(window.document.getElementById("wodBuilderName").getAttribute("aria-invalid"), "true");
 });
 
-test("the destructive clear-all-data trigger has its own red-bordered styling, not the plain footer link style", () => {
-  const src = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
-  assert.match(src, /data-action="ask-clear" style="color:var\(--red\); font-size:11px; font-weight:700; border:1px solid var\(--red\)/);
+test("the destructive clear-all-data trigger has its own red-bordered styling, not the plain footer link style", async () => {
+  // COMM-323 moved this from a hand-rolled inline style to the shared
+  // .chip-btn.danger modifier (COMM-346) - same visual weight requirement,
+  // now checked against the real rendered button instead of a source regex
+  // tied to the old inline-style implementation.
+  const window = await bootApp();
+  window.openSettings();
+  const btn = window.document.querySelector('[data-action="ask-clear"]');
+  assert.ok(btn, "the clear-all-data trigger must exist in Settings");
+  assert.ok(btn.classList.contains("danger"), "must carry the shared destructive-action modifier, not the plain footer link style");
 });
 
 test("clearing all data auto-downloads a backup first, same safety net import already gets", async () => {

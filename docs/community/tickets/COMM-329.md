@@ -52,12 +52,24 @@ both apps, including all of Community's community layer.
   fail) after these changes: no test asserted a tag name or `span`/`div`
   selector for any element touched here.
 
+## Shipped 2026-09-03 (closes the h1 gap below)
+
+- `renderCommunityApp()`'s main tabbed shell (feed/boards/directory/account/
+  coach) now opens with `renderTabHeader("community")`, the same shared
+  function the other 4 solo tabs already use — reads "קהילה" from the one
+  `getNavItems()` registry entry rather than inventing a second name (the
+  per-club name stays the club-strip card's own identity, not this screen's).
+  The pre-membership gate screens above it in the same function (login,
+  invite code, profile completion, recovery) are unchanged — they're
+  one-off setup cards, not "the Community tab" this gap was about.
+- Verified via the existing community test suite (feed-client, nav-exports)
+  booting `renderCommunityApp()` for real; no ReferenceError from calling an
+  app.js-defined function from cloud.js (cloud.js loads first in
+  `index.html`, but this call only executes on an actual render, well after
+  both scripts have run).
+
 ## Not done — remaining scope
 
-- The Community tab itself still has no top-level `<h1>` of its own (it
-  doesn't call `renderTabHeader()`) — someone needs to decide what that
-  title should be (club name? "קהילה"?) and where in `renderCommunityApp()`
-  it belongs.
 - Sub-section headings inside `cloud.js` that don't go through `sectionHead()`
   (e.g. modal/dialog titles, admin panel sub-headers) were not audited or
   converted — this pass covered the two highest-leverage shared functions,
