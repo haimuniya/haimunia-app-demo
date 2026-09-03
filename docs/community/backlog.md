@@ -2396,7 +2396,7 @@ Filed from `2026-09-02-design-sync-and-cross-repo-audit.md`, a 10-agent cross-re
 |---|---|---|---|---|
 | COMM-322 | Restore --shadow-sm design token | cross-cutting (UI/design) | P0 | done |
 | COMM-323 | Port Noam's card-based Settings screen redesign | cross-cutting (UI/design) | P0 | done |
-| COMM-324 | Port Noam's two-card WOD Builder layout with pinned footer | cross-cutting (UI/design) | P0 | todo |
+| COMM-324 | Port Noam's two-card WOD Builder layout with pinned footer | cross-cutting (UI/design) | P0 | done |
 | COMM-325 | Finish the .chip-btn.primary / .selected migration for filter and toggle chips | cross-cutting (UI/design) | P0 | done |
 | COMM-326 | Fix hardcoded dark popover background in post menu and mention picker | cross-cutting (UI/design) | P0 | done |
 | COMM-327 | Decide and align on one navigation pattern across both apps | cross-cutting (UI/design) | P0 | done |
@@ -2591,3 +2591,16 @@ destructive-button test used to regex-match the old inline style string;
 rewritten to render the real screen and assert the `.danger` class instead.
 `test/community-backup-sync.test.mjs`'s source-slice check of the threshold
 logic needed no change.
+
+**COMM-324 is done.** `crossfit-pwa-Noam` isn't checked out here either, but
+the ticket's own evidence named both card classes and the footer class,
+which was enough: `.wodbuild-card-details` (name/format/EMOM/time-cap) and
+`.wodbuild-card-moves` (search + movement list) replace the flat
+`.modal-list` layout; the "צור אימון" button moved out of the scrollable
+middle section into a new `.wodbuild-foot`, a sibling of `.modal-list`
+inside `.modal-sheet`'s flex column (the same structural trick
+`#bottomNavWrap` uses) so it stays reachable regardless of scroll position
+instead of sitting mid-form. Each `.format-chip` regained a one-line
+subtitle (זמן→"כמה מהר סיימתם", etc.) — `renderWodBuilderFormats()` only
+toggles classes on the existing buttons and never regenerates their
+markup, so this carried no regression risk to it.

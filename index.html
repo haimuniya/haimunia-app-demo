@@ -446,8 +446,22 @@
     :root:not([data-theme="light"]) input[type="date"]::-webkit-calendar-picker-indicator{ filter:invert(1) brightness(1.4); }
   }
   :root[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator{ filter:invert(1) brightness(1.4); }
-  .format-chip{ padding:10px 0; border-radius:12px; border:1px solid var(--border); background:var(--surface); font-weight:700; font-size:13px; color:var(--steel); text-align:center; flex:1; }
+  .format-chip{ padding:10px 6px; border-radius:12px; border:1px solid var(--border); background:var(--surface); font-weight:700; font-size:13px; color:var(--steel); text-align:center; flex:1; }
   .format-chip.active{ background:rgba(232,93,61,.15); border-color:var(--energy); color:var(--energy); }
+  /* COMM-324: a one-line description under each format's name (e.g. "זמן" /
+     "כמה מהר סיימתם") - lost somewhere along the way even though the chip
+     already had room for it. */
+  .format-chip-sub{ display:block; font-weight:600; font-size:9.5px; color:var(--steel); margin-top:2px; line-height:1.25; }
+  .format-chip.active .format-chip-sub{ color:var(--energy); opacity:.85; }
+  /* COMM-324: WOD Builder's two-card layout (details, then optional
+     movements) with the create button pinned to a footer instead of sitting
+     mid-form - Noam's own code comment says it fixed this exact placement
+     problem, which Community had regressed back into. .wodbuild-foot is a
+     sibling of .modal-list (not inside it), so .modal-sheet's flex column
+     keeps it visible under the scrollable content regardless of scroll
+     position, the same structural trick #bottomNavWrap already uses. */
+  .wodbuild-card-details, .wodbuild-card-moves{ background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:14px 16px; box-shadow:var(--shadow-card); margin-bottom:14px; }
+  .wodbuild-foot{ flex-shrink:0; padding:12px 16px calc(env(safe-area-inset-bottom,0px) + 16px); border-top:1px solid var(--border); background:var(--bg); }
   .movecheck-row{ width:100%; display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:11px 14px; margin-bottom:6px; text-align:right; }
   .movecheck-row.checked{ background:var(--surface2); border-color:var(--brass); }
   .movecheck-box{ width:18px; height:18px; border-radius:5px; border:1.5px solid var(--border); flex-shrink:0; display:flex; align-items:center; justify-content:center; }
@@ -831,30 +845,35 @@
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
       </button>
     </div>
-    <div class="modal-list" style="padding:0 16px calc(env(safe-area-inset-bottom, 0px) + 24px);">
-      <div style="color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; margin-bottom:6px;" id="wodBuilderNameLabel">שם</div>
-      <input id="wodBuilderName" class="text-input" dir="auto" maxlength="80" autocomplete="off" placeholder="לדוגמה: אימון יום שני" aria-labelledby="wodBuilderNameLabel" aria-describedby="wodBuilderNameHint" style="margin-bottom:6px;" />
-      <div id="wodBuilderNameHint" role="alert" style="color:var(--red); font-size:11px; margin-bottom:16px; display:none;"></div>
+    <div class="modal-list" style="padding:0 16px calc(env(safe-area-inset-bottom, 0px) + 16px);">
+      <div class="wodbuild-card-details">
+        <div style="color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; margin-bottom:6px;" id="wodBuilderNameLabel">שם</div>
+        <input id="wodBuilderName" class="text-input" dir="auto" maxlength="80" autocomplete="off" placeholder="לדוגמה: אימון יום שני" aria-labelledby="wodBuilderNameLabel" aria-describedby="wodBuilderNameHint" style="margin-bottom:6px;" />
+        <div id="wodBuilderNameHint" role="alert" style="color:var(--red); font-size:11px; margin-bottom:16px; display:none;"></div>
 
-      <div style="color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; margin-bottom:6px;" id="wodBuilderFormatLabel">פורמט</div>
-      <div class="flex" style="gap:8px; margin-bottom:4px;" id="wodBuilderFormats" role="radiogroup" aria-labelledby="wodBuilderFormatLabel" aria-describedby="wodBuilderFormatHint">
-        <button class="format-chip" data-action="builder-set-format" data-format="time" role="radio" aria-checked="false">זמן</button>
-        <button class="format-chip" data-action="builder-set-format" data-format="amrap" role="radio" aria-checked="false">AMRAP</button>
-        <button class="format-chip" data-action="builder-set-format" data-format="load" role="radio" aria-checked="false">משקל מקסימלי</button>
-        <button class="format-chip" data-action="builder-set-format" data-format="emom" role="radio" aria-checked="false">EMOM</button>
+        <div style="color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; margin-bottom:6px;" id="wodBuilderFormatLabel">פורמט</div>
+        <div class="flex" style="gap:8px; margin-bottom:4px;" id="wodBuilderFormats" role="radiogroup" aria-labelledby="wodBuilderFormatLabel" aria-describedby="wodBuilderFormatHint">
+          <button class="format-chip" data-action="builder-set-format" data-format="time" role="radio" aria-checked="false">זמן<span class="format-chip-sub">כמה מהר סיימתם</span></button>
+          <button class="format-chip" data-action="builder-set-format" data-format="amrap" role="radio" aria-checked="false">AMRAP<span class="format-chip-sub">כמה סיבובים הספקתם</span></button>
+          <button class="format-chip" data-action="builder-set-format" data-format="load" role="radio" aria-checked="false">משקל מקסימלי<span class="format-chip-sub">המשקל הכי כבד שהרמתם</span></button>
+          <button class="format-chip" data-action="builder-set-format" data-format="emom" role="radio" aria-checked="false">EMOM<span class="format-chip-sub">תרגיל חדש כל דקה</span></button>
+        </div>
+        <div id="wodBuilderFormatHint" role="alert" style="color:var(--steel); font-size:11px; margin-bottom:0;">חובה לבחור אחד</div>
+        <div id="wodBuilderEmomOptions"></div>
+        <div id="wodBuilderTimeCapOptions"></div>
       </div>
-      <div id="wodBuilderFormatHint" role="alert" style="color:var(--steel); font-size:11px; margin-bottom:16px;">חובה לבחור אחד</div>
-      <div id="wodBuilderEmomOptions"></div>
-      <div id="wodBuilderTimeCapOptions"></div>
 
-      <button data-action="create-wod" class="save-btn" style="max-width:none; margin-bottom:20px;">צור אימון</button>
-
-      <div id="wodBuilderMovesLabel" style="color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; margin-bottom:6px;">תרגילים (אופציונלי)</div>
-      <div class="search-box" style="margin:0 0 12px;">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8f97" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-        <input id="wodBuilderMoveSearch" dir="auto" maxlength="80" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="חיפוש תרגילים" aria-label="חיפוש תרגילים" />
+      <div class="wodbuild-card-moves">
+        <div id="wodBuilderMovesLabel" style="color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; margin-bottom:6px;">תרגילים (אופציונלי)</div>
+        <div class="search-box" style="margin:0 0 12px;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8f97" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <input id="wodBuilderMoveSearch" dir="auto" maxlength="80" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="חיפוש תרגילים" aria-label="חיפוש תרגילים" />
+        </div>
+        <div id="wodBuilderMovements"></div>
       </div>
-      <div id="wodBuilderMovements" style="margin-bottom:16px;"></div>
+    </div>
+    <div class="wodbuild-foot">
+      <button data-action="create-wod" class="save-btn" style="max-width:none;">צור אימון</button>
     </div>
   </div>
 </div>
