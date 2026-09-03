@@ -3565,6 +3565,15 @@ function openSettings() {
 function closeSettings() {
   if (!settingsOpen) return;
   settingsOpen = false;
+  // COMM-339: reset the armed "delete everything" confirm on close, not just
+  // on an explicit cancel/confirm inside clearAllData() - otherwise a user
+  // who backs out by closing the sheet sees it still armed on reopen, one
+  // tap from a wipe with no fresh warning. render() so #settingsBody (kept
+  // current on every render() regardless of open state, see renderSettingsBody())
+  // actually reflects the reset before the next open, the same reason
+  // ask-clear/cancel-clear call render() themselves.
+  confirmClear = false;
+  render();
   document.body.style.overflow = "";
   const overlay = document.getElementById("settingsOverlay");
   if (overlay) overlay.classList.remove("open");
