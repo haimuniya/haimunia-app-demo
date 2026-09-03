@@ -2407,7 +2407,7 @@ Filed from `2026-09-02-design-sync-and-cross-repo-audit.md`, a 10-agent cross-re
 | COMM-332 | Verify and fix migration-check / pgTAP CI status (COMM-020) | qa | P0 | done |
 | COMM-333 | Fix browser-check flakiness and stop run-all.mjs aborting on first failure | qa | P0 | done |
 | COMM-334 | Confirm CSP status of the real production repo (haimunia-app) and port CSP headers to it | unassigned (separate repo, outside this workspace) | P0 | done |
-| COMM-335 | Finish legal essentials in PRIVACY.md / TERMS.md and remove draft language | identity-privacy | P0 | todo |
+| COMM-335 | Finish legal essentials in PRIVACY.md / TERMS.md and remove draft language | identity-privacy | P0 | partial |
 | COMM-336 | Extend PRIVACY.md to disclose photos, comments, follows, and admin-visible data | identity-privacy | P0 | done |
 | COMM-337 | Move hosting off GitHub Pages (or add an edge layer) to enable clickjacking headers | platform | P1 | todo |
 | COMM-338 | Run the pgTAP suite in CI and add a multi-role live smoke test before deploy | qa | P1 | todo |
@@ -2471,3 +2471,33 @@ wrong, not verified. That comment is now corrected in place, and this demo's
 meta tag gained the `frame-ancestors 'none'` line production already had
 (inert in meta form on either app, real fix tracked separately as
 COMM-337).
+
+COMM-335 is `partial`: PRIVACY.md and TERMS.md were rewritten end to end
+into structurally complete policies — every section a launch-ready policy
+needs (operator identity, information collected, automatic-backup versus
+community-sharing scope, sharing and subprocessor disclosure, legal basis,
+retention, data-subject rights, children's privacy, security, international
+transfers, acceptable use, content license, moderation, disclaimers,
+termination) — in ordinary finished prose, with every "this is a draft" /
+"requires legal review" / unfinished-checklist line removed. What remains
+is not missing structure but missing facts nobody in this workspace can
+supply: the operator's legal name and registered address, a real contact
+email, the governing-law/jurisdiction, the hosting/data-processing region,
+the backup and log retention windows (beyond the already-fixed 30-day
+account-deletion window), and the minimum-age requirement. Each is marked
+inline with a bracketed placeholder (`[Operator legal name]`, `[Operator
+registered address]`, `[Contact email]`, `[Jurisdiction / governing law]`,
+`[Hosting region]`, `[Backup retention period, in days]`, `[Log retention
+period, in days]`, `[Minimum age requirement]`) at the exact point each
+fact belongs, so a founder/legal pass can find and fill every one without
+re-reading the whole document. Supabase and GitHub Pages are named as the
+actual subprocessors (real facts from `cloud.js`/the tickets, not
+placeholders); lawful-basis language uses a standard contract/consent/
+legitimate-interest/legal-obligation mapping since that follows from how
+the app already works, not from an unknown fact. COMM-336's disclosures
+(photos, comments, follows, and the admin-visible member directory plus the
+attendance admin-override) are preserved and folded into the rewrite, not
+dropped. This ticket cannot move to `done` until a founder or legal pass
+resolves the bracketed facts above — that sign-off, and updating the
+in-app links at `app.js:2844` to be considered launch-ready, is out of
+scope for this pass and tracked by this ticket's own acceptance criteria.
