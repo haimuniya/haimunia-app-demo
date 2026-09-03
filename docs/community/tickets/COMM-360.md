@@ -2,7 +2,7 @@
 
 Phase: Design sync & audit remediation (2026-09-02)
 Agent: unassigned (app.js core, outside the 15-agent community roster)
-Status: todo
+Status: done
 Priority: P1
 Attendance-blocked: no
 
@@ -16,10 +16,13 @@ just cosmetic.
 
 ## Acceptance criteria
 
-- [ ] `selectedId`/`selectedWodId` default to unset; the log/WOD screens show an
+- [x] `selectedId`/`selectedWodId` default to unset; the log/WOD screens show an
   explicit "pick a movement / pick a WOD" prompt before the save action is
-  enabled.
-- [ ] A fresh load and post-"clear all data" state never shows a pre-filled Back
+  enabled. `selectedId` stays a real id internally (ladder/superset logic
+  needs one) gated by a new `movementExplicitlyChosen` flag instead;
+  `selectedWodId` defaults to a real `null`. See `docs/community/backlog.md`'s
+  "Design sync & audit remediation" section for the full writeup.
+- [x] A fresh load and post-"clear all data" state never shows a pre-filled Back
   Squat/Fran selection.
 
 ## Location / evidence

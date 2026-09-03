@@ -2,7 +2,7 @@
 
 Phase: Design sync & audit remediation (2026-09-02)
 Agent: unassigned (app.js core, outside the 15-agent community roster)
-Status: todo
+Status: done
 Priority: P1
 Attendance-blocked: no
 
@@ -16,9 +16,14 @@ elements once those dialogs are migrated.
 
 ## Acceptance criteria
 
-- [ ] Tracked as a duplicate of COMM-328 — verify COMM-328's acceptance criteria
+- [x] Tracked as a duplicate of COMM-328 — verify COMM-328's acceptance criteria
   explicitly include the `[href]` -> `a[href]` selector narrowing before closing
-  both.
+  both. Verified: COMM-328's own acceptance criteria (done) lists it explicitly,
+  and `app.js`'s `appDialogFocusables()` reads `a[href]`, not a bare `[href]`.
+  All 8 dialogs are also confirmed registered on `APP_DIALOGS`. No code change
+  needed here, only verification - both facts are now pinned in
+  `test/design-sync-audit-app-core.test.mjs` so a future edit can't quietly
+  regress either.
 
 ## Location / evidence
 
