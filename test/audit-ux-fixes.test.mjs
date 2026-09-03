@@ -53,6 +53,12 @@ test("the destructive clear-all-data trigger has its own red-bordered styling, n
 
 test("clearing all data auto-downloads a backup first, same safety net import already gets", async () => {
   const window = await bootApp();
+  // COMM-360: saveSet() now refuses to save until a movement is explicitly
+  // chosen (nothing is pre-selected on a fresh load) - pick one first, same
+  // as a real user would via the picker.
+  window.document.getElementById("tabAddBtn").click();
+  window.document.querySelector('[data-action="open-picker"]').click();
+  window.document.querySelector('[data-action="pick-movement"]').click();
   await window.saveSet(); // logs one entry using the default weight/reps/sets
   let calledWith = null;
   window.downloadBackup = (payload) => { calledWith = payload; return true; };
