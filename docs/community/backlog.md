@@ -2489,10 +2489,10 @@ definer functions in this schema.
 
 | ID | Title | Agent | Status |
 |---|---|---|---|
-| COMM-376 | Invite and code management admin screen | admin-moderation | todo |
-| COMM-377 | Member roster screen | admin-moderation | todo |
-| COMM-378 | Onboarding step content editor | admin-moderation | todo |
-| COMM-379 | Registration funnel analytics screen | admin-moderation | todo |
+| COMM-376 | Invite and code management admin screen | admin-moderation | done |
+| COMM-377 | Member roster screen | admin-moderation | done |
+| COMM-378 | Onboarding step content editor | admin-moderation | done |
+| COMM-379 | Registration funnel analytics screen | admin-moderation | done |
 
 All four are client-only, no migration. COMM-378 (onboarding-content
 editing) is assigned here rather than to coach-tools: it is admin console
@@ -2506,6 +2506,122 @@ machinery rather than rebuilding it — the roster is a new browse entry
 point onto member management that already exists, not a second
 implementation of it. COMM-379 shares COMM-310's dashboard shell and
 period selector rather than adding a second one.
+
+**All four shipped 2026-09-04, client-only, against the fixed
+`admin_search_members` and the final Phase 4 signatures in
+`contracts.md`.** Three new client-side permission strings were added to
+`PERM` in `cloud.js` (`MEMBER_INVITE`, `INVITE_MANAGE_CODES`,
+`CONTENT_MANAGE_ONBOARDING`), gating both the nav/render entry point and
+nothing else — every actual write still goes through the RPC that holds
+the real boundary, matching COMM-150's rule that a client gate only hides
+a control the server would refuse anyway. `npm test` is green: 1015 tests
+across 60 community-\* files (44 new tests added across the four new
+files below), no regressions in any pre-existing suite.
+
+**COMM-376.** Two independent panels in one `renderInviteManagement()`
+section, each self-gating and returning `""` when its own permission is
+absent, so a coach who holds `community.member.invite` but not
+`community.invite.manage_codes` sees the per-person panel only — the
+outer section itself renders nothing only when *both* are absent. The
+shared-code create form offers **no role selector at all**: `p_role` is
+always sent as `"member"`, because `admin_invite_code_create` refuses a
+coach-role shared code unconditionally (COMM-371's own DEVIATION — not
+even an admin can create one), so there is nothing to disable, only
+something to never offer. The per-person create form's coach radio is
+rendered only for `isAdmin()`; a coach sees the member radio plus an
+inline note that a coach invite needs an admin, matching the
+`202609030008` narrowing exactly (`community.member.invite` alone is only
+sufficient for `p_role = 'member'`). Both create flows reveal their raw
+code exactly once, in a dismissible card, with a copy-to-clipboard action
+— the ticket's own acceptance criteria only asked for this on the
+per-person panel, but the same "neither list function returns a `code`
+key" fact from `contracts.md` applies identically to a shared code, so the
+shared-code form got the identical one-time reveal rather than leaving an
+admin with no way to ever read a freshly minted code back. Revoking a
+pending per-person invite goes through the module's standing
+`askConfirm()` destructive-action pattern; the server's `'already
+redeemed'` refusal surfaces as its own Hebrew sentence rather than the
+generic failure copy, per the ticket's own acceptance criterion.
+
+**COMM-377.** `renderMemberManagement()`'s row markup was split into a
+shared `memberManagementRowHtml(m, opts)` plus a `memberRoleButtonsHtml(m,
+readOnly)` helper, so the roster and the existing search screen call the
+exact same renderer — `opts.readOnly` disables (with a tooltip) the role
+buttons for a staff-but-not-admin viewer, and `opts.showRemove` hides the
+destructive remove-member control on a roster row, since neither the
+ticket's acceptance criteria nor product intent asked for a "remove a
+member" affordance on a plain browse view. Gate is `is_staff()`
+client-side, matching `admin_member_roster`'s own looser AUTH versus
+`admin_search_members`'/the role-change RPCs' `is_admin()`.
+
+**A real, flagged gap found while building COMM-377, worked around rather
+than papered over.** `admin_member_roster` sorts and paginates on
+`coalesce(invite_redemptions.redeemed_at, profiles.created_at)` but its
+`returns table(...)` never exposes that coalesced value or
+`profiles.created_at` — only `redeemed_at`. For a profile with no
+`invite_redemptions` row at all (mid-signup, or a pre-invite-gate legacy
+account), the value the RPC actually sorted and filtered on is invisible
+to the client, so there is no way to construct a correct `p_cursor` for
+the page after one ending in such a row. Resending a `null` cursor is not
+a fix: the function reads `p_cursor is null` as "no lower bound at all"
+and restarts from the very top, which would loop the same rows forever
+rather than advance. The shipped behaviour (`loadRoster()` in `cloud.js`)
+is to stop offering "load more" the moment a page's last row has
+`redeemed_at == null`, rather than resend a cursor that cannot possibly be
+correct — every row already fetched is real, correctly ordered, and never
+duplicated; the only cost is not reaching further into a club's legacy
+tail in one browsing session. A real fix is a small schema addition (a
+`sort_key timestamptz` column in the return, or exposing
+`profiles.created_at` directly) and is one line of migration plus a
+one-line client change once it ships — filed here rather than invented
+around, per this file's own "flag it, don't paper over it" rule.
+
+**COMM-378.** `cloud.js`'s five `renderOnboarding*Step()` functions now
+read `title`/`body` from `state.onboarding.stepContent` (loaded once for
+*every* signed-in member, not just staff, at boot alongside
+`loadOnboardingProgress()` — the table's read policy is `using (true)`,
+and every member's own onboarding card depends on it, not only the
+editor). Each falls back to today's exact hardcoded Hebrew string while
+the table has not loaded yet, which is byte-identical to COMM-373's own
+seed, so there is no flash on a slow load. `welcome`/`first_class`/
+`third_class` have no computed line at all — the table's `body` **is** the
+whole card. `first_week`/`first_month` prepend the table's `body` (empty
+on today's seed, so today's screens are pixel-identical to before) before
+their own untouched computed sentence (the active-challenge line, the
+sessions/PRs/achievements summary), never after, matching the "computed
+line appended after the editable lead" split `contracts.md` describes.
+The editor itself lists all five rows with the `field()`/`setFieldErrors()`
+pattern per row (`formId = "onboardingEdit_" + step`), and — because
+`contracts.md` documents that a refused `UPDATE` under this table's RLS
+`USING` clause never raises, only matches zero rows — every save re-reads
+the row and compares it against what was just sent before declaring
+success, surfacing "the save didn't go through" rather than a false
+positive. A save's own draft is seeded from the loaded row lazily, once,
+and only cleared on a verified successful save, so a failed save (network
+or the read-back mismatch) never discards what a staff member typed.
+
+**COMM-379.** Appended inside `renderAdminAnalyticsDashboard()`'s own
+populated branch, immediately after COMM-311's `renderMemberSegments()`,
+sharing the exact period selector and load cycle — `loadRegistrationFunnel()`
+fires from inside `loadAdminAnalyticsDashboard()` the instant its own
+`a.data` becomes truthy, unawaited, the same precedent COMM-311 set. The
+funnel renders as four ordered rows, each carrying its own count and (from
+the second row on) `registration_funnel()`'s own already-computed
+step-over-previous-step rate — `redeemed_rate`, `profile_completed_rate`
+and `verified_rate` are rendered verbatim, never re-derived, and a `null`
+rate (a genuine zero-denominator, e.g. no redemptions this period) renders
+through the module's existing em-dash convention rather than being
+omitted the way the funnel's own first row (which has no previous step to
+compare against, structurally) is. Shared-code activity and per-person
+invite counts render in two separate supporting cards, with a
+footer-note spelling out that `invites_issued` counts per-person invites
+only — so `redeemed` legitimately exceeding it, and a rate legitimately
+exceeding 100%, render as the honest (if unusual) numbers
+`registration_funnel()` returns, never clamped. Gate matches the RPC's own
+`community.analytics.view or is_admin()` pair exactly, deliberately
+narrower than COMM-377's `is_staff()` — a coach who can browse the roster
+is still refused here, asserted directly against the same seeded coach in
+the new test file.
 
 ### identity-privacy
 

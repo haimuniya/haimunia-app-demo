@@ -2,7 +2,7 @@
 
 Phase: 4
 Agent: admin-moderation
-Status: todo
+Status: done
 Attendance-blocked: no
 
 ## User outcome
