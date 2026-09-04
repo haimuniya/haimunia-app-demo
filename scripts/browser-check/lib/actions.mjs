@@ -65,32 +65,28 @@ export async function dismissCelebrationIfOpen(page) {
 
 // COMM-327 put the 4 main (offline training-log) tabs into a fixed bottom
 // tab bar (#tabAddBtn/#tabHistoryBtn/#tabCalendarBtn/#tabWodBtn, reachable
-// directly, no menu) and left only Community (#tabCommunityBtn) inside the
-// hamburger's full-page nav menu, since it needs a sub-nav of its own.
-// Before that change all 5 lived inside the nav menu (see git history) and
-// this helper always opened it first - now doing that for a main tab opens
-// a full-page overlay that sits on top of, and intercepts clicks on, the
-// bottom bar behind it. Only open the menu for "tabCommunityBtn"; for the
-// other 4, close it first if a caller left it open, then click directly.
-const MAIN_TAB_IDS = new Set(["tabAddBtn", "tabHistoryBtn", "tabCalendarBtn", "tabWodBtn"]);
+// directly, no menu) and left Community (#tabCommunityBtn) as the one item
+// still inside the hamburger's full-page nav menu. That's since been
+// revisited: Community is `main: true` too now (see app.js's getNavItems()
+// comment for why - it already has its own on-screen subtabbar, the same
+// thing WOD already proved works fine from the bottom bar), so all 5 ids
+// are reachable directly. This helper used to branch on which set a given
+// id belonged to; now every id takes the same path - close the nav menu
+// overlay first if a caller left it open (it would otherwise sit on top
+// of, and intercept clicks on, the bottom bar underneath), then click the
+// bottom-bar button directly. No id opens the menu to be reached any more.
 export async function switchTab(page, tabId) {
   const menuOpen = await page.evaluate(() => document.getElementById("navMenuOverlay")?.classList.contains("open"));
-  if (MAIN_TAB_IDS.has(tabId)) {
-    if (menuOpen) {
-      // The explicit close (X) button, not the bare [data-action='close-
-      // nav-menu'] selector - that also matches the overlay div itself
-      // (backdrop-click-to-close), whose bounding-box center sits under
-      // the full-height modal-sheet it contains, which would intercept
-      // the click the same way this fix is for.
-      await page.click("#navMenuOverlay button[data-action='close-nav-menu']");
-      await page.waitForFunction(() => !document.getElementById("navMenuOverlay")?.classList.contains("open"), { timeout: 5000 });
-    }
-    await page.click(`#${tabId}`);
-    return;
+  if (menuOpen) {
+    // The explicit close (X) button, not the bare [data-action='close-
+    // nav-menu'] selector - that also matches the overlay div itself
+    // (backdrop-click-to-close), whose bounding-box center sits under
+    // the full-height modal-sheet it contains, which would intercept
+    // the click the same way this fix is for.
+    await page.click("#navMenuOverlay button[data-action='close-nav-menu']");
+    await page.waitForFunction(() => !document.getElementById("navMenuOverlay")?.classList.contains("open"), { timeout: 5000 });
   }
-  if (!menuOpen) await page.click("[data-action='open-nav-menu']");
   await page.click(`#${tabId}`);
-  await page.waitForFunction(() => !document.getElementById("navMenuOverlay")?.classList.contains("open"), { timeout: 5000 });
 }
 
 // Settings (theme, text scale, backup, delete-all-data) moved off the

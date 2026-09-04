@@ -73,23 +73,35 @@ let tab = VALID_TABS.includes(urlTab) ? urlTab : "add";
 // ICONS, which isn't defined until much later in this file - a function
 // body doesn't run until called, well after the whole script has loaded,
 // so the forward reference is safe the same way fieldMax's is.
-// COMM-327. `main: true` marks the 4 offline training-log tabs, which get
-// their own always-visible bottom tab bar (renderBottomTabBar below) - a
-// deliberate mix of Noam's all-in-the-bottom-bar design and Community's
-// hamburger, not a full port of either: Community needs a full-page sub-nav
-// of its own once signed in, not a single tap target, so it (and only it)
-// stays in the hamburger menu (renderNavRows' onlyOther filter).
+// COMM-327 originally kept `main: true` to the 4 offline training-log tabs
+// only, leaving Community as the hamburger-only 5th item - reasoned as
+// "Community needs a full-page sub-nav of its own once signed in, not a
+// single tap target." Revisited: that reasoning doesn't actually hold once
+// you notice the WOD tab already carries its own sub-nav (Log/History/
+// Benchmarks) while living in the bottom bar - "has sub-screens" was never
+// really disqualifying. Community is now `main: true` too, exactly the
+// same footing as WOD: one tap from anywhere, its own on-screen subtabbar
+// (cloud.js's `.subtabbar`, `setCommunityTab`) handles Feed/Boards/Coach/
+// Account navigation once you're on the tab, same as WOD's own subtabbar
+// handles Log/History/Benchmarks. `.tabbtn{flex:1}` (index.html) has no
+// hardcoded child count, so a 5th icon costs each ~20% width, nothing more.
+// The mobile hamburger's Community row and its `.subnav` preview
+// (renderNavRows' onlyOther branch below) naturally stop appearing there
+// once this flips - onlyOther now returns nothing to show, and the on-
+// screen subtabbar is real Community navigation now, not a fallback for a
+// preview that's gone. The desktop sidebar (onlyOther=false) is unaffected,
+// since it already showed every item including the preview regardless.
 function getNavItems() {
   return [
     { id: "add", tab: "add", rowId: "tabAddBtn", label: "רישום", tint: "energy", icon: ICONS.logIcon, main: true },
     { id: "history", tab: "history", rowId: "tabHistoryBtn", label: "התקדמות", tint: "blue", icon: ICONS.chartIcon, main: true },
     { id: "calendar", tab: "calendar", rowId: "tabCalendarBtn", label: "לוח שנה", tint: "yellow", icon: ICONS.calendarIcon, main: true },
     { id: "wod", tab: "wod", rowId: "tabWodBtn", label: "אימונים", tint: "purple", icon: ICONS.stopwatchIcon, main: true },
-    { id: "community", tab: "community", rowId: "tabCommunityBtn", label: "קהילה", tint: "teal", icon: ICONS.communityIcon, main: false },
+    { id: "community", tab: "community", rowId: "tabCommunityBtn", label: "קהילה", tint: "teal", icon: ICONS.communityIcon, main: true },
   ];
 }
 // The fixed bottom tab bar (#bottomTabBar, index.html) - one tap to any of
-// the 4 main tabs. Bare icon + label, matching Noam's .tabbtn treatment,
+// the 5 main tabs. Bare icon + label, matching Noam's .tabbtn treatment,
 // not the icon-chip/list-row look renderNavRows below uses for the
 // hamburger menu and desktop sidebar. Regenerated on every render() call,
 // same "always regenerated, just glued into a fixed container" treatment
@@ -130,11 +142,15 @@ function renderNavWho() {
 // comment inline below); the desktop copy renders withIds=false so the two
 // surfaces never produce duplicate DOM ids, using data-tab alone for the
 // click delegator, which already reads it independent of id. onlyOther
-// (COMM-327) restricts the list to the non-main items (Community) - the
-// mobile hamburger menu uses this now that the 4 main tabs live in the
-// fixed bottom tab bar instead (renderBottomTabBar), so their ids aren't
-// duplicated between the two; the desktop sidebar still passes false and
-// shows every item, since it has no separate bottom bar to split against.
+// restricts the list to the non-main items - the mobile hamburger menu
+// uses this now that all 5 tabs live in the fixed bottom tab bar instead
+// (renderBottomTabBar), so their ids aren't duplicated between the two;
+// now that Community is `main: true` too, onlyOther's list on mobile is
+// empty and the Community `.subnav` preview branch below never fires
+// there - it's real dead weight on that path, kept only because the
+// desktop sidebar still passes onlyOther=false and shows every item
+// (including the preview) regardless, since it has no bottom bar to split
+// against.
 function renderNavRows(withIds, onlyOther) {
   const communitySignedIn = typeof window.isCommunitySignedIn === "function" && window.isCommunitySignedIn();
   const items = onlyOther ? getNavItems().filter((item) => !item.main) : getNavItems();

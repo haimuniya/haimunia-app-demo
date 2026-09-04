@@ -3794,3 +3794,56 @@ source-text assertions that named a path or a helper this refactor moved
 sign-out reset assignments were adjacent lines, now rewritten to assert both
 run in the same block, which is what it actually cared about). No test's
 subject changed.
+
+## Community promoted to the bottom tab bar (2026-09-04)
+
+Direct product-owner decision, not filed as a ticket. COMM-327 (2026-09-02)
+put the 4 offline training-log tabs into a fixed bottom tab bar and left
+Community as the one item still inside the hamburger nav menu, reasoned as
+"Community needs a full-page sub-nav of its own once signed in, not a
+single tap target." Revisited and reversed: that reasoning doesn't actually
+hold once you notice WOD already carries its own sub-nav (Log/History/
+Benchmarks) while living in the bottom bar - "has sub-screens" was never
+really disqualifying on its own.
+
+`getNavItems()`'s `community` entry (`app.js`) is now `main: true`, same
+footing as the other 4. `.tabbtn{flex:1}` (index.html) has no hardcoded
+child count, so the change cost each icon ~20% width and nothing else in
+CSS. Community's own on-screen subtabbar (`cloud.js`'s `.subtabbar`,
+`setCommunityTab`) was already real, self-contained navigation - it never
+depended on the hamburger's `.subnav` preview to be reachable, so nothing
+about *how* Community itself is browsed changed, only how you first get to
+it. The mobile hamburger's `onlyOther` list (app.js's `renderNavRows`) is
+now empty, so the menu shows just the account card and Settings; the
+desktop sidebar (`onlyOther=false`) is unaffected, since it always showed
+every item regardless of the `main` split.
+
+New coverage: `test/nav-community-bottom-tab.test.mjs` (3 tests) pins the
+new bottom-bar button, the single-id guarantee (no duplicate `#tabCommunityBtn`
+between the bottom bar and a now-empty hamburger list), and that the
+desktop sidebar is untouched. `test/tablist-keyboard.test.mjs` needed no
+changes at all - its Home/End test already computed "the last tab" from a
+live query rather than hardcoding which one that was, so it silently
+started asserting against Community instead of WOD and kept passing,
+exactly as a well-written test should.
+
+**Real regression found and fixed via browser-check, not the node suite**:
+`scripts/browser-check/lib/actions.mjs`'s `switchTab()` helper hardcoded a
+`MAIN_TAB_IDS` set that still routed `tabCommunityBtn` through "open the
+hamburger menu first, click inside it, wait for the menu to close" -
+correct before this change, actively wrong after it, since that id now
+lives in the always-visible bottom bar. Opening the menu on top of it and
+then clicking `#tabCommunityBtn` clicked an element now sitting underneath
+a full-page overlay, and the subsequent wait-for-menu-to-close never
+resolved. This is exactly the class of bug jsdom's node tests cannot catch
+(no real hit-testing, no obscured-element detection) - every one of the 11
+Community browser-check scenarios plus `boot-smoke.mjs` failed on a clean
+run, while all 1036 node tests stayed green throughout. Fixed by collapsing
+`switchTab()` to one path for every id (close the menu if a caller left it
+open, then click directly) - now that all 5 ids are reachable the same
+way, the old branch had nothing left to distinguish. `run-all.mjs`: 28/28
+after the fix, 17 failing before it.
+
+Verified: `npm test` 1035/1036 (1 pre-existing skip, 0 fail, clean run with
+no flaky timeouts this pass), `run-all.mjs` 28/28. No schema change, no
+migration - this is client-only.
