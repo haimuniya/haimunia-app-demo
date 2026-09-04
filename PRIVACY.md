@@ -1,6 +1,6 @@
 # Privacy Policy
 
-*Last updated: 2026-09-03*
+*Last updated: 2026-09-04*
 
 This policy explains what information the app collects, why, how it is
 shared, and what control you have over it. It covers both the private
@@ -8,13 +8,21 @@ training log (your workouts, saved on your device and backed up to the
 cloud) and the optional community features (a public-to-the-club profile,
 posts, comments, follows, and leaderboards).
 
-## Who operates this service
+## Who runs this
 
-The service is operated by [Operator legal name] ([Operator registered address]).
-For any privacy question, request, or complaint, contact [Contact email].
-This policy is governed by the laws of [Jurisdiction / governing law], and
-that jurisdiction's courts and regulators have authority over disputes
-arising from it.
+There is no separate company behind this app. It is run directly by the
+club's own coaching team for their own members — there is no registered
+legal entity, business address, or compliance department, and this policy
+does not claim that any particular country's law or courts govern it.
+Wherever this policy says "we" or "the operator," it means the coaching
+team who runs the app and the club. If a disagreement ever came up, it
+would be worked out directly between you and the coaching team, the same
+way any other question about the club would be.
+
+For any privacy question, request, or complaint, contact your coach
+directly — the same way you'd reach them about anything else related to
+the club. There is no separate support email; the coaching team is the
+whole of "support" for this app.
 
 ## Information we collect
 
@@ -83,7 +91,7 @@ only hidden in the app's screens.
   policy set by admins can also make attendance visible to admins even when
   a member's own attendance toggle is off; it does not override any other
   privacy toggle.
-- **We (the operator)** and our subprocessors below can access data as
+- **We (the coaching team)** and our subprocessors below can access data as
   needed to run, secure, and support the service. We do not sell personal
   information, and we do not share it with third parties for their own
   marketing purposes.
@@ -95,53 +103,56 @@ bound by their own data-processing terms:
 
 - **Supabase** provides our database, authentication, and file storage
   (including uploaded post photos). Account, training-log, and community
-  data described in this policy is stored and processed there.
+  data described in this policy is stored and processed there, in
+  Supabase's `ap-southeast-1` (Singapore) hosting region.
 - **GitHub Pages** serves the app's static files (the code that runs in
   your browser). It does not receive your account or training-log data;
   that traffic goes directly to Supabase.
 
-Data processed through these providers may be stored in [Hosting region].
-
 ## Legal basis for processing
 
-Where a legal basis is required, we rely on: performance of a contract (to
-create your account and provide the training log and community features you
-sign up for), your consent (for optional features such as joining the
-community, sharing a post, or enabling automatic backup), our legitimate
-interest (to secure the service, prevent abuse, and enforce invite and rate
-limits), and legal obligation where applicable law requires us to retain or
-disclose specific records.
+Where a legal basis would matter, we think about our handling of your data
+this way: performance of a contract (to create your account and provide the
+training log and community features you sign up for), your consent (for
+optional features such as joining the community, sharing a post, or
+enabling automatic backup), our legitimate interest (to secure the service,
+prevent abuse, and enforce invite and rate limits), and legal obligation
+where applicable law requires specific records to be retained or disclosed.
+This mirrors how the app already works rather than resting on any claimed
+jurisdiction.
 
 ## Data retention
 
 Your training-log data is kept for as long as your account is active. If
 you request deletion, your profile and posts are hidden immediately and the
-account and its content are permanently deleted after 30 days. Backup
-copies created by our infrastructure provider's own backup rotation may
-persist for up to [Backup retention period, in days] additional days before
-being purged. Technical and security logs are retained for
-[Log retention period, in days] days and then deleted.
+account and its content are permanently deleted after 30 days. Beyond that
+30-day window, infrastructure-level backups and technical/security logs
+follow our hosting provider's own standard backup-rotation and log-retention
+windows — we don't separately extend those windows or track them by an
+exact day count, and they are not used for anything beyond restoring
+service or investigating abuse before they age out.
 
 ## Your rights
 
-Subject to the laws of [Jurisdiction / governing law], you have the right
-to access the personal data we hold about you, correct it, request its
-deletion, receive a copy of it in a portable format, object to or restrict
-certain processing, and withdraw consent for anything based on consent
-(such as community sharing or automatic backup) without affecting anything
-already processed. In the app, you can export your local data, turn off
-automatic backup, adjust every privacy toggle listed above, block other
-members, report content, and request full account deletion at any time. To
-exercise a right that isn't available directly in the app, contact
-[Contact email]. You also have the right to lodge a complaint with your
-local data protection authority.
+Even without a specific law requiring it, you have the right to access the
+personal data we hold about you, correct it, request its deletion, receive
+a copy of it in a portable format, object to or restrict certain
+processing, and withdraw consent for anything based on consent (such as
+community sharing or automatic backup) without affecting anything already
+processed. In the app, you can export your local data, turn off automatic
+backup, adjust every privacy toggle listed above, block other members,
+report content, and request full account deletion at any time. To exercise
+a right that isn't available directly in the app, contact your coach
+directly. If a data protection authority is relevant where you live, you
+can also raise concerns with them.
 
 ## Children's privacy
 
-This service is not directed at children under [Minimum age requirement],
-and we do not knowingly collect personal information from anyone under
-that age. If you believe a child has created an account, contact
-[Contact email] and we will remove it.
+This service is not directed at children under 13, and we do not knowingly
+collect personal information from anyone under that age. 13 is a general
+baseline we chose as a reasonable policy, not a number required by a
+specific law that applies to this app. If you believe a child has created
+an account, contact your coach directly and we will remove it.
 
 ## Security
 
@@ -154,9 +165,10 @@ absolute security.
 
 ## International transfers
 
-If you access the service from outside [Hosting region], your information
-will be transferred to and processed in [Hosting region]. By using the
-service you consent to that transfer.
+Regardless of where you access the service from, your information is
+processed by Supabase in its `ap-southeast-1` (Singapore) hosting region.
+By using the service you understand that your information will be
+transferred there for processing.
 
 ## Changes to this policy
 
@@ -166,5 +178,5 @@ required, an in-app notice.
 
 ## Contact
 
-Questions, requests, or complaints about this policy can be sent to
-[Contact email].
+Questions, requests, or complaints about this policy can be sent to your
+coach directly — see "Who runs this" above.

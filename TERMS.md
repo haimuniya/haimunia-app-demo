@@ -1,18 +1,20 @@
 # Terms of Service
 
-*Last updated: 2026-09-03*
+*Last updated: 2026-09-04*
 
 These terms govern your use of the app's training log and community
-features, operated by [Operator legal name]. By creating an account or
-using the app, you agree to these terms. If you do not agree, do not use
-the service.
+features. There is no separate company behind this app — it is run
+directly by the club's own coaching team for their own members, and
+wherever these terms say "we" or "the operator," that's who is meant. By
+creating an account or using the app, you agree to these terms. If you do
+not agree, do not use the service.
 
 ## Eligibility
 
-You must be old enough to consent to these terms under the laws that apply
-to you, and in any case at least [Minimum age requirement]. By using the
-service you confirm that you meet this requirement. This service is
-governed by the laws of [Jurisdiction / governing law].
+You must be old enough to responsibly agree to these terms, and in any
+case at least 13 — a general baseline we chose as a reasonable default,
+not a number required by a specific law that applies to this app. By using
+the service you confirm that you meet this requirement.
 
 ## Accounts
 
@@ -47,7 +49,7 @@ You agree not to:
 
 You retain ownership of the training-log and community content you create.
 By publishing a post, comment, photo, or profile field to an audience wider
-than yourself, you grant the operator a license to store, display, and
+than yourself, you grant the coaching team a license to store, display, and
 distribute that content to the audience you selected, for as long as it
 remains published or until you remove it or delete your account. You are
 responsible for content you publish and confirm you have the right to post
@@ -73,10 +75,10 @@ own judgment about your physical limits.
 ## Disclaimers and limitation of liability
 
 The service is provided "as is" without warranties of any kind, to the
-fullest extent permitted by [Jurisdiction / governing law]. We are not
-liable for indirect, incidental, or consequential damages arising from your
-use of the service, or for injury resulting from exercises or workouts you
-choose to perform, to the fullest extent permitted by law.
+fullest extent permitted by applicable law. We are not liable for indirect,
+incidental, or consequential damages arising from your use of the service,
+or for injury resulting from exercises or workouts you choose to perform,
+to the fullest extent permitted by law.
 
 ## Termination
 
@@ -84,7 +86,7 @@ You may stop using the service and request account deletion at any time,
 as described in the Privacy Policy. We may suspend or terminate an account
 that violates these terms. Sections of these terms that by their nature
 should survive termination (ownership, disclaimers, limitation of
-liability, governing law) continue to apply after your account is closed.
+liability) continue to apply after your account is closed.
 
 ## Changes to these terms
 
@@ -95,4 +97,5 @@ takes effect means you accept the updated terms.
 
 ## Contact
 
-Questions about these terms can be sent to [Contact email].
+Questions about these terms can be sent to your coach directly — there is
+no separate company or support email behind this app.

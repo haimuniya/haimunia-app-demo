@@ -2984,7 +2984,7 @@ function renderSettingsBody() {
 
       <div class="settings-block">
         <div class="settings-block-title">משפטי</div>
-        <div class="flex items-center justify-center gap-8"><a class="link-btn" href="./PRIVACY.md" target="_blank" rel="noopener">פרטיות</a><span aria-hidden="true">·</span><a class="link-btn" href="./TERMS.md" target="_blank" rel="noopener">כללי קהילה</a></div>
+        <div class="flex items-center justify-center gap-8"><a class="link-btn" href="./privacy.html" target="_blank" rel="noopener">פרטיות</a><span aria-hidden="true">·</span><a class="link-btn" href="./terms.html" target="_blank" rel="noopener">כללי קהילה</a></div>
       </div>
 
       <div class="settings-block">
