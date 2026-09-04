@@ -4977,7 +4977,7 @@
     return `<div class="log-list">${entries.map(([k, v]) => adminAnalyticsRow(k, adminAnalyticsCount(v))).join("")}</div>`;
   }
   function adminAnalyticsCard(title, bodyHtml) {
-    return `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:6px;">${esc(title)}</div>${bodyHtml}</div>`;
+    return `<div class="chart-card" style="margin-bottom:10px;"><h3 class="field-label" style="margin-bottom:6px;">${esc(title)}</h3>${bodyHtml}</div>`;
   }
   // ---- Core metrics (metrics.md "## Core metrics", 5) --------------------
   function renderAdminAnalyticsWcam(core) {
