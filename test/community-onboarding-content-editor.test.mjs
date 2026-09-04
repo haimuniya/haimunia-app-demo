@@ -49,7 +49,13 @@ async function openFeed(window) {
 
 // ---- gating --------------------------------------------------------------
 
-test("a coach without community.content.manage_onboarding never sees the editor entry point", async () => {
+// COMM-381 QA sweep: this test's own title used to say "a coach without
+// community.content.manage_onboarding", but the fixture role is "member" -
+// community.content.manage_onboarding is seeded to every coach-and-above
+// tier (202609030004), so there is no such thing as an actual coach who
+// lacks it. Retitled to describe what the fixture really is; behaviour and
+// assertion are unchanged.
+test("a plain member never sees the editor entry point", async () => {
   const mock = seeded({ onboarding_step_content: [] }, "member");
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openAccountTab(window);

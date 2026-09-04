@@ -2,7 +2,7 @@
 
 Phase: 4
 Agent: schema
-Status: review — schema shipped (see docs/community/backlog.md Phase 4 section and contracts.md for final signatures)
+Status: done — schema shipped and verified (see docs/community/backlog.md Phase 4 section and contracts.md for final signatures; COMM-381 confirmed pgTAP 0057 covers every acceptance criterion, including redemption_count vs use_count)
 Attendance-blocked: no
 
 `public.invite_codes` (202608270003) has existed since before Phase 0 with

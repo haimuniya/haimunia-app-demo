@@ -2,7 +2,7 @@
 
 Phase: 4
 Agent: schema
-Status: review — schema shipped (see docs/community/backlog.md Phase 4 section and contracts.md for final signatures)
+Status: done — schema shipped and verified (see docs/community/backlog.md Phase 4 section and contracts.md for final signatures; COMM-381 confirmed pgTAP 0058 covers the anti-enumeration property and the single-use UPDATE ... RETURNING claim, and re-verified the same lifecycle end to end in scripts/browser-check/community-person-invite-lifecycle.mjs)
 Attendance-blocked: no
 
 `redeem_invite_code` currently only ever looks at `invite_codes`, the

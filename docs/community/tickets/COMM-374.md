@@ -2,7 +2,7 @@
 
 Phase: 4
 Agent: schema
-Status: review — schema shipped (see docs/community/backlog.md Phase 4 section and contracts.md for final signatures)
+Status: done — schema shipped and verified (see docs/community/backlog.md Phase 4 section and contracts.md for final signatures; COMM-381 confirmed pgTAP 0060 asserts the byte-identical result type against admin_search_members and 0062 covers the pre-existing admin_search_members ambiguity bug this ticket surfaced and fixed)
 Attendance-blocked: no
 
 `admin_search_members(p_query text)` (202608270011, widened in

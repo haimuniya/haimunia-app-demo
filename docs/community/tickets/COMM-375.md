@@ -2,7 +2,7 @@
 
 Phase: 4
 Agent: schema
-Status: review — schema shipped (see docs/community/backlog.md Phase 4 section and contracts.md for final signatures)
+Status: done — schema shipped and verified (see docs/community/backlog.md Phase 4 section and contracts.md for final signatures; COMM-381 confirmed pgTAP 0061 covers the permission gate, period validation and the no-uuid-anywhere aggregate-only shape)
 Attendance-blocked: no
 
 Reads across the tables this whole ticket cluster touches

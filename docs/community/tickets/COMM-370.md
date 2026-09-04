@@ -2,7 +2,7 @@
 
 Phase: 4
 Agent: schema
-Status: review — schema shipped (see docs/community/backlog.md Phase 4 section and contracts.md for final signatures)
+Status: done — schema shipped and verified (see docs/community/backlog.md Phase 4 section and contracts.md for final signatures; COMM-381 confirmed pgTAP 0056 covers every acceptance criterion, including the 202609030008 coach-role narrowing)
 Attendance-blocked: no
 
 Today `public.invite_codes` is a single shared code per role (`member`/

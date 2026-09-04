@@ -39,6 +39,11 @@ their own sections below); Phase 4, Registration & invite management, is
 now also filed, from a direct product-owner ask rather than a spec
 section. See "## Phase 4 tickets, Registration & invite management" below.
 
+Note (2026-09-04): Phase 4 is closed out — COMM-381's QA sweep confirmed
+every Phase 4 ticket done and all three CI jobs green from a fresh state.
+See "## Phase 4 tickets, Registration & invite management" below, COMM-381's
+own summary paragraph, for what it found and fixed.
+
 ## Phase 0 tickets
 
 | ID | Title | Agent | Status |
@@ -2299,15 +2304,20 @@ COMM-191/234/317/338 played for every earlier phase.
 
 | ID | Title | Agent | Status |
 |---|---|---|---|
-| COMM-370 | Per-person invite table and admin create/list/revoke RPCs | schema | review |
-| COMM-371 | Shared invite-code admin RPCs | schema | review |
-| COMM-372 | redeem_invite_code accepts a per-person invite | schema | review |
-| COMM-373 | Editable onboarding step content | schema | review |
-| COMM-374 | Paginated member roster RPC | schema | review |
-| COMM-375 | Registration funnel analytics RPC | schema | review |
+| COMM-370 | Per-person invite table and admin create/list/revoke RPCs | schema | done |
+| COMM-371 | Shared invite-code admin RPCs | schema | done |
+| COMM-372 | redeem_invite_code accepts a per-person invite | schema | done |
+| COMM-373 | Editable onboarding step content | schema | done |
+| COMM-374 | Paginated member roster RPC | schema | done |
+| COMM-375 | Registration funnel analytics RPC | schema | done |
 
-**All six are in review, and the five client tickets they gate are
-unblocked.** Built 2026-09-03 as migrations 202609030001 through
+**All six were sitting at `review` through the rest of this phase's build
+and are promoted to `done` here** — a bookkeeping gap COMM-381 found and
+closed, the same shape COMM-234 found for the Phase 2 challenges cluster:
+the pgTAP was real and passing throughout, the status column had simply
+never been bumped past the pre-client-build checkpoint. The five client
+tickets they gate were correctly unblocked the whole time. Built 2026-09-03
+as migrations 202609030001 through
 202609030006, with pgTAP 0056 through 0061. `supabase db reset` applies
 every migration clean and `supabase test db` passes 63 files / 2274
 assertions locally, with no regression in any of the 55 pre-existing
@@ -2671,9 +2681,160 @@ protect.
 
 | ID | Title | Agent | Status |
 |---|---|---|---|
-| COMM-381 | Phase 4 QA sweep and merge gate | qa | todo |
+| COMM-381 | Phase 4 QA sweep and merge gate | qa | done — see summary below |
 
 Last, depends on every other Phase 4 ticket.
+
+**COMM-381, the Phase 4 QA sweep and merge gate, DONE.** Cross-referenced
+every Phase 4 ticket's (COMM-370 through COMM-380) acceptance criteria
+against the real `cloud.js`/migration/RLS code, not just this file's own
+prose, and re-verified all three CI jobs independently from a genuinely
+fresh state, the same discipline COMM-234/317 held for Phase 2/3.
+
+**Full test suite, re-run fresh, not trusted from any earlier agent's own
+report.** `npx supabase db reset` applies all 84 migrations clean;
+`npx supabase test db` (real Docker Postgres, not mocked): 63 files / 2276
+assertions, all pass. `npm test`: 1022 tests, 1021 pass / 1 skipped / 0
+failed on a clean run. One run under load hit a single `waitFor timed out`
+failure in `test/community-moderation.test.mjs` ("the report sheet lists
+the six reasons..."); re-run in isolation it passed cleanly in under a
+second — the same confirmed-flaky-infra-not-a-regression class this file's
+own notes describe for earlier sweeps, verified rather than assumed here.
+`scripts/browser-check/run-all.mjs`: 28/28 green, up from 27 (see below).
+
+**The one real gap this sweep found and closed itself, per the ticket's own
+acceptance criterion #3: no end-to-end browser check of the full per-person
+invite lifecycle existed.** COMM-381's own acceptance criteria explicitly
+ask for "an admin generates one, a new signup redeems it, the admin sees it
+flip to redeemed with the right identity attached, and a second redemption
+attempt on the same code is refused" via real Chromium — nothing in
+`scripts/browser-check/` covered it. Added
+`scripts/browser-check/community-person-invite-lifecycle.mjs`, following
+COMM-317's own `community-monthly-recap-publish.mjs` precedent for a
+multi-actor scenario, but in ONE Chromium page rather than two separate
+browser launches, because the two actors here need to share the same raw
+code and the same underlying invite row across an identity switch — real
+sign-out, a real fresh anonymous signup, a real credentials upgrade, and a
+real sign-back-in with a password, exactly the sequence a real device would
+drive. `test/helpers/mockSupabase.mjs`'s built-in `redeem_invite_code` knows
+nothing about `public.invites` (it always answers `"member"`), so this
+script registers its own small, faithful in-page stand-in for
+`admin_invite_create`/`admin_invite_list`/`redeem_invite_code`'s per-person
+branch, sharing one `invites` array across every step — the real Postgres
+functions are already proven exhaustively by pgTAP 0056/0058; this proves
+the CLIENT'S OWN continuity, which nothing else did. Building it surfaced a
+genuine ordering fact about `renderCommunityApp()` this sweep had assumed
+wrong on a first draft: right after a per-person code redemption the
+session is still anonymous, so the render shows the `#communityCredentials`
+(username/password) screen *before* `#communityProfile`, not after — a
+draft that skipped it hung waiting on the wrong element forever. Also
+surfaced, and worth any future browser-check author knowing:
+`ensureCommunityDataLoaded()`'s own comment already documents that
+`loadFeed()`'s success calls `setMessage("")`, racing `saveProfile()`'s own
+success message on the exact same field — "whichever finished last silently
+won" — so this script asserts on `.subtabbar` appearing (a non-racy signal
+that every gate has passed) rather than on the "הפרופיל נשמר" toast text,
+which a real Chromium run can and did lose to that documented race.
+
+**A bookkeeping gap, the same shape COMM-234 found in Phase 2.** All six
+schema tickets (COMM-370 through COMM-375) had been sitting at `review`
+since 2026-09-03, even though the backlog's own schema section already said
+"Built ... `supabase db reset` applies every migration clean and
+`supabase test db` passes 63 files / 2274 assertions" — the tests were real
+and passing the whole time, the status column had simply never been bumped
+past the pre-client-build checkpoint once the five client tickets landed on
+top of them. Promoted all six to `done` here, in the schema table above and
+in each ticket's own file.
+
+**A second, much smaller cosmetic-but-real gap, fixed:** a test title in
+`test/community-onboarding-content-editor.test.mjs` read "a coach without
+community.content.manage_onboarding never sees the editor entry point," but
+its own fixture role was `"member"`, not `"coach"` — and
+`community.content.manage_onboarding` is seeded coach-and-above
+(202609030004), so there is no such thing as an actual coach who lacks it.
+The assertion was always correct (a plain member sees nothing); only the
+title claimed to test a case that cannot exist. Retitled to "a plain member
+never sees the editor entry point"; no behavior change.
+
+**Permission gating, the phase's own stated focus, re-verified per screen
+rather than assumed from the tickets' own reports.** Each of the four
+admin-moderation screens already carries a real, executing test proving a
+plain member gets neither the UI entry point nor a fired RPC, matching the
+exact server rule: invite management (`test/community-invite-code-
+management.test.mjs`, split two ways — `community.member.invite` coach-and-
+up for the per-person panel, `community.invite.manage_codes` admin/owner-
+only for the shared-code panel, and the 202609030008 coach-role-invite-
+requires-admin narrowing asserted with its own dedicated radio-visibility
+test), member roster (`test/community-member-roster.test.mjs`, `is_staff()`
+— deliberately looser than `admin_search_members`'/the role-change RPCs'
+`is_admin()`), onboarding editor (`test/community-onboarding-content-
+editor.test.mjs`, `community.content.manage_onboarding` or `is_admin()`),
+and registration funnel (`test/community-registration-funnel.test.mjs`,
+`community.analytics.view` or `is_admin()` — explicitly narrower than
+`is_staff()`, asserted against the same coach fixture that CAN see the
+roster). Every RPC-side boundary these client tests assume is separately
+proven at the real-Postgres level by pgTAP 0056/0057/0059/0060/0061, not
+merely mirrored in a mock.
+
+**Worth a separate look, flagged rather than fixed here, matching this
+file's "flag it, don't invent around it" rule.** `cloud.js`'s `isAdmin()`
+helper reads the raw `profiles.is_admin` boolean; the server's
+`public.is_admin()` (202608280001) is `role_rank(my_role_code()) >= 50`,
+and `my_role_code()`'s own comment says it resolves "the highest-ranked of
+the redeemed role and the legacy `is_admin` flag" — so a real `owner` or
+`admin` account reached via an `invite_redemptions.role` value rather than
+the flag would pass every server `is_admin()` gate (including COMM-370's
+coach-role-invite narrowing and COMM-371's shared-code creation) while
+`cloud.js`'s `isAdmin()` would still read `false` for them, hiding controls
+a real owner is actually allowed to use — the same "client gate doesn't
+quite match its own RPC" shape COMM-374 found and fixed in
+`admin_search_members`. Not fixed here, for two reasons: it is not
+reachable through anything Phase 4 (or, so far as this sweep found,
+anything else client-side) ever writes — `GRANTABLE_ROLES` caps a
+client-driven role grant at `head_coach`, so `invite_redemptions.role` can
+only ever become `'admin'`/`'owner'` via a direct service-role/dashboard
+insert, never through the app — and it predates this phase entirely,
+already tracked under Phase 1's own COMM-150 ("`isStaff`/`isAdmin` helpers
+stay as thin conveniences over the permission set and role rank, with a
+comment that the server is the authority"), which `cloud.js`'s `isAdmin()`
+does not yet honor. Fixing it here would mean auditing every one of
+`isAdmin()`'s dozens of pre-existing call sites across the whole module,
+well outside this phase's remit; filed here for whoever picks COMM-150 back
+up.
+
+**The "OUT parameter shadows a column in its own guard" bug shape COMM-374
+flagged for a separate look (the exact defect that broke
+`admin_search_members` for its entire life) does not recur elsewhere.**
+Checked every `returns table(...)` `language plpgsql` `security definer`
+function in the schema: `coach_inactive_members`/`coach_new_members`
+qualify every guard and query reference with a table alias (`pr.id`, never
+bare `id`); `admin_member_roster` (COMM-374 itself) was built with that
+lesson already applied and never references a bare column at all in its
+guard; `feed_page` explicitly declares `#variable_conflict use_column` at
+the top of its body, a deliberate, different defusing of the same class of
+collision. No second instance found.
+
+**Open questions and contracts.md, confirmed rather than assumed.** All
+seven of this phase's own open questions (no default expiry; a shared-code
+revoke is non-retroactive; the generic `'invalid'` anti-enumeration answer;
+one `admin_actions` row per onboarding edit, no version table; no literal
+step reordering; `community.member.invite` seeded coach-and-above, narrowed
+to admin-only for a coach-role invite by 202609030008; `invites_issued`
+counts per-person invites only) match what actually shipped, read directly
+off the migrations rather than off this file's own prose.
+`docs/community/contracts.md`'s Phase 4 section was checked line by line
+against the final migrations and is consistent — every DEVIATION it
+documents is real and matches the shipped signature.
+
+**Full WCAM re-review, checked rather than defaulted, per the ticket's own
+"checked, not defaulted" instruction.** None of the four Phase 4 client
+screens fires a single `track(...)` analytics event — grepped `cloud.js`
+for any WCAM-relevant call site touching invite management, the roster, the
+onboarding editor or the funnel dashboard and found none. All four are
+staff/admin surfaces (moderation-style actions or passive reads), exactly
+the "adds no new member-facing participation event" case the ticket
+predicted; no `docs/community/metrics.md` change was needed and none was
+made.
 
 ### Open questions for this phase
 
