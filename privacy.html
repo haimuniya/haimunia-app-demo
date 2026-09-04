@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<!-- Stamps data-theme on <html> before first paint, from a stored choice.
+     Must be a separate file, not an inline <script> — script-src 'self'
+     below has no 'unsafe-inline'. Runs synchronously so there's no flash.
+     Shared verbatim with index.html so this page follows the same
+     light/dark/auto choice as the rest of the app. -->
+<script src="./theme-init.js"></script>
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'self';
+  script-src 'self';
+  style-src 'self' 'unsafe-inline';
+  font-src 'self';
+  img-src 'self';
+  connect-src 'self';
+  object-src 'none';
+  base-uri 'none';
+  form-action 'none';
+  frame-ancestors 'none'" />
+<meta name="referrer" content="no-referrer" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Privacy Policy – האימוניה</title>
+<meta name="theme-color" content="#152342" />
+<link rel="icon" href="./icon-192.png" />
+<style>
+  /* Font set trimmed to what this page actually uses: Rubik for the Hebrew
+     chrome (header, back link, "last updated" line) and Anton for the page
+     title, matching index.html's own use of .page-title. No JetBrains Mono
+     here — nothing on this page is numeric/tabular. Same self-hosted files,
+     same unicode-range split, as index.html. */
+  @font-face{ font-family:'Rubik'; font-style:normal; font-weight:400; font-display:swap; src:url('./assets/fonts/rubik-400-latin.woff2') format('woff2'); unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+  @font-face{ font-family:'Rubik'; font-style:normal; font-weight:400; font-display:swap; src:url('./assets/fonts/rubik-400-hebrew.woff2') format('woff2'); unicode-range:U+0307-0308,U+0590-05FF,U+200C-2010,U+20AA,U+25CC,U+FB1D-FB4F; }
+  @font-face{ font-family:'Rubik'; font-style:normal; font-weight:700; font-display:swap; src:url('./assets/fonts/rubik-700-latin.woff2') format('woff2'); unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+  @font-face{ font-family:'Rubik'; font-style:normal; font-weight:700; font-display:swap; src:url('./assets/fonts/rubik-700-hebrew.woff2') format('woff2'); unicode-range:U+0307-0308,U+0590-05FF,U+200C-2010,U+20AA,U+25CC,U+FB1D-FB4F; }
+  @font-face{ font-family:'Rubik'; font-style:normal; font-weight:800; font-display:swap; src:url('./assets/fonts/rubik-800-latin.woff2') format('woff2'); unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+  @font-face{ font-family:'Rubik'; font-style:normal; font-weight:800; font-display:swap; src:url('./assets/fonts/rubik-800-hebrew.woff2') format('woff2'); unicode-range:U+0307-0308,U+0590-05FF,U+200C-2010,U+20AA,U+25CC,U+FB1D-FB4F; }
+  @font-face{ font-family:'Anton'; font-style:normal; font-weight:400; font-display:swap; src:url('./assets/fonts/anton-400-latin.woff2') format('woff2'); unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+
+  /* Theme tokens — same variable names and values as index.html's :root /
+     prefers-color-scheme / [data-theme="dark"] blocks. Only the tokens this
+     page actually uses are carried over (surface, border, chalk, steel,
+     brass, bg, shadow-card, stripe); nothing invented. */
+  :root{
+    --bg:#F2F5FA; --surface:#FFFFFF; --border:#D6DFEC;
+    --chalk:#1C2536; --steel:#57627A; --brass:#956529;
+    --energy:#C94B29;
+    --stripe-a:var(--energy); --stripe-b:#22345C;
+    --stripe:repeating-linear-gradient(135deg, var(--stripe-a) 0 14px, var(--stripe-b) 14px 28px);
+    --shadow-card: 0 1px 0 rgba(255,255,255,.6) inset, 0 10px 20px -14px rgba(28,37,54,.16);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#152342; --surface:#1F3057; --border:#425481;
+      --chalk:#F2ECE1; --steel:#A8B3C9; --brass:#E8B98A;
+      --energy:#E85D3D;
+      --stripe-a:var(--energy); --stripe-b:#ffffff;
+      --shadow-card: 0 1px 0 rgba(255,255,255,.04) inset, 0 14px 28px -18px rgba(0,0,0,.65);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#152342; --surface:#1F3057; --border:#425481;
+    --chalk:#F2ECE1; --steel:#A8B3C9; --brass:#E8B98A;
+    --energy:#E85D3D;
+    --stripe-a:var(--energy); --stripe-b:#ffffff;
+    --shadow-card: 0 1px 0 rgba(255,255,255,.04) inset, 0 14px 28px -18px rgba(0,0,0,.65);
+  }
+
+  * { box-sizing: border-box; }
+  h1, h2, h3 { margin: 0; font: inherit; }
+  html,body{ margin:0; padding:0; background:var(--bg); color:var(--chalk); font-family:'Rubik',sans-serif; }
+  a{ color:inherit; }
+  a:focus-visible, [tabindex]:focus-visible { outline:2px solid var(--brass); outline-offset:2px; }
+
+  .page-wrap{ max-width:640px; margin:0 auto; padding:24px 16px calc(env(safe-area-inset-bottom,0px) + 40px); }
+  .header{ display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; gap:12px; }
+  .header-logo{ height:36px; width:36px; border-radius:10px; display:block; flex-shrink:0; }
+  .back-link{ color:var(--steel); font-size:12px; font-weight:700; text-decoration:underline; white-space:nowrap; }
+  .brand-stripe{ height:6px; border-radius:4px; background-image:var(--stripe); margin-bottom:18px; }
+  .page-title{ font-family:'Anton',sans-serif; font-weight:400; letter-spacing:.3px; font-size:24px; color:var(--chalk); margin-bottom:6px; }
+  .updated-note{ color:var(--steel); font-size:11px; margin-bottom:20px; }
+  .intro{ font-size:13.5px; line-height:1.6; color:var(--chalk); margin-bottom:20px; }
+
+  /* One .chart-card per policy section — the same card component the app
+     uses elsewhere (index.html's .chart-card), not a new visual language. */
+  .chart-card{ background:var(--surface); border:1px solid var(--border); border-radius:20px; padding:16px; margin-bottom:16px; box-shadow:var(--shadow-card); }
+  .chart-card h2{ font-size:15px; font-weight:800; color:var(--chalk); margin-bottom:8px; }
+  .chart-card p{ font-size:13.5px; line-height:1.6; color:var(--chalk); margin:0 0 10px; }
+  .chart-card p:last-child{ margin-bottom:0; }
+  .chart-card ul{ margin:0 0 10px; padding-inline-start:20px; display:flex; flex-direction:column; gap:6px; }
+  .chart-card ul:last-child{ margin-bottom:0; }
+  .chart-card li{ font-size:13.5px; line-height:1.6; color:var(--chalk); }
+  .chart-card strong{ font-weight:700; }
+  code{ font-family:monospace; font-size:.95em; }
+
+  .footer-links{ text-align:center; margin-top:8px; }
+  .footer-links a{ color:var(--steel); font-size:11px; text-decoration:underline; }
+</style>
+</head>
+<body>
+<div class="page-wrap">
+  <header class="header">
+    <img class="header-logo" src="./icon-192.png" alt="" />
+    <a class="back-link" href="./index.html">חזרה לאפליקציה</a>
+  </header>
+  <div class="brand-stripe"></div>
+
+  <h1 class="page-title">Privacy Policy</h1>
+  <div class="updated-note">Last updated: 2026-09-04</div>
+
+  <!-- The body copy below is English in the source policy today (see
+       PRIVACY.md), so it gets its own dir="ltr" island inside this RTL
+       Hebrew page rather than being forced right-to-left — matching how
+       the rest of the app isolates non-Hebrew content (see index.html's
+       .mono class for the same pattern applied to numbers). -->
+  <div dir="ltr" lang="en">
+    <p class="intro">
+      This policy explains what information the app collects, why, how it is
+      shared, and what control you have over it. It covers both the private
+      training log (your workouts, saved on your device and backed up to the
+      cloud) and the optional community features (a public-to-the-club
+      profile, posts, comments, follows, and leaderboards).
+    </p>
+
+    <section class="chart-card">
+      <h2>Who runs this</h2>
+      <p>
+        There is no separate company behind this app. It is run directly by
+        the club's own coaching team for their own members — there is no
+        registered legal entity, business address, or compliance department,
+        and this policy does not claim that any particular country's law or
+        courts govern it. Wherever this policy says "we" or "the operator,"
+        it means the coaching team who runs the app and the club. If a
+        disagreement ever came up, it would be worked out directly between
+        you and the coaching team, the same way any other question about the
+        club would be.
+      </p>
+      <p>
+        For any privacy question, request, or complaint, contact your coach
+        directly — the same way you'd reach them about anything else related
+        to the club. There is no separate support email; the coaching team is
+        the whole of "support" for this app.
+      </p>
+    </section>
+
+    <section class="chart-card">
+      <h2>Information we collect</h2>
+      <ul>
+        <li><strong>Account and sign-in data.</strong> You can create an
+          account anonymously (no personal information is required) or with a
+          member handle and password. Sign-in never collects an email address
+          or any other contact detail — a community account is identified
+          only by an anonymous session and the profile handle you choose.
+          Where a password login internally requires an email format, the app
+          generates one from your handle; it is not a real address and is
+          never used to contact you.</li>
+        <li><strong>Invite and membership data.</strong> If you join through
+          an invite code, we record which code was redeemed, by which
+          account, and when, to enforce one-use and rate-limit rules.</li>
+        <li><strong>Training-log data.</strong> Workouts, results, personal
+          records, bodyweight, body measurements, session notes, scaling
+          notes, and partner tags that you enter into the app.</li>
+        <li><strong>Community content.</strong> Posts (a workout name,
+          result, date, Rx/Scaled state, and comparison score, plus any photo
+          you attach), comments on posts, reactions, follows, and the display
+          name, handle, and avatar on your profile.</li>
+        <li><strong>Attendance and booking data.</strong> Class attendance
+          and upcoming bookings, where the club uses these features, tied to
+          your account.</li>
+        <li><strong>Technical data.</strong> Standard device and request
+          metadata generated by using a web app (timestamps, error logs, and
+          the equivalent of browser/device information), used only for
+          reliability and abuse prevention.</li>
+      </ul>
+      <p>
+        We do not collect government ID, precise location, financial account
+        numbers, or biometric data, and we do not use any of the above for
+        advertising.
+      </p>
+    </section>
+
+    <section class="chart-card">
+      <h2>Automatic private backup</h2>
+      <p>
+        New workouts are backed up automatically and privately to the cloud
+        from the first save on — only the athlete can see this data, and it
+        is entirely separate from joining the community (posting, a public
+        profile, the feed). This automatic backup can be turned off at any
+        time in Settings, and turning it off never affects anything already
+        saved on the device itself.
+      </p>
+    </section>
+
+    <section class="chart-card">
+      <h2>Community sharing</h2>
+      <p>
+        A community post is created only after you select a result and an
+        audience for it — nothing you log is shared with the club
+        automatically. Posts and comments are visible only to whoever the
+        chosen audience allows; bodyweight, body measurements, session notes,
+        scaling notes, partner tags, and backup files are never published to
+        the community regardless of audience. Following another member is
+        visible to that member and, depending on their own privacy settings,
+        to people who can see their profile — it is not anonymous.
+      </p>
+      <p>
+        You control a set of visibility toggles on your own profile: whether
+        your profile is visible to the club at all, and whether workout
+        results, personal records, achievements, attendance, upcoming
+        bookings, and leaderboard placement are shown to others. Separate
+        toggles control whether other members can follow, @mention, or
+        message you, and whether your birthday is shown. These toggles are
+        enforced at the database level, not only hidden in the app's screens.
+      </p>
+    </section>
+
+    <section class="chart-card">
+      <h2>Who can see what</h2>
+      <ul>
+        <li><strong>Other members</strong> see only what your audience choice
+          and privacy toggles allow for any given post, profile field, or
+          activity.</li>
+        <li><strong>Club admins</strong> can see a directory of every
+          member's handle, display name, role, and join date, for club
+          administration purposes, regardless of a member's own
+          profile-visibility toggles. A club-wide attendance policy set by
+          admins can also make attendance visible to admins even when a
+          member's own attendance toggle is off; it does not override any
+          other privacy toggle.</li>
+        <li><strong>We (the coaching team)</strong> and our subprocessors
+          below can access data as needed to run, secure, and support the
+          service. We do not sell personal information, and we do not share
+          it with third parties for their own marketing purposes.</li>
+      </ul>
+    </section>
+
+    <section class="chart-card">
+      <h2>Subprocessors</h2>
+      <p>
+        We use a small number of infrastructure providers to run the
+        service, each bound by their own data-processing terms:
+      </p>
+      <ul>
+        <li><strong>Supabase</strong> provides our database, authentication,
+          and file storage (including uploaded post photos). Account,
+          training-log, and community data described in this policy is
+          stored and processed there, in Supabase's <code>ap-southeast-1</code>
+          (Singapore) hosting region.</li>
+        <li><strong>GitHub Pages</strong> serves the app's static files (the
+          code that runs in your browser). It does not receive your account
+          or training-log data; that traffic goes directly to Supabase.</li>
+      </ul>
+    </section>
+
+    <section class="chart-card">
+      <h2>Legal basis for processing</h2>
+      <p>
+        Where a legal basis would matter, we think about our handling of
+        your data this way: performance of a contract (to create your
+        account and provide the training log and community features you
+        sign up for), your consent (for optional features such as joining
+        the community, sharing a post, or enabling automatic backup), our
+        legitimate interest (to secure the service, prevent abuse, and
+        enforce invite and rate limits), and legal obligation where
+        applicable law requires specific records to be retained or
+        disclosed. This mirrors how the app already works rather than
+        resting on any claimed jurisdiction.
+      </p>
+    </section>
+
+    <section class="chart-card">
+      <h2>Data retention</h2>
+      <p>
+        Your training-log data is kept for as long as your account is
+        active. If you request deletion, your profile and posts are hidden
+        immediately and the account and its content are permanently deleted
+        after 30 days. Beyond that 30-day window, infrastructure-level
+        backups and technical/security logs follow our hosting provider's
+        own standard backup-rotation and log-retention windows — we don't
+        separately extend those windows or track them by an exact day count,
+        and they are not used for anything beyond restoring service or
+        investigating abuse before they age out.
+      </p>
+    </section>
+
+    <section class="chart-card">
+      <h2>Your rights</h2>
+      <p>
+        Even without a specific law requiring it, you have the right to
+        access the personal data we hold about you, correct it, request its
+        deletion, receive a copy of it in a portable format, object to or
+        restrict certain processing, and withdraw consent for anything based
+        on consent (such as community sharing or automatic backup) without
+        affecting anything already processed. In the app, you can export
+        your local data, turn off automatic backup, adjust every privacy
+        toggle listed above, block other members, report content, and
+        request full account deletion at any time. To exercise a right that
+        isn't available directly in the app, contact your coach directly. If
+        a data protection authority is relevant where you live, you can also
+        raise concerns with them.
+      </p>
+    </section>
+
+    <section class="chart-card">
+      <h2>Children's privacy</h2>
+      <p>
+        This service is not directed at children under 13, and we do not
+        knowingly collect personal information from anyone under that age.
+        13 is a general baseline we chose as a reasonable policy, not a
+        number required by a specific law that applies to this app. If you
+        believe a child has created an account, contact your coach directly
+        and we will remove it.
+      </p>
+    </section>
+
+    <section class="chart-card">
+      <h2>Security</h2>
+      <p>
+        We use industry-standard access controls, encryption in transit, and
+        row-level database policies so that a member can only read or write
+        the data their own permissions and privacy settings allow, enforced
+        by the database itself rather than only by the app's screens. No
+        method of transmission or storage is completely secure, and we
+        cannot guarantee absolute security.
+      </p>
+    </section>
+
+    <section class="chart-card">
+      <h2>International transfers</h2>
+      <p>
+        Regardless of where you access the service from, your information is
+        processed by Supabase in its <code>ap-southeast-1</code> (Singapore)
+        hosting region. By using the service you understand that your
+        information will be transferred there for processing.
+      </p>
+    </section>
+
+    <section class="chart-card">
+      <h2>Changes to this policy</h2>
+      <p>
+        We may update this policy as the service changes. Material changes
+        will be reflected by an updated date at the top of this document
+        and, where required, an in-app notice.
+      </p>
+    </section>
+
+    <section class="chart-card">
+      <h2>Contact</h2>
+      <p>
+        Questions, requests, or complaints about this policy can be sent to
+        your coach directly — see "Who runs this" above.
+      </p>
+    </section>
+  </div>
+
+  <div class="footer-links"><a href="./index.html">חזרה לאפליקציה</a></div>
+</div>
+</body>
+</html>

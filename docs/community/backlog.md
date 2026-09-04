@@ -2881,7 +2881,7 @@ Filed from `2026-09-02-design-sync-and-cross-repo-audit.md`, a 10-agent cross-re
 | COMM-332 | Verify and fix migration-check / pgTAP CI status (COMM-020) | qa | P0 | done |
 | COMM-333 | Fix browser-check flakiness and stop run-all.mjs aborting on first failure | qa | P0 | done |
 | COMM-334 | Confirm CSP status of the real production repo (haimunia-app) and port CSP headers to it | unassigned (separate repo, outside this workspace) | P0 | done |
-| COMM-335 | Finish legal essentials in PRIVACY.md / TERMS.md and remove draft language | identity-privacy | P0 | partial |
+| COMM-335 | Finish legal essentials in PRIVACY.md / TERMS.md and remove draft language | identity-privacy | P0 | done |
 | COMM-336 | Extend PRIVACY.md to disclose photos, comments, follows, and admin-visible data | identity-privacy | P0 | done |
 | COMM-337 | Move hosting off GitHub Pages (or add an edge layer) to enable clickjacking headers | platform | P1 | todo |
 | COMM-338 | Run the pgTAP suite in CI and add a multi-role live smoke test before deploy | qa | P1 | partial |
@@ -2946,35 +2946,78 @@ meta tag gained the `frame-ancestors 'none'` line production already had
 (inert in meta form on either app, real fix tracked separately as
 COMM-337).
 
-COMM-335 is `partial`: PRIVACY.md and TERMS.md were rewritten end to end
-into structurally complete policies — every section a launch-ready policy
-needs (operator identity, information collected, automatic-backup versus
-community-sharing scope, sharing and subprocessor disclosure, legal basis,
-retention, data-subject rights, children's privacy, security, international
-transfers, acceptable use, content license, moderation, disclaimers,
-termination) — in ordinary finished prose, with every "this is a draft" /
-"requires legal review" / unfinished-checklist line removed. What remains
-is not missing structure but missing facts nobody in this workspace can
-supply: the operator's legal name and registered address, a real contact
-email, the governing-law/jurisdiction, the hosting/data-processing region,
-the backup and log retention windows (beyond the already-fixed 30-day
-account-deletion window), and the minimum-age requirement. Each is marked
-inline with a bracketed placeholder (`[Operator legal name]`, `[Operator
-registered address]`, `[Contact email]`, `[Jurisdiction / governing law]`,
-`[Hosting region]`, `[Backup retention period, in days]`, `[Log retention
-period, in days]`, `[Minimum age requirement]`) at the exact point each
-fact belongs, so a founder/legal pass can find and fill every one without
-re-reading the whole document. Supabase and GitHub Pages are named as the
-actual subprocessors (real facts from `cloud.js`/the tickets, not
-placeholders); lawful-basis language uses a standard contract/consent/
-legitimate-interest/legal-obligation mapping since that follows from how
-the app already works, not from an unknown fact. COMM-336's disclosures
-(photos, comments, follows, and the admin-visible member directory plus the
-attendance admin-override) are preserved and folded into the rewrite, not
-dropped. This ticket cannot move to `done` until a founder or legal pass
-resolves the bracketed facts above — that sign-off, and updating the
-in-app links at `app.js:2844` to be considered launch-ready, is out of
-scope for this pass and tracked by this ticket's own acceptance criteria.
+COMM-335 is `done`: the previous pass left PRIVACY.md/TERMS.md structurally
+complete but with ~13 bracketed placeholders (`[Operator legal name]`,
+`[Contact email]`, `[Jurisdiction / governing law]`, `[Hosting region]`,
+`[Backup retention period, in days]`, `[Log retention period, in days]`,
+`[Minimum age requirement]`, etc.) marking facts nobody in this workspace
+could supply, because there is no real legal entity behind this app to
+supply them. The product owner clarified directly: this is a single
+CrossFit box's own app, run by its coaching team for their own members, not
+a company with a registered identity, jurisdiction, or compliance
+department — so this pass replaced every placeholder with honest, generic
+language instead of inventing a fake company, address, or governing law.
+Concretely: "operator" throughout both documents now reads as "the coaching
+team," with an explicit "there is no separate company/legal entity" line
+rather than a name and address; "contact `[Contact email]`" became "contact
+your coach directly" everywhere, since that is the real, already-established
+private-contact channel (the same WhatsApp/direct-contact path COMM-230/231
+already document — there never was a support inbox to point to, so pointing
+at a fake one would have been worse than admitting there isn't one);
+`[Jurisdiction / governing law]` was dropped rather than replaced — the
+documents now say plainly that no particular country's law or courts are
+claimed to govern them, since there is no entity to make that claim, and
+disclaimer language that previously leaned on "the laws of X" now just says
+"applicable law"; `[Hosting region]` became the real, verifiable technical
+fact instead of a legal claim — Supabase's actual `ap-southeast-1`
+(Singapore) hosting region (confirmed against this workspace's own
+supabase-live-project record), stated as infrastructure fact, not a
+jurisdiction assertion; the backup/log retention placeholders became honest
+non-numeric language ("follow our hosting provider's own standard
+backup-rotation and log-retention windows... we don't separately extend
+those windows or track them by an exact day count") since no real day count
+exists to state, while the one retention fact that IS real — the 30-day
+post-deletion purge window — stayed as a concrete number because it was
+already true; and `[Minimum age requirement]` became a plain 13, stated
+explicitly as "a general baseline we chose as a reasonable policy, not a
+number required by a specific law that applies to this app," rather than a
+fabricated jurisdictional minimum. COMM-336's disclosures (photos, comments,
+follows, the admin-visible member directory, the attendance admin-override)
+are preserved unchanged through this pass. Separately, both documents were
+previously linked live from Settings as raw `.md` files opened in a new
+browser tab (`app.js`'s "משפטי" block, `href="./PRIVACY.md"` /
+`href="./TERMS.md"`, `target="_blank"`) — unstyled, no theme, no RTL — so
+this pass also added `privacy.html` and `terms.html` at the repo root: real
+standalone pages that load `theme-init.js` (same dark/light/auto behavior as
+the rest of the app, stamped before first paint), self-host the same Rubik
+and Anton `@font-face` declarations, and reuse the app's own design tokens
+by literal value (`--bg`, `--surface`, `--border`, `--chalk`, `--steel`,
+`--brass`, `--shadow-card`, the `--stripe` gradient) rather than inventing
+new ones, with each policy section rendered as a `.chart-card` — the same
+grouped-card component index.html already uses elsewhere, not a new visual
+language. The page shell (`<html lang="he" dir="rtl">`, header, "חזרה
+לאפליקציה" back link) matches the app's Hebrew/RTL chrome; the policy prose
+itself stays in English, as it already was in the source `.md` files (this
+pass did not translate it), so the prose sits inside its own `dir="ltr"`
+island — the same isolation pattern `index.html`'s `.mono` class already
+uses for non-Hebrew content — rather than being force-flowed right-to-left.
+`app.js`'s two Settings links now point at `privacy.html`/`terms.html`
+instead of the raw `.md` files. PRIVACY.md/TERMS.md remain in the repo as
+the plain-text source of truth (nothing auto-generates the HTML from them,
+by design — this stays build-free per this repo's own stated philosophy);
+to keep the two formats from silently drifting apart, `test/community-
+legal-pages.test.mjs` asserts both formats agree on every load-bearing fact
+(no leftover bracket placeholders, no draft/review language, the "no
+separate legal entity"/"contact your coach directly" language, the 30-day
+deletion window, minimum age 13, and the `ap-southeast-1` region) rather
+than diffing full prose, which would be too brittle. `npm test` passes
+including the pre-existing `community-backup-sync.test.mjs` assertions
+against PRIVACY.md's automatic-backup paragraph, which was left unchanged
+by this pass. What remains genuinely out of scope, per the ticket's own
+acceptance criteria: an actual founder/legal sign-off is still recorded
+outside this repo if the product owner ever forms a real legal entity later
+— nothing here claims that sign-off happened, only that the documents no
+longer contain placeholders standing in for facts nobody could supply.
 
 COMM-338 is `partial`: two of its three acceptance criteria were already
 true, not newly shipped here — confirmed again by re-reading
