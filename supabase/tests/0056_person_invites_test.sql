@@ -6,6 +6,12 @@
 -- allowed (community.member.invite is seeded coach-and-above, which is what
 -- makes this ticket's tier different from COMM-371's), an admin is allowed.
 --
+-- With ONE exception, added by 202609030008 and asserted below: the coach
+-- tier is allowed for a member-role invite and refused for a coach-role one.
+-- That gate is per-ARGUMENT, not per-RPC, so it is the only place in this
+-- file where "a coach may" and "a coach may not" are both true of the same
+-- function.
+--
 -- Also asserted, because it is this migration's deliberate deviation from
 -- COMM-370's written outline: no plaintext code is ever stored, and the raw
 -- code is returned by admin_invite_create and by nothing else.
@@ -105,7 +111,23 @@ select throws_ok(
 select tests.set_auth(tests.uid('coach'));
 select lives_ok(
   $$ select public.admin_invite_create('member', 'Dana, Tuesday 06:00', null) $$,
-  'a COACH can mint an invite - community.member.invite is seeded coach-and-above, deliberately looser than the shared-code permission');
+  'a COACH can mint a MEMBER-role invite - community.member.invite is seeded coach-and-above, deliberately looser than the shared-code permission');
+
+-- 202609030008's narrowing, asserted as the pair it is: the SAME caller, the
+-- SAME function, one argument apart. The assertion above is what makes this
+-- one meaningful - without it this would only prove the coach was refused,
+-- not that they were refused for the role and nothing else.
+select throws_ok(
+  $$ select public.admin_invite_create('coach', 'a coach minting a coach', null) $$,
+  'P0001', 'not authorized',
+  'but the same coach CANNOT mint a COACH-role invite: 202609030008 added a second gate on p_role = ''coach'' requiring is_admin() specifically, so a code stops being the one way to reach the coach tier without an admin. holding community.member.invite is no longer sufficient for that role');
+-- Counted as the superuser: the coach has no grant on invites at all, so an
+-- authenticated count would raise 42501 rather than return a number.
+select tests.clear_auth();
+select results_eq(
+  $$ select count(*)::int from public.invites $$,
+  $$ values (1) $$,
+  'and that refusal wrote nothing - the coach still has exactly the one member-role invite they were allowed to mint, and no half-created coach invite');
 
 select tests.set_auth(tests.uid('admin'));
 select lives_ok(
@@ -147,15 +169,26 @@ select lives_ok(
   $$ select public.admin_invite_create('member', null, null) $$,
   'a NULL expiry is accepted and means never expires - open question 1''s chosen default, no standing expiry imposed');
 
--- Five invites now exist: coach 1, owner 1, admin 3.
+-- Five invites now exist: coach 1 (member-role), owner 1, admin 3.
+-- Eight refusals have been issued and none of them wrote a row: two for no
+-- permission at all (m1, norec), one for the 202609030008 coach-role
+-- narrowing, three for an invalid role, one label, one expiry.
 select results_eq(
   $$ select count(*)::int from public.admin_invite_list('all', null, 100) $$,
   $$ values (5) $$,
-  'five invites were created and none of the six refusals above created anything');
+  'five invites were created and none of the eight refusals above created anything');
 
 -- =====================================================================
 -- The code: returned once, stored only as a hash
 -- =====================================================================
+-- The ADMIN mints this one, and the role is 'coach'. Both halves matter and
+-- neither is incidental: 202609030008 makes admin (or owner) the only tier
+-- that can produce a coach-role row at all, so moving this actor down to the
+-- coach fixture would not merely change created_by, it would raise
+-- 'not authorized' and take every hash assertion below with it. The auth is
+-- already admin from the validation block; restated so the dependency is
+-- visible at the call site rather than 30 lines up.
+select tests.set_auth(tests.uid('admin'));
 insert into tests.stash (k, j)
   select 'made', public.admin_invite_create('coach', 'hash check', null);
 
@@ -436,7 +469,7 @@ select tests.clear_auth();
 select results_eq(
   $$ select count(*)::int from public.admin_actions where action_type = 'invite_created' $$,
   $$ values (6) $$,
-  'one invite_created audit row per successful create, and none for any of the six refusals');
+  'one invite_created audit row per successful create, and none for any of the eight refusals - including the coach-role narrowing, which raises before the insert and so leaves no audit trace of an invite that never existed');
 select results_eq(
   $$ select count(*)::int from public.admin_actions where action_type = 'invite_revoked' $$,
   $$ values (1) $$,

@@ -99,6 +99,43 @@ Not applicable. Schema and RPCs only; COMM-376 builds the screen.
   `security definer`, `set search_path = ''`, `revoke all from public,
   anon`, `grant execute to authenticated`.
 
+## Addendum — a coach-role invite now requires an admin (202609030008)
+
+`202609030001` shipped `admin_invite_create` gated on
+`has_perm('community.member.invite') or is_admin()` for every `p_role`, and
+flagged the consequence in its own header rather than narrowing it silently:
+since `community.member.invite` is seeded coach-and-above and `invites.role`
+admits `'coach'`, any coach could mint an invite that grants the invitee the
+coach role on redemption — bypassing `admin_grant_coach`, the only other
+route to that role, which has always required a real admin. Each new coach
+then inherited the same minting power, so the tier was self-propagating from
+one coach.
+
+The product owner has decided: **a coach-role invite requires an admin; a
+member-role invite does not.** `202609030008_invite_create_coach_role_requires_admin.sql`
+adds a second gate inside `admin_invite_create`, applied only when
+`p_role = 'coach'`, requiring `is_admin()` specifically.
+
+- Nothing else changes. The permission is not re-seeded, the table, the two
+  other RPCs and redemption are untouched, and `p_role = 'member'` stays
+  exactly coach-and-above — inviting a new gym member remains a normal coach
+  task, which is what open question 6 decided and this does not reopen.
+- `head_coach` and `staff` lose the coach-role invite too, not just `coach`:
+  `is_admin()` is `role_rank >= 50`, and all three tiers sit below that while
+  holding `community.member.invite`. That is the intended reading of
+  "requires an admin".
+- The refusal is the same `'not authorized'` P0001 as the other auth
+  failures, deliberately — a bespoke message would tell a caller which tier
+  they lack. **Consequence for COMM-376:** offer the coach option only when
+  the viewer is `is_admin()`, since the client cannot tell this refusal apart
+  from a missing permission.
+- Third acceptance criterion above ("`p_role` accepts only `member` or
+  `coach`") still holds as written; it is now conditioned on the caller's
+  tier for the `coach` value.
+- Covered by `supabase/tests/0056_person_invites_test.sql`: the same coach
+  fixture is asserted to succeed on `'member'` and to raise on `'coach'`,
+  one argument apart.
+
 ## Dependencies
 
 - None on other Phase 4 tickets. COMM-372 (redemption) reads this table;
