@@ -2,7 +2,7 @@
 
 Phase: 4
 Agent: identity-privacy
-Status: todo
+Status: done — see docs/community/backlog.md Phase 4 section for what shipped
 Attendance-blocked: no
 
 `redeem_invite_code` (COMM-372) is widened server-side to accept either

@@ -2511,13 +2511,45 @@ period selector rather than adding a second one.
 
 | ID | Title | Agent | Status |
 |---|---|---|---|
-| COMM-380 | Signup screen supports per-person invite codes | identity-privacy | todo |
+| COMM-380 | Signup screen supports per-person invite codes | identity-privacy | done |
 
 Small on purpose: `redeem_invite_code`'s signature does not change
 (COMM-372), so the existing code-entry screen needs no new field and no
 new branch. This ticket is the copy review and the end-to-end test for the
 new code path, plus confirming the generic "invalid" error copy still
 reads honestly now that it also covers a spent per-person invite.
+
+**Shipped as a copy review plus one real client bug fix, not a pure copy
+review.** The Hebrew copy needed no change: `redeemCode()`'s existing
+generic "קוד ההזמנה שגוי, פג תוקף או נוצל" ("the invite code is invalid,
+has expired, or has already been used") already reads honestly for a
+never-issued code, a spent one, an expired one, and a revoked one — a
+revoked invite reads fine under "invalid," the same way a deactivated
+shared code already did before this ticket, and COMM-372's own
+anti-enumeration acceptance criterion means the server will never
+distinguish revoked from the other three anyway. What did need to change:
+`redeemCode()`'s success check was hardcoded to the literal string
+`"member"`, which was equivalent to "did the RPC succeed" only because,
+before COMM-372, a shared code could never grant anything but `'member'`
+(COMM-371's own coach-shared-code refusal). COMM-372 grants a per-person
+invite's own role, member **or coach**, so a real, successful coach-invite
+redemption came back as the string `"coach"` and the old check
+(`data !== "member"`) misread it as a failure — showing the generic
+invalid-code error for a redemption the server had already committed
+(the invite row claimed, single-use, via `UPDATE ... RETURNING`, per
+COMM-372) and could never be retried, since the code was already burned.
+Fixed by checking for the literal `"invalid"` instead of the literal
+`"member"`, which makes the client's success path match the RPC's actual
+three-way contract instead of a two-way contract that stopped being true.
+New coverage: `test/community-person-invite-redemption.test.mjs`, one test
+for a successful coach-role per-person redemption (asserts the invite-code
+screen is gone and no field error shows) and one for a genuinely invalid
+code (asserts the existing generic error still shows and the screen does
+not advance). `test/security-hardening.test.mjs`'s pre-existing "the invite
+UI handles invalid and rate-limited results" test asserted the old
+`data !== "member"` string directly; updated to assert `data === "invalid"`
+instead, since it was pinning the bug rather than the behavior it meant to
+protect.
 
 ### qa
 

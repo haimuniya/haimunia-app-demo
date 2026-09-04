@@ -131,7 +131,11 @@ test("report review is admin-only and records an audit trail", () => {
 
 test("the invite UI handles invalid and rate-limited results", () => {
   assert.match(cloudJs, /data === "rate_limited"/);
-  assert.match(cloudJs, /data !== "member"/);
+  // COMM-380: redeem_invite_code can now succeed with role "coach" as well
+  // as "member" (a per-person invite grants its own role, COMM-372), so the
+  // failure branch checks for the literal "invalid" rather than hardcoding
+  // "member" as the only successful answer.
+  assert.match(cloudJs, /data === "invalid"/);
 });
 
 test("CSP allows only the configured Supabase project and permits signed post images", () => {

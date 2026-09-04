@@ -836,7 +836,12 @@
     // before, so the message here must not hint at a remaining count.
     const { data, error } = await client.rpc("redeem_invite_code", { p_code: code, p_actor_key: communityActorKey() });
     if (error || data === "rate_limited") return setFieldErrors("communityInviteCode", { code: data === "rate_limited" ? "יותר מדי ניסיונות. יש לנסות שוב מאוחר יותר" : "קוד ההזמנה שגוי או לא פעיל" });
-    if (data !== "member") return setFieldErrors("communityInviteCode", { code: "קוד ההזמנה שגוי, פג תוקף או נוצל" });
+    // COMM-380: the RPC now grants a per-person invite's own role, so a
+    // successful redemption can return "coach" as well as "member"
+    // (COMM-372). Checking for the literal "invalid" instead of the
+    // literal "member" keeps this a generic success/failure branch, not
+    // one hardcoded to the one role a shared code could ever grant.
+    if (data === "invalid") return setFieldErrors("communityInviteCode", { code: "קוד ההזמנה שגוי, פג תוקף או נוצל" });
     setFieldErrors("communityInviteCode", {});
     await loadRedemption();
     // COMM-222. This is the module's MEMBER_JOINED moment (mirrors the
