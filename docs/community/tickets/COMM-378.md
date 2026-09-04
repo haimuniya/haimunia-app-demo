@@ -2,7 +2,7 @@
 
 Phase: 4
 Agent: admin-moderation
-Status: todo
+Status: done
 Attendance-blocked: no
 
 Assigned to admin-moderation rather than coach-tools: this is admin console

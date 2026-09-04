@@ -202,6 +202,32 @@
       modAction: null, modContext: null, reportSheet: null,
       pins: [], pinsLoaded: false, pinError: "",
       auditLog: [], auditCursor: null, auditLoading: false, auditError: false, auditLoaded: false, auditEnd: false, auditFilters: {},
+
+      // ---- COMM-376. Invite and code management ---------------------
+      // invites is the per-person panel: items is admin_invite_list()'s
+      // current page (cursor-paginated on created_at desc, the same
+      // loading/loadingMore/loaded/error/end shape the audit log above
+      // already uses), status is the active filter chip, created is the
+      // one-time { id, code, role, label, created_at, expires_at, status }
+      // reveal admin_invite_create() returned (the raw code is never
+      // retrievable again after this - see contracts.md), and revoking is
+      // the id of an invite whose admin_invite_revoke() call is in flight.
+      invites: { items: [], status: "all", cursor: null, loading: false, loadingMore: false, loaded: false, error: false, end: false, created: null, revoking: null },
+      // inviteCodes is the shared-code panel: items is admin_invite_code_list()'s
+      // full (unpaginated - a club has a handful) list, created is the same
+      // kind of one-time reveal for a freshly minted shared code, busy is the
+      // id of a code whose admin_invite_code_set_active() call is in flight.
+      inviteCodes: { items: [], loading: false, loaded: false, error: false, created: null, busy: null },
+
+      // ---- COMM-377. Member roster ------------------------------------
+      // items is admin_member_roster()'s accumulated pages, newest-joined
+      // first. cursor is the last row's own redeemed_at - see loadRoster()'s
+      // own comment for why a null-redeemed_at row (no invite_redemptions
+      // row at all) ends pagination there rather than resending a null
+      // cursor, a real gap between what this RPC returns and what its own
+      // sort key needs (documented in docs/community/backlog.md's COMM-377
+      // paragraph).
+      roster: { items: [], cursor: null, loading: false, loadingMore: false, loaded: false, error: false, end: false },
     },
 
     // ---- analytics: the admin dashboards (COMM-310..313) ----
@@ -287,6 +313,17 @@
       // this ticket's frontend states name no such control, and COMM-313's own
       // sibling section has none either.
       health: { loading: false, loaded: false, error: false, errorText: "", weeks: [] },
+      // COMM-379 registration funnel analytics, client half. Same shape and
+      // same precedent as COMM-311's segments just above: appended INSIDE
+      // renderAdminAnalyticsDashboard()'s own populated branch, its own load
+      // fired from inside loadAdminAnalyticsDashboard() once a.data is
+      // truthy, reusing state.analytics.dashboard.start/end - no second nav
+      // destination, no second period selector. Gated on the SAME pair as
+      // the shell itself (community.analytics.view or real is_admin(), per
+      // registration_funnel()'s own AUTH note - not is_staff(), so a coach
+      // is refused here the same way COMM-310/311 already refuse one). data
+      // is the raw jsonb registration_funnel() returned, rendered as-is.
+      registrationFunnel: { loading: false, loaded: false, error: false, errorText: "", data: null },
     },
 
     // ---- challenges (COMM-201..207) ----
@@ -375,6 +412,22 @@
     onboarding: {
       progress: null, firstMonth: null,
       attendance: { count: 0, loading: false, loaded: false, error: false },
+      // COMM-373/378. stepContent is a plain {step: {step,title,body,
+      // updated_at}} map read straight off onboarding_step_content, own-
+      // audience select (RLS `using (true)`), loaded once for EVERY member
+      // (not just staff) at boot alongside loadOnboardingProgress() -
+      // renderOnboardingWelcomeStep() and its four siblings read title/body
+      // from here instead of a literal string. stepContentLoaded/-Error
+      // gate the loading/error frontend states of COMM-378's own editor;
+      // every member-facing onboarding card falls back to today's exact
+      // hardcoded copy while this is still in flight, so there is no flash
+      // even before the first load resolves. editor is COMM-378's own
+      // per-row form state: drafts (title/body, seeded from stepContent the
+      // first time a row is touched and never re-seeded from a background
+      // reload, so mid-edit typing survives a save landing on another row),
+      // saving/saved are per-step busy/confirmation flags.
+      stepContent: {}, stepContentLoaded: false, stepContentError: false,
+      editor: { drafts: {}, saving: {}, saved: {} },
     },
 
     // ---- recaps (COMM-220..222, COMM-309) ----
@@ -526,6 +579,16 @@
     CONTENT_PIN: "community.content.pin",
     ANNOUNCEMENT_PUBLISH: "community.announcement.publish",
     CLUB_MANAGE_MODULES: "community.club.manage_modules",
+    // Phase 4 (COMM-370/371/373). MEMBER_INVITE gates the per-person invite
+    // half of COMM-376's screen and is held by coach and up (the server's
+    // own admin_invite_create/list/revoke pair) - NOT the same tier as
+    // MEMBER_RESTRICT, see contracts.md's own correction of that comparison.
+    // INVITE_MANAGE_CODES gates the shared-code half, admin/owner only
+    // (admin_invite_code_*). CONTENT_MANAGE_ONBOARDING gates COMM-378's
+    // editor, matching community.announcement.publish's seeded role list.
+    MEMBER_INVITE: "community.member.invite",
+    INVITE_MANAGE_CODES: "community.invite.manage_codes",
+    CONTENT_MANAGE_ONBOARDING: "community.content.manage_onboarding",
   };
   // COMM-321 Club Modules. The six toggles the current app structure
   // actually exposes as independently gateable surfaces (matching the
@@ -712,7 +775,7 @@
     if (!state.user || !state.profile || !state.profile.recovery_verified_at || state.communityDataLoaded || state.communityDataLoading) return;
     state.communityDataLoading = true;
     try {
-      await Promise.all([loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadEvents(), loadOnboardingProgress()]);
+      await Promise.all([loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadEvents(), loadOnboardingProgress(), loadOnboardingStepContent()]);
       if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers()]);
       if (hasPerm(PERM.COMMENT_MODERATE) || isAdmin()) await loadModQueue();
       // COMM-141. Arm the own-row notification channel for this session.
@@ -801,6 +864,22 @@
     if (!state.user) return;
     const { data, error } = await client.from("onboarding_progress").select("*").eq("user_id", state.user.id).maybeSingle();
     state.onboarding.progress = error ? null : (data || null);
+  }
+  // COMM-373/378. All five rows, open to every signed-in member under
+  // onboarding_step_content's own `using (true)` read policy - not staff-
+  // gated, since every member's own onboarding cards read from here, not
+  // only COMM-378's editor. Loaded once at boot alongside
+  // loadOnboardingProgress(); the editor's own retry re-runs this same
+  // function rather than a second loader.
+  async function loadOnboardingStepContent() {
+    if (!state.user) return;
+    const { data, error } = await client.from("onboarding_step_content").select("step,title,body,updated_at");
+    if (error) { state.onboarding.stepContentError = true; return; }
+    const map = {};
+    for (const row of (data || [])) map[row.step] = row;
+    state.onboarding.stepContent = map;
+    state.onboarding.stepContentLoaded = true;
+    state.onboarding.stepContentError = false;
   }
   // COMM-017. A stable per-client identifier the invite throttle keys on
   // in ADDITION to the Auth uid, so discarding an anonymous session and
@@ -1035,49 +1114,71 @@
       <div class="chip-row">${extraActionHtml || ""}<button class="chip-btn primary" data-community-action="onboarding-dismiss" data-step="${step}">הבנתי</button></div>
     </div>`;
   }
+  // COMM-378. Every one of the five card renderers below now reads its
+  // title/body from state.onboarding.stepContent (COMM-373's table) instead
+  // of a literal string, falling back to today's exact hardcoded copy while
+  // that table has not loaded yet - the two are byte-identical on first
+  // deploy (COMM-373's own seed), so there is no flash either way. welcome/
+  // first_class/third_class have no dynamic line at all: the table's body IS
+  // the whole card, editable end to end. first_week/first_month are the two
+  // COMM-373 seeded with an EMPTY body on purpose (their bodies are entirely
+  // computed today) - this function prepends the table's body (once a staff
+  // member fills one in) before that same computed sentence, never after,
+  // per COMM-378's own "appended after the editable lead sentence" criterion
+  // read from the other direction (the lead comes first, the computed line
+  // follows it).
+  function onboardingStepTitle(step, fallback) {
+    const c = state.onboarding.stepContent[step];
+    return (c && c.title) || fallback;
+  }
+  // Raw (unescaped) body text, or "" when the table has not loaded yet or
+  // the row's own body is empty (first_week/first_month's own seed) - every
+  // caller below decides for itself when and how to escape it, since the
+  // static-body cards (welcome/first_class/third_class) need it escaped
+  // alone while the computed-line cards (first_week/first_month) need it
+  // escaped and then concatenated with ALREADY-RAW computed HTML.
+  function onboardingStepBodyRaw(step) {
+    const c = state.onboarding.stepContent[step];
+    return (c && typeof c.body === "string") ? c.body : "";
+  }
   function renderOnboardingWelcomeStep() {
-    return renderOnboardingCard(
-      "ברוכים הבאים לקהילה!",
-      `כאן רואים מה קורה במועדון, ואפשר לשתף אימונים ושיאים ולהגיב לחברים אחרים. לחיצה על "כתיבת פוסט" למעלה פותחת את השיתוף הראשון שלכם.`,
-      "welcome",
-    );
+    const bodyRaw = onboardingStepBodyRaw("welcome") || `כאן רואים מה קורה במועדון, ואפשר לשתף אימונים ושיאים ולהגיב לחברים אחרים. לחיצה על "כתיבת פוסט" למעלה פותחת את השיתוף הראשון שלכם.`;
+    return renderOnboardingCard(onboardingStepTitle("welcome", "ברוכים הבאים לקהילה!"), esc(bodyRaw), "welcome");
   }
   function renderOnboardingFirstWeekStep() {
     // COMM-207's own list, sorted the same soonest-end-first order the
     // Boards tab already uses - just the first entry.
     const active = state.challenges.items.filter((c) => c.status === "active").slice().sort((a, b) => new Date(a.end_at) - new Date(b.end_at))[0];
-    const body = active
+    const computed = active
       ? `יש אתגר פעיל במועדון עכשיו: <strong>${esc(active.title)}</strong>.`
       : `אין כרגע אתגר פעיל במועדון, אבל שווה להציץ בלוח האתגרים מדי פעם.`;
+    const leadRaw = onboardingStepBodyRaw("first_week");
+    const lead = leadRaw ? esc(leadRaw) + " " : "";
     const openBtn = active ? `<button class="chip-btn" data-community-action="open-challenge" data-id="${esc(active.id)}" data-source="onboarding">פתיחת האתגר</button>` : "";
-    return renderOnboardingCard("השבוע הראשון שלכם מאחוריכם", body, "first_week", openBtn);
+    return renderOnboardingCard(onboardingStepTitle("first_week", "השבוע הראשון שלכם מאחוריכם"), lead + computed, "first_week", openBtn);
   }
   function renderOnboardingFirstMonthStep() {
     const summary = state.onboarding.firstMonth;
-    const body = (!summary || summary.loading)
+    const computed = (!summary || summary.loading)
       ? `<span aria-hidden="true" style="display:inline-block;height:12px;width:70%;background:var(--border);border-radius:6px;"></span>`
       : summary.error
       ? `החודש הראשון שלכם הסתיים - לא הצלחנו לטעון את הסיכום כרגע.`
       : `החודש הראשון שלכם: ${summary.sessions} אימונים, ${summary.prs} שיאים ו-${summary.achievements} הישגים חדשים. כל הכבוד!`;
-    return renderOnboardingCard("החודש הראשון שלכם במועדון", body, "first_month");
+    const leadRaw = onboardingStepBodyRaw("first_month");
+    const lead = leadRaw ? esc(leadRaw) + " " : "";
+    return renderOnboardingCard(onboardingStepTitle("first_month", "החודש הראשון שלכם במועדון"), lead + computed, "first_month");
   }
-  // COMM-316. Static copy, same shape as the three above - no dependent
-  // data to load beyond the attendance count that already decided the step
-  // is due (currentOnboardingStep), so there is no loading/error variant
-  // here the way first_month's summary needs one.
+  // COMM-316. Static copy, same shape as welcome above - no dependent data
+  // to load beyond the attendance count that already decided the step is
+  // due (currentOnboardingStep), so there is no loading/error variant here
+  // the way first_month's summary needs one.
   function renderOnboardingFirstClassStep() {
-    return renderOnboardingCard(
-      "הגעתם לאימון הראשון!",
-      `האימון הראשון שלכם כבר נרשם במערכת. ממשיכים באותו הקצב?`,
-      "first_class",
-    );
+    const bodyRaw = onboardingStepBodyRaw("first_class") || `האימון הראשון שלכם כבר נרשם במערכת. ממשיכים באותו הקצב?`;
+    return renderOnboardingCard(onboardingStepTitle("first_class", "הגעתם לאימון הראשון!"), esc(bodyRaw), "first_class");
   }
   function renderOnboardingThirdClassStep() {
-    return renderOnboardingCard(
-      "אימון שלישי — אתם כבר בקצב!",
-      `שלושה אימונים כבר מאחוריכם. ככה בונים הרגל אימונים.`,
-      "third_class",
-    );
+    const bodyRaw = onboardingStepBodyRaw("third_class") || `שלושה אימונים כבר מאחוריכם. ככה בונים הרגל אימונים.`;
+    return renderOnboardingCard(onboardingStepTitle("third_class", "אימון שלישי — אתם כבר בקצב!"), esc(bodyRaw), "third_class");
   }
   function renderOnboardingStep() {
     const step = currentOnboardingStep();
@@ -1093,6 +1194,88 @@
     if (step === "first_month") return renderOnboardingFirstMonthStep();
     if (step === "first_class") return renderOnboardingFirstClassStep();
     return renderOnboardingThirdClassStep();
+  }
+  // ---- COMM-378. Onboarding step content editor ------------------------
+  // Admin-console content management (same cluster as pinned content and
+  // the announcement/analytics admin surfaces), not a coach-tools member-
+  // relationship action - see backlog.md's own placement note. Gated on
+  // community.content.manage_onboarding or real is_admin(), matching
+  // onboarding_step_content's own write policy exactly - a coach without
+  // that permission never sees the entry point at all, per this ticket's
+  // own criterion.
+  const ONBOARDING_STEPS_ORDER = ["welcome", "first_week", "first_month", "first_class", "third_class"];
+  const ONBOARDING_STEP_LABELS = {
+    welcome: "ברוכים הבאים", first_week: "השבוע הראשון", first_month: "החודש הראשון",
+    first_class: "אימון ראשון", third_class: "אימון שלישי",
+  };
+  // Seeded from the loaded row the first time a step is touched, and never
+  // re-seeded from a background reload afterward - so a save landing on one
+  // row (which triggers loadOnboardingStepContent() again) can never clobber
+  // an in-progress, unsaved edit on a sibling row.
+  function onboardingEditorDraft(step) {
+    const drafts = state.onboarding.editor.drafts;
+    if (!drafts[step]) {
+      const c = state.onboarding.stepContent[step];
+      drafts[step] = { title: (c && c.title) || "", body: (c && c.body) || "" };
+    }
+    return drafts[step];
+  }
+  async function saveOnboardingContent(step) {
+    if (!state.user || !(hasPerm(PERM.CONTENT_MANAGE_ONBOARDING) || isAdmin())) return;
+    const e = state.onboarding.editor;
+    if (e.saving[step]) return;
+    const draft = onboardingEditorDraft(step);
+    const title = String(draft.title || "").trim().slice(0, 120);
+    const body = String(draft.body || "").slice(0, 2000);
+    const formId = "onboardingEdit_" + step;
+    if (!title) { setFieldErrors(formId, { title: "יש למלא כותרת" }); return; }
+    setFieldErrors(formId, {});
+    e.saving[step] = true; e.saved[step] = false; rerender();
+    const { error } = await client.from("onboarding_step_content").update({ title, body }).eq("step", step);
+    e.saving[step] = false;
+    if (error) { setFieldErrors(formId, { title: "השמירה נכשלה, נסו שוב." }); rerender(); return; }
+    // contracts.md's own COMM-373 note: a refused UPDATE against this table
+    // never raises - a failing RLS USING clause on UPDATE just matches zero
+    // rows - so a client that only checks `error` cannot tell a real save
+    // from a silently-dropped one. Reading the row back is the only honest
+    // check; a mismatch means the write did not really land.
+    await loadOnboardingStepContent();
+    const saved = state.onboarding.stepContent[step];
+    if (!saved || saved.title !== title || (saved.body || "") !== body) {
+      setFieldErrors(formId, { title: "השמירה לא בוצעה - ייתכן שאין הרשאה מספקת." });
+      rerender();
+      return;
+    }
+    delete e.drafts[step]; // next read reflects the fresh server row
+    e.saved[step] = true;
+    rerender();
+  }
+  function renderOnboardingContentEditor() {
+    if (!(hasPerm(PERM.CONTENT_MANAGE_ONBOARDING) || isAdmin())) return "";
+    let body;
+    if (!state.onboarding.stepContentLoaded && !state.onboarding.stepContentError) {
+      const skRow = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:60%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
+      body = `<div class="log-list" aria-busy="true" data-onboarding-editor-skeleton="1">${skRow.repeat(5)}</div>`;
+    } else if (state.onboarding.stepContentError) {
+      body = `<div class="empty">לא ניתן היה לטעון את תוכן ההיכרות.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="onboarding-content-retry">ניסיון חוזר</button></div></div>`;
+    } else {
+      body = ONBOARDING_STEPS_ORDER.map((step) => {
+        const draft = onboardingEditorDraft(step);
+        const formId = "onboardingEdit_" + step;
+        const saving = !!state.onboarding.editor.saving[step];
+        const saved = !!state.onboarding.editor.saved[step];
+        return `<div class="chart-card" style="margin-bottom:10px;" data-onboarding-editor-row="${step}">
+          <div class="field-label" style="margin-bottom:6px;">${esc(ONBOARDING_STEP_LABELS[step] || step)}</div>
+          ${field(formId, "title", "כותרת", `<input class="text-input" maxlength="120" data-onboarding-edit-title="${step}" value="${esc(draft.title)}"/>`)}
+          ${field(formId, "body", "משפט פתיחה", `<textarea class="text-input" maxlength="2000" rows="3" data-onboarding-edit-body="${step}">${esc(draft.body)}</textarea>`)}
+          <div class="chip-row" style="margin-top:6px;">
+            <button class="chip-btn primary" data-community-action="onboarding-content-save" data-step="${step}"${saving ? " disabled" : ""}>${saving ? "שומר…" : "שמירה"}</button>
+            ${saved ? `<span class="footer-note" role="status">נשמר</span>` : ""}
+          </div>
+        </div>`;
+      }).join("");
+    }
+    return `<div class="ach-section" style="margin-top:18px;" data-onboarding-editor-section="1">${sectionHead("var(--teal)", "עריכת תוכן היכרות", true)}${body}</div>`;
   }
   // COMM-218. The three-tier client-facing control that replaces the plain
   // `important` boolean; `announcements.important` still exists server-side
@@ -1938,6 +2121,253 @@
     setMessage("הרשאת מאמן/ת בוטלה");
     await searchMembers(state.members.search);
   }
+  // ---- COMM-376. Invite and code management -----------------------------
+  // Two independent panels, gated on the two different permissions COMM-
+  // 370/371 set up server-side (contracts.md's own "Needs from schema,
+  // registration and invite management" section is the ground truth for
+  // every signature below - COMM-376's own ticket text still names the
+  // pre-hardening (p_code, p_role) shapes, which never shipped). A coach who
+  // holds community.member.invite but not community.invite.manage_codes
+  // sees the per-person panel only, matching that permission split exactly.
+  function inviteCodeCreateErrorText(error) {
+    const msg = error && error.message;
+    return {
+      "not authorized": "אין הרשאה ליצור קוד הצטרפות.",
+      "invalid role": "תפקיד לא תקין.",
+      "shared codes cannot grant coach": "קוד משותף לא יכול להעניק הרשאת מאמן/ת.",
+      "max uses must be between 1 and 1000": "מספר השימושים חייב להיות בין 1 ל-1000.",
+      "expiry must be in the future": "תאריך התפוגה חייב להיות בעתיד.",
+    }[msg] || "יצירת הקוד נכשלה, נסו שוב.";
+  }
+  async function loadInviteCodes() {
+    if (!state.user || !(hasPerm(PERM.INVITE_MANAGE_CODES) || isAdmin())) { state.admin.inviteCodes.items = []; return; }
+    const ic = state.admin.inviteCodes;
+    ic.loading = true; ic.error = false; rerender();
+    const { data, error } = await client.rpc("admin_invite_code_list");
+    ic.loading = false; ic.loaded = true;
+    if (error) { ic.error = true; rerender(); return; }
+    ic.items = Array.isArray(data) ? data : [];
+    rerender();
+  }
+  async function createInviteCode(form) {
+    if (!state.user || !(hasPerm(PERM.INVITE_MANAGE_CODES) || isAdmin())) return;
+    const maxUsesRaw = String((form.elements.maxUses && form.elements.maxUses.value) || "").trim();
+    const expiresRaw = String((form.elements.expiresAt && form.elements.expiresAt.value) || "").trim();
+    const errors = {};
+    let maxUses = 100;
+    if (maxUsesRaw) {
+      maxUses = Number(maxUsesRaw);
+      if (!Number.isFinite(maxUses) || maxUses < 1 || maxUses > 1000) errors.maxUses = "מספר שימושים חייב להיות בין 1 ל-1000";
+    }
+    let expiresAtIso = null;
+    if (expiresRaw) {
+      const d = new Date(expiresRaw);
+      if (Number.isNaN(d.getTime()) || d.getTime() <= Date.now()) errors.expiresAt = "תאריך התפוגה חייב להיות בעתיד";
+      else expiresAtIso = d.toISOString();
+    }
+    if (Object.keys(errors).length) return setFieldErrors("communityInviteCodeCreate", errors);
+    setFieldErrors("communityInviteCodeCreate", {});
+    // p_role is always "member" - admin_invite_code_create refuses a coach
+    // role unconditionally (COMM-371's own DEVIATION note: a shared code
+    // with role='coach' would be permanently unredeemable, since
+    // redeem_invite_code's shared branch never grants anything but member),
+    // so there is no role selector here at all, not even for an admin.
+    const { data, error } = await client.rpc("admin_invite_code_create", { p_role: "member", p_expires_at: expiresAtIso, p_max_uses: maxUses });
+    if (error) return setMessage(inviteCodeCreateErrorText(error));
+    form.reset();
+    state.admin.inviteCodes.created = data;
+    setMessage("קוד ההצטרפות נוצר");
+    await loadInviteCodes();
+  }
+  async function setInviteCodeActive(codeId, active) {
+    if (!state.user || !(hasPerm(PERM.INVITE_MANAGE_CODES) || isAdmin()) || state.admin.inviteCodes.busy) return;
+    state.admin.inviteCodes.busy = codeId; rerender();
+    const { error } = await client.rpc("admin_invite_code_set_active", { p_code_id: codeId, p_active: active });
+    state.admin.inviteCodes.busy = null;
+    if (error) { setMessage("עדכון הסטטוס נכשל"); rerender(); return; }
+    await loadInviteCodes();
+  }
+  function dismissInviteCodeCreated() { state.admin.inviteCodes.created = null; rerender(); }
+  function copyInviteCode(code) {
+    if (!code) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(code).then(() => setMessage("הקוד הועתק")).catch(() => setMessage("ההעתקה נכשלה, אפשר להעתיק ידנית"));
+    } else {
+      setMessage("ההעתקה נכשלה, אפשר להעתיק ידנית");
+    }
+  }
+  const INVITE_STATUS_FILTERS = [
+    { id: "all", label: "הכול" }, { id: "pending", label: "ממתין" }, { id: "redeemed", label: "מומש" },
+    { id: "revoked", label: "בוטל" }, { id: "expired", label: "פג תוקף" },
+  ];
+  function inviteStatusLabel(s) { return { pending: "ממתין", redeemed: "מומש", revoked: "בוטל", expired: "פג תוקף" }[s] || s; }
+  async function loadInvites(reset) {
+    if (!state.user || !(hasPerm(PERM.MEMBER_INVITE) || isAdmin())) { state.admin.invites.items = []; return; }
+    const iv = state.admin.invites;
+    if (reset) { iv.items = []; iv.cursor = null; iv.end = false; iv.loading = true; } else { iv.loadingMore = true; }
+    iv.error = false; rerender();
+    const { data, error } = await client.rpc("admin_invite_list", { p_status: iv.status, p_cursor: iv.cursor, p_limit: 25 });
+    iv.loading = false; iv.loadingMore = false; iv.loaded = true;
+    if (error) { iv.error = true; rerender(); return; }
+    const page = Array.isArray(data) ? data : [];
+    iv.items = reset ? page : iv.items.concat(page);
+    iv.end = page.length < 25;
+    const last = page[page.length - 1];
+    if (last) iv.cursor = last.created_at;
+    rerender();
+  }
+  function setInviteStatusFilter(status) {
+    if (!INVITE_STATUS_FILTERS.some((s) => s.id === status) || state.admin.invites.status === status) return;
+    state.admin.invites.status = status;
+    loadInvites(true);
+  }
+  function inviteCreateErrorText(error) {
+    const msg = error && error.message;
+    return {
+      "not authorized": "אין הרשאה ליצור הזמנה מסוג זה.",
+      "invalid role": "תפקיד לא תקין.",
+      "label too long": "התווית ארוכה מדי (עד 120 תווים).",
+      "expiry must be in the future": "תאריך התפוגה חייב להיות בעתיד.",
+      "could not generate a unique invite code": "יצירת הקוד נכשלה, נסו שוב.",
+    }[msg] || "יצירת ההזמנה נכשלה, נסו שוב.";
+  }
+  async function createInvite(form) {
+    if (!state.user || !(hasPerm(PERM.MEMBER_INVITE) || isAdmin())) return;
+    const roleInput = form.querySelector('input[name="role"]:checked');
+    const role = roleInput ? roleInput.value : "member";
+    const label = String((form.elements.label && form.elements.label.value) || "").trim().slice(0, 120);
+    const expiresRaw = String((form.elements.expiresAt && form.elements.expiresAt.value) || "").trim();
+    const errors = {};
+    if (role !== "member" && role !== "coach") errors.label = "תפקיד לא תקין";
+    // COMM-376's own mandate: a coach never even sees the coach radio (see
+    // renderPersonInvitesPanel), but the server is the real boundary
+    // (admin_invite_create's 202609030008 narrowing) - this is a defensive
+    // second check in case that ever drifts, not the enforcement itself.
+    if (role === "coach" && !isAdmin()) errors.label = "רק מנהל/ת יכול/ה ליצור הזמנת מאמן/ת";
+    let expiresAtIso = null;
+    if (expiresRaw) {
+      const d = new Date(expiresRaw);
+      if (Number.isNaN(d.getTime()) || d.getTime() <= Date.now()) errors.expiresAt = "תאריך התפוגה חייב להיות בעתיד";
+      else expiresAtIso = d.toISOString();
+    }
+    if (Object.keys(errors).length) return setFieldErrors("communityInviteCreate", errors);
+    setFieldErrors("communityInviteCreate", {});
+    const { data, error } = await client.rpc("admin_invite_create", { p_role: role, p_label: label || null, p_expires_at: expiresAtIso });
+    if (error) return setFieldErrors("communityInviteCreate", { label: inviteCreateErrorText(error) });
+    form.reset();
+    state.admin.invites.created = data;
+    setMessage("ההזמנה נוצרה");
+    await loadInvites(true);
+  }
+  function dismissInviteCreated() { state.admin.invites.created = null; rerender(); }
+  async function revokeInvite(inviteId) {
+    if (!state.user || !(hasPerm(PERM.MEMBER_INVITE) || isAdmin()) || state.admin.invites.revoking) return;
+    state.admin.invites.revoking = inviteId; rerender();
+    const { error } = await client.rpc("admin_invite_revoke", { p_invite_id: inviteId });
+    state.admin.invites.revoking = null;
+    if (error) {
+      setMessage(error.message === "already redeemed" ? "לא ניתן לבטל הזמנה שכבר מומשה" : "ביטול ההזמנה נכשל");
+      rerender();
+      return;
+    }
+    setMessage("ההזמנה בוטלה");
+    await loadInvites(true);
+  }
+  function renderSharedCodesPanel() {
+    if (!(hasPerm(PERM.INVITE_MANAGE_CODES) || isAdmin())) return "";
+    const ic = state.admin.inviteCodes;
+    const createdHtml = ic.created ? `<div class="chart-card" style="margin-bottom:10px;border:1px solid var(--brass);" data-invite-code-created="1">
+      <div class="field-label" style="margin-bottom:4px;">הקוד נוצר - זו הפעם היחידה שהוא יוצג</div>
+      <div class="flex gap-10" style="align-items:center;flex-wrap:wrap;">
+        <code class="mono" style="font-size:15px;">${esc(ic.created.code)}</code>
+        <button class="chip-btn" data-community-action="copy-invite-code" data-code="${esc(ic.created.code)}">העתקה</button>
+        <button class="link-btn" data-community-action="dismiss-invite-code-created">סגירה</button>
+      </div>
+    </div>` : "";
+    const form = `<form id="communityInviteCodeCreate" class="chart-card" style="margin-bottom:10px;">
+      <div class="field-label" style="margin-bottom:6px;">קוד הצטרפות משותף חדש</div>
+      ${field("communityInviteCodeCreate", "maxUses", "מקסימום שימושים", `<input class="text-input" name="maxUses" type="number" min="1" max="1000" placeholder="100"/>`)}
+      ${field("communityInviteCodeCreate", "expiresAt", "תפוגה (רשות)", `<input class="text-input" name="expiresAt" type="date"/>`)}
+      <button class="chip-btn primary" type="submit" style="margin-top:6px;">יצירת קוד</button>
+    </form>`;
+    let list;
+    if (ic.loading && !ic.items.length) {
+      const skRow = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:55%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
+      list = `<div class="log-list" aria-busy="true" data-invite-codes-skeleton="1">${skRow.repeat(2)}</div>`;
+    } else if (ic.error) {
+      list = `<div class="empty">לא ניתן היה לטעון את הקודים.</div>`;
+    } else if (!ic.items.length) {
+      list = `<div class="empty">אין קודי הצטרפות משותפים עדיין</div>`;
+    } else {
+      list = `<div class="log-list">${ic.items.map((c) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:6px;" data-invite-code-id="${esc(c.id)}">
+        <div class="flex" style="justify-content:space-between;width:100%;">
+          <span>${roleCodeLabel(c.role)} · נוצר ${esc(String(c.created_at || "").slice(0, 10))}</span>
+          <span class="admin-tag" style="${c.active ? "" : "opacity:.6;"}">${c.active ? "פעיל" : "כבוי"}</span>
+        </div>
+        <div style="color:var(--steel);font-size:12px;">${Number(c.redemption_count || 0)} מימושים · שימושים ${Number(c.use_count || 0)}${c.max_uses ? "/" + esc(c.max_uses) : ""}${c.expires_at ? " · תפוגה " + esc(String(c.expires_at).slice(0, 10)) : ""}</div>
+        <button class="chip-btn"${ic.busy ? " disabled" : ""} data-community-action="invite-code-toggle-active" data-id="${esc(c.id)}" data-active="${c.active ? "0" : "1"}">${c.active ? "כיבוי" : "הפעלה"}</button>
+      </div>`).join("")}</div>`;
+    }
+    return `<div data-invite-codes-panel="1">
+      <div class="field-label" style="margin:4px 0 8px;">קודי הצטרפות משותפים</div>
+      <div class="footer-note" style="margin-bottom:8px;">כיבוי קוד לא משפיע על מי שכבר הצטרף/ה דרכו - הוא רק מפסיק להתקבל בהצטרפויות חדשות.</div>
+      ${createdHtml}${form}${list}
+    </div>`;
+  }
+  function renderPersonInvitesPanel() {
+    if (!(hasPerm(PERM.MEMBER_INVITE) || isAdmin())) return "";
+    const iv = state.admin.invites;
+    const admin = isAdmin();
+    const createdHtml = iv.created ? `<div class="chart-card" style="margin-bottom:10px;border:1px solid var(--brass);" data-invite-created="1">
+      <div class="field-label" style="margin-bottom:4px;">ההזמנה נוצרה - זו הפעם היחידה שהקוד יוצג</div>
+      <div class="flex gap-10" style="align-items:center;flex-wrap:wrap;">
+        <code class="mono" style="font-size:15px;">${esc(iv.created.code)}</code>
+        <button class="chip-btn" data-community-action="copy-invite-code" data-code="${esc(iv.created.code)}">העתקה</button>
+        <button class="link-btn" data-community-action="dismiss-invite-created">סגירה</button>
+      </div>
+    </div>` : "";
+    const form = `<form id="communityInviteCreate" class="chart-card" style="margin-bottom:10px;">
+      <div class="field-label" style="margin-bottom:6px;">הזמנה אישית חדשה</div>
+      <div class="chip-row" style="margin-bottom:6px;">
+        <label class="flex gap-6" style="align-items:center;"><input type="radio" name="role" value="member" checked/> חבר/ה</label>
+        ${admin ? `<label class="flex gap-6" style="align-items:center;"><input type="radio" name="role" value="coach"/> מאמן/ת</label>` : `<span class="footer-note">הזמנת מאמן/ת זמינה רק למנהל/ת</span>`}
+      </div>
+      ${field("communityInviteCreate", "label", "תווית (רשות)", `<input class="text-input" name="label" maxlength="120" placeholder="למשל: שם המוזמן/ת"/>`)}
+      ${field("communityInviteCreate", "expiresAt", "תפוגה (רשות)", `<input class="text-input" name="expiresAt" type="date"/>`)}
+      <button class="chip-btn primary" type="submit" style="margin-top:6px;">יצירת הזמנה</button>
+    </form>`;
+    const filters = `<div class="chip-row" style="margin:0 0 10px;">${INVITE_STATUS_FILTERS.map((s) => `<button class="chip-btn${iv.status === s.id ? " selected" : ""}" data-community-action="invite-status-filter" data-status="${s.id}">${s.label}</button>`).join("")}</div>`;
+    const rowHtml = (inv) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:4px;" data-invite-id="${esc(inv.id)}">
+      <div class="flex" style="justify-content:space-between;width:100%;">
+        <span>${esc(inv.label || "(ללא תווית)")} · ${roleCodeLabel(inv.role)}</span>
+        <span class="admin-tag">${inviteStatusLabel(inv.status)}</span>
+      </div>
+      <div style="color:var(--steel);font-size:12px;">נוצר ${esc(String(inv.created_at || "").slice(0, 10))}${inv.expires_at ? " · תפוגה " + esc(String(inv.expires_at).slice(0, 10)) : ""}</div>
+      ${inv.status === "redeemed" ? `<div style="color:var(--steel);font-size:12px;">מומש/ה ע"י ${esc(inv.redeemed_by_display_name || inv.redeemed_by_handle || "חבר/ה")} · ${esc(String(inv.redeemed_at || "").slice(0, 10))}</div>` : ""}
+      ${inv.status === "pending" ? `<button class="chip-btn danger"${iv.revoking === inv.id ? " disabled" : ""} data-community-action="invite-revoke" data-id="${esc(inv.id)}">ביטול</button>` : ""}
+    </div>`;
+    let list;
+    if (iv.loading && !iv.items.length) {
+      const skRow = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:55%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
+      list = `<div class="log-list" aria-busy="true" data-person-invites-skeleton="1">${skRow.repeat(3)}</div>`;
+    } else if (iv.error) {
+      list = `<div class="empty">לא ניתן היה לטעון את ההזמנות.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="invite-list-retry">ניסיון חוזר</button></div></div>`;
+    } else if (!iv.items.length) {
+      list = `<div class="empty">עדיין לא נוצרו הזמנות אישיות</div>`;
+    } else {
+      list = `<div class="log-list">${iv.items.map(rowHtml).join("")}</div>${iv.end ? "" : `<div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="invite-list-more"${iv.loadingMore ? " disabled" : ""}>${iv.loadingMore ? "טוען…" : "טעינת עוד"}</button></div>`}`;
+    }
+    return `<div data-person-invites-panel="1" style="margin-top:14px;">
+      <div class="field-label" style="margin:4px 0 8px;">הזמנות אישיות</div>
+      ${createdHtml}${form}${filters}${list}
+    </div>`;
+  }
+  function renderInviteManagement() {
+    const shared = renderSharedCodesPanel();
+    const person = renderPersonInvitesPanel();
+    if (!shared && !person) return "";
+    return `<div class="ach-section" style="margin-top:18px;" data-invite-management-section="1">${sectionHead("var(--purple)", "ניהול הזמנות וקודי הצטרפות", true)}${shared}${person}</div>`;
+  }
   // ---- Pinned content (COMM-155) --------------------------------------
   // Read is open to every member; pin_set / pin_clear are the only write
   // paths and both check community.content.pin and write admin_actions in
@@ -2052,6 +2482,9 @@
     // message asked a later ticket to do. Not awaited: this function's own
     // render must not wait on an RPC it does not itself depend on.
     loadMemberSegments();
+    // COMM-379, same precedent, same reasoning: fires the instant a.data
+    // becomes truthy, not awaited, no second period selector.
+    loadRegistrationFunnel();
   }
   function setAdminAnalyticsMode(mode) {
     if (mode !== "week" && mode !== "month") return;
@@ -2119,6 +2552,34 @@
     // happens at render time in groupMemberSegments(), never here, the same
     // "server is the one definition" posture data itself already follows.
     ms.data = Array.isArray(data) ? data : [];
+    rerender();
+  }
+  // ---- COMM-379. Registration funnel analytics --------------------------
+  // Same gate as the shell itself (community.analytics.view or real
+  // is_admin() - registration_funnel()'s own AUTH note says NOT is_staff(),
+  // matching analytics_dashboard exactly), so a coach who can browse the
+  // roster (COMM-377, is_staff()) is still refused here, the one asymmetry
+  // this cluster keeps consistent everywhere it appears.
+  const REGISTRATION_FUNNEL_ERROR_LABELS = {
+    "not authorized": "אין לך הרשאה לצפות בנתוני ההרשמה.",
+    "period required": "יש לבחור טווח תאריכים.",
+    "period end before start": "תאריך הסיום קודם לתאריך ההתחלה.",
+    "period exceeds 366 days": "טווח התאריכים ארוך מדי (מקסימום 366 ימים).",
+  };
+  function registrationFunnelErrorText(error) {
+    const msg = error && error.message;
+    return (msg && REGISTRATION_FUNNEL_ERROR_LABELS[msg]) || "לא ניתן היה לטעון את נתוני ההרשמה.";
+  }
+  async function loadRegistrationFunnel() {
+    if (!state.user || !(hasPerm(PERM.ANALYTICS_VIEW) || isAdmin())) { state.analytics.registrationFunnel.data = null; return; }
+    const a = state.analytics.dashboard;
+    const rf = state.analytics.registrationFunnel;
+    rf.loading = true; rf.error = false; rf.errorText = "";
+    rerender();
+    const { data, error } = await client.rpc("registration_funnel", { p_period_start: a.start, p_period_end: a.end });
+    rf.loading = false; rf.loaded = true;
+    if (error) { rf.error = true; rf.errorText = registrationFunnelErrorText(error); rerender(); return; }
+    rf.data = data || null;
     rerender();
   }
   // A segment card's own drill-down toggle - independent of anything
@@ -3529,6 +3990,7 @@
     else if (c.action === "admin-grant-coach") adminGrantCoach(c.payload.userId);
     else if (c.action === "admin-set-role") adminSetRole(c.payload.userId, c.payload.role);
     else if (c.action === "admin-remove-member") adminRemoveMember(c.payload.userId);
+    else if (c.action === "admin-invite-revoke") revokeInvite(c.payload.inviteId);
     else if (c.action === "post-delete-rpc") postDeleteViaMenu(c.payload.postId);
     else if (c.action === "delete-comment") deleteComment(c.payload.commentId, c.payload.postId);
     else if (c.action === "composer-discard") closeComposer();
@@ -4332,39 +4794,108 @@
     if (m.is_admin) return "מנהל/ת";
     return roleCodeLabel(m.role) || (m.role === "member" ? "חבר/ה" : "לא הצטרפ/ה עדיין");
   }
-  function renderMemberManagement() {
-    if (!isAdmin()) return "";
-    const results = state.members.results;
-    // COMM-156. member -> coach and coach -> member keep the original
-    // dedicated controls. head_coach is the added selectable role.
-    const roleButtons = (m) => {
-      const role = m.role || "member";
-      const btns = [];
-      if (role === "coach" || role === "head_coach") {
-        btns.push(`<button class="chip-btn" data-community-action="admin-revoke-coach" data-id="${esc(m.id)}">ביטול הרשאת מאמן/ת</button>`);
-      } else {
-        btns.push(`<button class="chip-btn" data-community-action="admin-grant-coach" data-id="${esc(m.id)}">הענקת הרשאת מאמן/ת</button>`);
-      }
-      if (role !== "head_coach") {
-        btns.push(`<button class="chip-btn" data-community-action="admin-set-role" data-id="${esc(m.id)}" data-role="head_coach">הפיכה למאמן/ת ראשי/ת</button>`);
-      } else {
-        btns.push(`<button class="chip-btn" data-community-action="admin-set-role" data-id="${esc(m.id)}" data-role="coach">הורדה למאמן/ת</button>`);
-      }
-      return btns.join("");
-    };
-    const rowHtml = (m) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:6px;">
+  // COMM-156. member -> coach and coach -> member keep the original
+  // dedicated controls. head_coach is the added selectable role. `readOnly`
+  // (COMM-377) renders the exact same buttons, disabled, with a tooltip -
+  // for a staff viewer who is not a real admin, browsing the roster - rather
+  // than a second control set: the server-side boundary (admin_grant_coach/
+  // admin_revoke_coach's own inline is_admin()) is unchanged either way,
+  // this only decides whether the control looks clickable.
+  function memberRoleButtonsHtml(m, readOnly) {
+    const role = m.role || "member";
+    const dis = readOnly ? ' disabled title="שינוי הרשאה זמין למנהל/ת בלבד"' : "";
+    const btns = [];
+    if (role === "coach" || role === "head_coach") {
+      btns.push(`<button class="chip-btn"${dis} data-community-action="admin-revoke-coach" data-id="${esc(m.id)}">ביטול הרשאת מאמן/ת</button>`);
+    } else {
+      btns.push(`<button class="chip-btn"${dis} data-community-action="admin-grant-coach" data-id="${esc(m.id)}">הענקת הרשאת מאמן/ת</button>`);
+    }
+    if (role !== "head_coach") {
+      btns.push(`<button class="chip-btn"${dis} data-community-action="admin-set-role" data-id="${esc(m.id)}" data-role="head_coach">הפיכה למאמן/ת ראשי/ת</button>`);
+    } else {
+      btns.push(`<button class="chip-btn"${dis} data-community-action="admin-set-role" data-id="${esc(m.id)}" data-role="coach">הורדה למאמן/ת</button>`);
+    }
+    return btns.join("");
+  }
+  // COMM-377. The exact row shape and renderer admin_search_members'
+  // results already use, shared verbatim with the roster's own rows
+  // (admin_member_roster returns the identical eight columns, pgTAP 0060's
+  // own assertion) - no second row template. `opts.readOnly` disables the
+  // role buttons (a staff-but-not-admin roster viewer); `opts.showRemove`
+  // (default true) hides the destructive remove-member control on the
+  // roster row, which this ticket's own acceptance criteria never asks for
+  // there - only the dedicated search-based panel below offers it.
+  function memberManagementRowHtml(m, opts) {
+    opts = opts || {};
+    const readOnly = !!opts.readOnly;
+    const showRemove = opts.showRemove !== false;
+    return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:6px;">
       <div class="flex gap-10" style="align-items:center;">${avatarHtml(m.display_name || m.handle, 32, m.avatar_url)}<div><div style="font-weight:700;">${nameHtml(m.display_name, m.handle)}${isCoachRole(m.role) ? " " + coachBadgeHtml(m.role) : ""}</div><div style="color:var(--steel);font-size:11px;"><bdi>@${esc(m.handle)}</bdi> · ${memberRoleLabel(m)}</div></div></div>
       <div style="color:var(--steel);font-size:11px;">הצטרפ/ה: ${m.redeemed_at ? esc(String(m.redeemed_at).slice(0, 10)) : "—"} · פעילות אחרונה: ${m.last_activity_on ? esc(m.last_activity_on) : "מעולם לא"}</div>
       <div class="footer-note" style="margin:0;font-size:10.5px;">${esc(m.id)}</div>
       ${m.is_admin ? "" : `<div class="chip-row" style="margin-top:0;">
-        ${roleButtons(m)}
-        <button class="chip-btn danger" data-community-action="admin-remove-member" data-id="${esc(m.id)}">הסרת חבר/ה</button>
+        ${memberRoleButtonsHtml(m, readOnly)}
+        ${showRemove ? `<button class="chip-btn danger" data-community-action="admin-remove-member" data-id="${esc(m.id)}">הסרת חבר/ה</button>` : ""}
       </div>`}
     </div>`;
+  }
+  function renderMemberManagement() {
+    if (!isAdmin()) return "";
+    const results = state.members.results;
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--purple)", "ניהול חברים", true)}
       <div class="search-box"><input id="adminMemberSearch" placeholder="חיפוש לפי handle, שם, או הדבקת מזהה משתמש" aria-label="חיפוש חברים לניהול" value="${esc(state.members.search)}"/></div>
-      ${results.length ? `<div class="log-list">${results.map(rowHtml).join("")}</div>` : state.members.search.trim().length >= 2 ? `<div class="empty">לא נמצאו חברים תואמים</div>` : `<div class="empty">חיפוש לפי handle, שם, או מזהה משתמש (UUID)</div>`}
+      ${results.length ? `<div class="log-list">${results.map((m) => memberManagementRowHtml(m, { readOnly: false, showRemove: true })).join("")}</div>` : state.members.search.trim().length >= 2 ? `<div class="empty">לא נמצאו חברים תואמים</div>` : `<div class="empty">חיפוש לפי handle, שם, או מזהה משתמש (UUID)</div>`}
     </div>`;
+  }
+  // ---- COMM-377. Member roster -------------------------------------------
+  // A new browse entry point onto the SAME member-management area
+  // renderMemberManagement() already offers by search - not a second
+  // implementation. Read gate is is_staff() (admin_member_roster's own
+  // AUTH), deliberately looser than renderMemberManagement()'s is_admin():
+  // a coach may browse every row and act on none, via the readOnly role
+  // buttons above.
+  const ROSTER_PAGE_SIZE = 25;
+  async function loadRoster(reset) {
+    if (!state.user || !isStaff()) { state.admin.roster.items = []; return; }
+    const r = state.admin.roster;
+    if (reset) { r.items = []; r.cursor = null; r.end = false; r.loading = true; } else { r.loadingMore = true; }
+    r.error = false; rerender();
+    const { data, error } = await client.rpc("admin_member_roster", { p_cursor: r.cursor, p_limit: ROSTER_PAGE_SIZE });
+    r.loading = false; r.loadingMore = false; r.loaded = true;
+    if (error) { r.error = true; rerender(); return; }
+    const page = Array.isArray(data) ? data : [];
+    r.items = reset ? page : r.items.concat(page);
+    const last = page[page.length - 1];
+    // GAP flagged in docs/community/backlog.md's COMM-377 paragraph:
+    // admin_member_roster sorts and pages on coalesce(invite_redemptions.
+    // redeemed_at, profiles.created_at), but only ever returns redeemed_at -
+    // a profile with no invite_redemptions row (mid-signup, or a pre-invite-
+    // gate legacy account) sorts on a created_at value this client never
+    // sees, so there is no correct next cursor once such a row is the last
+    // one on a page. Resending a null cursor would not skip it - the RPC
+    // reads a null p_cursor as "no bound at all" and restarts from the very
+    // top, looping the same rows forever - so pagination simply stops one
+    // page early there instead. Every row already fetched is real and
+    // correctly ordered; the only cost is not reaching further into a
+    // club's legacy tail in one browsing session.
+    r.end = page.length < ROSTER_PAGE_SIZE || !last || last.redeemed_at == null;
+    r.cursor = last ? last.redeemed_at : r.cursor;
+    rerender();
+  }
+  function renderMemberRoster() {
+    if (!isStaff()) return "";
+    const r = state.admin.roster;
+    let body;
+    if (r.loading && !r.items.length) {
+      const skRow = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:55%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
+      body = `<div class="log-list" aria-busy="true" data-member-roster-skeleton="1">${skRow.repeat(4)}</div>`;
+    } else if (r.error) {
+      body = `<div class="empty">לא ניתן היה לטעון את רשימת החברים.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="roster-retry">ניסיון חוזר</button></div></div>`;
+    } else {
+      const readOnly = !isAdmin();
+      body = `<div class="log-list">${r.items.map((m) => memberManagementRowHtml(m, { readOnly, showRemove: false })).join("")}</div>${r.end ? "" : `<div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="roster-more"${r.loadingMore ? " disabled" : ""}>${r.loadingMore ? "טוען…" : "טעינת עוד"}</button></div>`}`;
+    }
+    return `<div class="ach-section" style="margin-top:18px;" data-member-roster-section="1">${sectionHead("var(--teal)", "רשימת חברים", true)}${body}</div>`;
   }
   // COMM-321 Club Modules. Same gating idiom the other four admin-only
   // account sections already use (renderModeration, renderMemberManagement,
@@ -4732,6 +5263,65 @@
     }
     return `<div style="margin-top:14px;" data-member-segments-section="1"><div class="field-label" style="margin:4px 0 8px;">פילוח מעורבות חברים</div>${body}</div>`;
   }
+  // ---- COMM-379. Registration funnel analytics ---------------------------
+  // Same "appended inside the shell's own populated branch" shape as
+  // renderMemberSegments() just above - reuses COMM-310's own period
+  // selector and load cycle, carries its own independent loading/error/
+  // populated switch on state.analytics.registrationFunnel.
+  function renderRegistrationFunnel() {
+    const rf = state.analytics.registrationFunnel;
+    let body;
+    if (rf.loading && !rf.data) {
+      const skRow = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:55%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
+      const skCard = `<div class="chart-card" style="margin-bottom:10px;">${skRow}</div>`;
+      body = `<div aria-busy="true" data-registration-funnel-skeleton="1">${skCard.repeat(3)}</div>`;
+    } else if (rf.error) {
+      body = `<div class="empty">${esc(rf.errorText || "לא ניתן היה לטעון את נתוני ההרשמה.")}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="registration-funnel-retry">ניסיון חוזר</button></div></div>`;
+    } else if (!rf.data) {
+      body = `<div class="empty">אין עדיין נתונים לתצוגה.</div>`;
+    } else {
+      const d = rf.data;
+      const sc = d.shared_codes || {};
+      const pp = d.per_person_invites || {};
+      const f = d.funnel || {};
+      // An ORDERED set of steps, each with its own count and, from the
+      // second step on, a real percentage of the PREVIOUS step - not four
+      // independent counters (COMM-379's own acceptance criterion). The
+      // three rate fields are already computed step-over-previous-step
+      // server-side (202609030006: redeemed_rate = redeemed/invites_issued,
+      // profile_completed_rate = profile_completed/redeemed, verified_rate =
+      // verified/profile_completed), so this only has to render them in
+      // order, never re-derive them.
+      // `hasRate: false` marks the FIRST step, which structurally has no
+      // previous step to compare against - true `null` from a step's own
+      // rate field (a zero denominator, e.g. no redemptions this period)
+      // still renders through adminAnalyticsRatioText, which is what turns
+      // it into an em dash rather than omitting the rate entirely - the
+      // two are different claims and must not look the same as "no rate at
+      // all" the way the first step's own blank rightly does.
+      const steps = [
+        { label: "הזמנות אישיות שהופצו", value: f.invites_issued, hasRate: false, rate: null },
+        { label: "מומשו", value: f.redeemed, hasRate: true, rate: f.redeemed_rate },
+        { label: "השלימו פרופיל", value: f.profile_completed, hasRate: true, rate: f.profile_completed_rate },
+        { label: "אומתו", value: f.verified, hasRate: true, rate: f.verified_rate },
+      ];
+      const funnelHtml = `<div class="log-list">${steps.map((s) =>
+        adminAnalyticsRow(s.label, adminAnalyticsCount(s.value) + (s.hasRate ? " · " + adminAnalyticsRatioText(s.rate, true) : ""))).join("")}</div>`;
+      const sharedHtml = adminAnalyticsCard("קודי הצטרפות משותפים (כרגע)",
+        adminAnalyticsRow("קודים פעילים", adminAnalyticsCount(sc.active_count))
+        + adminAnalyticsRow("מימושים בתקופה", adminAnalyticsCount(sc.redemptions_in_period)));
+      const personHtml = adminAnalyticsCard("הזמנות אישיות",
+        adminAnalyticsRow("נוצרו בתקופה", adminAnalyticsCount(pp.created_in_period))
+        + adminAnalyticsRow("מומשו בתקופה", adminAnalyticsCount(pp.redeemed_in_period))
+        + adminAnalyticsRow("בוטלו בתקופה", adminAnalyticsCount(pp.revoked_in_period))
+        + adminAnalyticsRow("ממתינות כרגע", adminAnalyticsCount(pp.pending_now))
+        + adminAnalyticsRow("פגות תוקף ולא מומשו, כרגע", adminAnalyticsCount(pp.expired_unredeemed_now)));
+      body = `<div class="footer-note" style="margin-bottom:8px;">״הזמנות שהופצו״ סופר רק הזמנות אישיות - מי שהצטרפ/ה דרך קוד משותף לא נספר/ת כאן, ולכן סה״כ המומשים יכול לעלות על מספר ההזמנות שהופצו.</div>`
+        + adminAnalyticsCard("משפך הרשמה", funnelHtml)
+        + sharedHtml + personHtml;
+    }
+    return `<div style="margin-top:14px;" data-registration-funnel-section="1"><div class="field-label" style="margin:4px 0 8px;">משפך הרשמה</div>${body}</div>`;
+  }
   // ---- The shell itself ---------------------------------------------------
   // Frontend states (COMM-310's own "Frontend states" list): loading is a
   // skeleton (data-admin-analytics-skeleton, the same aria-busy skeleton
@@ -4762,7 +5352,7 @@
       // picker." renderMemberSegments() carries its own independent
       // loading/error/populated switch on state.analytics.segments, so it is
       // not itself gated on a.data beyond appearing here.
-      body = renderAdminAnalyticsCoreGroup(a.data) + renderAdminAnalyticsAdditionalGroup(a.data) + renderMemberSegments();
+      body = renderAdminAnalyticsCoreGroup(a.data) + renderAdminAnalyticsAdditionalGroup(a.data) + renderMemberSegments() + renderRegistrationFunnel();
     }
     return `<div class="ach-section" style="margin-top:18px;" data-admin-analytics-dashboard="1">${sectionHead("var(--energy)", "לוח בקרה: אנליטיקת קהילה", true)}${renderAdminAnalyticsPeriodSelector()}${body}</div>`;
   }
@@ -9706,7 +10296,7 @@
     const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "חברים חדשים", true)}${state.club.newMembers.length ? `<div class="log-list">${state.club.newMembers.map((m) => `<div class="log-row"><span>${nameHtml(m.display_name, m.handle)}</span><span style="color:var(--steel);font-size:12px;">${esc(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין חברים חדשים לאחרונה</div>`}</div>` : "";
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.club.inactiveMembers.length ? `<div class="log-list">${state.club.inactiveMembers.map((m) => `<div class="log-row"><span>${nameHtml(m.display_name, m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? esc(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
-    const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderClubModulesPanel() + renderAdminAnalyticsDashboard() + renderRetentionCorrelations() + renderCommunityHealthScore() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
+    const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderMemberRoster() + renderInviteManagement() + renderOnboardingContentEditor() + renderClubModulesPanel() + renderAdminAnalyticsDashboard() + renderRetentionCorrelations() + renderCommunityHealthScore() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
 
@@ -9981,6 +10571,13 @@
     // side and share a gate) - the two RPCs have nothing to do with each
     // other from the client's point of view.
     if (state.ui.tab === "account" && isAdmin() && !state.analytics.health.loaded && !state.analytics.health.loading) loadCommunityHealth();
+    // COMM-376. Same lazy pattern, each panel gated on the exact permission
+    // its own RPC needs - a coach who only holds community.member.invite
+    // triggers the per-person load and never the shared-code one.
+    if (state.ui.tab === "account" && (hasPerm(PERM.INVITE_MANAGE_CODES) || isAdmin()) && !state.admin.inviteCodes.loaded && !state.admin.inviteCodes.loading) loadInviteCodes();
+    if (state.ui.tab === "account" && (hasPerm(PERM.MEMBER_INVITE) || isAdmin()) && !state.admin.invites.loaded && !state.admin.invites.loading) loadInvites(true);
+    // COMM-377. is_staff(), matching admin_member_roster's own looser AUTH.
+    if (state.ui.tab === "account" && isStaff() && !state.admin.roster.loaded && !state.admin.roster.loading) loadRoster(true);
     // COMM-309. The monthly club recap's member-facing card: fetched the
     // first time a member lands on the Account tab, same lazy pattern as
     // the audit view just above (and every other tab-scoped load in this
@@ -10221,6 +10818,23 @@
     else if (action === "retention-onboarding-step") setRetentionOnboardingStep(el.dataset.step);
     // COMM-312 community health score.
     else if (action === "community-health-retry") loadCommunityHealth();
+    // COMM-379 registration funnel analytics.
+    else if (action === "registration-funnel-retry") loadRegistrationFunnel();
+    // COMM-378 onboarding step content editor.
+    else if (action === "onboarding-content-retry") loadOnboardingStepContent().then(rerender);
+    else if (action === "onboarding-content-save") saveOnboardingContent(el.dataset.step);
+    // COMM-376 invite and code management.
+    else if (action === "invite-code-toggle-active") setInviteCodeActive(el.dataset.id, el.dataset.active === "1");
+    else if (action === "copy-invite-code") copyInviteCode(el.dataset.code);
+    else if (action === "dismiss-invite-code-created") dismissInviteCodeCreated();
+    else if (action === "dismiss-invite-created") dismissInviteCreated();
+    else if (action === "invite-status-filter") setInviteStatusFilter(el.dataset.status);
+    else if (action === "invite-list-retry") loadInvites(true);
+    else if (action === "invite-list-more") loadInvites(false);
+    else if (action === "invite-revoke") askConfirm({ title: "ביטול הזמנה", message: "ההזמנה תבוטל ולא תהיה ניתנת עוד למימוש. להמשיך?", confirmLabel: "ביטול ההזמנה", destructive: true, action: "admin-invite-revoke", payload: { inviteId: el.dataset.id } });
+    // COMM-377 member roster.
+    else if (action === "roster-retry") loadRoster(true);
+    else if (action === "roster-more") loadRoster(false);
     // COMM-155 pins.
     else if (action === "unpin") unpinTarget(el.dataset.type, el.dataset.id);
     else if (action === "pin") pinTarget(el.dataset.type, el.dataset.id, el.dataset.note || "");
@@ -10401,6 +11015,8 @@
     if (event.target.id === "communityProfile") { event.preventDefault(); saveProfile(event.target); }
     else if (event.target.id === "communityAnnouncement") { event.preventDefault(); postAnnouncement(event.target); }
     else if (event.target.id === "communityWeeklyChallenge") { event.preventDefault(); setWeeklyChallenge(event.target); }
+    else if (event.target.id === "communityInviteCodeCreate") { event.preventDefault(); createInviteCode(event.target); }
+    else if (event.target.id === "communityInviteCreate") { event.preventDefault(); createInvite(event.target); }
     else if (event.target.id === "communityChallengeForm") { event.preventDefault(); submitChallengeForm(event.target); }
     else if (event.target.id === "communityEventForm") { event.preventDefault(); submitEventForm(event.target); }
     else if (event.target.id === "communityInviteCode") { event.preventDefault(); redeemCode(event.target); }
@@ -10515,6 +11131,12 @@
         state.admin.pinsLoaded = false; state.admin.pinError = ""; state.admin.auditLog = []; state.admin.auditCursor = null;
         state.admin.auditLoaded = false; state.admin.auditLoading = false; state.admin.auditError = false;
         state.admin.auditEnd = false; state.admin.auditFilters = {};
+        // COMM-376/377. The next session on this device (a different member
+        // signing in) gets fresh panels, never a stale one-time code reveal
+        // or another admin's roster page left on screen.
+        state.admin.invites = { items: [], status: "all", cursor: null, loading: false, loadingMore: false, loaded: false, error: false, end: false, created: null, revoking: null };
+        state.admin.inviteCodes = { items: [], loading: false, loaded: false, error: false, created: null, busy: null };
+        state.admin.roster = { items: [], cursor: null, loading: false, loadingMore: false, loaded: false, error: false, end: false };
         state.challenges.items = []; state.challenges.loaded = false; state.challenges.loading = false;
         state.challenges.error = false; state.challenges.participation = {}; state.challenges.aggregates = {};
         state.challenges.view = null; state.challenges.form = null; state.challenges._rtId = null;
@@ -10527,6 +11149,9 @@
         state.notif.prefSaving = {}; state.notif._rtUid = null; state.notif.pushSub = null; state.notif.pushChecked = false;
         state.onboarding.progress = null; state.onboarding.firstMonth = null;
         state.onboarding.attendance = { count: 0, loading: false, loaded: false, error: false }; /* COMM-316: same reset reasoning as members.classmatesToday above - the next member on this device gets a fresh count, never the previous member's. */
+        state.onboarding.stepContent = {}; state.onboarding.stepContentLoaded = false; state.onboarding.stepContentError = false;
+        state.onboarding.editor = { drafts: {}, saving: {}, saved: {} };
+        state.analytics.registrationFunnel = { loading: false, loaded: false, error: false, errorText: "", data: null };
         state.recaps.view = null; state.recaps.monthly = { loading: false, loaded: false, error: false, row: null };
         state.coach.celebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null };
         state.coach.welcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null };
@@ -10562,6 +11187,12 @@
     // never drops what was typed.
     else if ("reportNote" in t.dataset && state.admin.reportSheet) state.admin.reportSheet.note = t.value;
     else if ("modNote" in t.dataset && state.admin.modAction) state.admin.modAction.note = t.value;
+    // COMM-378. onboardingEditorDraft() lazily seeds the draft the first
+    // time either field is touched, same "kept in state, not read off the
+    // DOM at submit" reasoning as every note/body field above - a rerender
+    // triggered by a sibling row's own save never drops what was typed here.
+    else if ("onboardingEditTitle" in t.dataset) onboardingEditorDraft(t.dataset.onboardingEditTitle).title = t.value;
+    else if ("onboardingEditBody" in t.dataset) onboardingEditorDraft(t.dataset.onboardingEditBody).body = t.value;
     // COMM-202..206. The manual progress form and the coach entry roster,
     // both inside the challenge detail dialog. Kept in state, not read off
     // the DOM at submit, same reasoning as every other note/body field
