@@ -68,20 +68,67 @@ both apps, including all of Community's community layer.
   `index.html`, but this call only executes on an actual render, well after
   both scripts have run).
 
+## Shipped 2026-09-04 (further remaining-scope closure, this repo only)
+
+- `adminAnalyticsCard(title, bodyHtml)` (`cloud.js`) — the one shared
+  function behind all 27 metric cards inside the admin analytics dashboard
+  (`renderAdminAnalyticsDashboard()` and its own nested groups) — now emits
+  `<h3 class="field-label">` instead of `<div class="field-label">`. This is
+  a real "admin panel sub-header not going through `sectionHead()`" gap, the
+  exact category the "Not done" note below named; converting the one shared
+  function fixes all 27 call sites at once, the same leverage the original
+  pass used for `sectionHead()`/`ach-section-title`. Nests correctly: every
+  caller of `adminAnalyticsCard()` already renders inside a `sectionHead()`
+  h2 (verified: `renderAdminAnalyticsDashboard`, `renderRegistrationFunnel`,
+  `renderMemberSegments` — all reached from the h2 "לוח בקרה: אנליטיקת
+  קהילה" section), so h3 is the correct next level, not a skip.
+  `test/community-retention-correlation-views.test.mjs:176` already
+  selects `.chart-card .field-label` by class, not tag, so it needed no
+  change.
+- New `test/heading-outline.test.mjs`: a real automated heading-outline
+  scan (not a scanner dependency, but a genuine DOM heading-list check) for
+  the 4 solo top-level tabs (add/history/calendar/wod), using the existing
+  `bootApp()` jsdom harness. Asserts, per tab, exactly one `<h1>` inside
+  `<main>` and that the heading list never skips a level going deeper (no
+  h3 with no ancestor h2, etc.) — the real substance of acceptance
+  criterion #3. This is real, if partial, closure of the "no automated
+  scan was run" gap below: it covers the 4 solo tabs for real, but not the
+  four community screens the criterion also names (see below).
+
 ## Not done — remaining scope
 
-- Sub-section headings inside `cloud.js` that don't go through `sectionHead()`
-  (e.g. modal/dialog titles, admin panel sub-headers) were not audited or
-  converted — this pass covered the two highest-leverage shared functions,
-  not every heading-shaped element in a 10,000+ line file.
-- Not applied to `crossfit-pwa-Noam` — out of scope for this pass (Noam
-  wasn't part of the "build tickets in Community's system" decision), but
-  the accessibility audit finding was for both repos; Noam's `.page-title`/
-  `.ach-section-title` still render as `<div>`/`<span>`.
-- No automated axe/heading-outline scan was run to verify this ticket's own
-  acceptance criteria #3 — verification here was source-level (grep +
-  balanced-tag check) and the existing test suite, not a real accessibility
-  scanner.
+- The admin-analytics sub-headers are fixed, but `cloud.js` still has
+  roughly 40 other one-off `<div class="field-label">` sub-headers acting
+  as section/panel titles outside any shared function (invite management's
+  two panels, challenge/event "ended" list headers, team management,
+  monthly-recap card labels, profile-completion sub-labels, etc. — see
+  `grep -n 'class="field-label"' cloud.js`). Converting those is a
+  file-wide audit, one heading-shaped element at a time, in a 10,000+ line
+  file — explicitly out of scope for this pass too, same reasoning as the
+  original 2026-09-02 pass's own scope boundary. This is what a real
+  heading-outline/axe scan across every screen (next bullet) would surface
+  systematically instead of by manual grep.
+- Not applied to `crossfit-pwa-Noam` — confirmed by actually reading
+  `crossfit-pwa-Noam/index.html:155` (`.page-title`, still a plain
+  `<div id="pageTitle">`) and `crossfit-pwa-Noam/app.js:1287`
+  (`.ach-section-title`, still a plain `<span>`) — not out-of-date
+  guesswork, read directly from that checkout. Cannot be changed from here
+  (see repo-access constraints); whoever owns that repo needs to apply the
+  same `<h1>`/`<h2>` conversion this repo already shipped 2026-09-02.
+- No automated scan covers the four **community** screens (feed, profile,
+  challenges, admin) acceptance criterion #3 also names. Reaching them in
+  a test needs `bootCommunity()` with a mock Supabase project and, for the
+  admin screen specifically, an admin/coach fixture plus in-app navigation
+  to each community sub-view — real, separate harness work, not a small
+  addition to `test/heading-outline.test.mjs`.
+- No axe-core (or any other accessibility-scanner) dependency exists
+  anywhere in this repo — checked `package.json`, `node_modules`, and
+  `scripts/browser-check/package.json` (only `playwright`, no
+  axe/a11y-named script in that directory). Adding real axe-core coverage
+  is new tooling (a new devDependency plus a Playwright-driven scan
+  script), not a fix-in-place; `test/heading-outline.test.mjs` above covers
+  the "logically nested, non-empty heading list" half of criterion #3
+  without that dependency, but does not replace a full WCAG-rule scan.
 
 ## Source
 

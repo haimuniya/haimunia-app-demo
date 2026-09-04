@@ -3326,29 +3326,45 @@ tokens as shipped, so a future edit to `--brass`/`--surface`/`--bg` gets
 caught here instead of by eyeballing it. Dark-theme `--brass` already
 cleared AA (7.25:1 / 8.69:1) and was left untouched.
 
-**COMM-351, COMM-353 and COMM-354 are partial** — all three ask to
-"reconcile" or "align" a value between this repo and `crossfit-pwa-Noam`,
-which is not checked out in this workspace, so the Noam side of each
-literally cannot be touched or even read from here. For each, this session
-established (from this repo's own git history, not guesswork) that
-Community's current value is a deliberate, already-shipped decision rather
-than accidental drift, and left it as-is:
-- **COMM-351** (`--shadow-card`): the token's own in-code comment already
-  says it's "a light rim highlight plus a soft, low-contrast drop, tuned
-  per theme" — a deliberate redesign, not drift.
-- **COMM-353** (`.page-title` Anton/400+tracking): commit `28819f7`
-  ("Page titles on all 4 solo tabs") shows this shipped as Phase 6 of a
-  named app-form redesign plan, not an accident.
-- **COMM-354** (`--steel`): commit `e3a5a5f` ("Accessibility fixes...")
-  shows Community's `--steel` was deliberately darkened/lightened per theme
-  specifically to clear 4.5:1 contrast (`#68748C`→`#57627A` light,
-  `#8891A6`→`#A8B3C9` dark) — the audit's "unintentional drift" read is a
-  false positive; this is the *fixed* value, and Noam is almost certainly
-  the one carrying the stale, lower-contrast one.
+**COMM-351, COMM-353 and COMM-354 are still partial, but now with a
+verified, actionable cross-repo diff instead of an assumption.** An earlier
+pass (2026-09-02) had no access to `crossfit-pwa-Noam` at all and could only
+establish, from this repo's own git history, that Community's current value
+of each token/rule was a deliberate, already-shipped decision rather than
+accidental drift — it could not check what Noam actually carries. This
+session (2026-09-04) had real read access to `crossfit-pwa-Noam` and used
+it: read the actual current CSS on Noam's side and diffed it against
+Community's, rather than repeating the earlier assumption unchecked. All
+three assumptions held exactly:
+- **COMM-351** (`--shadow-card`): Noam still carries the old flat-shadow
+  formula (`index.html:93,116,128`:
+  `0 1px 2px rgba(30,41,71,.06), 0 8px 22px rgba(30,41,71,.08)` light /
+  `0 1px 2px rgba(0,0,0,.35), 0 10px 26px rgba(0,0,0,.35)` dark). Community's
+  "light rim highlight plus a soft, low-contrast drop" redesign never got
+  backported. Exact 3-line diff now in the ticket file.
+- **COMM-353** (`.page-title`): Noam still carries `font-weight:800;
+  font-size:21px; ... margin-bottom:16px;` with no `font-family` override
+  (`index.html:155`), i.e. plain Rubik/800 — Community's Anton/400+tracking
+  redesign (commit `28819f7`) never got backported. Noam already has the
+  `Anton` `@font-face` declared and used elsewhere, so this is a pure
+  CSS-rule change on Noam's side, no new asset. Exact diff now in the
+  ticket file.
+- **COMM-354** (`--steel`): Noam still carries the pre-fix values
+  (`index.html:85,110,122`: `#68748C` light / `#8891A6` dark) — exactly the
+  values commit `e3a5a5f` moved Community away from to clear the 4.5:1 AA
+  contrast floor. Confirmed real drift, in the "Noam hasn't caught up"
+  direction, not a false-positive audit finding. Exact diff now in the
+  ticket file.
 
-None of these three needed a code change in this repo as a result. Porting
-the decision to Noam (or re-verifying that read against Noam's actual code)
-is real remaining work, just not work this workspace can do.
+None of these three needed (or now needs) a code change in this repo — all
+three are correct and intentional here, confirmed against the actual Noam
+source rather than assumed. Each ticket file now carries an exact CSS diff
+(current Noam value → target value, cited by line) so whoever owns
+`crossfit-pwa-Noam` can apply the fix directly without re-deriving it; that
+repo could not be modified from this workspace (read-only access, and the
+checkout has unrelated in-progress local changes that must not be
+disturbed), so all three stay `partial` until that repo actually ships the
+change.
 
 **COMM-342, COMM-344, COMM-345, COMM-346, COMM-347, COMM-348, COMM-350,
 COMM-356 and COMM-357 are done** — a batch of small, self-contained
@@ -3433,12 +3449,35 @@ name.test.mjs` checks both the multi-point and single-point cases.
 **COMM-329 has more of its remaining scope closed.** The Community tab
 itself now opens with `renderTabHeader("community")` — the same shared
 function the other 4 solo tabs already use, reading "קהילה" from the one
-`getNavItems()` registry entry rather than inventing a second name. Still
-`partial`: the other three remaining-scope items from the 2026-09-02 pass
-(cloud.js sub-section headings beyond `sectionHead()`, Noam's own
-`.page-title`/`.ach-section-title` still being `<div>`/`<span>`, and a real
-automated axe/heading-outline scan) are unchanged — see the ticket file's
-own "Not done" section.
+`getNavItems()` registry entry rather than inventing a second name.
+
+2026-09-04, with real `crossfit-pwa-Noam` read access, closed two more
+pieces of the "Not done" list:
+- `adminAnalyticsCard()` (`cloud.js`) — one shared function behind all 27
+  admin-analytics metric cards — now emits `<h3 class="field-label">`
+  instead of `<div class="field-label">`, the real remaining "`cloud.js`
+  sub-section headings beyond `sectionHead()`" work named in the ticket.
+  Every call site already nests inside a `sectionHead()` h2, so h3 is the
+  correct level, no skip. Roughly 40 other one-off `.field-label`
+  sub-headers scattered through invites/challenges/events/recaps/profile
+  are still plain `<div>`s — a file-wide audit, not a shared-function fix,
+  and stays out of scope for the same reason the original pass gave.
+- A new `test/heading-outline.test.mjs` gives acceptance criterion #3 a
+  real automated check (not axe — this repo has no axe-core dependency
+  anywhere, confirmed by checking `package.json`/`node_modules`/
+  `scripts/browser-check`; adding one is new tooling, not a fix-in-place)
+  for the 4 solo top-level tabs: exactly one `<h1>` inside `<main>`, and no
+  heading-level skip going deeper. The four **community** screens
+  (feed/profile/challenges/admin) the criterion also names still have no
+  automated scan — reaching them needs `bootCommunity()` plus admin/coach
+  fixtures and in-app navigation per screen, real separate harness work.
+
+Noam's own `.page-title`/`.ach-section-title` markup was re-checked against
+the actual checkout rather than left as a stale note: still `<div
+id="pageTitle">` (`index.html:155`) and `<span
+class="ach-section-title">` (`app.js:1287`) — confirmed, not guessed. Stays
+`partial`: see the ticket file's own updated "Not done" section for the
+three items above, spelled out precisely rather than left as "unchecked."
 
 **COMM-323 and COMM-355 are done together**, as COMM-355 required.
 `crossfit-pwa-Noam` is not checked out in this workspace, so Noam's actual
@@ -3554,14 +3593,34 @@ that no file in this repo re-declares a helper, the script ordering in
 shared module's *own* function objects rather than copies.
 
 What is NOT done, and could not be done here: `crossfit-pwa-Noam` actually
-consuming it. That repo was not in this workspace — same limitation
-COMM-334/COMM-337 already carry, except COMM-334 got lucky (the sibling
-checkout turned out to be the real `haimunia-app`) and this one did not: the
-sibling repo the audit compared against was not present at all this session.
-Until a change lands in *that* repo — either loading this file as its own
-`<script>` (it is framework-free and host-agnostic on purpose) or vendoring it
-verbatim and recording the `VERSION` it copied — `app.js:320-402` over there is
-still an unlinked fork, and a security fix here still has to be hand-carried.
+consuming it. That repo was not in this workspace when COMM-368 was
+implemented — same limitation COMM-334/COMM-337 already carry, except
+COMM-334 got lucky (the sibling checkout turned out to be the real
+`haimunia-app`) and this one did not: the sibling repo the audit compared
+against was not present at all that session.
+
+**2026-09-04, with real read access to `crossfit-pwa-Noam`: the premise was
+verified, not just re-asserted.** Read `crossfit-pwa-Noam/app.js:319-409`
+(the same block the ticket cites) function-by-function against
+`src/shared/safe-helpers.js` — `esc`, `cssSel`, `bag`, `cleanStr`,
+`cleanNum`, `cleanId` (including `LIMITS.idLen` — 128 on both sides),
+`cleanISODate`, `cleanTs` and `uid`'s two-level fallback chain are all still
+byte-identical. Zero drift since the extraction. So the fork is unlinked but
+not (yet) diverged — there is still exactly one correct implementation to
+converge on, not two implementations to reconcile.
+
+The ticket file now spells out the exact consuming change, since "could not
+be done here" was previously the whole note: copy
+`src/shared/safe-helpers.js` into `crossfit-pwa-Noam/src/shared/`, load it
+via a `<script>` tag before `app.js` in `index.html` (`app.js` is currently
+the sole script there besides `theme-init.js`), delete the nine local
+definitions and replace them with `window.BoxLogSafe.*` bindings (the same
+`var esc = window.BoxLogSafe.esc, …` pattern `src/constants.js` uses here),
+add the file to `sw.js`'s `ASSETS` precache array, and re-run Noam's own test
+suite. None of this was applied — this workspace can read
+`crossfit-pwa-Noam` but must never modify it — but a future pass with write
+access to that repo now has an exact recipe instead of "figure out how to
+consume a package."
 The ticket's second acceptance criterion ("a follow-up fix propagates via a
 version bump instead of manual copy-paste") is therefore only half-satisfied:
 the versioned artifact and the written protocol exist; the second consumer does

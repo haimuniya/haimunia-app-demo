@@ -2,7 +2,7 @@
 
 Phase: Design sync & audit remediation (2026-09-02)
 Agent: cross-cutting (UI/design)
-Status: todo
+Status: partial
 Priority: P1
 Attendance-blocked: no
 
@@ -21,6 +21,40 @@ don't match at all.
 
 - `index.html:155` (Noam)
 - `index.html:306` (Community)
+
+## Investigated 2026-09-04 (real read of `crossfit-pwa-Noam`, not assumed)
+
+Actually read `crossfit-pwa-Noam/index.html:155`:
+
+```css
+.page-title{ font-weight:800; font-size:21px; color:var(--chalk); margin-bottom:16px; }
+```
+
+Community's current rule (`index.html:402` — line number has since shifted
+from the `:306` on file, content unchanged):
+
+```css
+.page-title{ font-family:'Anton',sans-serif; font-weight:400; letter-spacing:.3px; font-size:22px; color:var(--chalk); margin-bottom:14px; }
+```
+
+Confirmed: Noam still renders `.page-title` in Rubik/800 with no
+letter-spacing, exactly as the backlog assumed. Community's Anton/400+
+tracking treatment is the deliberate shipped redesign (commit `28819f7`),
+not drift, and needs no change here. Noam already has the `Anton`
+`@font-face` declared (`index.html:74`, used elsewhere for e.g.
+`.history-stat-value`/`.save-btn`), so this is a pure CSS-rule change, no
+new font asset to add.
+
+### Exact diff for `crossfit-pwa-Noam/index.html`
+
+```diff
+- .page-title{ font-weight:800; font-size:21px; color:var(--chalk); margin-bottom:16px; }
++ .page-title{ font-family:'Anton',sans-serif; font-weight:400; letter-spacing:.3px; font-size:22px; color:var(--chalk); margin-bottom:14px; }
+```
+
+(line 155 in the checkout read for this ticket; confirm the line number is
+still current before applying, since Noam has unrelated local changes in
+progress.)
 
 ## Source
 
