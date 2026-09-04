@@ -5997,9 +5997,29 @@ constraint invites_not_both_revoked_and_redeemed
   carry the plaintext code, and the one-time reveal of that code is the
   entire point of the return value.
 - Auth: `security definer`. `auth.uid()` checked first, then
-  `has_perm('community.member.invite') or is_admin()`.
-- Errors, all `P0001`: `'not authorized'`, `'invalid role'` (anything but
-  member/coach, including null), `'label too long'` (over 120),
+  `has_perm('community.member.invite') or is_admin()`, and then — **NARROWED
+  in `202609030008`** — a second gate that applies only when
+  `p_role = 'coach'`: the caller must satisfy `is_admin()` specifically.
+  - `p_role = 'member'`: unchanged, coach-and-above via
+    `community.member.invite`. Inviting a new gym member stays a normal coach
+    task.
+  - `p_role = 'coach'`: admin/owner only. `community.member.invite` alone is
+    no longer sufficient, so `coach`, `head_coach` and `staff` — all of whom
+    hold that permission and none of whom is `is_admin()` (`role_rank >= 50`)
+    — are refused. This puts minting a coach invite on the same tier as
+    `admin_grant_coach`, previously the only admin-gated route to the coach
+    role.
+  - The refusal raises the same `'not authorized'` string as the other two
+    auth failures, on purpose: a distinct message would tell the caller which
+    tier they are missing. A client cannot distinguish them, so **COMM-376
+    should offer the coach option only when the viewer is `is_admin()`** —
+    and if it offers it anyway, the server still refuses.
+  - Ordering: the coach-role gate runs *after* `'invalid role'` and *before*
+    the label and expiry checks. A plain member is still refused before any
+    role is inspected; a coach passing `'owner'` still gets `'invalid role'`.
+- Errors, all `P0001`: `'not authorized'` (no session, no base permission, or
+  the coach-role narrowing — one string for all three), `'invalid role'`
+  (anything but member/coach, including null), `'label too long'` (over 120),
   `'expiry must be in the future'` (a non-null past value only; null is
   accepted and means never expires), `'could not generate a unique invite
   code'` (after 5 collisions, unreachable at 192 bits).
@@ -6011,7 +6031,11 @@ constraint invites_not_both_revoked_and_redeemed
 
 ### admin_invite_list(p_status text default 'all', p_cursor timestamptz default null, p_limit int default 25) returns setof jsonb (COMM-370)
 
-- Auth: same pair. Errors: `'not authorized'`, `'invalid status'`.
+- Auth: the same base pair (`has_perm('community.member.invite') or
+  is_admin()`). The `202609030008` coach-role narrowing does **not** apply
+  here — it is keyed on `admin_invite_create`'s `p_role` argument, and this
+  function has none. A coach lists and revokes coach-role invites they may
+  not mint. Errors: `'not authorized'`, `'invalid status'`.
 - `p_status` one of `all`, `pending`, `redeemed`, `revoked`, `expired`,
   resolved through `invite_status()`.
 - `p_limit` clamped 1..100. Cursor-paginated on `created_at desc`,
