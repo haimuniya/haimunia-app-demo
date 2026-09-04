@@ -25,12 +25,20 @@ export function createMockSupabase(seedTables = {}) {
 
   function rows(table) { return (db[table] = db[table] || []); }
   // COMM-150..156. Shared helpers for the admin-moderation stand-ins below.
+  // COMM-370/371/373 (Phase 4) added three permission strings, seeded per
+  // contracts.md's "New permissions (Phase 4)" section: community.member.invite
+  // to coach/head_coach/staff/admin/owner (the explicit list the real
+  // migration seeds - NOT the same tier as community.member.restrict, which
+  // stays head_coach/admin/owner only); community.invite.manage_codes to
+  // admin/owner only (narrower than community.member.invite on purpose); and
+  // community.content.manage_onboarding to the same five roles
+  // community.announcement.publish already has.
   const MOCK_ROLE_PERMS = {
     member: ["community.post.create"],
-    coach: ["community.post.create", "community.comment.moderate", "community.challenge.create", "community.event.manage", "community.announcement.publish"],
-    head_coach: ["community.post.create", "community.comment.moderate", "community.challenge.create", "community.event.manage", "community.announcement.publish", "community.post.delete_any", "community.member.restrict", "community.content.pin"],
-    staff: ["community.post.create", "community.event.manage", "community.announcement.publish", "community.content.pin"],
-    admin: ["community.post.create", "community.post.delete_any", "community.comment.moderate", "community.challenge.create", "community.event.manage", "community.analytics.view", "community.member.restrict", "community.announcement.publish", "community.content.pin"],
+    coach: ["community.post.create", "community.comment.moderate", "community.challenge.create", "community.event.manage", "community.announcement.publish", "community.member.invite", "community.content.manage_onboarding"],
+    head_coach: ["community.post.create", "community.comment.moderate", "community.challenge.create", "community.event.manage", "community.announcement.publish", "community.post.delete_any", "community.member.restrict", "community.content.pin", "community.member.invite", "community.content.manage_onboarding"],
+    staff: ["community.post.create", "community.event.manage", "community.announcement.publish", "community.content.pin", "community.member.invite", "community.content.manage_onboarding"],
+    admin: ["community.post.create", "community.post.delete_any", "community.comment.moderate", "community.challenge.create", "community.event.manage", "community.analytics.view", "community.member.restrict", "community.announcement.publish", "community.content.pin", "community.member.invite", "community.invite.manage_codes", "community.content.manage_onboarding"],
   };
   MOCK_ROLE_PERMS.owner = MOCK_ROLE_PERMS.admin.slice();
   function roleOf(uid) {
