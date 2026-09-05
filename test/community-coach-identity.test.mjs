@@ -20,7 +20,9 @@ import { bootCommunity, waitFor } from "./helpers/boot.mjs";
 import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
 const VERIFIED = new Date().toISOString();
-const BASE = Date.parse("2026-08-28T09:00:00.000Z");
+// Anchored to Date.now(), not a fixed calendar date - see the identical
+// fix/comment in community-notifications.test.mjs.
+const BASE = Date.now() - 5 * 60000;
 const COACH_ID = "22222222-2222-2222-2222-222222222222";
 const HEAD_ID = "33333333-3333-3333-3333-333333333333";
 const MEMBER_ID = "44444444-4444-4444-4444-444444444444";

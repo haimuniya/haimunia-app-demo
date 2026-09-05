@@ -2260,6 +2260,7 @@ function renderLogTab() {
 
   return `
     ${renderTabHeader("add")}
+    ${!storageOK ? `<div class="footer-note" style="color:var(--red); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
     ${editingEntryId ? `
     <div style="background:rgba(232,185,138,.12); border:1px solid var(--brass); border-radius:12px; padding:10px 14px; margin-bottom:12px; display:flex; align-items:center; justify-content:space-between;">
       <span style="color:var(--brass); font-weight:700; font-size:13px;">עריכת סט קיים</span>
@@ -2912,6 +2913,7 @@ function renderHistoryTab() {
 
   return `
     ${renderTabHeader("history")}
+    ${!storageOK ? `<div class="footer-note" style="color:var(--red); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
     <div class="stat-row">
       <div class="stat-card" style="text-align:center;"><div class="stat-value mono" style="color:var(--brass); font-size:20px;">${prCountThisMonth}</div><div class="stat-label">שיאים החודש</div></div>
       <div class="stat-card" style="text-align:center;"><div class="stat-value mono" style="font-size:20px;">${sessionsThisWeek}</div><div class="stat-label">אימונים השבוע</div></div>
@@ -3512,6 +3514,7 @@ function renderWodBenchmarksSection() {
 function renderWodTab() {
   return `
     ${renderTabHeader("wod")}
+    ${!storageOK ? `<div class="footer-note" style="color:var(--red); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
     <div class="subtabbar" role="tablist">
       <button class="subtabbtn ${wodSubTab === "log" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="log" role="tab" aria-selected="${wodSubTab === "log"}" aria-controls="wodContent" tabindex="${wodSubTab === "log" ? "0" : "-1"}">רישום</button>
       <button class="subtabbtn ${wodSubTab === "history" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="history" role="tab" aria-selected="${wodSubTab === "history"}" aria-controls="wodContent" tabindex="${wodSubTab === "history" ? "0" : "-1"}">היסטוריה</button>

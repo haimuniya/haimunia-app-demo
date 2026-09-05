@@ -1,10 +1,17 @@
 -- COMM-020: real two-user RLS enforcement for 202608280006 (feed telemetry).
 -- Boundaries: feed_impressions and feed_interactions are strictly own-row
--- read and insert. No client (admin included) reads another member's
--- stream. No UPDATE path on feed_impressions, so opened and engaged cannot
--- be rewritten. feed_record_impressions caps a batch at 50 and de-dupes a
--- repeated batch.
+-- read. No client (admin included) reads another member's stream. No UPDATE
+-- path on feed_impressions, so opened and engaged cannot be rewritten.
+-- feed_record_impressions caps a batch at 50 and de-dupes a repeated batch.
 -- CI is the first real run of this file.
+--
+-- AMENDED by 202609050005. feed_impressions no longer has a direct INSERT
+-- grant for `authenticated`, and its insert policy is dropped with it:
+-- feed_record_impressions() is now the ONLY write path, so the batch cap, the
+-- position clamp, the forced user_id and the de-dupe cannot be skipped. The
+-- two assertions below that used to prove a direct own-row insert SUCCEEDS now
+-- prove it is REFUSED. feed_interactions is untouched and keeps its direct
+-- own-row insert - it has no equivalent RPC-only path.
 
 \set rls_helpers_included true
 create extension if not exists pgtap with schema extensions;
@@ -19,18 +26,44 @@ select tests.clear_auth();
 insert into public.workout_posts (id, author_id, visibility, body)
 values ('b0060000-0000-4000-8000-000000000001', tests.uid('m1'), 'club', 'feed target');
 
--- --- own-row insert and read ------------------------------------
+-- --- no direct insert at all, own-row or not (202609050005) --------
 select tests.set_auth(tests.uid('m1'));
-select lives_ok(
+select throws_ok(
   $$ insert into public.feed_impressions (user_id, post_id, "position", feed_session_id)
      values (tests.uid('m1'), 'b0060000-0000-4000-8000-000000000001', 0, gen_random_uuid()) $$,
-  'a member inserts an impression for their own user_id');
+  '42501',
+  null,
+  'a member cannot insert an impression directly even for their OWN user_id - feed_record_impressions is the only write path');
 select throws_ok(
   $$ insert into public.feed_impressions (user_id, post_id, "position", feed_session_id)
      values (tests.uid('m2'), 'b0060000-0000-4000-8000-000000000001', 0, gen_random_uuid()) $$,
   '42501',
   null,
   'a member cannot insert an impression under another user_id');
+
+-- ... and the two structural facts behind that refusal, asserted directly so a
+-- future re-grant fails here rather than silently reopening the bypass.
+select tests.clear_auth();
+select ok(
+  not has_table_privilege('authenticated', 'public.feed_impressions', 'INSERT'),
+  'authenticated holds no INSERT privilege on feed_impressions');
+select is_empty(
+  $$ select 1 from pg_policies
+     where schemaname = 'public' and tablename = 'feed_impressions' and cmd = 'INSERT' $$,
+  'and no INSERT policy is left behind to look live without a grant');
+-- analytics_events is the deliberate counter-example: it has no RPC path at
+-- all, so its direct insert grant is the only mechanism and must survive.
+select ok(
+  has_table_privilege('authenticated', 'public.analytics_events', 'INSERT'),
+  'analytics_events KEEPS its direct insert grant - src/analytics.js writes it with no RPC to fall back on');
+
+-- The one row the read assertions below are about, written the only way it
+-- can be written now: through the RPC, as m1.
+select tests.set_auth(tests.uid('m1'));
+select public.feed_record_impressions(
+  jsonb_build_array(jsonb_build_object(
+    'post_id', 'b0060000-0000-4000-8000-000000000001',
+    'feed_session_id', '00000000-0000-4000-8000-0000000000a1')));
 
 select tests.set_auth(tests.uid('m2'));
 select is_empty(

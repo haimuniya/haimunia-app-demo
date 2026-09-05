@@ -2170,7 +2170,8 @@ The single split, so the trigger set and the client `notifRoute()` agree.
 - Immediate (its own `notifications` row, written now): `comment_reply`,
   `comment_on_post`, `mention`, `coach_mention`, `achievement_unlocked`,
   `announcement` (operational, always), `challenge_ending_soon` (joined
-  participants only), `event_cancelled`.
+  participants only), `event_cancelled`, `new_report` (moderators only,
+  202609050003).
 - Batched (`notif_queue_batched`, rolled up by the flusher into one row per
   type per window): `reaction`, `comment_also`, `friend_achievement`,
   `challenge_update`, `feed_activity`, `weekly_recap`.
@@ -2203,6 +2204,12 @@ The single split, so the trigger set and the client `notifRoute()` agree.
   key is the type itself; the body is club aggregate figures only, with no
   member named anywhere. Deep link `/community/recap/monthly?month=<the
   month's first day>`.
+- `new_report` (immediate, moderators only): shipped in 202609050003 by the
+  `reports_notify_moderators` trigger. It has no `notif_pref_key` arm, so the
+  preference key is the type itself and a moderator can mute it with one
+  `notification_preferences` row — the queue is still there for them.
+  `notifications.type` needed no change to accept it: that column is a regex
+  CHECK (`^[a-z][a-z0-9_.]{2,63}$`, 202608280008), not a closed list.
 
 ## Needs from schema, notifications (Phase 2)
 
@@ -2381,23 +2388,41 @@ documented under "## Challenges" above, not here.
 
 ### report(p_target_type text, p_target_id uuid, p_reason text, p_note text) returns void
 
-- Shipped in 202608280025. Supersedes `submit_report(p_post_id, p_reason)`,
-  which stays as a thin wrapper. The client calls this by name with all four
-  params, so the signature has no defaults.
-- Purpose: file a report on a post or comment.
-- Params: `p_target_type` `post` or `comment`, an unknown value raises.
-  `p_reason` one of harassment, spam, inappropriate, privacy, unsafe_advice,
-  other, an unknown value raises. `p_note` trimmed to 500 chars, may be empty,
-  stored in `reports.details`.
+- Shipped in 202608280025, **widened in 202609050002** to admit a `profile`
+  target. Supersedes `submit_report(p_post_id, p_reason)`, which stays as a
+  thin wrapper. The client calls this by name with all four params, so the
+  signature has no defaults. The 202609050002 edit used
+  `drop function if exists ...; create function ...`, the convention
+  202609030007/202609030008 set for amending an existing RPC, so the grants
+  below are re-stated there in full; the signature and return type did not
+  change and no caller needs to change.
+- Purpose: file a report on a post, a comment, or a member's profile.
+- Params: `p_target_type` `post`, `comment` or `profile`, an unknown value
+  raises `unknown target type %`. `p_reason` one of harassment, spam,
+  inappropriate, privacy, unsafe_advice, other, an unknown value raises.
+  `p_note` trimmed to 500 chars, may be empty, stored in `reports.details`.
 - Auth: security definer, requires `is_community_member()`. Rate limited at 10
   per 10 minutes under the `report` key. Grant execute to `authenticated`.
+- Target validation: a post must exist in `workout_posts`, a comment in
+  `post_comments`, a profile in `profiles` **with `deleted_at is null`** — a
+  soft-deleted member is not reportable. All three failures raise the same
+  `target not found`.
 - Side effects: one `reports` row. For a `post` target `post_id` is set equal
-  to `target_id`; a `comment` target leaves `post_id` null. A duplicate by the
+  to `target_id`; a `comment` **or `profile`** target leaves `post_id` null,
+  which is what keeps the `reports.post_id`-keyed reporter self-hide in
+  `feed_page` correct. A duplicate by the
   same reporter on the same target collapses on the unique
   `(reporter_id, target_type, target_id)`, refreshing `reason` and `details`
   without moving the distinct-reporter count and without reopening `status`.
+- Second side effect, added 202609050003: the AFTER INSERT trigger
+  `reports_notify_moderators` notifies the club's moderators. It fires only on
+  a genuinely new row — the `on conflict do update` path above fires UPDATE
+  triggers, not INSERT ones, so refreshing a duplicate report is silent.
+- Self-reporting a profile is possible and deliberately not special-cased:
+  `report()` has never checked self-targeting for posts or comments either, and
+  the unique key collapses it to one row.
 - The client also records `feed_record_interaction(p_target_id, 'hide')` when
-  the target is a post (COMM-151). A comment records nothing.
+  the target is a post (COMM-151). A comment or a profile records nothing.
 
 ### mod_queue(p_status text, p_cursor timestamptz, p_limit int) returns setof mod_queue_item
 
@@ -2416,6 +2441,14 @@ documented under "## Challenges" above, not here.
   else dismissed, else action_taken. `note` is the most recent non-empty
   reporter note. `content_excerpt` is the post or comment body, first 240
   chars, empty when the content is gone. `reporters` is `[{id, name}]`.
+- **202609050002**: a third `target_type`, `profile`. `content_excerpt` is then
+  the reported member's display name (or `@handle`) followed by their bio on a
+  second line, and `content_author_id` / `content_author_name` are the reported
+  member themselves — a profile is its own author, so the client's existing
+  "act on this member" controls work with no render-side special case. The post
+  and comment arms are byte-identical to 202608280025; only the two `case`
+  expressions grew an arm, so signature, return type and grants are unchanged
+  (`create or replace`).
 - Auth: security definer, requires `has_perm('community.comment.moderate')` OR
   real `is_admin`. Grant execute to `authenticated`; the permission check
   inside is the gate. Reporter identities are only ever returned here.
@@ -2434,10 +2467,17 @@ documented under "## Challenges" above, not here.
   - `remove`: a post target calls `post_delete(target_id)`, a comment target
     calls `comment_moderate(target_id, 'remove')`. Each writes its own
     `content_delete` `admin_actions` row, so a remove leaves two audit rows.
+    A **`profile` target raises `a profile report has no content to remove`**
+    (202609050002) — there is nothing to take down, and refusing by name beats
+    the misleading `comment not found` the untouched two-way `case` would have
+    produced.
   - `restrict_temp` / `restrict_permanent`: calls
     `mod_restrict_member(content_author_id, 'temporary' | 'permanent',
     p_expires_at | null, p_note, p_report_id)`, which writes its own
-    `member_restrict` row. Raises if the content author is gone. Note the
+    `member_restrict` row. For a `profile` target the "content author" is the
+    reported member themselves (202609050002), resolved through `profiles` with
+    `deleted_at is null`, so these are the decisions a profile report actually
+    has. Raises if the content author is gone. Note the
     restrict decisions need `community.member.restrict`, which a
     `community.comment.moderate`-only role does not hold, so a coach can pick
     them but the call raises.
@@ -6338,3 +6378,205 @@ reading these rows needs to change. Relevant to Phase 4 because COMM-377
 is specified to reuse this exact surface. pgTAP 0062 leads with the
 assertion that was missing for the whole life of the defect: an admin
 calls it and really gets rows back.
+
+## The scheduler, retention, and four widenings (202609050001–202609050005)
+
+Five migrations, applied in order, plus pgTAP `0063_scheduler_reports_and_retention_test.sql`
+and an amendment to `0006_feed_telemetry_test.sql`.
+
+### admin_actions.action_type gains 'member_password_reset' (202609050001)
+
+Twentieth label, added with the same `drop constraint if exists` /
+`add constraint` widening 202609010001, 202609010002 and 202609030004 use.
+`target_type` is untouched: `member` has been in that list since
+202608280002 and is exactly right for a credential act on a member.
+
+### admin_log_password_reset(p_user_id uuid) returns void (202609050001)
+
+- Purpose: write the `member_password_reset` / `member` audit row for an
+  admin-initiated password reset. **It does not reset anything.** GoTrue owns
+  `auth.users.encrypted_password`, so the reset itself happens in
+  `supabase/functions/admin_reset_password/` through
+  `auth.admin.updateUserById()`; this function is the audit half.
+- Params: `p_user_id`, the member whose password was reset. There is
+  deliberately **no `p_admin_id`** — the actor is `auth.uid()` and can never
+  be passed in, so an Edge Function cannot attribute a reset to someone who
+  did not do it. That is also why the Edge Function must call this with the
+  **acting admin's own JWT**, not the service-role key: a service-role call
+  has no `auth.uid()` and is refused.
+- Auth: security definer. A real `profiles.is_admin` row that is not
+  soft-deleted — the narrow gate, not `is_staff()` and not `has_perm`, so a
+  coach and a head_coach are both refused. Grant execute to `authenticated`;
+  the `is_admin` check inside is the gate. This is deliberately wider than
+  `log_admin_action()` itself, which stays granted to no client role.
+- Raises: `not authorized` (no session, or not an admin),
+  `target member required` (null target), `member not found` (no live profile).
+- Side effects: exactly one `admin_actions` row via `log_admin_action()`.
+  `before_data` is null and `after_data` is `{"method": "admin_temp_password"}`
+  — no credential material, not even a hash, because `admin_actions` is
+  readable by every `community.analytics.view` holder.
+
+### reports.target_type gains 'profile' (202609050002)
+
+`check (target_type in ('post', 'comment', 'profile'))`, widening the inline
+CHECK 202608280024 declared. See the amended `report()`, `mod_queue()` and
+`mod_review()` entries under **Moderation and admin** above for what each
+one does with the new arm. `post_id` stays null for a profile target, the
+same as for a comment.
+
+### mod_alert_recipients(p_club_id uuid) returns setof uuid (202609050003)
+
+- Purpose: every member of `p_club_id` who may act on the moderation queue.
+  The per-ROW form of the per-SESSION gate `mod_queue()` and `mod_review()`
+  use, needed because `has_perm()` answers about `auth.uid()` and a fan-out
+  asks about someone else — the same problem `notif_on_achievement()` solved
+  by computing the mutual-follow join directly instead of calling
+  `are_friends()`.
+- Definition: a non-deleted `profiles` row in that club that is either
+  `is_admin`, or holds `community.comment.moderate` through its
+  `invite_redemptions.role`, or has role `owner` (mirroring `has_perm()`'s
+  owner short-circuit). It reads `role_permissions` rather than hardcoding a
+  role list, so a re-seed of that permission changes this automatically.
+- Auth: security definer to read `profiles`, `invite_redemptions` and
+  `role_permissions` past their own RLS. **Granted to no role** — that missing
+  grant is the boundary, the same one `notif_create()` relies on. No
+  `auth.uid()` check, because it never acts on the caller's behalf.
+- Ordered by `profiles.id`, so a fan-out is deterministic. Returns no rows for
+  a null or unknown club.
+
+### AFTER INSERT on public.reports — notif_on_report() (202609050003)
+
+- Trigger `reports_notify_moderators`, `for each row`. Returns NULL.
+- Notifies every `mod_alert_recipients()` member of the **reporter's** club
+  (`profiles.club_id`, falling back to `default_club_id()`) with an immediate
+  `new_report` notification in category `community`, one `notif_create()` call
+  per recipient — the exact convention `notif_on_comment()`,
+  `notif_on_mention()` and `notif_announcement_fanout()` already use.
+- `notif_create()` is not bypassed, so all four of its filters apply: the
+  reporter never gets their own alert; a moderator on either side of a block
+  edge with the reporter is skipped; an `off` preference on `new_report`
+  suppresses; and the 1-hour de-dupe collapses repeats.
+- **`source_type`/`source_id` are the reported TARGET, not the report row.**
+  That is what makes the de-dupe useful: five members reporting the same post
+  inside the window produce one alert per moderator, matching the single
+  `mod_queue` row those five reports fold into. Consequence, stated: a target
+  re-reported inside the window does not alert again even if the first report
+  was already dismissed.
+- Deep links: `/community/feed?post=<id>`,
+  `/community/feed?post=<post>&comment=<id>`,
+  `/community/account?user=<id>`. All three satisfy
+  `notifications_deep_link_check` and resolve through the existing
+  `resolveNotifTarget()` in cloud.js with no client change.
+- Does **not** fire on `report()`'s `on conflict do update` path — that fires
+  UPDATE triggers, not INSERT ones.
+- Writes nothing but `notifications`: no audit row, no status change.
+
+### events.map_link must be null or http(s) (202609050004)
+
+`check (map_link is null or (char_length(map_link) <= 500 and map_link ~*
+'^https?://'))`, replacing the length-only inline CHECK from 202608280010.
+The old constraint is found by definition (`ilike '%map_link%'`) rather than
+by a guessed name, the way 202608280024 handled reports' inline reason CHECK.
+One constraint does both jobs; the length rule is not dropped. Case-insensitive
+and anchored, so `HTTPS://…` passes and `javascript:void(0)//https://x` does
+not. Added validated, so a pre-existing non-http row would fail the migration
+rather than be grandfathered in.
+
+### retention_purge_telemetry(p_days integer default 90) returns integer (202609050005)
+
+- Purpose: the first retention job in the module. Deletes `feed_impressions`
+  rows with `shown_at` older than the window and `analytics_events` rows with
+  `created_at` older than it. Returns the **total** rows removed across both
+  tables — the "rows written" integer convention `notif_batch_flush_due()` and
+  `recompute_feed_weights()` return.
+- Params: `p_days` clamped to 1..3650; null is treated as 90.
+- Auth: security definer, **granted to no role**, and no `auth.uid()` check —
+  the documented exception every scheduled job in this schema carries, since a
+  cron job has no session. The job runs as the function owner.
+- Supporting indexes added in the same migration:
+  `feed_impressions_shown_at_idx`, `analytics_events_created_at_idx`.
+- Irreversible: no soft-delete, no archive. After the first run no surface can
+  report on telemetry older than 90 days, including a backfill of a historical
+  week. Stored answers (`community_health_scores`, `monthly_club_recaps`)
+  survive; recomputing an old week does not.
+- Scope: only these two tables. They are the module's only unbounded
+  append-only telemetry; everything else has a natural ceiling or an existing
+  purge.
+
+### feed_impressions loses its direct INSERT grant (202609050005)
+
+`revoke insert on public.feed_impressions from authenticated;` plus
+`drop policy if exists feed_impressions_self_insert`. `feed_record_impressions()`
+is now the only write path. The direct grant was never equivalent to the RPC:
+the RPC caps a batch at 50, clamps `position`, forces `user_id = auth.uid()`
+and de-dupes on `(user_id, feed_session_id, post_id)`, none of which a raw
+PostgREST insert did. cloud.js's single impression call site is the RPC
+(`cloud.js:2966`) and there is no `.from("feed_impressions")` anywhere in the
+client, so nothing breaks. RLS stays enabled and `feed_impressions_self_select`
+stays, so the table still has a policy and is still strictly own-row on read;
+there was never an UPDATE grant or policy.
+
+**`analytics_events` is deliberately left alone.** It has no RPC path at all —
+`analyticsTrack()` in `src/analytics.js` does
+`client.from("analytics_events").insert(row)` directly, by design, gated by
+`analytics_events_insert_self` and the props-size trigger. Revoking that grant
+would break every tracked event with nothing to fall back on. Only the purge
+applies to it. pgTAP 0006 asserts both halves of this asymmetry.
+
+### cron_invoke_edge_function(p_slug text) returns bigint (202609050005)
+
+- Purpose: the bridge from `cron.schedule` (whose body is SQL) to an Edge
+  Function (which is HTTP). POSTs `{}` to
+  `<edge_functions_base_url>/<p_slug>` with an
+  `Authorization: Bearer <service_role key>` header via `net.http_post`
+  (pg_net), and returns pg_net's request id.
+- **Neither the project ref nor the service-role key is in the migration.**
+  Both are read at run time from Supabase Vault
+  (`vault.decrypted_secrets`), under the names `edge_functions_base_url` and
+  `edge_functions_service_role_key`. The migration creates those two secrets
+  **with placeholder values**, only if a secret of that name does not already
+  exist, so a re-run is safe and a project that already has real values is
+  never overwritten.
+- **Whoever runs this against the live hosted project must set both**, e.g.
+  `select vault.update_secret((select id from vault.secrets where name =
+  'edge_functions_base_url'), 'https://<project-ref>.supabase.co/functions/v1');`
+  and the same for the key. Until then — which is the permanent state of every
+  local `supabase start` and of CI — the function makes **no request**, raises
+  a NOTICE, and returns null, so the two Edge Function jobs are scheduled and
+  inert rather than firing POSTs at a hostname that does not exist.
+- `p_slug` must match `^[a-z][a-z0-9_-]{2,63}$` or it raises
+  `unknown edge function %`. No slash, no dot, no scheme, so the call cannot be
+  redirected at another host or climb out of `/functions/v1/`.
+- Asynchronous: pg_net queues the request, so this returns before the Edge
+  Function has run and a failure surfaces in `net._http_response`, not here.
+- Auth: security definer to read `vault.decrypted_secrets`, no `auth.uid()`
+  check (scheduled-job exception), **granted to no role**.
+
+### The schedule (202609050005)
+
+`create extension if not exists pg_cron;` and
+`create extension if not exists pg_net with schema extensions;` at the top.
+Both ship in the Supabase Postgres image, pg_cron is already in
+`shared_preload_libraries` with `cron.database_name = 'postgres'`, so
+`supabase start` really does schedule these. `cron.schedule(name, …)` UPSERTs
+on the job name, so the whole block is idempotent.
+
+Before this migration there was **not one `cron.schedule` call anywhere in the
+repo's history**, real or commented out. Six of these functions had shipped
+and tested bodies that had never run on their own.
+
+| job name | schedule (UTC) | body | cadence source |
+|---|---|---|---|
+| `notif-batch-flush` | `*/15 * * * *` | `notif_batch_flush_due()` | verbatim from 202608280028's dead comment |
+| `recap_monthly` | `41 4 1 * *` | `recap_monthly_generate()` | verbatim from 202609010002's dead comment |
+| `feed-weights-recompute` | `17 4 * * 1` | `recompute_feed_weights()` | verbatim from 202608310006's dead comment |
+| `chal-notify-ending-soon` | `23 * * * *` | `chal_notify_ending_soon()` | **new decision**: hourly, so "ending soon" is never more than an hour late; the `ending_soon_notified_at` stamp makes extra runs free |
+| `coach-engagement-decline` | `17 6 * * *` | `coach_detect_engagement_decline()` | **new decision**: daily; the signal is multi-week by construction |
+| `purge-abandoned-profiles` | `31 3 * * *` | `cron_invoke_edge_function('purge_abandoned_profiles')` | **new decision**: daily hygiene; the 30-day retention window lives in the function's own `index.ts` |
+| `recap-weekly` | `11 5 * * 1` | `cron_invoke_edge_function('recap_weekly')` | **new decision**: Monday, after the ISO week boundary and after the 04:17 weekly pass |
+| `telemetry-retention-purge` | `47 3 * * *` | `retention_purge_telemetry()` | **new job**, daily so each pass deletes ~one day of rows |
+
+Every job is on an odd minute rather than `:00`, the habit 202608310006
+established, so eight jobs do not stampede the same instant. Verify with
+`select jobname, schedule, active from cron.job;` and
+`select * from cron.job_run_details order by start_time desc limit 20;`.

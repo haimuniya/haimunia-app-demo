@@ -232,7 +232,7 @@ test("notification centre: focus-in, trap, Escape restores focus, backdrop close
     notifs.push({
       id: "n" + i, user_id: "u1", type: "comment_reply", category: "community",
       title: "התראה " + i, body: "גוף " + i, source_type: null, source_id: null,
-      deep_link: null, read_at: null, created_at: new Date(Date.parse("2026-08-29T09:00:00Z") - i * 60000).toISOString(),
+      deep_link: null, read_at: null, created_at: new Date(Date.now() - 5 * 60000 - i * 60000).toISOString(),
     });
   }
   const mock = createMockSupabase({

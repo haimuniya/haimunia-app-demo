@@ -201,6 +201,10 @@
       modQueue: [], modQueueStatus: "open", modQueueLoading: false, modQueueError: false, modQueueLoaded: false,
       modAction: null, modContext: null, reportSheet: null,
       pins: [], pinsLoaded: false, pinError: "",
+      // One-time password-reset reveal (2026-09-05), same shape as
+      // invites.created/inviteCodes.created above: { userId, tempPassword }
+      // shown once, cleared by close-password-reset-result.
+      passwordResetResult: null,
       auditLog: [], auditCursor: null, auditLoading: false, auditError: false, auditLoaded: false, auditEnd: false, auditFilters: {},
 
       // ---- COMM-376. Invite and code management ---------------------
@@ -2381,10 +2385,19 @@
     state.admin.pins = error ? [] : (data || []);
     state.admin.pinsLoaded = !error;
   }
+  // In-flight guard for pin/unpin - a fast double-click on either used to be
+  // able to fire the RPC twice before the first response landed. Keyed by
+  // action+target (not just target) so a pin and a following unpin on the
+  // same target never see each other's flag.
+  const pinBusy = {};
   async function pinTarget(targetType, targetId, note) {
     if (!state.user || !hasPerm(PERM.CONTENT_PIN)) return;
+    const key = "pin:" + targetType + ":" + targetId;
+    if (pinBusy[key]) return;
+    pinBusy[key] = true;
     state.admin.pinError = "";
     const { error } = await client.rpc("pin_set", { p_target_type: targetType, p_target_id: targetId, p_note: String(note || "").slice(0, 200) });
+    pinBusy[key] = false;
     if (error) {
       state.admin.pinError = (error.message || "") === "pin_limit_reached"
         ? "אפשר להצמיד עד שלושה פריטים. יש לבטל הצמדה קיימת קודם."
@@ -2396,8 +2409,12 @@
   }
   async function unpinTarget(targetType, targetId) {
     if (!state.user || !hasPerm(PERM.CONTENT_PIN)) return;
+    const key = "unpin:" + targetType + ":" + targetId;
+    if (pinBusy[key]) return;
+    pinBusy[key] = true;
     state.admin.pinError = "";
     const { error } = await client.rpc("pin_clear", { p_target_type: targetType, p_target_id: targetId });
+    pinBusy[key] = false;
     if (error) { state.admin.pinError = "לא ניתן היה לעדכן את ההצמדות."; return rerender(); }
     await loadPins();
     setMessage("ההצמדה בוטלה");
@@ -2767,12 +2784,37 @@
     rerender();
     if (s.targetType === "post") loadFeed();
   }
+  const removeMemberBusy = {};
   async function adminRemoveMember(userId) {
     if (!state.user || !isAdmin()) return;
+    if (removeMemberBusy[userId]) return;
+    removeMemberBusy[userId] = true;
     const { error } = await client.rpc("admin_remove_member", { p_user_id: userId });
+    removeMemberBusy[userId] = false;
     if (error) return setMessage("הסרת החבר/ה נכשלה");
     setMessage("החבר/ה הוסר/ה");
     await searchMembers(state.members.search);
+  }
+  // 2026-09-05 launch-readiness fix. Login emails are synthetic
+  // (usernameToEmail() - never a real deliverable address), so there is no
+  // self-service "email me a reset link" path. This calls the
+  // admin_reset_password Edge Function, which verifies the caller is a
+  // real admin server-side (never trusting this client), then uses the
+  // Supabase Admin SDK to set a new temporary password - the officially
+  // supported way to do that, not a direct write to auth.users. The
+  // returned password is shown exactly once (server never stores or
+  // re-shows it) so the admin can relay it to the member directly.
+  const resetPasswordBusy = {};
+  async function adminResetPassword(userId) {
+    if (!state.user || !isAdmin()) return;
+    if (resetPasswordBusy[userId]) return;
+    resetPasswordBusy[userId] = true;
+    rerender();
+    const { data, error } = await client.functions.invoke("admin_reset_password", { body: { target_user_id: userId } });
+    resetPasswordBusy[userId] = false;
+    if (error || !data || !data.temp_password) { rerender(); return setMessage("איפוס הסיסמה נכשל"); }
+    state.admin.passwordResetResult = { userId, tempPassword: data.temp_password };
+    rerender();
   }
   async function publishAchievement(achievementId, title, rule) {
     if (!state.user || !state.profile) return setMessage("התחברו לקהילה כדי לשתף עיטור");
@@ -3649,6 +3691,11 @@
   // COMM-151. Opens the reason sheet for a post. The acknowledgement after
   // submit is plain ("הדיווח התקבל.") and says nothing about what follows.
   function report(postId) { openReportSheet("post", postId); }
+  // 2026-09-05 launch-readiness fix. Posts and comments could be reported;
+  // a member's profile (bio, display name) could not, even though it's
+  // just as visible to the whole club. Requires the schema widening
+  // reports.target_type/report() to accept 'profile' (2026-09-05 migration).
+  function reportProfile(userId) { openReportSheet("profile", userId); }
   // COMM-228. Members, events and challenges in one round trip. The RPC is
   // security definer and unions three rules that already exist as RLS
   // policies (profiles_read_authenticated, events_read, challenges_read),
@@ -3839,7 +3886,17 @@
     if (!item) return setMessage("לא ניתן למצוא את התוצאה במכשיר");
     let photoPath = null;
     if (photoFile) {
-      photoPath = await uploadPostPhoto(photoFile);
+      // Was uploadPostPhoto(photoFile) directly on the raw File - every
+      // other upload path (composerAddPhoto, avatar, PR prompt) goes
+      // through prepareImage first, which strips EXIF/GPS and compresses.
+      // This was the one path that shipped a member's raw photo, metadata
+      // and all, straight to storage.
+      try {
+        const prepared = await window.HaimuniaImage.prepareImage(photoFile);
+        photoPath = await uploadPreparedPhoto(prepared);
+      } catch (e) {
+        photoPath = null;
+      }
       if (!photoPath) return setMessage("העלאת התמונה נכשלה, אפשר לנסות שוב בלי תמונה");
     }
     const payload = { author_id: state.user.id, source_type: item.type, source_record_id: item.id, visibility: visibility === "public" ? "public" : "followers", title: item.title, result_text: item.resultText, comparison_key: item.comparisonKey, score_value: item.scoreValue, score_direction: item.scoreDirection, rx: item.rx, occurred_on: item.occurredOn };
@@ -3990,6 +4047,7 @@
     else if (c.action === "admin-grant-coach") adminGrantCoach(c.payload.userId);
     else if (c.action === "admin-set-role") adminSetRole(c.payload.userId, c.payload.role);
     else if (c.action === "admin-remove-member") adminRemoveMember(c.payload.userId);
+    else if (c.action === "admin-reset-password") adminResetPassword(c.payload.userId);
     else if (c.action === "admin-invite-revoke") revokeInvite(c.payload.inviteId);
     else if (c.action === "post-delete-rpc") postDeleteViaMenu(c.payload.postId);
     else if (c.action === "delete-comment") deleteComment(c.payload.commentId, c.payload.postId);
@@ -4837,12 +4895,25 @@
         ${memberRoleButtonsHtml(m, readOnly)}
         ${showRemove ? `<button class="chip-btn danger" data-community-action="admin-remove-member" data-id="${esc(m.id)}">הסרת חבר/ה</button>` : ""}
       </div>`}
+      <div class="chip-row" style="margin-top:0;">
+        <button class="chip-btn"${readOnly ? ' disabled title="זמין למנהל/ת בלבד"' : ""} data-community-action="admin-reset-password" data-id="${esc(m.id)}">איפוס סיסמה</button>
+      </div>
     </div>`;
   }
   function renderMemberManagement() {
     if (!isAdmin()) return "";
     const results = state.members.results;
+    const pr = state.admin.passwordResetResult;
+    const passwordResetHtml = pr ? `<div class="chart-card" style="margin-bottom:10px;border:1px solid var(--brass);" data-password-reset-created="1">
+      <div class="field-label" style="margin-bottom:4px;">הסיסמה אופסה - זו הפעם היחידה שהיא תוצג. מסרו אותה לחבר/ה ישירות.</div>
+      <div class="flex gap-10" style="align-items:center;flex-wrap:wrap;">
+        <code class="mono" style="font-size:15px;">${esc(pr.tempPassword)}</code>
+        <button class="chip-btn" data-community-action="copy-invite-code" data-code="${esc(pr.tempPassword)}">העתקה</button>
+        <button class="link-btn" data-community-action="close-password-reset-result">סגירה</button>
+      </div>
+    </div>` : "";
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--purple)", "ניהול חברים", true)}
+      ${passwordResetHtml}
       <div class="search-box"><input id="adminMemberSearch" placeholder="חיפוש לפי handle, שם, או הדבקת מזהה משתמש" aria-label="חיפוש חברים לניהול" value="${esc(state.members.search)}"/></div>
       ${results.length ? `<div class="log-list">${results.map((m) => memberManagementRowHtml(m, { readOnly: false, showRemove: true })).join("")}</div>` : state.members.search.trim().length >= 2 ? `<div class="empty">לא נמצאו חברים תואמים</div>` : `<div class="empty">חיפוש לפי handle, שם, או מזהה משתמש (UUID)</div>`}
     </div>`;
@@ -6586,13 +6657,20 @@
     return state.challenges.items.filter((c) => c.status === "active" && types.indexOf(c.challenge_type) >= 0
       && state.challenges.participation[c.id] && state.challenges.participation[c.id].status === "active");
   }
-  async function logAutoChallengeProgress(challengeId, delta, sourceType) {
+  async function logAutoChallengeProgress(challengeId, delta, sourceType, consistencyKey) {
     if (!state.user || !delta) return;
     const { error } = await client.from("challenge_progress").insert({ challenge_id: challengeId, user_id: state.user.id, delta, source_type: sourceType || "auto" });
     if (!error) {
       await loadChallenges();
       if (state.challenges.view && state.challenges.view.id === challengeId) await refreshChallengeView(challengeId);
       rerender();
+    } else if (consistencyKey) {
+      // The caller sets _consistencyWeekLogged[key] optimistically before
+      // this insert resolves (COMM-205's in-memory guard, needed to avoid
+      // double-counting from a fire-and-forget call). A failed write must
+      // not permanently burn that week's consistency credit with no retry -
+      // roll the flag back so the next qualifying session tries again.
+      delete state.challenges._consistencyWeekLogged[consistencyKey];
     }
   }
   // ISO 8601 week, e.g. "2026-W35" - the same week boundary the achievement
@@ -6623,7 +6701,7 @@
       const target = Number((c.config && c.config.times_per_week) || 0);
       if (target > 0 && state.challenges._consistencySessionCounts[key] >= target && !state.challenges._consistencyWeekLogged[key]) {
         state.challenges._consistencyWeekLogged[key] = true;
-        logAutoChallengeProgress(c.id, 1, "workout_completed");
+        logAutoChallengeProgress(c.id, 1, "workout_completed", key);
       }
     }
   }
@@ -7502,6 +7580,10 @@
     if (title.length < 1 || title.length > 120) errors.title = "כותרת נדרשת, עד 120 תווים";
     if (description.length > 4000) errors.description = "עד 4000 תווים";
     if (location.length > 240) errors.location = "עד 240 תווים";
+    // esc() at render time only prevents this from breaking the page - it
+    // does not stop a javascript: URI from sitting in an href. Length was
+    // the only real check before this.
+    if (mapLink && !/^https?:\/\//i.test(mapLink)) errors.mapLink = "הקישור חייב להתחיל ב-http:// או https://";
     if (!startAt) errors.startAt = "יש לבחור תאריך ושעת התחלה";
     if (endAt && startAt && new Date(endAt).getTime() < new Date(startAt).getTime()) errors.endAt = "תאריך הסיום חייב להיות אחרי ההתחלה";
     if (capacityRaw && (!Number.isInteger(Number(capacityRaw)) || Number(capacityRaw) <= 0)) errors.capacity = "מספר שלם חיובי נדרש";
@@ -9119,6 +9201,9 @@
       bodyHtml = renderFollowingTab(pv, d);
     }
     const followBtn = d.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${esc(pv.userId)}">מעקב</button>`;
+    // 2026-09-05. A member's bio/display name were reportable nowhere - only
+    // posts and comments were. Own profile has no report button.
+    const reportProfileBtn = (state.user && pv.userId === state.user.id) ? "" : `<button class="chip-btn" data-community-action="report-profile" data-id="${esc(pv.userId)}">דיווח</button>`;
     return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="profileViewTitle" data-cloud-dialog="profileView" style="align-items:flex-start;padding:20px 12px;">
       <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:520px;">
         <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
@@ -9132,7 +9217,7 @@
             </div>
             <button class="link-btn" data-community-action="close-profile" aria-label="סגירה">סגירה</button>
           </div>
-          <div class="chip-row" style="margin-top:0;">${followBtn}</div>
+          <div class="chip-row" style="margin-top:0;">${followBtn}${reportProfileBtn}</div>
           <div class="subtabbar" style="margin-top:12px;">${profileTabs.map((t) => `<button class="subtabbtn${t.id === active ? " active" : ""}" data-community-action="profile-tab" data-tab="${t.id}">${t.label}</button>`).join("")}</div>
           <div style="margin-top:12px;">${bodyHtml}</div>
         </div>
@@ -9722,6 +9807,20 @@
   // postgres_changes filters only support eq, and a feed page is twenty
   // posts, so twenty filtered channels would blow the ten-channel cap.
   // Incoming rows are filtered here against what is actually rendered.
+  //
+  // Re-checked for a 200-user launch: a server-side `filter` on club_id
+  // was considered and rejected, not overlooked. Neither table carries a
+  // club_id column (reactions/post_comments only have post_id, user_id,
+  // kind/body, created_at), and this product is one club by deliberate
+  // decision (docs/community/backlog.md, "Club model... approved. Keep
+  // club_id, one club row, no multi-tenant") - every one of the 200 users
+  // is in the same club, so a club-level filter would not reduce fanout at
+  // all even if the column existed. There is no column on either table
+  // that both exists and would narrow broadcast without recreating the
+  // per-post-channel problem this comment already rejected. The real lever
+  // here is confirming the actual Supabase plan's realtime message-volume
+  // and concurrent-connection limits against real usage, not a code change -
+  // see 2026-09-05 launch-readiness audit.
   function ensureFeedRealtime() {
     if (!state.user || !client || !window.HaimuniaRealtime) return;
     if (state.ui.tab !== "feed") return;
@@ -10765,6 +10864,7 @@
     else if (action === "comment-edit-cancel") cancelCommentEdit();
     else if (action === "comment-retry") retryComment(el.dataset.post, el.dataset.parent || null);
     else if (action === "report-comment") reportComment(el.dataset.id);
+    else if (action === "report-profile") reportProfile(el.dataset.id);
     else if (action === "mention-pick") mentionPick(el.dataset.key, el.dataset.id, el.dataset.name);
     else if (action === "set-tab") setCommunityTab(el.dataset.tab);
     else if (action === "verify-recovery") verifyRecovery({ force: true });
@@ -10848,6 +10948,8 @@
     else if (action === "admin-grant-coach") askConfirm({ title: "הענקת הרשאת מאמן/ת", message: "להעניק הרשאת מאמן/ת למשתמש/ת זה/ו?", confirmLabel: "הענקה", action: "admin-grant-coach", payload: { userId: el.dataset.id } });
     else if (action === "admin-revoke-coach") adminRevokeCoach(el.dataset.id);
     else if (action === "admin-remove-member") askConfirm({ title: "הסרת חבר/ה", message: "הפרופיל והשיתופים של המשתמש/ת יוסרו מיד. המחיקה הסופית תתבצע לאחר 30 יום. להמשיך?", confirmLabel: "הסרה", destructive: true, action: "admin-remove-member", payload: { userId: el.dataset.id } });
+    else if (action === "admin-reset-password") askConfirm({ title: "איפוס סיסמה", message: "ייווצרו סיסמה זמנית חדשה שתוצג פעם אחת בלבד. יש למסור אותה לחבר/ה ישירות (לא דרך האפליקציה).", confirmLabel: "איפוס", action: "admin-reset-password", payload: { userId: el.dataset.id } });
+    else if (action === "close-password-reset-result") { state.admin.passwordResetResult = null; rerender(); }
     else if (action === "toggle-share") toggleShare(el.dataset.type, el.dataset.id);
     else if (action === "open-composer") openComposer(el);
     else if (action === "composer-cancel") tryCloseComposer();

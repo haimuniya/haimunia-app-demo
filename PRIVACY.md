@@ -1,6 +1,6 @@
 # Privacy Policy
 
-*Last updated: 2026-09-04*
+*Last updated: 2026-09-05*
 
 This policy explains what information the app collects, why, how it is
 shared, and what control you have over it. It covers both the private
@@ -49,6 +49,18 @@ whole of "support" for this app.
   using a web app (timestamps, error logs, and the equivalent of
   browser/device information), used only for reliability and abuse
   prevention.
+- **Engagement and usage analytics.** We record which screens you open and
+  which community content you view or interact with (for example, opening
+  the feed, viewing a post, or visiting a profile) — not the training-log
+  data itself, just that an interaction happened and when. This is
+  aggregated into club-wide participation metrics (such as how active the
+  community is week to week) and into a per-member engagement signal (for
+  example, flagging that a member's participation appears to be trending
+  down) that coaches and admins can see, so they can reach out rather than
+  a member quietly drifting away unnoticed. This data is kept for 90 days
+  and then deleted; it is never sold or shared outside the coaching team,
+  and it is not used to make any automated decision about you — only to
+  prompt a human coach to check in.
 
 We do not collect government ID, precise location, financial account
 numbers, or biometric data, and we do not use any of the above for
@@ -91,6 +103,11 @@ only hidden in the app's screens.
   policy set by admins can also make attendance visible to admins even when
   a member's own attendance toggle is off; it does not override any other
   privacy toggle.
+- **Coaches and admins** can also see the per-member engagement signal
+  described above (a general "trending down" flag, not a detailed log of
+  what you viewed or when) — this is separate from, and not limited by,
+  your own profile-visibility toggles, since it exists specifically to
+  support outreach from the people already responsible for the club.
 - **We (the coaching team)** and our subprocessors below can access data as
   needed to run, secure, and support the service. We do not sell personal
   information, and we do not share it with third parties for their own
@@ -116,7 +133,8 @@ this way: performance of a contract (to create your account and provide the
 training log and community features you sign up for), your consent (for
 optional features such as joining the community, sharing a post, or
 enabling automatic backup), our legitimate interest (to secure the service,
-prevent abuse, and enforce invite and rate limits), and legal obligation
+prevent abuse, enforce invite and rate limits, and let coaches identify and
+support members whose participation is dropping off), and legal obligation
 where applicable law requires specific records to be retained or disclosed.
 This mirrors how the app already works rather than resting on any claimed
 jurisdiction.
@@ -130,7 +148,9 @@ account and its content are permanently deleted after 30 days. Beyond that
 follow our hosting provider's own standard backup-rotation and log-retention
 windows — we don't separately extend those windows or track them by an
 exact day count, and they are not used for anything beyond restoring
-service or investigating abuse before they age out.
+service or investigating abuse before they age out. The engagement and
+usage analytics described above follow their own, shorter 90-day window
+and are deleted on that schedule regardless of account status.
 
 ## Your rights
 

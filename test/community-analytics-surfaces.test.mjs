@@ -22,7 +22,9 @@ import { bootCommunity, waitFor } from "./helpers/boot.mjs";
 import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
 const VERIFIED = new Date().toISOString();
-const BASE = Date.parse("2026-08-29T09:00:00.000Z");
+// Anchored to Date.now(), not a fixed calendar date - see the identical
+// fix/comment in community-notifications.test.mjs.
+const BASE = Date.now() - 5 * 60000;
 
 function row(i, extra) {
   return Object.assign({

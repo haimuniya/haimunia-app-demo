@@ -27,7 +27,11 @@ import { bootCommunity, waitFor } from "./helpers/boot.mjs";
 import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
 const VERIFIED = new Date().toISOString();
-const BASE = Date.parse("2026-08-29T09:00:00.000Z");
+// Anchored to Date.now(), not a fixed calendar date - a hardcoded past
+// date eventually crosses relativeTime()'s 7-day "switch to absolute date"
+// threshold and fails this suite's own relative-time assertions on any
+// day after that, regardless of the product code being correct.
+const BASE = Date.now() - 5 * 60000;
 
 function notif(i, extra) {
   return Object.assign({
