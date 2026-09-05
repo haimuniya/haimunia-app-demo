@@ -126,9 +126,11 @@ test("an admin can search for a member and grant coach, executing for real throu
   });
 
   const window = await bootCommunity(mock, { syncEnabled: false });
-  window.document.getElementById("tabCommunityBtn").click();
+  // Redesign, Phase 1: renderMemberManagement() moved from Community's
+  // "account" sub-tab to the Manage tab's own "members" sub-tab.
+  window.document.getElementById("tabManageBtn").click();
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
-  window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();
+  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="members"]').click();
 
   const search = window.document.getElementById("adminMemberSearch");
   search.value = "dana";

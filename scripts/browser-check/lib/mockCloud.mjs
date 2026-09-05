@@ -55,7 +55,15 @@ export async function installMockCloud(page, seedTables = {}, opts = {}) {
   );
 
   const userLine = opts.user ? `window.__mock.setUser(${JSON.stringify(opts.user)});` : "";
+  // Redesign, Phase 3: same default test/helpers/boot.mjs's bootCommunity()
+  // sets, for the identical reason - cloud.js's hasSeenIntroCarousel() is
+  // read on every render, so without this every scenario here that reaches
+  // a fresh signup gets intercepted by the first-run carousel instead of
+  // whatever it actually means to test. opts.seenIntroCarousel === false
+  // overrides this back to genuinely unseen, for the one scenario that
+  // actually wants the carousel to appear.
   const glue = `${mockSupabaseSource()}
+localStorage.setItem("haimunia-demo:seenIntroCarousel", ${opts.seenIntroCarousel === false ? '"0"' : '"1"'});
 window.__mock = createMockSupabase(${JSON.stringify(seedTables)});
 window.supabase = { createClient: function () { return window.__mock.client; } };
 ${userLine}

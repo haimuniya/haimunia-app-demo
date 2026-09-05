@@ -115,6 +115,16 @@ export async function bootCommunity(mock, opts = {}) {
     // decode, matching what a real browser is handed.
     notifPushVapidPublicKey: "BD16mHSAcS-jU5cV2xEqkNy09hCQ7MTjkY22CK8UrRw1JpI_5kjReL7tME6O4BFmQhuiaOVCWQ-nqsnoa1_0nAo" };
   window.supabase = { createClient: () => mock.client };
+  // Redesign, Phase 3: default every test to "already saw the first-run
+  // intro carousel" - unlike syncEnabled/coachEngage below, cloud.js reads
+  // this on every render (hasSeenIntroCarousel()), not just at module init,
+  // so the vast majority of existing tests boot a member straight to
+  // whatever screen they actually mean to test (the profile-completion
+  // form, the tabbed UI, ...) instead of being intercepted by a carousel
+  // they have no interest in. A test that DOES want the carousel passes
+  // `localStorage: { "haimunia-demo:seenIntroCarousel": "0" }` (below) to
+  // override this default back to unseen.
+  window.localStorage.setItem("haimunia-demo:seenIntroCarousel", "1");
   // cloud.js reads this synchronously at module init (state.syncEnabled),
   // so it has to be set before cloud.js is eval'd below, not after.
   if (opts.syncEnabled) window.localStorage.setItem("haimunia-demo:cloudSyncEnabled", "1");

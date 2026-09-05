@@ -49,10 +49,22 @@ function seeded(extra, role, opts) {
   return mock;
 }
 
+// Redesign, Phase 1: renderCommunityHealthScore() moved from Community's
+// "account" sub-tab to the Manage tab's own "dashboard" sub-tab (the
+// mockup's own layout call - the score is the dashboard's headline card,
+// not one more analytics card). renderAdminAnalyticsDashboard()/
+// renderRetentionCorrelations() moved too, to Manage's "analytics" sub-tab
+// - a DIFFERENT sub-tab than health's now, where before all three sat on
+// the same Account-tab page together.
 async function openAccountTab(window) {
-  window.document.getElementById("tabCommunityBtn").click();
+  window.document.getElementById("tabManageBtn").click();
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
-  window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();
+  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="dashboard"]').click();
+}
+async function openManageAnalytics(window) {
+  window.document.getElementById("tabManageBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="analytics"]').click();
 }
 
 // analytics_dashboard()/member_segments()/the three retention RPCs are
@@ -256,12 +268,15 @@ test("a community.analytics.view holder who is NOT an admin sees COMM-310's dash
   const healthCalls = [];
   mock.onRpc("community_health_history", (args) => { healthCalls.push(args); return { data: [healthWeek("2026-08-24", 70)], error: null }; });
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openAccountTab(window);
-
-  // The broader-gated dashboard DOES show for this holder.
+  // The broader-gated dashboard DOES show for this holder, on Manage's
+  // "analytics" sub-tab.
+  await openManageAnalytics(window);
   await waitFor(() => !!window.document.querySelector('[data-admin-analytics-dashboard="1"]'), 3000);
   assert.ok(dashCalls.length >= 1, "analytics_dashboard() is called for a community.analytics.view holder");
+  assert.equal(window.document.querySelector('[data-community-health-score="1"]'), null, "the community health section never renders on Analytics either");
 
+  // Nor on the Dashboard sub-tab, where health now lives for an admin.
+  await openAccountTab(window);
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(window.document.querySelector('[data-community-health-score="1"]'), null, "the community health section never renders for this holder");
   assert.equal(window.document.body.textContent.includes("ציון בריאות הקהילה"), false, "not even the section header text is present");
@@ -298,7 +313,13 @@ test("a plain member (no staff role, no permission at all) never sees the commun
   const calls = [];
   mock.onRpc("community_health_history", () => { calls.push(1); return { data: [healthWeek("2026-08-24", 70)], error: null }; });
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openAccountTab(window);
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  // Redesign, Phase 1: a plain member does not even get the Manage tab at
+  // all (window.communityIsStaff() gates whether app.js emits it) -
+  // stronger than the old assertion, which only checked the section was
+  // absent from Account.
+  assert.equal(window.document.getElementById("tabManageBtn"), null, "a plain member never gets the Manage tab at all");
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(window.document.querySelector('[data-community-health-score="1"]'), null);
   assert.equal(calls.length, 0);
@@ -306,21 +327,23 @@ test("a plain member (no staff role, no permission at all) never sees the commun
 
 // --- placement: its own section, sibling to COMM-313's, not nested ---------
 
-test("the community health section is its OWN top-level ach-section, not nested inside COMM-310's dashboard nor COMM-313's retention section, and vice versa", async () => {
+test("the community health section is its OWN top-level ach-section, not nested inside COMM-310's dashboard nor COMM-313's retention section, and vice versa - redesign, Phase 1: they are also on separate Manage sub-tabs entirely now, never in the same DOM at once", async () => {
   const mock = seeded({}, "admin");
   registerSiblingRpcs(mock);
   mock.onRpc("community_health_history", () => ({ data: [healthWeek("2026-08-24", 70)], error: null }));
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openAccountTab(window);
-  await waitFor(() => !!window.document.querySelector('[data-community-health-score="1"]'), 3000);
 
+  await openManageAnalytics(window);
+  await waitFor(() => !!window.document.querySelector('[data-admin-analytics-dashboard="1"]'), 3000);
   const dashboard = window.document.querySelector('[data-admin-analytics-dashboard="1"]');
   const retention = window.document.querySelector('[data-retention-correlations="1"]');
-  const health = window.document.querySelector('[data-community-health-score="1"]');
-  assert.ok(dashboard && retention && health, "all three sections rendered");
+  assert.ok(dashboard && retention, "both analytics sections rendered on the analytics sub-tab");
+  assert.equal(window.document.querySelector('[data-community-health-score="1"]'), null, "the health section is not nested inside the analytics sub-tab at all");
 
-  assert.equal(dashboard.querySelector('[data-community-health-score="1"]'), null, "not nested inside COMM-310's dashboard");
-  assert.equal(health.querySelector('[data-admin-analytics-dashboard="1"]'), null, "and not the other way around");
-  assert.equal(retention.querySelector('[data-community-health-score="1"]'), null, "not nested inside COMM-313's retention section");
-  assert.equal(health.querySelector('[data-retention-correlations="1"]'), null, "and not the other way around either");
+  await openAccountTab(window);
+  await waitFor(() => !!window.document.querySelector('[data-community-health-score="1"]'), 3000);
+  const health = window.document.querySelector('[data-community-health-score="1"]');
+  assert.ok(health, "the health section rendered on the dashboard sub-tab");
+  assert.equal(window.document.querySelector('[data-admin-analytics-dashboard="1"]'), null, "and neither analytics section is nested inside the dashboard sub-tab, the other way around");
+  assert.equal(window.document.querySelector('[data-retention-correlations="1"]'), null);
 });

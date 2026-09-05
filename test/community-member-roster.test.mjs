@@ -37,10 +37,13 @@ function seeded(extra, role) {
   return mock;
 }
 
+// Redesign, Phase 1: renderMemberManagement()/renderMemberRoster() moved
+// from Community's "account" sub-tab to the Manage tab's own "members"
+// sub-tab.
 async function openAccountTab(window) {
-  window.document.getElementById("tabCommunityBtn").click();
+  window.document.getElementById("tabManageBtn").click();
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
-  window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();
+  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="members"]').click();
 }
 
 function rosterRow(role, extra) {
@@ -52,7 +55,9 @@ test("a plain member never sees the roster, and admin_member_roster is never cal
   const calls = [];
   mock.onRpc("admin_member_roster", (args) => { calls.push(args); return { data: [], error: null }; });
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openAccountTab(window);
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  assert.equal(window.document.getElementById("tabManageBtn"), null, "a plain member never gets the Manage tab at all");
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(window.document.querySelector('[data-member-roster-section="1"]'), null);
   assert.equal(calls.length, 0);

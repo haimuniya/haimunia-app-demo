@@ -55,10 +55,12 @@ function seeded(extra, role, opts) {
   return mock;
 }
 
+// Redesign, Phase 1: renderRetentionCorrelations() moved from Community's
+// "account" sub-tab to the Manage tab's own "analytics" sub-tab.
 async function openAccountTab(window) {
-  window.document.getElementById("tabCommunityBtn").click();
+  window.document.getElementById("tabManageBtn").click();
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
-  window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();
+  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="analytics"]').click();
 }
 
 // analytics_dashboard()/member_segments() are exercised elsewhere - a
@@ -350,7 +352,9 @@ test("a plain member (no staff role, no permission at all) never sees the retent
   const retentionCalls = [];
   mock.onRpc("retention_cohorts", () => { retentionCalls.push(1); return { data: cohortsFixture(), error: null }; });
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openAccountTab(window);
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  assert.equal(window.document.getElementById("tabManageBtn"), null, "a plain member never gets the Manage tab at all");
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(window.document.querySelector('[data-retention-correlations="1"]'), null);
   assert.equal(retentionCalls.length, 0);

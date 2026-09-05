@@ -84,6 +84,17 @@ async function openAccount(window) {
   await openCommunity(window);
   await gotoAccount(window);
 }
+// Redesign, Phase 1: renderModeration()/renderAuditLog() moved from
+// Community's "account" sub-tab to the Manage tab's own "moderation"
+// sub-tab; renderMemberManagement() moved to Manage's "members" sub-tab.
+async function gotoManage(window, subtab) {
+  await waitFor(() => !!window.document.getElementById("tabManageBtn"), 4000);
+  window.document.getElementById("tabManageBtn").click();
+  await waitFor(() => !!window.document.querySelector(`[data-community-action="set-manage-tab"][data-tab="${subtab}"]`), 4000);
+  window.document.querySelector(`[data-community-action="set-manage-tab"][data-tab="${subtab}"]`).click();
+}
+async function openManageModeration(window) { await gotoManage(window, "moderation"); }
+async function openManageMembers(window) { await gotoManage(window, "members"); }
 const bodyText = (window) => window.document.body.textContent;
 
 // ===== COMM-150 table-driven permissions ==============================
@@ -116,19 +127,26 @@ test("a role that gains community.comment.moderate gains the queue, and loses it
   await openAccount(window);
   assert.doesNotMatch(bodyText(window), /תור מודרציה/, "a plain member sees no moderation queue");
 
-  // Gains the permission.
+  // Gains the permission - and, redesign Phase 1, the Manage tab itself,
+  // since head_coach now satisfies isStaff().
   mock.db.invite_redemptions[0].role = "head_coach";
   await mock.client.auth.signOut();
   await mock.client.auth.signInWithPassword({ email: "mod@members.haimuniya.invalid", password: "pw123456" });
-  await gotoAccount(window);
+  await openManageModeration(window);
   await waitFor(() => /תור מודרציה/.test(bodyText(window)), 3000);
   assert.match(bodyText(window), /תור מודרציה/, "the queue appears once the role holds community.comment.moderate");
 
-  // Loses it again.
+  // Loses it again - and the Manage tab disappears with it. Not
+  // openCommunity()/openAccount(): state.ui.tab (Community's OWN internal
+  // sub-tab) is still "account" from before the Manage detour, so
+  // communityClubTop (feed/boards chrome) never renders on this pass -
+  // gotoAccount alone is enough once we're back on the Community bottom-tab.
   mock.db.invite_redemptions[0].role = "member";
   await mock.client.auth.signOut();
   await mock.client.auth.signInWithPassword({ email: "mod@members.haimuniya.invalid", password: "pw123456" });
+  window.document.getElementById("tabCommunityBtn").click();
   await gotoAccount(window);
+  assert.equal(window.document.getElementById("tabManageBtn"), null, "the Manage tab itself is gone once the permission is removed");
   assert.doesNotMatch(bodyText(window), /תור מודרציה/, "the queue is gone again once the permission is removed");
 });
 
@@ -198,8 +216,12 @@ test("the queue shows content, reported member, reporter count, reason, date and
   });
   mock.setUser({ id: "mod-1", is_anonymous: false, email: "mod@members.haimuniya.invalid" });
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openAccount(window);
-  await waitFor(() => /תור מודרציה/.test(window.document.body.textContent), 3000);
+  await openManageModeration(window);
+  // Wait for the actual report content, not just the section heading -
+  // the heading (and the "nothing to review" empty state) render before
+  // the eager modQueue load resolves, so waiting on heading text alone is
+  // satisfied too early.
+  await waitFor(() => /תוכן שדווח/.test(window.document.body.textContent), 3000);
   const section = Array.from(window.document.querySelectorAll(".ach-section")).find((s) => /תור מודרציה/.test(s.textContent));
   assert.ok(section, "the queue section renders");
   assert.match(section.textContent, /תוכן שדווח/, "content excerpt");
@@ -219,6 +241,7 @@ test("the queue is not rendered for a member without the moderation permission",
   mock.setUser({ id: "mod-1", is_anonymous: false, email: "mod@members.haimuniya.invalid" });
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openAccount(window);
+  assert.equal(window.document.getElementById("tabManageBtn"), null, "a plain member never gets the Manage tab at all");
   assert.doesNotMatch(window.document.body.textContent, /תור מודרציה/);
 });
 
@@ -227,7 +250,7 @@ test("the queue is not rendered for a member without the moderation permission",
 async function bootQueueAs(mock) {
   mock.setUser({ id: "mod-1", is_anonymous: false, email: "mod@members.haimuniya.invalid" });
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openAccount(window);
+  await openManageModeration(window);
   await waitFor(() => !!window.document.querySelector('[data-community-action="mod-action"]'), 3000);
   return window;
 }
@@ -302,7 +325,7 @@ test("the audit view is gated on community.analytics.view and reads admin_action
   });
   mock.setUser({ id: "mod-1", is_anonymous: false, email: "mod@members.haimuniya.invalid" });
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openAccount(window);
+  await openManageModeration(window);
   // head_coach does not hold community.analytics.view, so no audit view.
   assert.doesNotMatch(window.document.body.textContent, /יומן פעולות ניהול/);
 
@@ -318,7 +341,7 @@ test("the audit view is gated on community.analytics.view and reads admin_action
   });
   mock2.setUser({ id: "adm-1", is_anonymous: false, email: "adm@members.haimuniya.invalid" });
   const w2 = await bootCommunity(mock2, { syncEnabled: false });
-  await openAccount(w2);
+  await openManageModeration(w2);
   await waitFor(() => /יומן פעולות ניהול/.test(w2.document.body.textContent), 3000);
   assert.ok(mock2.callsTo("admin_actions_page").length >= 1, "the view reads admin_actions_page()");
   assert.match(w2.document.body.textContent, /הצמדת תוכן/, "an audit row renders");
@@ -371,7 +394,7 @@ test("head_coach is selectable in member management; staff and owner are not", a
   mock.setUser({ id: "adm-1", is_anonymous: false, email: "adm@members.haimuniya.invalid" });
   mock.onRpc("admin_search_members", () => ({ data: [{ id: "author-1", handle: "kobi", display_name: "קובי", role: "member", redeemed_at: VERIFIED, last_activity_on: null }], error: null }));
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openAccount(window);
+  await openManageMembers(window);
   const input = window.document.getElementById("adminMemberSearch");
   input.value = "ko";
   input.dispatchEvent(new window.Event("input"));
@@ -391,7 +414,7 @@ test("granting head_coach passes p_role and is confirmed; the mock records a rol
   });
   mock.setUser({ id: "adm-1", is_anonymous: false, email: "adm@members.haimuniya.invalid" });
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openAccount(window);
+  await openManageMembers(window);
   window.eval('window.handleCommunityClick({ dataset: { communityAction: "admin-set-role", id: "author-1", role: "head_coach" } })');
   await waitFor(() => !!window.document.querySelector('[data-community-action="confirm-yes"]'), 3000);
   window.document.querySelector('[data-community-action="confirm-yes"]').click();

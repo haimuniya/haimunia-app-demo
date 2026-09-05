@@ -54,7 +54,7 @@ test("the state root is the session core plus per-domain namespaces, nothing els
   assert.deepEqual(namespaces, [
     "ui", "feed", "posts", "engagement", "members", "club", "leaderboard",
     "admin", "analytics", "challenges", "events", "search", "achievements",
-    "notif", "onboarding", "recaps", "coach",
+    "notif", "onboarding", "intro", "recaps", "coach",
   ], "the namespace set changed - update this list and docs/community/backlog.md's COMM-365 row");
 });
 

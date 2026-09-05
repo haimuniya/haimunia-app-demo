@@ -35,10 +35,13 @@ function seeded(extra, role) {
   return mock;
 }
 
+// Redesign, Phase 1: renderRegistrationFunnel() itself did not move, but its
+// container renderAdminAnalyticsDashboard() did - from Community's "account"
+// sub-tab to the Manage tab's own "analytics" sub-tab.
 async function openAccountTab(window) {
-  window.document.getElementById("tabCommunityBtn").click();
+  window.document.getElementById("tabManageBtn").click();
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
-  window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();
+  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="analytics"]').click();
 }
 
 function minimalDashboardFixture() { return { core: {}, additional: {} }; }
@@ -240,6 +243,11 @@ test("a coach (is_staff, no community.analytics.view) never sees the funnel sect
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(window.document.body.textContent.includes("משפך הרשמה"), false);
   assert.equal(funnelCalls.length, 0);
+  // Redesign, Phase 1: the roster is on a DIFFERENT Manage sub-tab
+  // ("members") than the funnel/analytics ("analytics") now - navigate
+  // there separately to check it still renders for the same coach.
+  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="members"]').click();
+  await waitFor(() => !!window.document.querySelector('[data-member-roster-section="1"]'), 3000);
   assert.ok(window.document.querySelector('[data-member-roster-section="1"]'), "the roster still renders for the same coach (is_staff, looser gate)");
 });
 
@@ -247,7 +255,9 @@ test("a plain member never sees the funnel section either", async () => {
   const mock = seeded({}, "member");
   mock.onRpc("registration_funnel", () => ({ data: funnelFixture(), error: null }));
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openAccountTab(window);
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  assert.equal(window.document.getElementById("tabManageBtn"), null, "a plain member never gets the Manage tab at all");
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(window.document.querySelector('[data-registration-funnel-section="1"]'), null);
 });

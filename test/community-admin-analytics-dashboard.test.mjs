@@ -42,10 +42,14 @@ function seeded(extra, role) {
   return mock;
 }
 
+// Redesign, Phase 1: the admin analytics dashboard moved from Community's
+// "account" sub-tab to the Manage tab's own "analytics" sub-tab. Renamed
+// call sites left alone (still "openAccountTab" throughout this file) -
+// only the navigation itself changed.
 async function openAccountTab(window) {
-  window.document.getElementById("tabCommunityBtn").click();
+  window.document.getElementById("tabManageBtn").click();
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
-  window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();
+  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="analytics"]').click();
 }
 
 // A full, plausible analytics_dashboard() response - every one of the 18
@@ -270,7 +274,13 @@ test("a plain member (no staff role at all) never sees the dashboard section eit
   const calls = [];
   mock.onRpc("analytics_dashboard", (args) => { calls.push(args); return { data: dashboardFixture(), error: null }; });
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openAccountTab(window);
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  // Redesign, Phase 1: a plain member does not even get the Manage tab
+  // (window.communityIsStaff() gates whether app.js emits it at all) -
+  // stronger than the old assertion, which only checked the section was
+  // absent from Account. Nothing to click through to any more.
+  assert.equal(window.document.getElementById("tabManageBtn"), null, "a plain member never gets the Manage tab at all");
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(window.document.querySelector('[data-admin-analytics-dashboard="1"]'), null);
   assert.equal(calls.length, 0);

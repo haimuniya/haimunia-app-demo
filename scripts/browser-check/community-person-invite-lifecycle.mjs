@@ -136,15 +136,19 @@ await dismissWelcomeModal(page);
 await switchTab(page, "tabCommunityBtn");
 await page.waitForSelector(".subtabbar", { timeout: 5000 });
 
-async function openAccountTab() {
-  await page.waitForSelector(".subtabbar", { timeout: 5000 });
-  await page.click('[data-community-action="set-tab"][data-tab="account"]');
+// Redesign, Phase 1: invite management now lives on its own "ניהול"
+// (Manage) bottom-tab, Invites sub-tab - relocated out of Community's
+// Account tab.
+async function openManageInvites() {
+  await switchTab(page, "tabManageBtn");
+  await page.waitForSelector('[data-community-action="set-manage-tab"][data-tab="invites"]', { timeout: 5000 });
+  await page.click('[data-community-action="set-manage-tab"][data-tab="invites"]');
 }
 
 // ===========================================================================
 // Step 1: the admin generates a per-person invite.
 // ===========================================================================
-await openAccountTab();
+await openManageInvites();
 await page.waitForSelector('[data-invite-management-section="1"]', { timeout: 5000 });
 check("the admin reaches the invite management section", true);
 
@@ -162,6 +166,12 @@ check("the new invite appears in the admin's own list as pending, carrying the l
 // ===========================================================================
 // Step 2: sign out, start a brand-new signup, redeem that exact code.
 // ===========================================================================
+// sign-out stayed put in Community's Account tab (not moved to Manage) -
+// back out of Manage to reach it.
+await switchTab(page, "tabCommunityBtn");
+await page.waitForSelector(".subtabbar", { timeout: 5000 });
+await page.click('[data-community-action="set-tab"][data-tab="account"]');
+await page.waitForSelector('[data-community-action="sign-out"]', { timeout: 5000 });
 await page.click('[data-community-action="sign-out"]');
 await page.waitForSelector('[data-community-action="start-signup"]', { timeout: 5000 });
 check("signing out drops back to the signed-out community gate", true);
@@ -206,7 +216,13 @@ check("the new member completed their profile and reached the real tabbed commun
 // ===========================================================================
 // Step 3: sign back in as the admin and see the invite flip to redeemed.
 // ===========================================================================
-await openAccountTab();
+// Still signed in as the brand-new plain member here - they have no Manage
+// tab at all (staff-only), so this reaches sign-out via Community's Account
+// tab, same as the admin's own sign-out in Step 2.
+await switchTab(page, "tabCommunityBtn");
+await page.waitForSelector(".subtabbar", { timeout: 5000 });
+await page.click('[data-community-action="set-tab"][data-tab="account"]');
+await page.waitForSelector('[data-community-action="sign-out"]', { timeout: 5000 });
 await page.click('[data-community-action="sign-out"]');
 await page.waitForSelector("#communityLogin", { timeout: 5000 });
 await page.fill('#communityLogin input[name="username"]', "roi");
@@ -215,7 +231,7 @@ await page.locator("#communityLogin").evaluate((form) => form.requestSubmit());
 await page.waitForSelector(".subtabbar", { timeout: 5000 });
 check("the admin logs back in with their own username and password", true);
 
-await openAccountTab();
+await openManageInvites();
 await page.waitForFunction(() => !!document.querySelector("[data-invite-id]"), { timeout: 5000 });
 const redeemedRowText = await page.locator("[data-invite-id]").first().textContent();
 check(

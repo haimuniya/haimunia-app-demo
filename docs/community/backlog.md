@@ -3673,10 +3673,11 @@ COMM-365: `state` had 139 top-level keys — more than the ~89 the ticket
 estimated — where the only thing keeping two feature clusters from colliding on
 a name like `view`, `items`, `loading` or `error` was a hand-maintained prefix
 convention (`feedScope`, `challengeView`, `coachCelebrate`, `modQueueStatus`).
-It is now 17 per-domain namespaces (`ui`, `feed`, `posts`, `engagement`,
+It is now 18 per-domain namespaces (`ui`, `feed`, `posts`, `engagement`,
 `members`, `club`, `leaderboard`, `admin`, `analytics`, `challenges`, `events`,
-`search`, `achievements`, `notif`, `onboarding`, `recaps`, `coach`) plus a
-13-key root. The root is deliberately NOT a domain: it holds only the
+`search`, `achievements`, `notif`, `onboarding`, `recaps`, `coach`, `intro` —
+the last added by the redesign's Phase 3, for the first-run intro carousel)
+plus a 13-key root. The root is deliberately NOT a domain: it holds only the
 session/auth/config core that every domain reads and no domain owns
 (`configured`/`client`, `user`/`profile`/`redemption`, the two
 localStorage-backed switches, the boot guard, the cached permission set,

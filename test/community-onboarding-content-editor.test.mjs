@@ -37,10 +37,12 @@ function seeded(extra, role) {
   return mock;
 }
 
+// Redesign, Phase 1: renderOnboardingContentEditor() moved from Community's
+// "account" sub-tab to the Manage tab's own "onboarding" sub-tab.
 async function openAccountTab(window) {
-  window.document.getElementById("tabCommunityBtn").click();
+  window.document.getElementById("tabManageBtn").click();
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
-  window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();
+  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="onboarding"]').click();
 }
 async function openFeed(window) {
   window.document.getElementById("tabCommunityBtn").click();
@@ -58,7 +60,9 @@ async function openFeed(window) {
 test("a plain member never sees the editor entry point", async () => {
   const mock = seeded({ onboarding_step_content: [] }, "member");
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openAccountTab(window);
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  assert.equal(window.document.getElementById("tabManageBtn"), null, "a plain member never gets the Manage tab at all");
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(window.document.querySelector('[data-onboarding-editor-section="1"]'), null);
 });

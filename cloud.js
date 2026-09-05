@@ -90,7 +90,10 @@
     // tab is which community sub-tab is showing. message is the one status
     // line every surface writes through setMessage(). fieldErrors is keyed by
     // form+field (see field()). confirmDialog is the shared confirm sheet.
-    ui: { tab: "feed", loading: false, message: "", fieldErrors: {}, confirmDialog: null },
+    // manageTab is the active sub-tab of the separate "ניהול" (Manage) top-
+    // level tab - its own field, not reusing `tab`, since a staff member can
+    // leave Manage and come back without losing their place in either.
+    ui: { tab: "feed", manageTab: "dashboard", loading: false, message: "", fieldErrors: {}, confirmDialog: null },
 
     // ---- feed (COMM-110..115) ----
     // items holds feed_page() rows in the exact order the function returned
@@ -434,6 +437,21 @@
       editor: { drafts: {}, saving: {}, saved: {} },
     },
 
+    // ---- Redesign, Phase 3: the first-run intro carousel ----
+    // A DELIBERATE SIBLING of onboarding above, not a slice of it - see
+    // intro_carousel_content's own migration comment (202609050007) for why
+    // the five-step recurring lifecycle system above and this three-step
+    // one-time first-run system share no code path. step is which of the
+    // three content screens is showing (0-2); content/contentLoaded/
+    // contentError/editor mirror onboarding.stepContent/.../editor's own
+    // shape exactly, one level up, so a reader who already knows that shape
+    // already knows this one.
+    intro: {
+      step: 0,
+      content: {}, contentLoaded: false, contentError: false,
+      editor: { drafts: {}, saving: {}, saved: {} },
+    },
+
     // ---- recaps (COMM-220..222, COMM-309) ----
     // view is the open weekly recap dialog (COMM-221); its own
     // load/prev/next calls read straight off weekly_recaps, own row only.
@@ -594,12 +612,21 @@
     INVITE_MANAGE_CODES: "community.invite.manage_codes",
     CONTENT_MANAGE_ONBOARDING: "community.content.manage_onboarding",
   };
-  // COMM-321 Club Modules. The six toggles the current app structure
-  // actually exposes as independently gateable surfaces (matching the
-  // schema's own seeded module_key set, 202609010012) - declared here,
-  // ahead of both toggleClubFeature() and renderClubModulesPanel(), since
-  // this is a top-level const evaluated at script load, not inside a
-  // function body where declaration order wouldn't matter.
+  // COMM-321 Club Modules, extended by the redesign's Phase 2 (202609050006).
+  // Two groups now, matching the mockup's own "תכני קהילה" / "כלי מאמנים"
+  // split, declared here ahead of both toggleClubFeature() and
+  // renderClubModulesPanel() for the same load-order reason as before.
+  //
+  // clientOnly marks the one real asymmetry worth keeping visible at the
+  // call site, not just in a comment: 'directory' has no RLS clause behind
+  // it (profiles is too foundational a read policy to gate - the schema
+  // migration's own reasoning, kept on purpose by 202609050006, not
+  // revisited) and the four "כלי מאמנים" keys gate a coach-only UI SECTION,
+  // not member-facing data - the RPCs behind them already carry their own
+  // is_staff()/has_perm() check independent of this flag. Every other key
+  // here is a real, server-enforced RLS gate. renderClubModulesPanel() reads
+  // this flag to avoid making a blanket "enforced on the server" claim about
+  // a row where that would be false.
   const CLUB_MODULE_TOGGLES = [
     { key: "announcements", label: "הודעות מועדון" },
     { key: "events", label: "אירועים" },
@@ -607,8 +634,15 @@
     { key: "achievements", label: "הישגים ועיטורים" },
     { key: "feed", label: "פיד (כולל תגובות ותגובות חיזוק)" },
     { key: "leaderboards", label: "טבלאות מובילים" },
+    { key: "directory", label: "ספריית חברים", clientOnly: true },
   ];
-  const CLUB_MODULE_KEYS = CLUB_MODULE_TOGGLES.map((m) => m.key);
+  const COACH_MODULE_TOGGLES = [
+    { key: "coach_tools", label: "לוח מאמנים (הכל)", clientOnly: true },
+    { key: "member_of_week", label: "חבר/ת השבוע", clientOnly: true },
+    { key: "welcome_flow", label: "קבלת פנים", clientOnly: true },
+    { key: "monthly_recap", label: "סיכום חודשי", clientOnly: true },
+  ];
+  const CLUB_MODULE_KEYS = CLUB_MODULE_TOGGLES.concat(COACH_MODULE_TOGGLES).map((m) => m.key);
   function hasPerm(code) { return !!state.permissions && state.permissions.indexOf(code) >= 0; }
   async function loadPermissions() {
     if (!state.user) { state.permissions = []; state.permissionsLoaded = false; return; }
@@ -884,6 +918,90 @@
     state.onboarding.stepContent = map;
     state.onboarding.stepContentLoaded = true;
     state.onboarding.stepContentError = false;
+  }
+  // Redesign, Phase 3. Same read audience and shape as
+  // loadOnboardingStepContent() just above (every authenticated member,
+  // `using (true)`), a sibling table, loaded lazily the first time the
+  // carousel or its editor is about to render, not at boot: a returning
+  // member (the overwhelming majority of sessions once launch has passed)
+  // never reaches either. Explicit rerender() at the end, unlike
+  // loadOnboardingStepContent() above - that one is always called from
+  // inside afterRenderCommunity(), which rerenders nothing itself but runs
+  // right after a render already happened; this one is called directly
+  // from inside a render function (renderIntroCarousel/
+  // renderIntroCarouselContentEditor, the same "render triggers its own
+  // one-shot lazy load" shape verifyRecovery() already uses a few hundred
+  // lines below), so it has to trigger the follow-up render itself.
+  async function loadIntroCarouselContent() {
+    if (!state.user) return;
+    const { data, error } = await client.from("intro_carousel_content").select("step,title,body,updated_at");
+    if (error) { state.intro.contentError = true; return rerender(); }
+    const map = {};
+    for (const row of (data || [])) map[row.step] = row;
+    state.intro.content = map;
+    state.intro.contentLoaded = true;
+    state.intro.contentError = false;
+    rerender();
+  }
+  const INTRO_CAROUSEL_STEPS = ["welcome_intro", "club_rules", "getting_started"];
+  // Byte-identical to intro_carousel_content's own seed (202609050007) -
+  // first deploy, and any moment before the table has loaded, shows exactly
+  // this, so there is no flash once the real (identical, until a staff
+  // member edits it) row arrives.
+  const INTRO_CAROUSEL_FALLBACK = {
+    welcome_intro: { title: "ברוכים הבאים", body: "אנחנו שמחים שהצטרפתם אלינו. בואו נכיר את המועדון בכמה מסכים קצרים." },
+    club_rules: { title: "כללי המועדון", body: "שעות הפעילות, קוד הלבוש, כללי הציוד האישי ומדיניות הביטולים - כל המידע הזה זמין תמיד בלשונית הקהילה." },
+    getting_started: { title: "איך מתחילים", body: "קבעו אימון היכרות עם מאמן/ת, וקבלו התאמה אישית לתוכנית האימונים שלכם." },
+  };
+  function introStepTitle(step) {
+    const c = state.intro.content[step];
+    return (c && c.title) || INTRO_CAROUSEL_FALLBACK[step].title;
+  }
+  function introStepBody(step) {
+    const c = state.intro.content[step];
+    return (c && c.body) || INTRO_CAROUSEL_FALLBACK[step].body;
+  }
+  // One-time, per DEVICE (not per member - the same "cross-device sync is
+  // explicitly out of scope" call already made for this module elsewhere),
+  // same localStorage-flag shape as every other one-time client-side flag
+  // in this file (e.g. backupOptedOut() below). Never replays once seen,
+  // matching app.js's own openOnboarding()/hasOnboarded tour for the exact
+  // same reason: a member who already sat through it once must not see it
+  // again on a later visit from the same browser.
+  const INTRO_CAROUSEL_SEEN_KEY = "haimunia-demo:seenIntroCarousel";
+  function hasSeenIntroCarousel() {
+    try { return localStorage.getItem(INTRO_CAROUSEL_SEEN_KEY) === "1"; } catch (e) { return false; }
+  }
+  function introCarouselNext() {
+    if (state.intro.step < INTRO_CAROUSEL_STEPS.length - 1) { state.intro.step += 1; return rerender(); }
+    try { localStorage.setItem(INTRO_CAROUSEL_SEEN_KEY, "1"); } catch (e) {}
+    rerender();
+  }
+  function introCarouselBack() {
+    if (state.intro.step > 0) { state.intro.step -= 1; rerender(); }
+  }
+  // Renders inside the normal app shell (header, bottom tab bar), same as
+  // the credentials/invite-code/profile-completion gates right beside it -
+  // not a separate full-screen overlay. Same "this screen is all there is
+  // until it's done" treatment those gates already use, just within that
+  // shell rather than outside it. Three content-only screens; no recovery
+  // form and no profile fields here (both already exist for real, right
+  // after this carousel finishes, in the credentials gate above and the
+  // profile-completion gate below - duplicating either here would ask
+  // twice for the same thing under different copy).
+  function renderIntroCarousel() {
+    if (!state.intro.contentLoaded && !state.intro.contentError) loadIntroCarouselContent();
+    const stepIdx = state.intro.step;
+    const step = INTRO_CAROUSEL_STEPS[stepIdx];
+    const isLast = stepIdx === INTRO_CAROUSEL_STEPS.length - 1;
+    const dots = INTRO_CAROUSEL_STEPS.map((_, i) => `<span style="display:inline-block;height:8px;width:${i === stepIdx ? "22px" : "8px"};border-radius:4px;background:${i === stepIdx ? "var(--brass)" : "var(--border)"};transition:width .2s;"></span>`).join(" ");
+    return `<div class="chart-card" data-intro-carousel="1" data-intro-step="${step}" style="text-align:center;">
+      <div style="display:flex;justify-content:center;gap:6px;margin-bottom:16px;">${dots}</div>
+      <div style="font-weight:800;font-size:20px;margin-bottom:10px;">${esc(introStepTitle(step))}</div>
+      <div style="color:var(--steel);font-size:14px;line-height:1.7;margin-bottom:20px;">${esc(introStepBody(step))}</div>
+      <button class="save-btn" data-community-action="intro-carousel-next">${isLast ? "המשך להשלמת הפרופיל" : "הבא"}</button>
+      ${stepIdx > 0 ? `<button class="link-btn" data-community-action="intro-carousel-back" style="display:block;margin:12px auto 0;">חזרה</button>` : ""}
+    </div>`;
   }
   // COMM-017. A stable per-client identifier the invite throttle keys on
   // in ADDITION to the Auth uid, so discarding an anonymous session and
@@ -1280,6 +1398,79 @@
       }).join("");
     }
     return `<div class="ach-section" style="margin-top:18px;" data-onboarding-editor-section="1">${sectionHead("var(--teal)", "עריכת תוכן היכרות", true)}${body}</div>`;
+  }
+  // Redesign, Phase 3. The intro-carousel's own editor, right beside
+  // renderOnboardingContentEditor() above in the Manage tab's "קליטה"
+  // sub-tab - same permission, same skeleton/error/populated shape, same
+  // per-row draft/saving/saved state, one level up (state.intro.editor
+  // instead of state.onboarding.editor), pointed at intro_carousel_content
+  // instead of onboarding_step_content. Kept as a second function rather
+  // than parameterizing the one above: the two tables are a deliberate
+  // sibling pair, not a shared abstraction (see intro_carousel_content's
+  // own migration comment), and duplicating ~25 lines of straightforward
+  // render logic is cheaper to read correctly than a generalized editor
+  // threading a table name and a state-slice reference through every call.
+  const INTRO_CAROUSEL_LABELS = { welcome_intro: "1. ברוכים הבאים", club_rules: "2. כללי המועדון", getting_started: "3. איך מתחילים" };
+  function introEditorDraft(step) {
+    const drafts = state.intro.editor.drafts;
+    if (!drafts[step]) drafts[step] = { title: introStepTitle(step), body: introStepBody(step) };
+    return drafts[step];
+  }
+  async function saveIntroCarouselContent(step) {
+    if (!state.user || !(hasPerm(PERM.CONTENT_MANAGE_ONBOARDING) || isAdmin())) return;
+    const e = state.intro.editor;
+    if (e.saving[step]) return;
+    const draft = introEditorDraft(step);
+    const title = String(draft.title || "").trim().slice(0, 120);
+    const body = String(draft.body || "").slice(0, 2000);
+    const formId = "introEdit_" + step;
+    if (!title) { setFieldErrors(formId, { title: "יש למלא כותרת" }); return; }
+    setFieldErrors(formId, {});
+    e.saving[step] = true; e.saved[step] = false; rerender();
+    const { error } = await client.from("intro_carousel_content").update({ title, body }).eq("step", step);
+    e.saving[step] = false;
+    if (error) { setFieldErrors(formId, { title: "השמירה נכשלה, נסו שוב." }); rerender(); return; }
+    // Same honest read-back check onboarding_step_content's own editor
+    // uses just above - an UPDATE this table's RLS refuses also just
+    // matches zero rows rather than raising.
+    await loadIntroCarouselContent();
+    const saved = state.intro.content[step];
+    if (!saved || saved.title !== title || (saved.body || "") !== body) {
+      setFieldErrors(formId, { title: "השמירה לא בוצעה - ייתכן שאין הרשאה מספקת." });
+      rerender();
+      return;
+    }
+    delete e.drafts[step];
+    e.saved[step] = true;
+    rerender();
+  }
+  function renderIntroCarouselContentEditor() {
+    if (!(hasPerm(PERM.CONTENT_MANAGE_ONBOARDING) || isAdmin())) return "";
+    if (!state.intro.contentLoaded && !state.intro.contentError) loadIntroCarouselContent();
+    let body;
+    if (!state.intro.contentLoaded && !state.intro.contentError) {
+      const skRow = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:60%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
+      body = `<div class="log-list" aria-busy="true" data-intro-editor-skeleton="1">${skRow.repeat(3)}</div>`;
+    } else if (state.intro.contentError) {
+      body = `<div class="empty">לא ניתן היה לטעון את תוכן מסך הפתיחה.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="intro-content-retry">ניסיון חוזר</button></div></div>`;
+    } else {
+      body = INTRO_CAROUSEL_STEPS.map((step) => {
+        const draft = introEditorDraft(step);
+        const formId = "introEdit_" + step;
+        const saving = !!state.intro.editor.saving[step];
+        const saved = !!state.intro.editor.saved[step];
+        return `<div class="chart-card" style="margin-bottom:10px;" data-intro-editor-row="${step}">
+          <div class="field-label" style="margin-bottom:6px;">${esc(INTRO_CAROUSEL_LABELS[step] || step)}</div>
+          ${field(formId, "title", "כותרת", `<input class="text-input" maxlength="120" data-intro-edit-title="${step}" value="${esc(draft.title)}"/>`)}
+          ${field(formId, "body", "תוכן", `<textarea class="text-input" maxlength="2000" rows="3" data-intro-edit-body="${step}">${esc(draft.body)}</textarea>`)}
+          <div class="chip-row" style="margin-top:6px;">
+            <button class="chip-btn primary" data-community-action="intro-content-save" data-step="${step}"${saving ? " disabled" : ""}>${saving ? "שומר…" : "שמירה"}</button>
+            ${saved ? `<span class="footer-note" role="status">נשמר</span>` : ""}
+          </div>
+        </div>`;
+      }).join("");
+    }
+    return `<div class="ach-section" style="margin-top:18px;" data-intro-editor-section="1">${sectionHead("var(--purple)", "עריכת מסך פתיחה לחברים חדשים", true)}${body}</div>`;
   }
   // COMM-218. The three-tier client-facing control that replaces the plain
   // `important` boolean; `announcements.important` still exists server-side
@@ -3981,6 +4172,14 @@
     state.ui.tab = tab;
     rerender();
   }
+  // The Manage tab's own sub-tab switch. No realtime teardown and no feed-
+  // impression flush like setCommunityTab above - none of Manage's 7
+  // sub-tabs open a realtime channel or a feed session, so there is nothing
+  // to tear down when moving between them.
+  function setManageTab(tab) {
+    state.ui.manageTab = tab;
+    rerender();
+  }
 
   // COMM-170. One club_tab_viewed per entry into a sub-tab, never one per
   // render. afterRenderCommunity() runs on every re-render of the Community
@@ -4974,28 +5173,38 @@
   // at the top, unconditionally appended into accountTab - no dedicated
   // sub-tab, matching this codebase's own precedent that a single admin
   // screen never gets one (only "coach", a whole role tier's toolset, does).
+  // Shared row renderer for both groups below - toggleClubFeature() is
+  // single-flight (it returns early while state.club.moduleBusy is set), so
+  // EVERY row across BOTH groups has to be disabled while any one write is
+  // in flight, not just the one being written: leaving the others live let
+  // a second tap flip a checkbox that the guard then dropped with no
+  // message, and the next rerender silently put it back - which is exactly
+  // "the toggles don't work". Same busy/anyBusy split renderMemberOfWeekPickForm
+  // already uses: `busy` still labels only the row actually saving.
+  function clubModuleRow(m, anyBusy) {
+    const row = state.club.features[m.key] || { enabled: true, config: {} };
+    const busy = state.club.moduleBusy === m.key;
+    return `<label class="log-row" style="justify-content:space-between;gap:12px;cursor:pointer;">
+      <span style="font-size:13px;">${esc(m.label)}${busy ? " (שומר…)" : ""}</span>
+      <input type="checkbox" data-club-feature="${m.key}"${row.enabled ? " checked" : ""}${anyBusy ? " disabled" : ""} aria-label="${esc(m.label)}"/>
+    </label>`;
+  }
   function renderClubModulesPanel() {
     if (!(hasPerm(PERM.CLUB_MANAGE_MODULES) || isAdmin())) return "";
-    // toggleClubFeature() is single-flight (it returns early while
-    // state.club.moduleBusy is set), so EVERY row has to be disabled while a
-    // write is in flight, not just the one being written: leaving the other
-    // five live let a second tap flip a checkbox that the guard then dropped
-    // with no message, and the next rerender silently put it back - which is
-    // exactly "the toggles don't work". Same busy/anyBusy split
-    // renderMemberOfWeekPickForm already uses: `busy` still labels only the
-    // row actually saving.
     const anyBusy = !!state.club.moduleBusy;
-    const rows = CLUB_MODULE_TOGGLES.map((m) => {
-      const row = state.club.features[m.key] || { enabled: true, config: {} };
-      const busy = state.club.moduleBusy === m.key;
-      return `<label class="log-row" style="justify-content:space-between;gap:12px;cursor:pointer;">
-        <span style="font-size:13px;">${esc(m.label)}${busy ? " (שומר…)" : ""}</span>
-        <input type="checkbox" data-club-feature="${m.key}"${row.enabled ? " checked" : ""}${anyBusy ? " disabled" : ""} aria-label="${esc(m.label)}"/>
-      </label>`;
-    }).join("");
-    return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "מודולים למועדון", true)}
-      <div style="color:var(--steel);font-size:12px;line-height:1.6;margin-bottom:8px;">כיבוי מודול מסתיר אותו לגמרי מכל חברי המועדון - אין טאב, כרטיס, כפתור או התראה - ואוכף בשרת, לא רק בתצוגה.</div>
-      <div class="log-list">${rows}</div>
+    // 'directory' is the one clientOnly row in this group (see
+    // CLUB_MODULE_TOGGLES' own comment) - called out inline rather than
+    // silently folded into a blanket "enforced on the server" claim that
+    // would be false for it.
+    const communityRows = CLUB_MODULE_TOGGLES.map((m) => clubModuleRow(m, anyBusy)).join("");
+    const coachRows = COACH_MODULE_TOGGLES.map((m) => clubModuleRow(m, anyBusy)).join("");
+    return `<div class="ach-section" style="margin-top:18px;" data-club-modules-panel="1">${sectionHead("var(--green)", "מודולים למועדון", true)}
+      <div style="font-weight:800;font-size:13px;margin:4px 0 6px;">תכני קהילה</div>
+      <div style="color:var(--steel);font-size:12px;line-height:1.6;margin-bottom:8px;">כיבוי מודול מסתיר אותו לגמרי מכל חברי המועדון - אין טאב, כרטיס, כפתור או התראה - ואוכף בשרת, לא רק בתצוגה. יוצא דופן: "ספריית חברים" מוסתרת רק בתצוגה, ולא ברמת הרשאות השרת.</div>
+      <div class="log-list">${communityRows}</div>
+      <div style="font-weight:800;font-size:13px;margin:16px 0 6px;">כלי מאמנים</div>
+      <div style="color:var(--steel);font-size:12px;line-height:1.6;margin-bottom:8px;">שולט אילו חלקים מלוח המאמנים גלויים לצוות - נוחות ארגונית, לא הרשאה: הפעולות עצמן שמורות למי שמורשה/ית לבצע אותן בכל מקרה. "לוח מאמנים (הכל)" מכבה את כל הטאב.</div>
+      <div class="log-list">${coachRows}</div>
     </div>`;
   }
   // ==========================================================================
@@ -5423,6 +5632,17 @@
       // picker." renderMemberSegments() carries its own independent
       // loading/error/populated switch on state.analytics.segments, so it is
       // not itself gated on a.data beyond appearing here.
+      //
+      // Redesign, Phase 1: the plan's first draft moved renderRegistrationFunnel()
+      // out to the Manage tab's "קליטה" (Onboarding) sub-tab. Reverted after
+      // tracing loadRegistrationFunnel() (~line 2507): it fires only as a
+      // side effect of loadAdminAnalyticsDashboard()'s OWN completion, and
+      // the funnel renders with no period selector of its own - it reuses
+      // this dashboard's, by design (COMM-379). Moving the render call
+      // without also inventing an independent load trigger and an
+      // independent period selector would have shipped a funnel that never
+      // loads for a staff member who visits Onboarding before Analytics.
+      // Stays here, byte-identical to before this phase.
       body = renderAdminAnalyticsCoreGroup(a.data) + renderAdminAnalyticsAdditionalGroup(a.data) + renderMemberSegments() + renderRegistrationFunnel();
     }
     return `<div class="ach-section" style="margin-top:18px;" data-admin-analytics-dashboard="1">${sectionHead("var(--energy)", "לוח בקרה: אנליטיקת קהילה", true)}${renderAdminAnalyticsPeriodSelector()}${body}</div>`;
@@ -6863,6 +7083,12 @@
     </div>`;
   }
   function renderCoachWelcomeSection() {
+    // Redesign, Phase 2. Same shell-hiding shape as renderChallengesListSection's
+    // own club_features guard - a coach-only UI section, not member data, so
+    // this is the only enforcement point (see CLUB_MODULE_TOGGLES' clientOnly
+    // comment); the underlying loaders/RPCs keep their own is_staff() gate
+    // regardless of this flag.
+    if (!isModuleEnabled("welcome_flow")) return "";
     const w = state.coach.welcome;
     const body = (w.loading && !w.loaded)
       ? `<div aria-busy="true">${`<div class="chart-card" style="height:56px;background:var(--border);opacity:.35;margin-bottom:10px;"></div>`.repeat(2)}</div>`
@@ -6949,6 +7175,9 @@
     </div>`;
   }
   function renderCoachMemberOfWeekSection() {
+    // Redesign, Phase 2. Same clientOnly UI-section guard as
+    // renderCoachWelcomeSection just above.
+    if (!isModuleEnabled("member_of_week")) return "";
     const s = state.coach.memberOfWeek;
     const head = sectionHead("var(--brass)", s.envelope ? `חבר/ת השבוע · ${esc(s.envelope.category_label)}` : "חבר/ת השבוע");
     if (s.loading && !s.loaded) {
@@ -7011,6 +7240,9 @@
   // one (the function's check is narrower) - gating the button on
   // isStaff() would show a coach a control the database refuses.
   function renderCoachMonthlyRecapSection() {
+    // Redesign, Phase 2. Same clientOnly UI-section guard as the two coach
+    // sections above.
+    if (!isModuleEnabled("monthly_recap")) return "";
     const s = state.coach.monthlyRecap;
     const head = sectionHead("var(--purple)", "סיכום חודשי למועדון");
     if (s.loading && !s.loaded) {
@@ -10189,6 +10421,18 @@
     // setCredentials() succeeds, so a returning user (who logged in with
     // real credentials to begin with) never sees this screen at all.
     if (state.user.is_anonymous) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">יצירת חשבון</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">שם משתמש וסיסמה — כדי שתוכלו להתחבר שוב מכל מכשיר.</div><form id="communityCredentials">${field("communityCredentials", "username", "שם משתמש", `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="אותיות אנגליות, ספרות או קו תחתון" required/>`)}${field("communityCredentials", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="new-password" placeholder="לפחות 8 תווים" required/>`)}${field("communityCredentials", "passwordConfirm", "אימות סיסמה", `<input class="text-input" name="passwordConfirm" type="password" dir="ltr" autocomplete="new-password" placeholder="הקלידו שוב" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">יצירת חשבון</button></form>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
+    // Redesign, Phase 3. Three purely informational screens, shown once per
+    // device, right where the mockup's own new-member flow put them: after
+    // credentials exist (so is_anonymous is already false and this gate is
+    // reached at all) but before profile completion, which is what makes
+    // "המשך להשלמת הפרופיל" on the last screen an honest label rather than
+    // a lie about what happens next. hasSeenIntroCarousel() is checked
+    // AFTER the credentials gate above and BEFORE the profile gate below on
+    // purpose - a returning member (who already has a profile) never
+    // reaches this line at all, so there is no separate "already a member"
+    // check needed here beyond the existing !state.profile the surrounding
+    // gates already run on.
+    if (!hasSeenIntroCarousel()) return renderIntroCarousel();
     // Without this gate, a fresh code-redeemer landed straight on the Feed
     // sub-tab — mostly empty, nothing prompting them to the profile form
     // buried in Account — with no clear signal anything had actually been
@@ -10341,7 +10585,21 @@
     // sit here (see renderConsistencyLeaderboardSection for why).
     const streaksHtml = renderConsistencyLeaderboardSection();
 
-    const boardsTab = renderChallengesListSection() + renderEventsListSection() + weeklyChallengeHtml + streaksHtml;
+    // Redesign, Phase 2: the mockup's own empty state for this tab -
+    // challenges, events and leaderboards are the three modules that can go
+    // fully dark here (each already self-gates and returns "" above), and
+    // when all three are off there is otherwise nothing on the page
+    // explaining why. Placed above weeklyChallengeHtml rather than
+    // replacing it: the legacy weekly-challenge board (state.club.weeklyChallenge)
+    // predates and is independent of the Phase-2 club_features module set
+    // and always renders something (a live challenge or "אין אתגר פעיל
+    // כרגע"), so this tab is never truly blank the way the mockup's
+    // simpler 3-module model assumes - the note supplements it rather than
+    // standing in for a genuinely empty tab.
+    const boardsAllOffHtml = (!isModuleEnabled("challenges") && !isModuleEnabled("events") && !isModuleEnabled("leaderboards"))
+      ? `<div class="chart-card" data-boards-all-off="1">כל המודולים בלוח זה כבויים כרגע. הפעילו אותם ב"ניהול › הגדרות".</div>`
+      : "";
+    const boardsTab = boardsAllOffHtml + renderChallengesListSection() + renderEventsListSection() + weeklyChallengeHtml + streaksHtml;
 
     // ---- Account tab: profile, member search, admin member management ----
     // COMM-318. Uploading/failed states mirror the composer photo-attach
@@ -10395,7 +10653,16 @@
     const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "חברים חדשים", true)}${state.club.newMembers.length ? `<div class="log-list">${state.club.newMembers.map((m) => `<div class="log-row"><span>${nameHtml(m.display_name, m.handle)}</span><span style="color:var(--steel);font-size:12px;">${esc(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין חברים חדשים לאחרונה</div>`}</div>` : "";
     const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.club.inactiveMembers.length ? `<div class="log-list">${state.club.inactiveMembers.map((m) => `<div class="log-row"><span>${nameHtml(m.display_name, m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? esc(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
 
-    const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderModeration() + renderMemberManagement() + renderMemberRoster() + renderInviteManagement() + renderOnboardingContentEditor() + renderClubModulesPanel() + renderAdminAnalyticsDashboard() + renderRetentionCorrelations() + renderCommunityHealthScore() + renderAuditLog() + renderMyAchievements() + renderNotifPrefsPanel()
+    // Redesign (Manage tab): moderation, member/role management, invites,
+    // onboarding-content editing, the feature-flag panel, and every
+    // analytics/health surface used to render inline here, one after
+    // another on this one scrolling tab. They now live in their own "ניהול"
+    // bottom-tab (renderManageApp, staff-only) instead - moved verbatim,
+    // same functions, same permission gates, just a different mount point.
+    // newMembersHtml/inactiveHtml stay here on purpose (out of this phase's
+    // scope) and staff still sees a pointer to where the rest went.
+    const movedToManageNote = staff ? `<div class="footer-note" style="color:var(--steel);text-align:center;margin:16px 0 4px;">כלי ניהול עברו ל"ניהול" בתפריט התחתון</div>` : "";
+    const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderMyAchievements() + renderNotifPrefsPanel() + movedToManageNote
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
 
@@ -10406,12 +10673,21 @@
     // moderation permission (or a real admin), not the legacy reports list.
     const pendingReports = (hasPerm(PERM.COMMENT_MODERATE) || isAdmin())
       ? state.admin.modQueue.filter((r) => r.status === "open").length : 0;
-    const tabs = [
-      { id: "feed", label: "פיד", html: feedTab },
-      { id: "boards", label: "לוחות", html: boardsTab },
-      { id: "directory", label: "חברים", html: directoryTab },
-      { id: "account", label: "חשבון", html: accountTab, badge: pendingReports },
-    ];
+    // Redesign, Phase 2: feed and directory are now conditional pushes, same
+    // shape as the staff-only "coach" push just below - a module that's off
+    // removes its PILL entirely, not just its content, matching the
+    // mockup's own behaviour and the "account" tab's own historical
+    // treatment (never one more `if (staff)` ternary slice). boards and
+    // account are never flag-gated at the pill level: boards' own three
+    // modules (challenges/events/leaderboards) gate their CONTENT inside
+    // boardsTab (with an empty-state pointing back to Settings when all
+    // three are off - see boardsTab's own composition), and account is
+    // profile/settings, nobody's content to hide.
+    const tabs = [];
+    if (isModuleEnabled("feed")) tabs.push({ id: "feed", label: "פיד", html: feedTab });
+    tabs.push({ id: "boards", label: "לוחות", html: boardsTab });
+    if (isModuleEnabled("directory")) tabs.push({ id: "directory", label: "חברים", html: directoryTab });
+    tabs.push({ id: "account", label: "חשבון", html: accountTab, badge: pendingReports });
     // COMM-223. A dedicated 4th sub-tab, added only for isStaff(), as an
     // `if (staff)` push rather than an inline ternary render gate (that
     // literal ternary pattern is what community-coach-tier.test.mjs counts
@@ -10420,7 +10696,10 @@
     // non-staff caller's tabs array has no "coach" entry at all, and the
     // activeTab lookup below falls back to the feed tab even if something
     // forced state.ui.tab to "coach" directly.
-    if (staff) tabs.push({ id: "coach", label: "לוח מאמנים", html: renderCoachTab() });
+    // Redesign, Phase 2: also requires isModuleEnabled("coach_tools") - the
+    // mockup's "לוח מאמנים (הכל)" master switch. Off removes the whole
+    // sub-tab for every coach, same as a role downgrade would.
+    if (staff && isModuleEnabled("coach_tools")) tabs.push({ id: "coach", label: "לוח מאמנים", html: renderCoachTab() });
     const activeTab = tabs.find((t) => t.id === state.ui.tab) || tabs[0];
     const tabBar = `<div class="subtabbar">${tabs.map((t) => `<button class="subtabbtn${t.id === activeTab.id ? " active" : ""}" data-community-action="set-tab" data-tab="${t.id}">${t.label}${t.badge ? `<span class="tab-badge" aria-label="${t.badge} דיווחים ממתינים">${t.badge}</span>` : ""}</button>`).join("")}</div>`;
 
@@ -10438,6 +10717,59 @@
       + tabBar
       + (state.ui.message ? `<div class="footer-note" role="status" style="color:var(--brass);margin-bottom:14px;">${esc(state.ui.message)}</div>` : "")
       + activeTab.html;
+  };
+  // ==========================================================================
+  // Redesign, Phase 1: the "ניהול" (Manage) top-level tab.
+  //
+  // Every function this composes already existed and was already correctly
+  // permission-gated (each returns "" on its own if the viewer doesn't
+  // qualify) - this is a relocation out of the Community "חשבון" (Account)
+  // sub-tab into its own bottom-bar tab, not a rewrite. The tab itself is
+  // visible to any coach-and-up (isStaff()), same access Account already
+  // gave these sections; nothing here narrows or widens who can do what.
+  //
+  // renderRegistrationFunnel() moved here (from inside
+  // renderAdminAnalyticsDashboard()) to sit next to the onboarding content
+  // it measures. Its own data loader (loadRegistrationFunnel, ~line 2594)
+  // already gates on the same permission, so this is a second, matching
+  // gate for a tidy empty state rather than the only one.
+  function renderManageDashboard() {
+    const canModerate = hasPerm(PERM.COMMENT_MODERATE) || isAdmin();
+    const pendingReports = canModerate ? state.admin.modQueue.filter((r) => r.status === "open").length : 0;
+    const inactiveCount = state.club.inactiveMembers.length;
+    const attentionRows = [
+      canModerate ? `<button class="log-row" data-community-action="set-manage-tab" data-tab="moderation" style="width:100%;text-align:right;border:1px solid var(--red);border-radius:10px;padding:10px 12px;background:transparent;cursor:pointer;">
+          <span>${pendingReports} דיווחים ממתינים למודרציה</span><span aria-hidden="true">‹</span>
+        </button>` : "",
+      inactiveCount ? `<button class="log-row" data-community-action="set-manage-tab" data-tab="members" style="width:100%;text-align:right;border:1px solid var(--yellow);border-radius:10px;padding:10px 12px;background:transparent;cursor:pointer;">
+          <span>${inactiveCount} חברים לא פעילים</span><span aria-hidden="true">‹</span>
+        </button>` : "",
+    ].filter(Boolean);
+    const attentionHtml = attentionRows.length
+      ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "דורש תשומת לב")}<div class="log-list">${attentionRows.join("")}</div></div>`
+      : `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "דורש תשומת לב")}<div class="empty">אין דבר שדורש תשומת לב כרגע ✓</div></div>`;
+    return renderCommunityHealthScore() + attentionHtml;
+  }
+  window.renderManageApp = function () {
+    if (!isStaff()) return renderTabHeader("manage") + `<div class="empty">אין הרשאה לצפות בעמוד זה.</div>`;
+    const manageTabs = [
+      { id: "dashboard", label: "דשבורד", html: renderManageDashboard() },
+      { id: "members", label: "חברים", html: renderMemberManagement() + renderMemberRoster() },
+      { id: "onboarding", label: "קליטה", html: renderOnboardingContentEditor() + renderIntroCarouselContentEditor() },
+      { id: "moderation", label: "מודרציה", html: renderModeration() + renderAuditLog() },
+      { id: "settings", label: "הגדרות", html: renderClubModulesPanel() },
+      // renderAdminAnalyticsDashboard() still includes renderRegistrationFunnel()
+      // nested inside itself (see that function's own comment) - not a
+      // separate call here.
+      { id: "analytics", label: "אנליטיקס", html: renderAdminAnalyticsDashboard() + renderRetentionCorrelations() },
+      { id: "invites", label: "הזמנות", html: renderInviteManagement() },
+    ];
+    const activeManageTab = manageTabs.find((t) => t.id === state.ui.manageTab) || manageTabs[0];
+    const manageTabBar = `<div class="subtabbar">${manageTabs.map((t) => `<button class="subtabbtn${t.id === activeManageTab.id ? " active" : ""}" data-community-action="set-manage-tab" data-tab="${t.id}">${t.label}</button>`).join("")}</div>`;
+    return renderTabHeader("manage")
+      + manageTabBar
+      + (state.ui.message ? `<div class="footer-note" role="status" style="color:var(--brass);margin-bottom:14px;">${esc(state.ui.message)}</div>` : "")
+      + activeManageTab.html;
   };
   // Sharing (see renderShareControl) can now be triggered from the
   // Calendar and Progress tabs, not just the Community tab, so the
@@ -10642,8 +10974,6 @@
     if (input && input.value && (!document.activeElement || document.activeElement === document.body)) {
       try { input.focus(); input.setSelectionRange(input.value.length, input.value.length); } catch (e) { /* not a text input in this browser */ }
     }
-    const adminInput = document.getElementById("adminMemberSearch");
-    if (adminInput) adminInput.addEventListener("input", () => searchMembers(adminInput.value));
     // COMM-231. Same restore-focus-and-caret pattern as communityPeopleSearch
     // above, for the directory's own search box.
     const dirInput = document.getElementById("communityDirectorySearch");
@@ -10651,32 +10981,6 @@
     if (dirInput && dirInput.value && (!document.activeElement || document.activeElement === document.body)) {
       try { dirInput.focus(); dirInput.setSelectionRange(dirInput.value.length, dirInput.value.length); } catch (e) { /* not a text input in this browser */ }
     }
-    // COMM-154. The audit view is lazy: fetched the first time an analytics
-    // holder lands on the Account tab, not on every session.
-    if (state.ui.tab === "account" && hasPerm(PERM.ANALYTICS_VIEW) && !state.admin.auditLoaded && !state.admin.auditLoading) loadAuditLog(true);
-    // COMM-310. Same lazy pattern as the audit view just above: the
-    // dashboard's default period (this ISO week) is fetched the first time
-    // an analytics holder or real admin lands on the Account tab.
-    if (state.ui.tab === "account" && (hasPerm(PERM.ANALYTICS_VIEW) || isAdmin()) && !state.analytics.dashboard.loaded && !state.analytics.dashboard.loading) loadAdminAnalyticsDashboard();
-    // COMM-313. Same lazy pattern, its OWN gate: real is_admin() alone, not
-    // the ANALYTICS_VIEW-or-admin pair the two lazy loads just above use -
-    // so a community.analytics.view holder who is not an admin never even
-    // triggers the three retention RPCs, matching that this section must not
-    // render for them at all.
-    if (state.ui.tab === "account" && isAdmin() && !state.analytics.retention.loaded && !state.analytics.retention.loading) loadRetentionCorrelations();
-    // COMM-312. Same lazy pattern and same is_admin()-only gate as COMM-313's
-    // load just above, its own independent trigger (not piggybacked on
-    // loadRetentionCorrelations() even though the two sections sit side by
-    // side and share a gate) - the two RPCs have nothing to do with each
-    // other from the client's point of view.
-    if (state.ui.tab === "account" && isAdmin() && !state.analytics.health.loaded && !state.analytics.health.loading) loadCommunityHealth();
-    // COMM-376. Same lazy pattern, each panel gated on the exact permission
-    // its own RPC needs - a coach who only holds community.member.invite
-    // triggers the per-person load and never the shared-code one.
-    if (state.ui.tab === "account" && (hasPerm(PERM.INVITE_MANAGE_CODES) || isAdmin()) && !state.admin.inviteCodes.loaded && !state.admin.inviteCodes.loading) loadInviteCodes();
-    if (state.ui.tab === "account" && (hasPerm(PERM.MEMBER_INVITE) || isAdmin()) && !state.admin.invites.loaded && !state.admin.invites.loading) loadInvites(true);
-    // COMM-377. is_staff(), matching admin_member_roster's own looser AUTH.
-    if (state.ui.tab === "account" && isStaff() && !state.admin.roster.loaded && !state.admin.roster.loading) loadRoster(true);
     // COMM-309. The monthly club recap's member-facing card: fetched the
     // first time a member lands on the Account tab, same lazy pattern as
     // the audit view just above (and every other tab-scoped load in this
@@ -10776,11 +11080,6 @@
     document.querySelectorAll("[data-privacy-field]").forEach((el) => {
       el.addEventListener("change", () => savePrivacyField(el.dataset.privacyField, el.checked));
     });
-    // COMM-321. Same per-element wiring shape as the privacy toggles just
-    // above - persists on change, no save button.
-    document.querySelectorAll("[data-club-feature]").forEach((el) => {
-      el.addEventListener("change", () => toggleClubFeature(el.dataset.clubFeature, el.checked));
-    });
     // COMM-113/114. Both observers are rebuilt here because rerender()
     // replaces every card element, so the previous ones point at nodes that
     // are no longer in the document.
@@ -10811,6 +11110,63 @@
     // focus-in on open, focus restored to the opener on close. Replaces the
     // notification centre's one-off focus-in.
     syncCloudDialogFocus();
+  };
+  // Redesign, Phase 1: the Manage tab's own after-render hook, called by
+  // app.js's render() when tab === "manage" - the exact same "lazy-load the
+  // first time a member actually lands on the sub-tab that needs it" pattern
+  // afterRenderCommunity() uses above, just keyed on state.ui.manageTab
+  // instead of state.ui.tab, since Manage is a separate top-level tab with
+  // its own sub-tab state (kept separate on purpose - see the ui state
+  // literal's own comment - so leaving Manage and coming back doesn't lose
+  // either tab's place). Every one of these gates is moved, not duplicated,
+  // from afterRenderCommunity(): each of these sections used to render (and
+  // lazy-load) only on Community's "account" sub-tab, and does not any more.
+  window.afterRenderManage = function () {
+    // COMM-331's own cascade (permissions, the mod queue, inactive/new
+    // members and a dozen other loads) has always been kicked off only
+    // from afterRenderCommunity() - a staff member who boots straight into
+    // Manage (their new home tab) without ever touching Community first
+    // must still get it, or hasPerm() has nothing loaded to check and every
+    // permission-gated section here renders as if signed out. Idempotent
+    // (state.communityDataLoaded guards it), so calling it from both hooks
+    // is exactly as safe as calling it from either one alone.
+    ensureCommunityDataLoaded();
+    const mt = state.ui.manageTab;
+    const adminInput = document.getElementById("adminMemberSearch");
+    if (adminInput) adminInput.addEventListener("input", () => searchMembers(adminInput.value));
+    // COMM-321. Same per-element wiring shape as the privacy toggles in
+    // afterRenderCommunity() - persists on change, no save button. Moved
+    // here (not duplicated) since renderClubModulesPanel() only renders on
+    // the Manage tab's "settings" sub-tab now.
+    document.querySelectorAll("[data-club-feature]").forEach((el) => {
+      el.addEventListener("change", () => toggleClubFeature(el.dataset.clubFeature, el.checked));
+    });
+    // COMM-154. The audit view is lazy: fetched the first time an analytics
+    // holder lands on the Moderation sub-tab (renderAuditLog's new home).
+    if (mt === "moderation" && hasPerm(PERM.ANALYTICS_VIEW) && !state.admin.auditLoaded && !state.admin.auditLoading) loadAuditLog(true);
+    // COMM-310. Same lazy pattern: the dashboard's default period (this ISO
+    // week) is fetched the first time an analytics holder or real admin
+    // lands on the Analytics sub-tab.
+    if (mt === "analytics" && (hasPerm(PERM.ANALYTICS_VIEW) || isAdmin()) && !state.analytics.dashboard.loaded && !state.analytics.dashboard.loading) loadAdminAnalyticsDashboard();
+    // COMM-313. Same lazy pattern, its OWN gate: real is_admin() alone, not
+    // the ANALYTICS_VIEW-or-admin pair the load just above uses - so a
+    // community.analytics.view holder who is not an admin never even
+    // triggers the three retention RPCs, matching that this section must
+    // not render for them at all.
+    if (mt === "analytics" && isAdmin() && !state.analytics.retention.loaded && !state.analytics.retention.loading) loadRetentionCorrelations();
+    // COMM-312. Same lazy pattern and same is_admin()-only gate as COMM-313's
+    // load just above, its own independent trigger. Gated on "dashboard" now
+    // (not "analytics"): the health score moved to the Manage Dashboard
+    // sub-tab, matching the mockup's own layout - the score is the
+    // dashboard's headline number, not one more analytics card.
+    if (mt === "dashboard" && isAdmin() && !state.analytics.health.loaded && !state.analytics.health.loading) loadCommunityHealth();
+    // COMM-376. Same lazy pattern, each panel gated on the exact permission
+    // its own RPC needs - a coach who only holds community.member.invite
+    // triggers the per-person load and never the shared-code one.
+    if (mt === "invites" && (hasPerm(PERM.INVITE_MANAGE_CODES) || isAdmin()) && !state.admin.inviteCodes.loaded && !state.admin.inviteCodes.loading) loadInviteCodes();
+    if (mt === "invites" && (hasPerm(PERM.MEMBER_INVITE) || isAdmin()) && !state.admin.invites.loaded && !state.admin.invites.loading) loadInvites(true);
+    // COMM-377. is_staff(), matching admin_member_roster's own looser AUTH.
+    if (mt === "members" && isStaff() && !state.admin.roster.loaded && !state.admin.roster.loading) loadRoster(true);
   };
   window.handleCommunityClick = function (el) {
     const action = el.dataset.communityAction;
@@ -10867,6 +11223,7 @@
     else if (action === "report-profile") reportProfile(el.dataset.id);
     else if (action === "mention-pick") mentionPick(el.dataset.key, el.dataset.id, el.dataset.name);
     else if (action === "set-tab") setCommunityTab(el.dataset.tab);
+    else if (action === "set-manage-tab") setManageTab(el.dataset.tab);
     else if (action === "verify-recovery") verifyRecovery({ force: true });
     else if (action === "hide-my-leaderboard-result") savePrivacyField("in_leaderboards", false);
     // COMM-210/211/212 leaderboards. Note the deliberate split from the line
@@ -10923,6 +11280,11 @@
     // COMM-378 onboarding step content editor.
     else if (action === "onboarding-content-retry") loadOnboardingStepContent().then(rerender);
     else if (action === "onboarding-content-save") saveOnboardingContent(el.dataset.step);
+    // Redesign, Phase 3.
+    else if (action === "intro-content-retry") loadIntroCarouselContent();
+    else if (action === "intro-content-save") saveIntroCarouselContent(el.dataset.step);
+    else if (action === "intro-carousel-next") introCarouselNext();
+    else if (action === "intro-carousel-back") introCarouselBack();
     // COMM-376 invite and code management.
     else if (action === "invite-code-toggle-active") setInviteCodeActive(el.dataset.id, el.dataset.active === "1");
     else if (action === "copy-invite-code") copyInviteCode(el.dataset.code);
@@ -11088,6 +11450,11 @@
     else if (action === "coach-monthly-recap-publish") publishMonthlyRecap(el.dataset.id);
   };
   window.isCommunitySignedIn = function () { return !!(state.user && state.profile); };
+  // Redesign, Phase 1: app.js's getNavItems() needs to know whether to emit
+  // the "ניהול" (Manage) bottom-tab item at all - the same isStaff() check
+  // renderManageApp() itself re-checks internally (defense in depth against
+  // a forced ?tab=manage), just exposed for the nav-item decision.
+  window.communityIsStaff = function () { return isStaff(); };
   window.shareAchievementToCommunity = function (achievementId, title, rule) { publishAchievement(achievementId, title, rule); };
   // Exported for app.js's Community sub-nav (the UI-restructuring track) so
   // it can switch cloud.js's own sub-tab without re-deriving any of the
@@ -11253,6 +11620,15 @@
         state.onboarding.attendance = { count: 0, loading: false, loaded: false, error: false }; /* COMM-316: same reset reasoning as members.classmatesToday above - the next member on this device gets a fresh count, never the previous member's. */
         state.onboarding.stepContent = {}; state.onboarding.stepContentLoaded = false; state.onboarding.stepContentError = false;
         state.onboarding.editor = { drafts: {}, saving: {}, saved: {} };
+        // Redesign, Phase 3: same reset reasoning as onboarding's own
+        // stepContent/editor just above - the next member on this device
+        // gets a fresh load and a fresh editor, never a stale copy or an
+        // in-progress edit left over from whoever was signed in before.
+        // step (which carousel screen) is deliberately NOT reset here -
+        // hasSeenIntroCarousel() is what actually gates the carousel, and
+        // that is a per-device localStorage flag, not per-session state.
+        state.intro.content = {}; state.intro.contentLoaded = false; state.intro.contentError = false;
+        state.intro.editor = { drafts: {}, saving: {}, saved: {} };
         state.analytics.registrationFunnel = { loading: false, loaded: false, error: false, errorText: "", data: null };
         state.recaps.view = null; state.recaps.monthly = { loading: false, loaded: false, error: false, row: null };
         state.coach.celebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null };
@@ -11295,6 +11671,10 @@
     // triggered by a sibling row's own save never drops what was typed here.
     else if ("onboardingEditTitle" in t.dataset) onboardingEditorDraft(t.dataset.onboardingEditTitle).title = t.value;
     else if ("onboardingEditBody" in t.dataset) onboardingEditorDraft(t.dataset.onboardingEditBody).body = t.value;
+    // Redesign, Phase 3. Same "seeded lazily, kept in state" shape as the
+    // two onboarding fields just above, for the intro-carousel editor.
+    else if ("introEditTitle" in t.dataset) introEditorDraft(t.dataset.introEditTitle).title = t.value;
+    else if ("introEditBody" in t.dataset) introEditorDraft(t.dataset.introEditBody).body = t.value;
     // COMM-202..206. The manual progress form and the coach entry roster,
     // both inside the challenge detail dialog. Kept in state, not read off
     // the DOM at submit, same reasoning as every other note/body field

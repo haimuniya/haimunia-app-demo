@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.0.2";
+const APP_VERSION = "4.2.0";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -61,7 +61,7 @@ function isBarbellMovement(id) {
 
 // ---------- State ----------
 let entries = [];
-const VALID_TABS = ["add", "history", "calendar", "wod", "community"];
+const VALID_TABS = ["add", "history", "calendar", "wod", "community", "manage"];
 const urlTab = new URLSearchParams(location.search).get("tab");
 let tab = VALID_TABS.includes(urlTab) ? urlTab : "add";
 
@@ -92,13 +92,24 @@ let tab = VALID_TABS.includes(urlTab) ? urlTab : "add";
 // preview that's gone. The desktop sidebar (onlyOther=false) is unaffected,
 // since it already showed every item including the preview regardless.
 function getNavItems() {
-  return [
+  const items = [
     { id: "add", tab: "add", rowId: "tabAddBtn", label: "רישום", tint: "energy", icon: ICONS.logIcon, main: true },
     { id: "history", tab: "history", rowId: "tabHistoryBtn", label: "התקדמות", tint: "blue", icon: ICONS.chartIcon, main: true },
     { id: "calendar", tab: "calendar", rowId: "tabCalendarBtn", label: "לוח שנה", tint: "yellow", icon: ICONS.calendarIcon, main: true },
     { id: "wod", tab: "wod", rowId: "tabWodBtn", label: "אימונים", tint: "purple", icon: ICONS.stopwatchIcon, main: true },
     { id: "community", tab: "community", rowId: "tabCommunityBtn", label: "קהילה", tint: "teal", icon: ICONS.communityIcon, main: true },
   ];
+  // Redesign, Phase 1: a 6th tab, staff-only, same footing as the other 5
+  // (main: true - bottom bar, not hamburger-only). window.communityIsStaff
+  // mirrors the isCommunitySignedIn() pattern already used all over this
+  // file for a cloud.js-owned fact app.js's nav has to react to. Absent
+  // entirely for anyone else, not just disabled - matching the mockup's own
+  // "showManageTab: isAdmin" behaviour (here: coach and up, see cloud.js's
+  // isStaff(), the same access these tools already had inside Account).
+  if (typeof window.communityIsStaff === "function" && window.communityIsStaff()) {
+    items.push({ id: "manage", tab: "manage", rowId: "tabManageBtn", label: "ניהול", tint: "steel", icon: ICONS.settingsIcon, main: true });
+  }
+  return items;
 }
 // The fixed bottom tab bar (#bottomTabBar, index.html) - one tap to any of
 // the 5 main tabs. Bare icon + label, matching Noam's .tabbtn treatment,
@@ -3203,6 +3214,8 @@ function render() {
         document.getElementById("bottomBarBtn").dataset.action = "save-wod";
         document.getElementById("saveBtnLabel").textContent = `${editingWodEntryId ? "עדכון" : "רישום"} אימון — ${w.name}`;
       }
+    } else if (tab === "manage") {
+      content = typeof renderManageApp === "function" ? renderManageApp() : `<div class="empty">בטעינה</div>`;
     } else {
       content = typeof renderCommunityApp === "function" ? renderCommunityApp() : `<div class="empty">הקהילה בטעינה</div>`;
     }
@@ -3267,6 +3280,10 @@ function render() {
     if (tab === "calendar") renderCalendarGrid();
     if (tab === "wod") renderWodContent();
     if (tab === "community" && typeof afterRenderCommunity === "function") afterRenderCommunity();
+    // Redesign, Phase 1: the Manage tab's own after-render hook, same
+    // "runs once per actual render of this tab" convention as Community's
+    // above - see afterRenderManage()'s own comment in cloud.js.
+    if (tab === "manage" && typeof afterRenderManage === "function") afterRenderManage();
     // COMM-190. The composer and PR/achievement prompts render in the global
     // cloud overlay and can show on any tab, so their focus management runs
     // after every render, not only Community's.

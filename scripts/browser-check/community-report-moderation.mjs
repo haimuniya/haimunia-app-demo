@@ -86,7 +86,11 @@ await page.evaluate(() => window.__mock.client.auth.signInWithPassword({ email: 
 await page.waitForFunction(() => !!document.querySelector(".subtabbar"), { timeout: 5000 });
 
 // --- Step 3: the moderator opens the queue and removes the content. ---
-await page.click('[data-community-action="set-tab"][data-tab="account"]');
+// Redesign, Phase 1: moderation now lives on its own "ניהול" (Manage)
+// bottom-tab, Moderation sub-tab - relocated out of Community's Account tab.
+await switchTab(page, "tabManageBtn");
+await page.waitForSelector('[data-community-action="set-manage-tab"][data-tab="moderation"]', { timeout: 5000 });
+await page.click('[data-community-action="set-manage-tab"][data-tab="moderation"]');
 await page.waitForSelector('[data-community-action="mod-action"][data-decision="remove"]', { timeout: 5000 });
 check("the head coach sees the reported item with a Remove action in the real moderation queue", true);
 

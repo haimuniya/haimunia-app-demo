@@ -13,7 +13,9 @@ import { bootCommunity, waitFor } from "./helpers/boot.mjs";
 import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
 const VERIFIED = new Date().toISOString();
-const MODULE_KEYS = ["announcements", "events", "challenges", "achievements", "feed", "leaderboards"];
+const MODULE_KEYS = ["announcements", "events", "challenges", "achievements", "feed", "leaderboards",
+  // Redesign, Phase 2.
+  "directory", "coach_tools", "member_of_week", "welcome_flow", "monthly_recap"];
 // A fresh set of row objects every call - tests must never share mutable
 // fixture objects, since a registered onRpc() handler in one test can
 // mutate ctx.db rows in place and a shared reference would leak that
@@ -37,6 +39,13 @@ async function openAccountTab(window) {
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
   window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();
 }
+// Redesign, Phase 1: renderClubModulesPanel() moved from Community's
+// "account" sub-tab to the Manage tab's own "settings" sub-tab.
+async function openManageSettings(window) {
+  window.document.getElementById("tabManageBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="settings"]').click();
+}
 
 test("a plain member never sees the club modules panel", async () => {
   const window = await bootCommunity(seeded(null, "member"), { syncEnabled: false });
@@ -47,10 +56,13 @@ test("a plain member never sees the club modules panel", async () => {
 
 test("an admin sees one toggle row per module, all checked when every module is on", async () => {
   const window = await bootCommunity(seeded(null, "admin"), { syncEnabled: false });
-  await openAccountTab(window);
+  await openManageSettings(window);
   await waitFor(() => !!window.document.querySelector('[data-club-feature="feed"]'), 3000);
   const rows = window.document.querySelectorAll('[data-club-feature]');
-  assert.equal(rows.length, 6, "one row per v1 module");
+  // Redesign, Phase 2: 7 community-content rows (the original 6 plus
+  // "directory") + 4 coach-tool rows (coach_tools, member_of_week,
+  // welcome_flow, monthly_recap) = 11.
+  assert.equal(rows.length, 11, "one row per module across both groups");
   rows.forEach((el) => assert.equal(el.checked, true, `${el.dataset.clubFeature} starts checked`));
 });
 
@@ -64,7 +76,7 @@ test("toggling a checkbox calls admin_set_club_feature and optimistically flips 
     return { data: null, error: null };
   });
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openAccountTab(window);
+  await openManageSettings(window);
   await waitFor(() => !!window.document.querySelector('[data-club-feature="events"]'), 3000);
 
   const checkbox = window.document.querySelector('[data-club-feature="events"]');
@@ -80,7 +92,7 @@ test("a failed toggle rolls back to the previous checked state", async () => {
   const mock = seeded(null, "admin");
   mock.onRpc("admin_set_club_feature", () => ({ data: null, error: { message: "not authorized" } }));
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openAccountTab(window);
+  await openManageSettings(window);
   await waitFor(() => !!window.document.querySelector('[data-club-feature="feed"]'), 3000);
 
   const checkbox = window.document.querySelector('[data-club-feature="feed"]');
@@ -115,8 +127,77 @@ test("achievements on: the account tab shows the my-achievements section shell e
 
 test("club feature state resets on sign-out so the next member's fresh load isn't polluted", async () => {
   const window = await bootCommunity(seeded(null, "admin"), { syncEnabled: false });
-  await openAccountTab(window);
+  await openManageSettings(window);
   await waitFor(() => !!window.document.querySelector('[data-club-feature]'), 3000);
+  await openAccountTab(window);
+  await waitFor(() => !!window.document.querySelector('[data-community-action="sign-out"]'), 3000);
   window.document.querySelector('[data-community-action="sign-out"]').click();
-  await waitFor(() => !window.document.querySelector('[data-club-feature]'), 3000);
+  // Redesign, Phase 1: signing out also clears isStaff(), so the whole
+  // Manage tab (and everything in it, including this panel) becomes
+  // unreachable - a stronger proof of the same reset than before.
+  await waitFor(() => !window.document.getElementById("tabManageBtn"), 3000);
+});
+
+// ===== Redesign, Phase 2: pill-level gating, not just content-level =======
+
+test("feed off removes the פיד pill itself, not just its content", async () => {
+  const mock = seeded({ club_features: allModulesOn("feed") }, "member");
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  assert.ok(!window.document.querySelector('[data-community-action="set-tab"][data-tab="feed"]'), "no feed pill in the subtab bar");
+  // Falls back to the first remaining pill (boards), never a blank screen.
+  assert.ok(window.document.querySelector(".subtabbtn.active"), "some pill is still active");
+});
+
+test("directory off removes the חברים pill itself, client-only (no RLS gate behind it)", async () => {
+  const mock = seeded({ club_features: allModulesOn("directory") }, "member");
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  assert.ok(!window.document.querySelector('[data-community-action="set-tab"][data-tab="directory"]'), "no directory pill");
+});
+
+test("coach_tools off removes the לוח מאמנים pill for a coach, even though their role would otherwise show it", async () => {
+  const mock = seeded({ club_features: allModulesOn("coach_tools") }, "coach");
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  assert.ok(!window.document.querySelector('[data-community-action="set-tab"][data-tab="coach"]'), "no coach pill while the master switch is off");
+});
+
+test("each of the three coach-tool sub-flags independently hides its own section, leaving the others visible", async () => {
+  for (const [key, marker] of [["member_of_week", "חבר/ת השבוע"], ["welcome_flow", "קבלת פנים"], ["monthly_recap", "סיכום חודשי למועדון"]]) {
+    const mock = seeded({ club_features: allModulesOn(key) }, "coach");
+    const window = await bootCommunity(mock, { syncEnabled: false });
+    window.document.getElementById("tabCommunityBtn").click();
+    await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+    window.document.querySelector('[data-community-action="set-tab"][data-tab="coach"]').click();
+    await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+    assert.ok(!window.document.body.textContent.includes(marker), `${key} off hides its own "${marker}" section`);
+  }
+});
+
+test("boards shows the mockup's empty-state note only when challenges, events and leaderboards are ALL off", async () => {
+  const allThreeOff = MODULE_KEYS.map((module_key) => ({
+    club_id: "club-1", module_key, config: {},
+    enabled: !["challenges", "events", "leaderboards"].includes(module_key),
+  }));
+  const mock = seeded({ club_features: allThreeOff }, "member");
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  window.document.querySelector('[data-community-action="set-tab"][data-tab="boards"]').click();
+  await waitFor(() => !!window.document.querySelector('[data-boards-all-off="1"]'), 3000);
+  assert.ok(window.document.body.textContent.includes('הפעילו אותם ב"ניהול'), "points back at Manage › Settings");
+
+  // Any one of the three back on removes the note, even though the tab is
+  // still not fully populated.
+  const partialMock = seeded({ club_features: allModulesOn("events") }, "member");
+  const partialWindow = await bootCommunity(partialMock, { syncEnabled: false });
+  partialWindow.document.getElementById("tabCommunityBtn").click();
+  await waitFor(() => !!partialWindow.document.querySelector(".subtabbar"), 3000);
+  partialWindow.document.querySelector('[data-community-action="set-tab"][data-tab="boards"]').click();
+  await waitFor(() => !!partialWindow.document.querySelector(".subtabbar"), 3000);
+  assert.ok(!partialWindow.document.querySelector('[data-boards-all-off="1"]'), "not shown once at least one of the three is on");
 });

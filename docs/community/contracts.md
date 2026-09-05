@@ -6580,3 +6580,83 @@ Every job is on an odd minute rather than `:00`, the habit 202608310006
 established, so eight jobs do not stampede the same instant. Verify with
 `select jobname, schedule, active from cron.job;` and
 `select * from cron.job_run_details order by start_time desc limit 20;`.
+
+## Redesign, Phase 1: the "ניהול" (Manage) tab
+
+A relocation, not a new feature. The admin/moderation/analytics/invites
+surfaces that used to render one after another inside Community's "חשבון"
+(Account) sub-tab now live on their own top-level bottom-bar tab
+(`getNavItems()`, app.js), visible whenever `window.communityIsStaff()`
+(cloud.js, mirrors `isStaff()`) is true - coach and above, the exact same
+audience these sections already had, not the mockup's stricter admin-only
+gate. `window.renderManageApp()` composes 7 sub-tabs (dashboard, members,
+onboarding, moderation, settings, analytics, invites) tracked in
+`state.ui.manageTab`, switched via `data-community-action="set-manage-tab"`.
+Every render function moved is byte-identical to before; only its mount
+point and lazy-load trigger changed. The lazy-load gates that used to read
+`state.ui.tab === "account"` (inside `afterRenderCommunity()`) moved to a new
+`window.afterRenderManage()` hook, gated on the matching `state.ui.manageTab`
+value instead, called by app.js's `render()` when `tab === "manage"`.
+
+One deliberate placement choice worth stating: `renderCommunityHealthScore()`
+moved to the **dashboard** sub-tab (the mockup's own layout - the score is
+the dashboard's headline card), not to analytics alongside
+`renderAdminAnalyticsDashboard()`/`renderRetentionCorrelations()`.
+`renderRegistrationFunnel()`, despite the plan's first draft, did **not**
+move out of `renderAdminAnalyticsDashboard()` - it has no independent data
+loader (`loadRegistrationFunnel()` only fires as a side effect of the
+dashboard's own load completing) and no period selector of its own; moving
+its render call without also giving it both would have shipped a funnel
+that never loads for a staff member visiting Onboarding before Analytics.
+
+## Redesign, Phase 2: club_features gains five more keys (202609050006)
+
+No schema change beyond an `insert` - `club_features.module_key`
+(202609010012) was declared as a shape check
+(`~ '^[a-z][a-z0-9_]{2,31}$'`), not a closed enum, so there was nothing to
+widen, and `admin_set_club_feature()` already upserts any key matching that
+shape and already writes `club_feature_toggle` (already in
+`admin_actions.action_type`'s closed list) for any module_key. The five new
+keys: `directory`, `coach_tools`, `member_of_week`, `welcome_flow`,
+`monthly_recap`. All seeded `enabled = true`.
+
+**A real asymmetry from the original six, worth stating plainly**: none of
+the five gates a table's RLS.
+- `directory` has no RLS clause behind it on purpose, matching
+  202609010012's own reasoning for never gating it in the first place
+  ("profiles is the single most foundational read policy in the schema").
+  Turning it off hides the Directory pill and its sub-tab; a member's
+  profile stays exactly as readable through the feed, mentions, follows and
+  every other existing surface as it always was.
+- `coach_tools` (a master switch for the whole Coach sub-tab) and
+  `member_of_week`/`welcome_flow`/`monthly_recap` (one each per Coach-tab
+  section) gate a **staff-facing UI section**, not member data. The coach-
+  only RPCs behind those sections (`coach_new_members`,
+  `coach_inactive_members`, the member-of-week candidate/publish pair,
+  `monthly_club_recaps`) keep their own independent `is_staff()`/`has_perm()`
+  check regardless of this flag - turning a coach-tool flag off declutters a
+  coach's own tab, it does not lock a door that was open.
+
+Client side: `CLUB_MODULE_TOGGLES` (cloud.js) carries a `clientOnly: true`
+marker on each of these so `renderClubModulesPanel()` never makes the
+original six's blanket "enforced on the server" claim about a row where
+that would be false - the Settings sub-tab now renders two labeled groups
+("תכני קהילה" / "כלי מאמנים"), matching the mockup, with the caveat text
+naming `directory` inline rather than only in a comment.
+
+Two more real, user-visible behavior changes: the Community tab's own
+`feed`/`directory` pills are now conditional pushes (`isModuleEnabled("feed")`
+/ `isModuleEnabled("directory")`), removing the pill entirely when off -
+before this, only the Coach pill worked that way, and feed/directory's
+existing module flags gated content but never the pill itself. And the
+Boards sub-tab gained the mockup's empty-state card
+(`data-boards-all-off="1"`, "כל המודולים בלוח זה כבויים כרגע. הפעילו אותם
+ב'ניהול › הגדרות'.") shown only when `challenges`/`events`/`leaderboards`
+are all off - additive to, not a replacement for, the always-present legacy
+`weekly_challenges` board, which predates and is independent of the
+`club_features` module set and never itself goes blank.
+
+pgTAP: `supabase/tests/0065_club_modules_coach_and_directory_test.sql`.
+Client: new tests in `test/community-club-features.test.mjs` covering pill
+removal, the coach master switch, the three independent coach-section
+flags, and the Boards empty-state's exact trigger condition.

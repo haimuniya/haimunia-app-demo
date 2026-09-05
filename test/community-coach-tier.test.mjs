@@ -11,12 +11,16 @@ test("cloud.js's isStaff() matches is_staff()'s server-side rule: admin OR a coa
   assert.match(cloudJs, /function isStaff\(\) \{ return !!\(state\.profile && \(state\.profile\.is_admin \|\| \(state\.redemption && \(state\.redemption\.role === "coach" \|\| state\.redemption\.role === "head_coach"\)\)\)\); \}/);
 });
 
-test("all four staff-only render gates (announcements composer, challenge setter, new/inactive members) use isStaff(), not a raw is_admin check", () => {
+test("all five staff-only render gates (announcements composer, challenge setter, new/inactive members, the redesign's moved-to-Manage note) use isStaff(), not a raw is_admin check", () => {
   const renderFn = cloudJs.slice(cloudJs.indexOf("window.renderCommunityApp = function"), cloudJs.indexOf("window.cloudStorageStatusText"));
   assert.doesNotMatch(renderFn, /state\.profile\.is_admin/, "the render function must not check is_admin directly anymore, only through isStaff()");
   assert.match(renderFn, /const staff = isStaff\(\);/);
   const staffGates = (renderFn.match(/\bstaff \?/g) || []).length;
-  assert.equal(staffGates, 4, "expected exactly 4 staff-gated sections: announcements composer, challenge setter, new members, inactive members");
+  // Redesign, Phase 1: the Account tab's "כלי ניהול עברו ל'ניהול'..." note
+  // (movedToManageNote) is a 5th `staff ? ... : ""` slice of this same
+  // function, on the same footing as the original four - a fifth genuine
+  // addition, not an oversight to correct.
+  assert.equal(staffGates, 5, "expected exactly 5 staff-gated sections: announcements composer, challenge setter, new members, inactive members, moved-to-Manage note");
 });
 
 test("is_staff() checks the caller's own admin flag or coach redemption only, and is locked away from anon", () => {

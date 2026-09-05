@@ -328,9 +328,13 @@ function modMock() {
   return mock;
 }
 
+// Redesign, Phase 1: renderModeration() moved from Community's "account"
+// sub-tab to the Manage tab's own "moderation" sub-tab.
 async function openQueue(window) {
-  await openCommunity(window);
-  window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();
+  await waitFor(() => !!window.document.getElementById("tabManageBtn"), 4000);
+  window.document.getElementById("tabManageBtn").click();
+  await waitFor(() => !!window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="moderation"]'), 4000);
+  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="moderation"]').click();
   await waitFor(() => !!window.document.querySelector('[data-community-action="mod-action"]'), 4000);
 }
 

@@ -220,8 +220,11 @@ test("COMM-160: the admin member directory row shows the coach badge for a coach
     error: null,
   }));
   const window = await bootCommunity(mock, { syncEnabled: false });
-  await openCommunity(window);
-  window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();
+  // Redesign, Phase 1: renderMemberManagement() moved from Community's
+  // "account" sub-tab to the Manage tab's own "members" sub-tab.
+  window.document.getElementById("tabManageBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="members"]').click();
   await waitFor(() => !!window.document.getElementById("adminMemberSearch"), 3000);
   const search = window.document.getElementById("adminMemberSearch");
   search.value = "mor";
