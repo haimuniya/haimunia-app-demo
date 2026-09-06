@@ -23,6 +23,11 @@ const ROOT_SCALARS = [
   "configured", "client", "user", "profile", "redemption", "syncEnabled",
   "signupStarted", "communityDataLoaded", "communityDataLoading",
   "permissions", "permissionsLoaded", "featureFlags", "avatarUpload",
+  // Launch-readiness audit, CQ-006. Load-failure flags for the two root
+  // scalars immediately above - not a feature domain of their own, just
+  // "did the last fetch of profile/redemption fail", read only by the join
+  // funnel that already reads profile/redemption directly.
+  "profileLoadError", "redemptionLoadError",
 ];
 
 function readStateLiteral() {
@@ -54,7 +59,13 @@ test("the state root is the session core plus per-domain namespaces, nothing els
   assert.deepEqual(namespaces, [
     "ui", "feed", "posts", "engagement", "members", "club", "leaderboard",
     "admin", "analytics", "challenges", "events", "search", "achievements",
-    "notif", "onboarding", "intro", "recaps", "coach",
+    "notif", "onboarding", "intro", "recaps",
+    // The community write queue's view-model (launch-readiness audit,
+    // RELIABILITY): { pending, failed }. A real namespace rather than two
+    // root scalars, because it groups two related leaves that are always
+    // read together by the outbox banner.
+    "outbox",
+    "coach",
   ], "the namespace set changed - update this list and docs/community/backlog.md's COMM-365 row");
 });
 
@@ -110,7 +121,9 @@ test("the dialog registry keeps DOM keys and state paths separate", () => {
   // isOpen() is the only thing that knows where the flag lives.
   const registry = src.slice(src.indexOf("const CLOUD_DIALOGS = ["), src.indexOf("const cloudDialogOpeners"));
   const entries = [...registry.matchAll(/\{ key: "([^"]+)", isOpen: \(\) => (state\.[\w.]+),/g)];
-  assert.equal(entries.length, 11, "every dialog entry needs a key and an isOpen getter");
+  // 12 since the launch-readiness audit's A3 fix added the confirm sheet -
+  // it was previously invisible to this whole registry.
+  assert.equal(entries.length, 12, "every dialog entry needs a key and an isOpen getter");
   const state = readStateLiteral();
   for (const [, key, path] of entries) {
     const value = path.split(".").slice(1).reduce((o, k) => (o == null ? o : o[k]), state);

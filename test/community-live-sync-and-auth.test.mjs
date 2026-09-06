@@ -30,13 +30,13 @@ test("a queued local edit reaches the mock server before a stale remote copy wou
 
   // Simulate: this device queued a real edit (weight 999) while the
   // "server" still only has an older, stale copy (weight 1).
-  mock.seedCredentials("u1", "dana@members.haimuniya.invalid", "correcthorse");
+  mock.seedCredentials("u1", "dana@members.haimuniya.invalid", "CorrectHorse9");
   mock.db.private_records = [{ user_id: "u1", record_type: "strength_entry", record_id: "e1", payload: { id: "e1", exerciseId: "back-squat", weight: 1, reps: 5, sets: 1, date: "2026-01-01", type: "reps" }, deleted_at: null, updated_at: "2020-01-01T00:00:00.000Z" }];
   await window.queueSyncRecord("strength_entry", { id: "e1", exerciseId: "back-squat", weight: 999, reps: 5, sets: 1, date: "2026-01-01", type: "reps" });
 
   // Re-triggers the exact same onAuthStateChange flush-then-pull chain
   // refreshSession() also runs on every normal app reopen.
-  await mock.client.auth.signInWithPassword({ email: "dana@members.haimuniya.invalid", password: "correcthorse" });
+  await mock.client.auth.signInWithPassword({ email: "dana@members.haimuniya.invalid", password: "CorrectHorse9" });
 
   await waitFor(() => {
     const row = mock.db.private_records.find((r) => r.record_id === "e1");
@@ -60,8 +60,8 @@ test("full signup lifecycle executes for real: bootstrap -> redeem code -> set c
   await waitFor(() => !!window.document.getElementById("communityCredentials"), 3000);
 
   window.document.querySelector('#communityCredentials input[name="username"]').value = "dana";
-  window.document.querySelector('#communityCredentials input[name="password"]').value = "correcthorse";
-  window.document.querySelector('#communityCredentials input[name="passwordConfirm"]').value = "correcthorse";
+  window.document.querySelector('#communityCredentials input[name="password"]').value = "CorrectHorse9";
+  window.document.querySelector('#communityCredentials input[name="passwordConfirm"]').value = "CorrectHorse9";
   window.document.getElementById("communityCredentials").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
   await waitFor(() => !!window.document.getElementById("communityProfile"), 3000);
 
@@ -79,7 +79,7 @@ test("full signup lifecycle executes for real: bootstrap -> redeem code -> set c
   // A "different device" logging in with the same credentials - the
   // thing plain anonymous-only sign-in structurally could not do.
   window.document.querySelector('#communityLogin input[name="username"]').value = "dana";
-  window.document.querySelector('#communityLogin input[name="password"]').value = "correcthorse";
+  window.document.querySelector('#communityLogin input[name="password"]').value = "CorrectHorse9";
   window.document.getElementById("communityLogin").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
   // Only the pre-auth gates render without a subtabbar - the main app
   // (any sub-tab, including Account, which happens to reuse the

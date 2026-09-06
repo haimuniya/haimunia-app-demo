@@ -18,7 +18,11 @@ import fs from "node:fs";
 const cloudJs = fs.readFileSync(new URL("../cloud.js", import.meta.url), "utf8");
 
 test("sign-in uses signInAnonymously(), with no email collection anywhere", () => {
-  assert.match(cloudJs, /client\.auth\.signInAnonymously\(\)/);
+  // Still signInAnonymously, now wrapped in withCaptcha() (SEC-004) which
+  // passes { options: { captchaToken } } when a site key is configured and
+  // calls it with no options at all when one is not. The property this test
+  // guards - anonymous sign-in, never an email flow - is unchanged.
+  assert.match(cloudJs, /client\.auth\.signInAnonymously\(captchaToken \? \{ options: \{ captchaToken \} \} : undefined\)/);
   assert.doesNotMatch(cloudJs, /signInWithOtp/);
   assert.doesNotMatch(cloudJs, /communityEmail/);
   assert.doesNotMatch(cloudJs, /emailRedirectTo/);

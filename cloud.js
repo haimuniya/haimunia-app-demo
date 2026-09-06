@@ -19,7 +19,14 @@
   const cfg = window.HAIMUNIA_CONFIG || {};
   const configured = /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(cfg.supabaseUrl || "") && !!cfg.supabasePublishableKey;
   const client = configured && window.supabase ? window.supabase.createClient(cfg.supabaseUrl, cfg.supabasePublishableKey, {
-    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+    // detectSessionInUrl stays false: this app never uses OAuth, magic
+    // links, or email confirmation (COMMUNITY_SETUP.md - email delivery is
+    // permanently out of scope), so there is no flow it serves. Left true it
+    // makes supabase-js adopt any #access_token=...&refresh_token=... found
+    // in the URL fragment on every load - a one-click session-fixation
+    // vector against a link-shareable, installable PWA. Launch-readiness
+    // audit, SEC-013.
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
   }) : null;
   // COMM-365. One state object, namespaced by feature domain.
   //
@@ -50,6 +57,8 @@
   const state = {
     // ---- session / auth / config core (see above: intentionally flat) ----
     configured, client, user: null, profile: null, redemption: null,
+    // Launch-readiness audit, CQ-006 - see loadProfile()/loadRedemption().
+    profileLoadError: false, redemptionLoadError: false,
     syncEnabled: localStorage.getItem("haimunia-demo:cloudSyncEnabled") === "1",
     signupStarted: false,
     // COMM-331. Guards ensureCommunityDataLoaded()'s feed/streaks/
@@ -93,7 +102,16 @@
     // manageTab is the active sub-tab of the separate "ניהול" (Manage) top-
     // level tab - its own field, not reusing `tab`, since a staff member can
     // leave Manage and come back without losing their place in either.
-    ui: { tab: "feed", manageTab: "dashboard", loading: false, message: "", fieldErrors: {}, confirmDialog: null },
+    ui: { tab: "feed", manageTab: "dashboard", loading: false, message: "", fieldErrors: {}, confirmDialog: null,
+      // Launch-readiness audit, RELIABILITY. The invite code the member
+      // is typing, kept in state for the same reason reportNote and the
+      // comment drafts are: this app re-renders by replacing #content's
+      // innerHTML, so ANY background render (maybeAutoStartBackup()'s
+      // "your workouts are backed up" message is the one that actually
+      // hit this) swapped the form for a fresh one and silently erased
+      // what had been typed. A member then submitted an empty code and
+      // got "code required" for a code they had just entered.
+      inviteCodeDraft: "" },
 
     // ---- feed (COMM-110..115) ----
     // items holds feed_page() rows in the exact order the function returned
@@ -477,6 +495,12 @@
     // Celebrate, Welcome, Engage, Member of the Week, Monthly recap preview.
     // Challenges re-surfaces renderChallengesListSection() unchanged, so it
     // has no state of its own here.
+    // Launch-readiness audit, RELIABILITY. The community write queue's
+    // view-model: `pending` is how many writes are waiting to go out (a
+    // count is all the banner needs), `failed` holds the full rows for the
+    // ones that gave up, because each needs its own retry/discard control
+    // and its own error text. Populated by refreshOutboxState().
+    outbox: { pending: 0, failed: [] },
     coach: {
       // celebrate.items holds coach_celebrate_feed() rows exactly as
       // returned (already sorted by recency - never re-sorted here).
@@ -925,6 +949,10 @@
       // pulling; this is the far more common path (reopening an existing
       // session) and was missing it.
       await flushOutbox();
+      // Same reasoning for the community queue: a post/comment/cheer made
+      // offline in a previous session is still sitting in IndexedDB, and
+      // reopening the app is the most common moment connectivity returns.
+      await flushCommunityOutbox();
       await pullPrivateRecords();
       await pingActivity();
       // COMM-130. Claim any non-attendance milestone this device already
@@ -941,9 +969,25 @@
   // (COMM-018) drive the Account > Privacy panel and are read straight off
   // state.profile, so they have to be selected here too.
   const PROFILE_COLUMNS = "id,handle,display_name,bio,avatar_url,is_admin,recovery_verified_at,visible_to_club,show_workout_results,show_prs,show_achievements,show_attendance,show_upcoming_booking,show_in_attendee_lists,in_leaderboards,allow_follows,allow_mentions,allow_messages";
+  // Launch-readiness audit, CQ-006. loadProfile()/loadRedemption() used to
+  // drop `error` and collapse "the fetch failed" into "the row doesn't
+  // exist" (`data || null`, unconditionally). The join funnel below reads
+  // state.profile/state.redemption as ground truth for "has this member
+  // joined yet", so a transient failure on a returning member's flaky
+  // connection re-ran the first-run intro carousel and then an unskippable
+  // "complete your profile" form - which, submitted, tries to create a
+  // profile that already exists. Every sibling loader in this file
+  // (loadOnboardingStepContent, loadIntroCarouselContent, loadClubFeatures,
+  // loadPermissions) already branches on error; these two were the outlier.
+  // Fix: track a load-failure flag, and — critically — do NOT overwrite an
+  // already-loaded profile/redemption with null just because a later
+  // refresh failed, so a transient error during the session can never
+  // downgrade "known joined" back to "appears not joined".
   async function loadProfile() {
     if (!state.user) return;
-    const { data } = await client.from("profiles").select(PROFILE_COLUMNS).eq("id", state.user.id).maybeSingle();
+    const { data, error } = await client.from("profiles").select(PROFILE_COLUMNS).eq("id", state.user.id).maybeSingle();
+    state.profileLoadError = !!error;
+    if (error) return;
     state.profile = data || null;
   }
   // A profile can only be created once a valid box invite code has been
@@ -951,8 +995,16 @@
   // not just here) — this just drives which form the Community tab shows.
   async function loadRedemption() {
     if (!state.user) return;
-    const { data } = await client.from("invite_redemptions").select("invite_id,role,redeemed_at").eq("user_id", state.user.id).maybeSingle();
+    const { data, error } = await client.from("invite_redemptions").select("invite_id,role,redeemed_at").eq("user_id", state.user.id).maybeSingle();
+    state.redemptionLoadError = !!error;
+    if (error) return;
     state.redemption = data || null;
+  }
+  // The retry action for the join-funnel error screen below - re-runs both
+  // loaders (either could be the one that failed) and rerenders either way.
+  async function retryJoinFunnelLoad() {
+    await Promise.all([loadProfile(), loadRedemption()]);
+    rerender();
   }
   // COMM-222. Own-row select; seed_onboarding_progress (202608290011) seeds
   // exactly one row per member at MEMBER_JOINED, so null here means "not
@@ -1087,8 +1139,13 @@
     return key.slice(0, 128);
   }
   async function redeemCode(form) {
-    if (!state.user) return;
-    const code = String(form.elements.code.value || "").trim();
+    // Was a bare `return` - a submit with no session did nothing at all,
+    // with no error and no explanation, which is indistinguishable from the
+    // app being broken. Same audit pass as the retry loop below.
+    if (!state.user) return setFieldErrors("communityInviteCode", { code: "אין חיבור לקהילה כרגע, נסו שוב בעוד רגע" });
+    // State first, DOM second: a render between the last keystroke and
+    // this submit replaces form.elements.code with an empty one.
+    const code = String(state.ui.inviteCodeDraft || form.elements.code.value || "").trim();
     if (!code) return setFieldErrors("communityInviteCode", { code: "יש להזין קוד הזמנה" });
     // Two-arg overload: passes the actor key so the throttle holds across
     // session replacement. The server returns the same generic answer and
@@ -1103,7 +1160,30 @@
     // one hardcoded to the one role a shared code could ever grant.
     if (data === "invalid") return setFieldErrors("communityInviteCode", { code: "קוד ההזמנה שגוי, פג תוקף או נוצל" });
     setFieldErrors("communityInviteCode", {});
-    await loadRedemption();
+    state.ui.inviteCodeDraft = "";
+    // Launch-readiness audit, RELIABILITY. THE BUG THIS FIXES: the
+    // redemption has ALREADY SUCCEEDED server-side by this line - the RPC
+    // returned a role. But the funnel below decides what to show from
+    // state.redemption, which is populated by this follow-up READ. A single
+    // failed or racing read therefore left the member staring at the invite
+    // form for a code that had just been consumed, with no error and no way
+    // forward: re-submitting the same code now returns "invalid" (it is
+    // spent), so the account was permanently stuck at the gate.
+    //
+    // This was the intermittent browser-check failure the suite has carried
+    // (previously attributed to CPU contention). Reproduced against
+    // pristine HEAD, 1 run in 4, by instrumenting the redemption step: the
+    // invite form was still on screen with the redemption already done.
+    //
+    // A read that is the sole gate on a completed write gets retried rather
+    // than trusted once. If every attempt fails, loadRedemption() sets
+    // redemptionLoadError and renderCommunityApp() shows its retry screen -
+    // an honest "we could not load your account" the member can act on,
+    // never the invite form again.
+    for (let attempt = 0; attempt < 3 && !state.redemption; attempt++) {
+      if (attempt) await new Promise((r) => setTimeout(r, 150 * attempt));
+      await loadRedemption();
+    }
     // COMM-222. This is the module's MEMBER_JOINED moment (mirrors the
     // server side: seed_onboarding_progress fires off the same
     // invite_redemptions insert). Emitting it lets the onboarding sequence
@@ -2247,6 +2327,13 @@
     { id: "all", label: "הכול" },
   ];
   const MOD_STATUS_LABEL = { open: "פתוח", reviewing: "בטיפול", action_taken: "טופל", dismissed: "נדחה" };
+  // Launch-readiness audit, CQ-001. 202609050002_report_profile_target.sql
+  // widened reports.target_type to include 'profile', but the queue row and
+  // context overlay still used a two-way post/comment ternary, so a profile
+  // report fell into the else branch and was labelled "פוסט" (post) - with
+  // the reported member's own bio shown as the "post excerpt". Same shape as
+  // pinTargetLabel()/auditTargetLabel() further down.
+  const MOD_TARGET_LABEL = { post: "פוסט", comment: "תגובה", profile: "פרופיל" };
   // Reason codes match the report() RPC contract. inappropriate covers
   // "inappropriate content", privacy covers "privacy concern",
   // unsafe_advice covers "unsafe training advice".
@@ -2302,6 +2389,17 @@
     rerender();
   }
   function closeModAction() { state.admin.modAction = null; rerender(); }
+  // Launch-readiness audit, CQ-002 (defensive second layer). The row
+  // renderer already filters "remove" off a profile report's button list;
+  // this is the fallback if that ever drifts, or if mod_review() adds a
+  // future refusal - so the message names the real reason instead of
+  // suggesting a retry that can never succeed.
+  function modActionErrorText(error) {
+    const msg = error && error.message;
+    return {
+      "a profile report has no content to remove": "אין תוכן להסרה בדיווח על פרופיל.",
+    }[msg] || "לא ניתן היה להשלים את הפעולה. נסו שוב.";
+  }
   async function runModAction() {
     const a = state.admin.modAction;
     if (!a || a.saving) return;
@@ -2313,7 +2411,7 @@
     const { error } = await client.rpc("mod_review", args);
     if (error) {
       a.saving = false;
-      a.error = "לא ניתן היה להשלים את הפעולה. נסו שוב.";
+      a.error = modActionErrorText(error);
       rerender();
       return;
     }
@@ -2331,13 +2429,19 @@
   // exact user id; role changes and removal each check real is_admin
   // server-side too (admin_grant_coach/admin_revoke_coach/
   // admin_remove_member), this is only for deciding what to show.
+  // Debounced for the same reason as searchPeople() (PERF-3): this fired an
+  // admin_search_members RPC plus a full re-render on every keystroke.
   async function searchMembers(query) {
     state.members.search = query;
+    if (memberSearchDebounceTimer) clearTimeout(memberSearchDebounceTimer);
     const q = String(query || "").trim();
     if (q.length < 2) { state.members.results = []; return rerender(); }
-    const { data, error } = await client.rpc("admin_search_members", { p_query: q });
-    state.members.results = error ? [] : (data || []);
-    rerender();
+    memberSearchDebounceTimer = setTimeout(async () => {
+      memberSearchDebounceTimer = null;
+      const { data, error } = await client.rpc("admin_search_members", { p_query: q });
+      state.members.results = error ? [] : (data || []);
+      rerender();
+    }, SEARCH_DEBOUNCE_MS);
   }
   // COMM-156. HEAD_COACH is exposed in Phase 1; STAFF and OWNER are modelled
   // server-side but stay out of this list until Phase 2. A role change goes
@@ -3086,26 +3190,64 @@
   // COMM-318 / 202609060003. The avatar half of the pattern below. Reads the
   // cache only - avatarHtml() runs during render and must never await.
   function avatarSignedUrl(storedUrl) {
-    return storedUrl ? (avatarUrlCache[storedUrl] || null) : null;
+    return storedUrl ? signedCacheGet(avatarUrlCache, storedUrl) : null;
   }
+  // Launch-readiness audit, CQ-004. Both caches used to store a bare URL
+  // string with no timestamp, and re-entry was short-circuited on a cache
+  // hit - so an entry was never refreshed. The signature these URLs carry
+  // expires after SIGNED_URL_TTL_S, and this is an installed PWA whose
+  // sessions routinely outlive that: after an hour every avatar and every
+  // feed photo already scrolled past rendered as a broken image, with no
+  // retry and no fallback to the initials badge (that path is only taken
+  // when the cache is EMPTY, not when it holds a stale URL).
+  //
+  // Entries are now { url, expiresAt } and a read within SIGNED_URL_SKEW_MS
+  // of expiry is treated as a miss, so the next render re-signs. The skew
+  // matters: an entry that expires while the member is looking at it would
+  // otherwise still be served once.
+  const SIGNED_URL_TTL_S = 3600;
+  const SIGNED_URL_SKEW_MS = 5 * 60 * 1000;
+  function signedCacheGet(cache, key) {
+    const hit = cache[key];
+    if (!hit) return null;
+    if (typeof hit === "string") return hit; // legacy shape, pre-CQ-004
+    if (hit.expiresAt - SIGNED_URL_SKEW_MS <= Date.now()) { delete cache[key]; return null; }
+    return hit.url;
+  }
+  function signedCachePut(cache, key, url) {
+    cache[key] = { url, expiresAt: Date.now() + SIGNED_URL_TTL_S * 1000 };
+  }
+  // Called from an <img onerror>: a signature that expired between render
+  // and load (or an object that vanished) evicts its entry so the next
+  // render re-signs instead of showing a permanently broken image.
+  function evictSignedUrl(kind, key) {
+    if (!key) return;
+    const cache = kind === "avatar" ? avatarUrlCache : photoUrlCache;
+    delete cache[key];
+    rerender();
+  }
+  window.__haimuniaEvictSignedUrl = evictSignedUrl;
   // Fire-and-forget, exactly like resolvePhotoUrl. A failure (a member who
   // hid from the club, a block edge, an object that was removed) is left
   // uncached on purpose: the initials badge is a correct answer for "you may
   // not see this face", so there is nothing to report and nothing to retry
   // until the next render decides to ask again.
   async function resolveAvatarUrl(storedUrl) {
-    if (!storedUrl || avatarUrlCache[storedUrl] || avatarInFlight[storedUrl]) return;
+    // signedCacheGet() rather than a bare truthiness check, so an entry
+    // that is present but expiring is treated as a miss and re-signed
+    // (CQ-004).
+    if (!storedUrl || signedCacheGet(avatarUrlCache, storedUrl) || avatarInFlight[storedUrl]) return;
     const path = avatarPathFromUrl(storedUrl);
     if (!path) return;
     avatarInFlight[storedUrl] = true;
-    const { data, error } = await client.storage.from("avatar-photos").createSignedUrl(path, 3600);
+    const { data, error } = await client.storage.from("avatar-photos").createSignedUrl(path, SIGNED_URL_TTL_S);
     delete avatarInFlight[storedUrl];
-    if (!error && data && data.signedUrl) { avatarUrlCache[storedUrl] = data.signedUrl; rerender(); }
+    if (!error && data && data.signedUrl) { signedCachePut(avatarUrlCache, storedUrl, data.signedUrl); rerender(); }
   }
   async function resolvePhotoUrl(path) {
-    if (!path || photoUrlCache[path]) return;
-    const { data, error } = await client.storage.from("post-photos").createSignedUrl(path, 3600);
-    if (!error && data) { photoUrlCache[path] = data.signedUrl; rerender(); }
+    if (!path || signedCacheGet(photoUrlCache, path)) return;
+    const { data, error } = await client.storage.from("post-photos").createSignedUrl(path, SIGNED_URL_TTL_S);
+    if (!error && data) { signedCachePut(photoUrlCache, path, data.signedUrl); rerender(); }
   }
   // ==========================================================================
   // COMM-110..115  feed cluster.
@@ -3487,8 +3629,16 @@
     syncFeedReactionCount(postId, optimistic.count);
     state.engagement.reactionError = null;
     rerender();
-    const { error } = await client.rpc("toggle_reaction", { p_post_id: postId });
+    const { queued, error } = await communityRpc("toggle_reaction", { p_post_id: postId });
     reactionBusy[postId] = false;
+    if (queued) {
+      // Offline: the optimistic state above already shows the cheer, and
+      // the queued op carries an idempotency key so replaying it on
+      // reconnect cannot flip it back off. Keep the optimistic UI.
+      await refreshOutboxState();
+      rerender();
+      return;
+    }
     if (error) {
       state.engagement.reactions[postId] = before;
       syncFeedReactionCount(postId, before.count);
@@ -3548,7 +3698,16 @@
     for (const id of ids || []) if (id && !(id in state.members.roles)) need.push(id);
     if (!need.length) return;
     for (const id of need) state.members.roles[id] = null;
-    const { data } = await client.rpc("member_roles", { p_ids: need });
+    const { data, error } = await client.rpc("member_roles", { p_ids: need });
+    // Launch-readiness audit, CQ-003. A dropped error used to leave every id
+    // in `need` pre-seeded at null ("no role") with no way to ever retry -
+    // the `!(id in state.members.roles)` guard above treats "present and
+    // null" the same as "checked and confirmed no role". One transient
+    // failure permanently stripped the coach badge from a whole batch of
+    // members for the rest of the session. Deleting the pre-seed on error
+    // instead makes the next call see these ids as unchecked again, matching
+    // how resolveAvatarUrl() deliberately leaves a failed lookup uncached.
+    if (error) { for (const id of need) delete state.members.roles[id]; return; }
     for (const r of (data || [])) state.members.roles[r.user_id] = r.role || null;
   }
   function toggleComments(postId) {
@@ -3609,8 +3768,20 @@
     // overload (202608280021_comment_mentions_and_self_delete.sql), which
     // writes comment_mentions and is what the notif_on_mention trigger
     // actually hangs off.
-    const { data, error } = await client.rpc("add_post_comment", { p_post_id: postId, p_body: resolved.stored, p_parent_comment_id: parentCommentId || null, p_mentions: resolved.mentions.map((m) => m.user_id) });
+    const { data, error, queued } = await communityRpc("add_post_comment", { p_post_id: postId, p_body: resolved.stored, p_parent_comment_id: parentCommentId || null, p_mentions: resolved.mentions.map((m) => m.user_id) });
     state.engagement.commentSending = null;
+    if (queued) {
+      // Offline: the comment is safely persisted and will be sent on
+      // reconnect. Clear the draft so it is not double-submitted, and tell
+      // the member what happened rather than showing a failure.
+      delete state.engagement.commentDrafts[key];
+      delete state.engagement.commentErrors[key];
+      if (typeof form.reset === "function") form.reset();
+      await refreshOutboxState();
+      setMessage("אין חיבור — התגובה תישלח כשהחיבור יחזור");
+      rerender();
+      return;
+    }
     if (error) {
       state.engagement.commentErrors[key] = commentErrorMessage(error);
       rerender();
@@ -3782,12 +3953,129 @@
   // does not reopen the "nothing happens silently" concern the removed
   // on-load version raised). Both share the exact same session; whichever
   // fires first wins, the guard below makes the second call a no-op.
+  // ---------------------------------------------------------------------
+  // CAPTCHA (launch-readiness audit, SEC-004)
+  // ---------------------------------------------------------------------
+  // Anonymous sign-in costs an attacker nothing, which is what makes every
+  // free identity a scraping/flooding primitive. Supabase verifies the
+  // token server-side when a provider is configured in the dashboard; this
+  // side's whole job is to obtain a token and attach it.
+  //
+  // OFF BY DEFAULT AND SAFE: with no captchaSiteKey configured,
+  // captchaEnabled() is false and every path below is a no-op, so a project
+  // that has not enabled the provider yet behaves exactly as before. There
+  // is deliberately no "fail open if the widget errors" branch when it IS
+  // enabled - a CAPTCHA that silently passes on script failure is not a
+  // control, so a token failure surfaces as a refusal the member can retry.
+  const CAPTCHA_SCRIPT_URL = {
+    turnstile: "https://challenges.cloudflare.com/turnstile/v0/api.js",
+    hcaptcha: "https://js.hcaptcha.com/1/api.js",
+  };
+  let captchaScriptPromise = null;
+
+  function captchaConfig() {
+    const cfg = window.HAIMUNIA_CONFIG || {};
+    return {
+      provider: String(cfg.captchaProvider || "turnstile"),
+      siteKey: String(cfg.captchaSiteKey || "").trim(),
+    };
+  }
+  function captchaEnabled() { return !!captchaConfig().siteKey; }
+
+  function loadCaptchaScript() {
+    if (captchaScriptPromise) return captchaScriptPromise;
+    const { provider } = captchaConfig();
+    const url = CAPTCHA_SCRIPT_URL[provider];
+    if (!url) return Promise.reject(new Error("unknown captcha provider"));
+    captchaScriptPromise = new Promise((resolve, reject) => {
+      const existing = document.querySelector(`script[data-captcha="${provider}"]`);
+      if (existing) return resolve();
+      const s = document.createElement("script");
+      s.src = url;
+      s.async = true;
+      s.defer = true;
+      s.dataset.captcha = provider;
+      s.onload = () => resolve();
+      s.onerror = () => { captchaScriptPromise = null; reject(new Error("captcha script failed to load")); };
+      document.head.appendChild(s);
+    });
+    return captchaScriptPromise;
+  }
+
+  // Renders an invisible widget and resolves with a single-use token.
+  // Rejects on load failure, on the provider reporting an error, and on a
+  // timeout - each of which must block the sign-in rather than pass it.
+  function getCaptchaToken() {
+    if (!captchaEnabled()) return Promise.resolve(null);
+    const { provider, siteKey } = captchaConfig();
+    return loadCaptchaScript().then(() => new Promise((resolve, reject) => {
+      const api = provider === "hcaptcha" ? window.hcaptcha : window.turnstile;
+      if (!api || typeof api.render !== "function") return reject(new Error("captcha unavailable"));
+      const host = document.createElement("div");
+      host.style.display = "none";
+      document.body.appendChild(host);
+      let settled = false;
+      const cleanup = () => { try { host.remove(); } catch (e) {} };
+      // A token that never arrives must not hang the sign-in button
+      // forever; 20s is well beyond a normal invisible challenge.
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true; cleanup(); reject(new Error("captcha timed out"));
+      }, 20000);
+      try {
+        api.render(host, {
+          sitekey: siteKey,
+          size: "invisible",
+          callback: (token) => {
+            if (settled) return;
+            settled = true; clearTimeout(timer); cleanup(); resolve(token);
+          },
+          "error-callback": () => {
+            if (settled) return;
+            settled = true; clearTimeout(timer); cleanup(); reject(new Error("captcha failed"));
+          },
+          "expired-callback": () => {
+            if (settled) return;
+            settled = true; clearTimeout(timer); cleanup(); reject(new Error("captcha expired"));
+          },
+        });
+        if (typeof api.execute === "function") api.execute(host);
+      } catch (e) {
+        if (!settled) { settled = true; clearTimeout(timer); cleanup(); reject(e); }
+      }
+    }));
+  }
+
+  // Wraps a Supabase auth call that accepts { options: { captchaToken } }.
+  // Returns { error } shaped like the underlying call so callers are
+  // unchanged apart from awaiting this instead.
+  async function withCaptcha(fn) {
+    if (!captchaEnabled()) return fn(undefined);
+    let token;
+    try {
+      token = await getCaptchaToken();
+    } catch (e) {
+      // Deliberately NOT falling through to an un-captcha'd call.
+      return { error: { message: "captcha_failed" } };
+    }
+    return fn(token);
+  }
+
   let anonSignInAttempted = false;
   async function ensureAnonymousSession() {
     if (!client || state.user || anonSignInAttempted) return;
     anonSignInAttempted = true;
-    const { error } = await client.auth.signInAnonymously();
-    if (error) { setMessage("לא ניתן להתחבר לקהילה כרגע, נסו לרענן את הדף"); return; }
+    const { error } = await withCaptcha((captchaToken) =>
+      client.auth.signInAnonymously(captchaToken ? { options: { captchaToken } } : undefined));
+    if (error) {
+      // A failed challenge is retryable: clear the one-shot guard so the
+      // member can try again rather than being stuck for the session.
+      anonSignInAttempted = false;
+      setMessage(error.message === "captcha_failed"
+        ? "אימות האבטחה נכשל, נסו שוב"
+        : "לא ניתן להתחבר לקהילה כרגע, נסו לרענן את הדף");
+      return;
+    }
     // onAuthStateChange below picks up the new session and loads everything.
   }
   function startSignup() { state.signupStarted = true; ensureAnonymousSession(); rerender(); }
@@ -3856,8 +4144,17 @@
     if (!USERNAME_RE.test(username)) errors.username = "שם משתמש לא תקין";
     if (!password) errors.password = "יש להזין סיסמה";
     if (Object.keys(errors).length) return setFieldErrors("communityLogin", errors);
-    const { error } = await client.auth.signInWithPassword({ email: usernameToEmail(username), password });
-    if (error) return setFieldErrors("communityLogin", { password: "שם משתמש או סיסמה שגויים" });
+    const { error } = await withCaptcha((captchaToken) =>
+      client.auth.signInWithPassword(Object.assign(
+        { email: usernameToEmail(username), password },
+        captchaToken ? { options: { captchaToken } } : {},
+      )));
+    if (error) {
+      // A failed challenge is not a wrong password, and saying so avoids
+      // sending a member off to reset a password that was fine.
+      if (error.message === "captcha_failed") return setFieldErrors("communityLogin", { password: "אימות האבטחה נכשל, נסו שוב" });
+      return setFieldErrors("communityLogin", { password: "שם משתמש או סיסמה שגויים" });
+    }
     setFieldErrors("communityLogin", {});
     // onAuthStateChange picks up the session and loads the existing account.
   }
@@ -3878,10 +4175,22 @@
     const passwordConfirm = String(form.elements.passwordConfirm.value || "");
     const errors = {};
     if (!USERNAME_RE.test(username)) errors.username = "שם משתמש: 3–24 תווים, אותיות אנגליות קטנות, ספרות או קו תחתון";
-    if (password.length < 8) errors.password = "הסיסמה חייבת להכיל לפחות 8 תווים";
+    // Matches supabase/config.toml's minimum_password_length/password_requirements
+    // (launch-readiness audit, SEC-012) - checked client-side too so a member
+    // gets this message instead of a raw Supabase rejection after submitting.
+    if (password.length < 10 || !/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
+      errors.password = "הסיסמה חייבת להכיל לפחות 10 תווים, כולל אות גדולה, אות קטנה וספרה";
+    }
     if (password !== passwordConfirm) errors.passwordConfirm = "הסיסמאות לא תואמות";
     if (Object.keys(errors).length) return setFieldErrors(formId, errors);
-    const { data, error } = await client.auth.updateUser({ email: usernameToEmail(username), password });
+    // updateUser() is the account-creation step (it turns the bootstrap
+    // anonymous session into a permanent, loggable-in account), so it is
+    // gated by the same challenge as the other two auth entry points.
+    const { data, error } = await withCaptcha((captchaToken) =>
+      client.auth.updateUser(
+        { email: usernameToEmail(username), password },
+        captchaToken ? { captchaToken } : undefined,
+      ));
     if (error) return setFieldErrors(formId, { username: /registered|exists|taken/i.test(error.message || "") ? "שם המשתמש כבר תפוס" : "השמירה נכשלה, נסו שוב" });
     state.user = data.user;
     setFieldErrors(formId, {});
@@ -3975,6 +4284,103 @@
       }
     }
   }
+  // ---------------------------------------------------------------------
+  // The community write queue (launch-readiness audit, RELIABILITY).
+  // ---------------------------------------------------------------------
+  // flushOutbox() above is the private_records channel and stays exactly as
+  // it was. This is the second, separate queue for community EVENTS - see
+  // src/outbox.js's header for why they are not one queue.
+  //
+  // Every write routed through communityRpc() carries a client-generated
+  // p_idempotency_key. The server (202609060014) returns the original
+  // result for a repeated key instead of writing again, which is what makes
+  // the retry below safe: without it, a queued post that actually landed
+  // before the connection dropped would be posted twice on reconnect.
+  const OUTBOX_ACTIONS = ["post_create", "add_post_comment", "toggle_reaction", "event_rsvp", "chal_record_progress"];
+
+  function isOfflineError(error) {
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return true;
+    const m = String((error && error.message) || "");
+    // supabase-js surfaces a dropped connection as a TypeError from fetch;
+    // the message text differs per browser, hence the alternation.
+    return /failed to fetch|networkerror|network request failed|load failed|fetch failed|timeout|timed out/i.test(m);
+  }
+
+  function newIdempotencyKey() {
+    if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+    return null;
+  }
+
+  // Returns { queued, data, error }. `queued: true` means the write is
+  // safely persisted in IndexedDB and will be sent on reconnect - the
+  // caller should show a "will send when you're back online" state, not an
+  // error.
+  async function communityRpc(action, args, opts) {
+    const options = opts || {};
+    const key = newIdempotencyKey();
+    const withKey = key ? Object.assign({}, args, { p_idempotency_key: key }) : Object.assign({}, args);
+    const canQueue = !!(window.HaimuniaOutbox && OUTBOX_ACTIONS.indexOf(action) >= 0);
+
+    if (canQueue && typeof navigator !== "undefined" && navigator.onLine === false) {
+      await window.HaimuniaOutbox.enqueue(action, withKey, options);
+      return { queued: true, data: null, error: null };
+    }
+    const { data, error } = await client.rpc(action, withKey);
+    if (error && canQueue && isOfflineError(error)) {
+      await window.HaimuniaOutbox.enqueue(action, withKey, options);
+      return { queued: true, data: null, error: null };
+    }
+    return { queued: false, data, error };
+  }
+
+  // One handler per queued action. Deliberately thin: the queue owns
+  // ordering, backoff, attempt counting and failure classification; this
+  // only knows how to put one row on the wire and how to say "that failed".
+  function registerOutboxHandlers() {
+    if (!window.HaimuniaOutbox) return;
+    OUTBOX_ACTIONS.forEach((action) => {
+      window.HaimuniaOutbox.registerHandler(action, async (args) => {
+        if (!client || !state.user) throw new Error("session expired");
+        const { error } = await client.rpc(action, args);
+        if (error) throw new Error(error.message || "rpc failed");
+      });
+    });
+  }
+
+  async function flushCommunityOutbox() {
+    if (!window.HaimuniaOutbox || !client || !state.user) return;
+    const result = await window.HaimuniaOutbox.flush();
+    if (result && (result.sent || result.failed)) {
+      await refreshOutboxState();
+      // A queued post/comment/cheer that has now landed should appear.
+      if (result.sent) { loadFeed(); }
+      rerender();
+    }
+  }
+
+  async function refreshOutboxState() {
+    if (!window.HaimuniaOutbox) return;
+    const rows = await window.HaimuniaOutbox.list();
+    state.outbox.pending = rows.filter((r) => r.status === "pending").length;
+    state.outbox.failed = rows.filter((r) => r.status === "failed");
+  }
+
+  async function retryOutboxItem(id) {
+    if (!window.HaimuniaOutbox) return;
+    await window.HaimuniaOutbox.retry(id);
+    await refreshOutboxState();
+    rerender();
+    await flushCommunityOutbox();
+  }
+
+  async function discardOutboxItem(id) {
+    if (!window.HaimuniaOutbox) return;
+    await window.HaimuniaOutbox.discard(id);
+    await refreshOutboxState();
+    setMessage("הפעולה הוסרה מהתור");
+    rerender();
+  }
+
   // Every login used to re-fetch and re-apply every private record (up
   // to 20,000) from scratch, even though almost nothing changed since
   // last time - slow and IndexedDB-write-heavy for a long-running
@@ -4077,7 +4483,31 @@
   // The search box's input handler keeps its original name: it is still the
   // members-first entry point every existing caller wired, COMM-228 only
   // widened what one keystroke fetches.
-  function searchPeople(query) { return communitySearch(query); }
+  // Launch-readiness audit, PERF-3. Every keystroke used to fire a
+  // community_search RPC AND a full #content rebuild. The existing
+  // searchToken guard stops an out-of-order response overwriting a newer
+  // one, but it does not stop the requests being made: typing "deadlift"
+  // was 8 round trips and 8 whole-page re-renders, on a codebase whose
+  // render model rebuilds the entire tab.
+  //
+  // 220 ms is below the ~250 ms at which typing starts to feel laggy and
+  // comfortably above a fast typist's inter-key interval, so a normal word
+  // now costs one request instead of one per character. The token guard is
+  // kept as well - debounce reduces the number of in-flight requests, it
+  // does not guarantee ordering of the ones that still overlap.
+  const SEARCH_DEBOUNCE_MS = 220;
+  let searchDebounceTimer = null;
+  let memberSearchDebounceTimer = null;
+  function searchPeople(query) {
+    // The typed value is stored synchronously so the input never fights the
+    // member's cursor while the request is still pending.
+    state.search.query = String(query || "");
+    if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = setTimeout(() => {
+      searchDebounceTimer = null;
+      communitySearch(query);
+    }, SEARCH_DEBOUNCE_MS);
+  }
   // COMM-018. The single client entry point to the server's per-field
   // privacy resolver. Feed, profile, leaderboard and search all resolve a
   // hidden field through this RPC (or the equivalent RLS policy) so one
@@ -4388,10 +4818,10 @@
   function renderConfirmSheet() {
     const c = state.ui.confirmDialog;
     if (!c) return "";
-    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="communityConfirmTitle" style="align-items:center;padding:0 20px;">
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="communityConfirmTitle" data-cloud-dialog="confirmSheet" style="align-items:center;padding:0 20px;">
       <div class="modal-sheet" style="border-radius:22px;border-bottom:1px solid var(--border);max-height:none;">
         <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
-          <div id="communityConfirmTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">${esc(c.title || "אישור פעולה")}</div>
+          <h2 id="communityConfirmTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">${esc(c.title || "אישור פעולה")}</h2>
           <div style="color:var(--steel);font-size:13.5px;line-height:1.6;margin-bottom:20px;">${esc(c.message)}</div>
           <div class="chip-row" style="margin-top:0;">
             <button class="chip-btn" data-community-action="confirm-no">ביטול</button>
@@ -5094,7 +5524,7 @@
         return `<div class="chart-card" style="margin-bottom:10px;" data-mod-report-id="${esc(r.report_id)}">
           <div class="flex" style="justify-content:space-between;align-items:flex-start;gap:10px;">
             <div style="min-width:0;">
-              <div style="font-weight:800;">${esc(r.target_type === "comment" ? "תגובה" : "פוסט")} · ${esc(r.content_author_name || "חבר/ה שהוסר/ה")}</div>
+              <div style="font-weight:800;">${esc(MOD_TARGET_LABEL[r.target_type] || "פוסט")} · ${esc(r.content_author_name || "חבר/ה שהוסר/ה")}</div>
               <div style="color:var(--steel);font-size:12.5px;margin-top:4px;white-space:pre-wrap;">${esc(String(r.content_excerpt || "התוכן הוסר").slice(0, 240))}</div>
             </div>
             <span class="admin-tag" style="${r.status === "open" ? "background:rgba(194,57,44,.12);border-color:var(--red);color:var(--red);" : ""}">${esc(MOD_STATUS_LABEL[r.status] || r.status)}</span>
@@ -5105,7 +5535,7 @@
           ${r.note ? `<div style="color:var(--steel);font-size:12px;margin-top:4px;">״${esc(String(r.note).slice(0, 240))}״</div>` : ""}
           <div class="chip-row" style="margin-top:10px;">
             <button class="chip-btn" data-community-action="mod-context" data-id="${esc(r.report_id)}">צפייה בהקשר</button>
-            ${done ? "" : MOD_DECISIONS.map((d) =>
+            ${done ? "" : MOD_DECISIONS.filter((d) => d.id !== "remove" || r.target_type !== "profile").map((d) =>
               `<button class="chip-btn${d.destructive ? " danger" : ""}" data-community-action="mod-action" data-id="${esc(r.report_id)}" data-decision="${d.id}">${d.label}</button>`).join("")}
           </div>
         </div>`;
@@ -6204,7 +6634,8 @@
     const items = media.slice(0, POST_MEDIA_MAX).map((m) => {
       let url = m.url || "";
       if (!url && m.storage_path) {
-        if (photoUrlCache[m.storage_path]) url = photoUrlCache[m.storage_path];
+        const cached = signedCacheGet(photoUrlCache, m.storage_path);
+        if (cached) url = cached;
         else resolvePhotoUrl(m.storage_path);
       }
       const alt = m.decorative ? "" : esc(m.alt_text || "");
@@ -6473,7 +6904,12 @@
     if (!state.user) { state.challenges.items = []; state.challenges.participation = {}; state.challenges.aggregates = {}; state.challenges.loaded = false; return; }
     state.challenges.loading = true;
     rerender();
-    const { data, error } = await client.from("challenges").select("*").order("end_at", { ascending: true });
+    // Launch-readiness audit, PERF-2. Was an unbounded select("*") with no
+    // limit: every challenge the club has ever run, fetched in full on
+    // every load of this tab. 200 is far above any realistic active count
+    // (the board shows current programming, not history) while making the
+    // query bounded rather than growing forever with the club.
+    const { data, error } = await client.from("challenges").select("*").order("end_at", { ascending: true }).limit(200);
     if (error) { state.challenges.loading = false; state.challenges.error = true; return rerender(); }
     state.challenges.items = data || [];
     state.challenges.error = false;
@@ -6938,8 +7374,19 @@
     const targetParticipant = v.participants.find((p) => p.user_id === userId);
     const wasStatus = targetParticipant && targetParticipant.status;
     const note = String(d.note || "").trim().slice(0, 500) || null;
-    const { error } = await client.rpc("chal_record_progress", { p_challenge_id: v.id, p_user_id: userId, p_delta: delta, p_note: note });
+    const { error, queued } = await communityRpc("chal_record_progress", { p_challenge_id: v.id, p_user_id: userId, p_delta: delta, p_note: note });
     v.coachEntry.busy[userId] = false;
+    if (queued) {
+      // The highest-value queued action in the app: a coach's progress
+      // entry is an append-only DELTA, so before the idempotency key
+      // (202609060014) a retry silently double-counted it. Clearing the
+      // draft is safe precisely because the queued op cannot be applied
+      // twice.
+      v.coachEntry.drafts[userId] = { delta: "", note: "" };
+      await refreshOutboxState();
+      setMessage("אין חיבור — העדכון יישלח כשהחיבור יחזור");
+      return rerender();
+    }
     if (error) { v.coachEntry.error = "לא ניתן היה לשמור את העדכון."; return rerender(); }
     v.coachEntry.drafts[userId] = { delta: "", note: "" };
     await refreshChallengeView(v.id);
@@ -7966,7 +8413,7 @@
       <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:560px;">
         <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
           <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:12px;">
-            <div id="challengeViewTitle" style="font-weight:800;font-size:17px;">${v.challenge ? esc(v.challenge.title) : "אתגר"}</div>
+            <h2 id="challengeViewTitle" style="margin-top:0;font-weight:800;font-size:17px;margin-bottom:0;">${v.challenge ? esc(v.challenge.title) : "אתגר"}</h2>
             <button class="chip-btn" data-community-action="close-challenge-view" aria-label="סגירה">✕</button>
           </div>
           ${bodyHtml}
@@ -8049,7 +8496,9 @@
     if (!state.user) { state.events.items = []; state.events.byId = {}; state.events.attendees = {}; state.events.loaded = false; return; }
     state.events.loading = true;
     rerender();
-    const { data, error } = await client.from("events").select("*").order("start_at", { ascending: true });
+    // Launch-readiness audit, PERF-2. Same unbounded-select fix as the
+    // challenges list above.
+    const { data, error } = await client.from("events").select("*").order("start_at", { ascending: true }).limit(200);
     if (error) { state.events.loading = false; state.events.error = true; return rerender(); }
     state.events.items = data || [];
     state.events.byId = {};
@@ -8343,8 +8792,14 @@
     const v = state.events.view && state.events.view.id === eventId ? state.events.view : null;
     if (v) { v.rsvpBusy = response; v.rsvpError = ""; }
     rerender();
-    const { error } = await client.rpc("event_rsvp", { p_event_id: eventId, p_response: response });
+    const { error, queued } = await communityRpc("event_rsvp", { p_event_id: eventId, p_response: response });
     if (v) v.rsvpBusy = null;
+    if (queued) {
+      await refreshOutboxState();
+      setMessage("אין חיבור — ההרשמה תישלח כשהחיבור יחזור");
+      rerender();
+      return;
+    }
     if (error) {
       const msg = eventRsvpErrorMessage(error.message);
       if (v) v.rsvpError = msg; else setMessage(msg);
@@ -8545,7 +9000,7 @@
       <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:560px;">
         <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
           <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:12px;">
-            <div id="eventViewTitle" style="font-weight:800;font-size:17px;">${v.event ? esc(v.event.title) : "אירוע"}</div>
+            <h2 id="eventViewTitle" style="margin-top:0;font-weight:800;font-size:17px;margin-bottom:0;">${v.event ? esc(v.event.title) : "אירוע"}</h2>
             <button class="chip-btn" data-community-action="close-event-view" aria-label="סגירה">✕</button>
           </div>
           ${bodyHtml}
@@ -8945,7 +9400,7 @@
       <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:560px;">
         <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
           <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:12px;">
-            <div id="recapViewTitle" style="font-weight:800;font-size:17px;">${weekLabel ? "סיכום השבוע · " + esc(weekLabel) : "סיכום שבועי"}</div>
+            <h2 id="recapViewTitle" style="margin-top:0;font-weight:800;font-size:17px;margin-bottom:0;">${weekLabel ? "סיכום השבוע · " + esc(weekLabel) : "סיכום שבועי"}</h2>
             <button class="chip-btn" data-community-action="close-recap-view" aria-label="סגירה">✕</button>
           </div>
           ${nav}
@@ -9179,12 +9634,23 @@
       if (c.links.achievement_id) links.achievement_id = c.links.achievement_id;
       if (c.links.event_id) links.event_id = c.links.event_id;
     }
-    const { data, error } = await client.rpc("post_create", {
+    const { data, error, queued } = await communityRpc("post_create", {
       body,
       visibility: c.visibility,
       media,
       links: Object.keys(links).length ? links : null,
     });
+    if (queued) {
+      // Offline: the post is persisted in the community outbox with its own
+      // idempotency key and will go out on reconnect. Close the composer as
+      // if it had published - the member's text is safe, which is the thing
+      // that used to be lost here - and say plainly that it is waiting.
+      c.publishing = false;
+      closeComposer();
+      await refreshOutboxState();
+      setMessage("אין חיבור — הפוסט יפורסם כשהחיבור יחזור");
+      return rerender();
+    }
     if (error || !data) {
       c.publishing = false;
       c.error = "פרסום הפוסט נכשל, אפשר לנסות שוב";
@@ -9236,7 +9702,7 @@
     return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="postComposerTitle" data-composer-overlay data-cloud-dialog="composer" style="align-items:center;padding:0 16px;">
       <div class="modal-sheet" id="postComposer" style="border-radius:22px;max-height:90vh;overflow:auto;">
         <div style="padding:22px 20px calc(env(safe-area-inset-bottom,0px) + 18px);">
-          <div id="postComposerTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:12px;">פוסט חדש</div>
+          <h2 id="postComposerTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:12px;">פוסט חדש</h2>
           <label class="field"><span class="field-label">מה תרצו לשתף?</span>
             <textarea class="text-input" data-composer-body maxlength="${POST_BODY_MAX}" rows="4" placeholder="כתבו משהו לקהילה" aria-describedby="postComposerCounter">${esc(c.body || "")}</textarea></label>
           <div id="postComposerCounter" data-composer-counter style="text-align:left;font-size:11px;color:var(--steel);min-height:14px;">${bodyLen >= 900 ? `${bodyLen}/${POST_BODY_MAX}` : ""}</div>
@@ -9418,7 +9884,7 @@
     return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="prPromptTitle" data-cloud-dialog="prPrompt" style="align-items:center;padding:0 16px;">
       <div class="modal-sheet" id="prPrompt" style="border-radius:22px;max-height:90vh;overflow:auto;">
         <div style="padding:22px 20px calc(env(safe-area-inset-bottom,0px) + 18px);">
-          <div id="prPromptTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:6px;">שיא חדש זוהה. לשתף עם המועדון?</div>
+          <h2 id="prPromptTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:6px;">שיא חדש זוהה. לשתף עם המועדון?</h2>
           <div style="display:inline-block;font-size:11px;font-weight:800;color:#0c0c0c;background:var(--brass);border-radius:999px;padding:2px 8px;margin-bottom:8px;">PR</div>
           ${line("תרגיל", r.movement || r.movement_name)}
           ${line("תוצאה חדשה", r.new_result || r.new_value)}
@@ -9619,7 +10085,7 @@
       <div class="modal-sheet" id="achUnlock" style="border-radius:22px;max-height:90vh;overflow:auto;">
         <div style="padding:22px 20px calc(env(safe-area-inset-bottom,0px) + 18px);text-align:center;">
           <div style="font-size:44px;line-height:1;margin-bottom:8px;" aria-hidden="true">${esc(a.icon)}</div>
-          <div id="achUnlockTitle" style="color:var(--chalk);font-weight:800;font-size:18px;margin-bottom:4px;">עיטור חדש נפתח</div>
+          <h2 id="achUnlockTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:18px;margin-bottom:4px;">עיטור חדש נפתח</h2>
           <div style="color:var(--brass);font-weight:800;font-size:15px;">${esc(a.title)}</div>
           ${a.explanation ? `<div style="color:var(--steel);font-size:12.5px;margin-top:6px;">${esc(a.explanation)}</div>` : ""}
           ${a.showNote ? `<label class="field" style="margin-top:10px;text-align:right;"><span class="field-label">הערה</span><textarea class="text-input" data-ach-note maxlength="${POST_BODY_MAX}" rows="3">${esc(a.note || "")}</textarea></label>` : ""}
@@ -9909,7 +10375,7 @@
             <div class="flex gap-10" style="align-items:center;min-width:0;">
               ${avatarHtml(name, 44, d.avatar_url)}
               <div style="min-width:0;">
-                <div id="profileViewTitle" style="font-weight:800;font-size:16px;">${esc(name)}${isCoachRole(d.role) ? " " + coachBadgeHtml(d.role) : ""}</div>
+                <h2 id="profileViewTitle" style="margin-top:0;font-weight:800;font-size:16px;margin-bottom:0;">${esc(name)}${isCoachRole(d.role) ? " " + coachBadgeHtml(d.role) : ""}</h2>
                 <div style="color:var(--steel);font-size:12px;">${roleLabel ? esc(roleLabel) : ""}${d.member_since ? ` · חבר/ה מאז ${esc(String(d.member_since).slice(0, 10))}` : ""}</div>
               </div>
             </div>
@@ -10798,7 +11264,7 @@
       <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:520px;">
         <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
           <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:6px;">
-            <div id="notifCenterTitle" style="font-weight:800;font-size:16px;">התראות</div>
+            <h2 id="notifCenterTitle" style="margin-top:0;font-weight:800;font-size:16px;margin-bottom:0;">התראות</h2>
             <button class="link-btn" data-community-action="notif-close" aria-label="סגירה">סגירה</button>
           </div>
           <div class="chip-row" style="margin-top:0;margin-bottom:4px;"><button class="link-btn" data-community-action="notif-mark-all"${canMarkAll ? "" : " disabled"}>סימון הכול כנקרא</button></div>
@@ -10916,7 +11382,7 @@
       return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="reportSheetTitle" data-cloud-dialog="reportSheet" style="align-items:center;padding:0 20px;">
         <div class="modal-sheet" style="border-radius:22px;max-height:none;">
           <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
-            <div id="reportSheetTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">הדיווח התקבל.</div>
+            <h2 id="reportSheetTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">הדיווח התקבל.</h2>
             <div class="chip-row" style="margin-top:8px;"><button class="chip-btn primary" data-community-action="report-close">סגירה</button></div>
           </div>
         </div>
@@ -10929,7 +11395,7 @@
     return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="reportSheetTitle" data-cloud-dialog="reportSheet" style="align-items:center;padding:0 20px;">
       <div class="modal-sheet" style="border-radius:22px;max-height:none;">
         <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
-          <div id="reportSheetTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:12px;">דיווח על ${s.targetType === "comment" ? "תגובה" : "פוסט"}</div>
+          <h2 id="reportSheetTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:12px;">דיווח על ${s.targetType === "comment" ? "תגובה" : "פוסט"}</h2>
           <div class="log-list">${reasons}</div>
           <label class="field" style="margin-top:12px;"><span class="field-label">פרטים נוספים (רשות)</span>
             <textarea class="text-input" data-report-note maxlength="500" placeholder="אפשר להוסיף הקשר">${esc(s.note || "")}</textarea></label>
@@ -10954,7 +11420,7 @@
     return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="modActionTitle" data-cloud-dialog="modAction" style="align-items:center;padding:0 20px;">
       <div class="modal-sheet" style="border-radius:22px;max-height:none;">
         <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
-          <div id="modActionTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">${esc(def.label)}</div>
+          <h2 id="modActionTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">${esc(def.label)}</h2>
           ${days}
           <label class="field" style="margin-top:10px;"><span class="field-label">הערה (רשות)</span>
             <textarea class="text-input" data-mod-note maxlength="500" placeholder="נרשמת ביומן">${esc(a.note || "")}</textarea></label>
@@ -10976,8 +11442,8 @@
     return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="modContextTitle" data-cloud-dialog="modContext" style="align-items:center;padding:0 20px;">
       <div class="modal-sheet" style="border-radius:22px;max-height:none;">
         <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
-          <div id="modContextTitle" style="color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">הקשר הדיווח</div>
-          <div style="color:var(--steel);font-size:12.5px;">${esc(c.target_type === "comment" ? "תגובה" : "פוסט")} מאת ${esc(c.content_author_name || "חבר/ה שהוסר/ה")}</div>
+          <h2 id="modContextTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">הקשר הדיווח</h2>
+          <div style="color:var(--steel);font-size:12.5px;">${esc(MOD_TARGET_LABEL[c.target_type] || "פוסט")} מאת ${esc(c.content_author_name || "חבר/ה שהוסר/ה")}</div>
           <div class="chart-card" style="margin-top:8px;white-space:pre-wrap;">${esc(String(c.content_excerpt || "התוכן הוסר"))}</div>
           ${Array.isArray(c.reporters) && c.reporters.length ? `<div style="color:var(--steel);font-size:12px;margin-top:8px;">דווח ע״י: ${c.reporters.map((r) => esc(r.name || r.id)).join(", ")}</div>` : ""}
           <div class="chip-row" style="margin-top:12px;">
@@ -11008,7 +11474,15 @@
       ensureAnonymousSession();
       return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">מתחברים לקהילה…</div><div style="color:var(--steel);font-size:13px;">שנייה אחת.</div>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     }
-    if (!state.redemption) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">קוד הזמנה למועדון</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">הקהילה פתוחה רק למי שקיבל/ה קוד הזמנה מהמאמן/ת. הקוד לא נוגע לרישום האימונים עצמו — הוא רק פותח את לשונית הקהילה.</div><form id="communityInviteCode">${field("communityInviteCode", "code", "קוד הזמנה", `<input class="text-input" name="code" dir="ltr" placeholder="קוד הזמנה" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">אישור קוד</button></form>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
+    // Launch-readiness audit, CQ-006. Neither loader has ever run
+    // successfully yet (both null) but the last attempt errored - render a
+    // retry screen instead of assuming "not joined", which is what the two
+    // gates below this one would otherwise conclude for a returning member
+    // on a flaky connection.
+    if ((state.profileLoadError && !state.profile) || (state.redemptionLoadError && !state.redemption)) {
+      return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">בעיה בטעינת הקהילה</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">לא הצלחנו לטעון את פרטי החשבון. ייתכן שזו בעיית רשת זמנית.</div><button class="save-btn" data-community-action="retry-join-load">ניסיון חוזר</button></div>`;
+    }
+    if (!state.redemption) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">קוד הזמנה למועדון</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">הקהילה פתוחה רק למי שקיבל/ה קוד הזמנה מהמאמן/ת. הקוד לא נוגע לרישום האימונים עצמו — הוא רק פותח את לשונית הקהילה.</div><form id="communityInviteCode">${field("communityInviteCode", "code", "קוד הזמנה", `<input class="text-input" name="code" dir="ltr" placeholder="קוד הזמנה" value="${esc(state.ui.inviteCodeDraft)}" data-invite-code required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">אישור קוד</button></form>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     // Right after the code, before anything else — this is what turns the
     // bootstrap anonymous session into a real, log-in-from-any-device
     // account. state.user.is_anonymous flips to false the moment
@@ -11148,7 +11622,7 @@
       <div class="post-head">${avatarHtml(post.display_name || post.handle, 36, (post.author && post.author.avatar_url) || post.avatar_url)}<div class="post-head-text"><div class="post-author">${nameHtml(post.display_name, post.handle)}</div><div class="post-time">${relativeTime(post.published_at)}</div></div></div>
       <div class="post-title">${esc(post.title)}</div>
       <div class="mono post-result">${esc(post.result_text)}</div>
-      ${post.photo_path && photoUrlCache[post.photo_path] ? `<img src="${photoUrlCache[post.photo_path]}" alt="" class="post-photo"/>` : ""}
+      ${post.photo_path && signedCacheGet(photoUrlCache, post.photo_path) ? `<img src="${signedCacheGet(photoUrlCache, post.photo_path)}" alt="" class="post-photo" onerror="window.__haimuniaEvictSignedUrl&&window.__haimuniaEvictSignedUrl('photo',this.dataset.k)" data-k="${esc(post.photo_path)}"/>` : ""}
       <div class="chip-row post-actions">
         <button class="chip-btn" data-community-action="cheer" data-id="${esc(post.id)}" aria-label="עידוד, ${Number(post.cheer_count || 0)} עידודים">🔥 ${Number(post.cheer_count || 0)}</button>
         <button class="chip-btn" data-community-action="toggle-comments" data-id="${esc(post.id)}" aria-label="תגובות, ${Number(post.comment_count || 0)}">💬 ${Number(post.comment_count || 0)}</button>
@@ -11325,7 +11799,14 @@
     // own sub-tabs (and Manage's, see manageTabBar below) with no
     // Arrow/Home/End support even though the generic listener already
     // covers any group shaped this way for free.
-    const tabBar = `<div class="subtabbar" role="tablist">${tabs.map((t) => `<button class="subtabbtn${t.id === activeTab.id ? " active" : ""}" data-community-action="set-tab" data-tab="${t.id}" role="tab" aria-selected="${t.id === activeTab.id}" tabindex="${t.id === activeTab.id ? "0" : "-1"}">${t.label}${t.badge ? `<span class="tab-badge" aria-label="${t.badge} דיווחים ממתינים">${t.badge}</span>` : ""}</button>`).join("")}</div>`;
+    // Launch-readiness audit, A1. Each tab now carries a stable id and
+    // aria-controls pointing at the panel it actually swaps (#content, the
+    // one role="tabpanel" in index.html). Without aria-controls the tab
+    // pattern is only half-declared: a screen reader announces "tab" but
+    // has no way to move to the region it governs, and the panel itself
+    // had no accessible name at all. afterRenderCommunity() completes the
+    // pair by pointing #content's aria-labelledby back at the active tab.
+    const tabBar = `<div class="subtabbar" role="tablist" aria-label="ניווט בקהילה">${tabs.map((t) => `<button class="subtabbtn${t.id === activeTab.id ? " active" : ""}" id="commTab-${t.id}" aria-controls="content" data-community-action="set-tab" data-tab="${t.id}" role="tab" aria-selected="${t.id === activeTab.id}" tabindex="${t.id === activeTab.id ? "0" : "-1"}">${t.label}${t.badge ? `<span class="tab-badge" aria-label="${t.badge} דיווחים ממתינים">${t.badge}</span>` : ""}</button>`).join("")}</div>`;
 
     // COMM-329 (remaining scope). The Community tab was the one solo tab
     // with no top-level <h1> of its own - it never calls renderTabHeader(),
@@ -11340,8 +11821,52 @@
     return renderTabHeader("community")
       + tabBar
       + (state.ui.message ? `<div class="footer-note" role="status" style="color:var(--brass);margin-bottom:14px;">${esc(state.ui.message)}</div>` : "")
+      + renderOutboxBanner()
       + activeTab.html;
   };
+
+  // Launch-readiness audit, RELIABILITY: "never lose a queued action
+  // silently". This banner is the visibility half of that promise - a
+  // pending count while things are waiting to go out, and one row per
+  // permanently-failed op with its own error, retry and discard. Without
+  // it, a write that exhausted its retries would be sitting in IndexedDB
+  // that nobody ever sees, which is the same as losing it.
+  function outboxActionLabel(action) {
+    return {
+      post_create: "פוסט",
+      add_post_comment: "תגובה",
+      toggle_reaction: "לייק",
+      event_rsvp: "הרשמה לאירוע",
+      chal_record_progress: "עדכון התקדמות",
+    }[action] || action;
+  }
+  function renderOutboxBanner() {
+    const pending = state.outbox.pending || 0;
+    const failed = state.outbox.failed || [];
+    if (!pending && !failed.length) return "";
+    let html = "";
+    if (pending) {
+      html += `<div class="chart-card" role="status" style="margin-bottom:10px;border-color:var(--brass);">
+        <div style="font-weight:800;font-size:13.5px;">${pending} ${pending === 1 ? "פעולה ממתינה" : "פעולות ממתינות"} לשליחה</div>
+        <div style="color:var(--steel);font-size:12.5px;margin-top:4px;">יישלחו אוטומטית כשהחיבור יחזור.</div>
+      </div>`;
+    }
+    if (failed.length) {
+      html += `<div class="chart-card" role="alert" style="margin-bottom:10px;border-color:var(--red);">
+        <div style="font-weight:800;font-size:13.5px;color:var(--red);">${failed.length} ${failed.length === 1 ? "פעולה נכשלה" : "פעולות נכשלו"}</div>
+        <div style="color:var(--steel);font-size:12.5px;margin:4px 0 8px;">אפשר לנסות שוב או להסיר מהתור.</div>
+        ${failed.map((r) => `<div style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px;">
+          <div style="font-weight:700;font-size:12.5px;">${esc(outboxActionLabel(r.action))}</div>
+          <div style="color:var(--steel);font-size:12px;margin-top:2px;">${esc(String(r.lastError || "").slice(0, 160))}</div>
+          <div class="chip-row" style="margin-top:6px;">
+            <button class="chip-btn" data-community-action="outbox-retry" data-id="${esc(r.id)}">ניסיון חוזר</button>
+            <button class="chip-btn danger" data-community-action="outbox-discard" data-id="${esc(r.id)}">הסרה</button>
+          </div>
+        </div>`).join("")}
+      </div>`;
+    }
+    return html;
+  }
   // ==========================================================================
   // Redesign, Phase 1: the "ניהול" (Manage) top-level tab.
   //
@@ -11411,7 +11936,7 @@
     const activeManageTab = manageTabs.find((t) => t.id === state.ui.manageTab) || manageTabs[0];
     // Same role="tablist"/"tab" convention as the Community sub-tab bar
     // above - see that bar's own comment (COMM-358).
-    const manageTabBar = `<div class="subtabbar" role="tablist">${manageTabs.map((t) => `<button class="subtabbtn${t.id === activeManageTab.id ? " active" : ""}" data-community-action="set-manage-tab" data-tab="${t.id}" role="tab" aria-selected="${t.id === activeManageTab.id}" tabindex="${t.id === activeManageTab.id ? "0" : "-1"}">${t.label}${t.badge ? `<span class="tab-badge" aria-label="${t.badge} דיווחים ממתינים">${t.badge}</span>` : ""}</button>`).join("")}</div>`;
+    const manageTabBar = `<div class="subtabbar" role="tablist" aria-label="ניווט בניהול">${manageTabs.map((t) => `<button class="subtabbtn${t.id === activeManageTab.id ? " active" : ""}" id="manageTab-${t.id}" aria-controls="content" data-community-action="set-manage-tab" data-tab="${t.id}" role="tab" aria-selected="${t.id === activeManageTab.id}" tabindex="${t.id === activeManageTab.id ? "0" : "-1"}">${t.label}${t.badge ? `<span class="tab-badge" aria-label="${t.badge} דיווחים ממתינים">${t.badge}</span>` : ""}</button>`).join("")}</div>`;
     // Redesign, Phase 3 fix: the notification bell used to live only inside
     // feedTab's club-strip - unreachable from Manage entirely. A staff
     // member who now lives primarily on Manage had no unread indicator at
@@ -11478,6 +12003,19 @@
   // that knows where a dialog's flag lives, so a dialog whose state moves
   // domains needs a change here and nowhere else.
   const CLOUD_DIALOGS = [
+    // Launch-readiness audit, A3. Must stay FIRST: askConfirm() is a
+    // modal-on-modal confirmation that renders LAST, on top of whatever
+    // triggered it (cloud.js:~10895's z-order fix is the mouse-side half of
+    // this same fact) - currentCloudDialog() returns the first array match
+    // whose isOpen() AND DOM element both exist, not the topmost dialog, so
+    // when the confirm sheet is stacked on another open dialog it has to be
+    // checked before that dialog or the Tab trap locks focus in the
+    // (visually covered, non-interactive) dialog underneath and Escape
+    // closes the wrong one. Before this entry existed, the confirm sheet
+    // carried no data-cloud-dialog attribute at all and was invisible to
+    // this registry, the Tab trap and the Escape chain - reachable by mouse
+    // only, gating ~19 destructive actions including delete-account.
+    { key: "confirmSheet", isOpen: () => state.ui.confirmDialog, close: function () { closeConfirm(); } },
     { key: "reportSheet", isOpen: () => state.admin.reportSheet, close: function () { closeReportSheet(); } },
     { key: "modAction", isOpen: () => state.admin.modAction, close: function () { closeModAction(); } },
     { key: "modContext", isOpen: () => state.admin.modContext, close: function () { closeModContext(); } },
@@ -11615,6 +12153,19 @@
     // boot. See ensureCommunityDataLoaded()'s own comment for what it does
     // and does not cover.
     ensureCommunityDataLoaded();
+    // Launch-readiness audit, A1. Completes the tab/tabpanel pair: the tabs
+    // point at #content via aria-controls, and #content points back at
+    // whichever tab is currently selected. index.html declares
+    // role="tabpanel" on #content but could never name it, because the tab
+    // that labels it is rendered here, not there. Without this the panel is
+    // an unlabelled region and a screen reader announces no context for
+    // what it just moved into.
+    const panel = document.getElementById("content");
+    const selectedTab = document.querySelector('.subtabbar [role="tab"][aria-selected="true"]');
+    if (panel) {
+      if (selectedTab && selectedTab.id) panel.setAttribute("aria-labelledby", selectedTab.id);
+      else panel.removeAttribute("aria-labelledby");
+    }
     const input = document.getElementById("communityPeopleSearch");
     if (input) input.addEventListener("input", () => searchPeople(input.value));
     // COMM-228. A render replaces the box the member is typing into, which
@@ -11905,6 +12456,9 @@
     else if (action === "confirm-yes") runConfirm();
     else if (action === "confirm-no") closeConfirm();
     else if (action === "start-signup") startSignup();
+    else if (action === "retry-join-load") retryJoinFunnelLoad();
+    else if (action === "outbox-retry") retryOutboxItem(el.dataset.id);
+    else if (action === "outbox-discard") discardOutboxItem(el.dataset.id);
     else if (action === "sign-out") client.auth.signOut();
     // COMM-151 report sheet.
     else if (action === "report-close") closeReportSheet();
@@ -12202,6 +12756,9 @@
   }, true);
   window.addEventListener("pagehide", flushFeedImpressions);
   window.addEventListener("online", flushOutbox);
+  // Reconnection drains BOTH queues. Registered separately from the
+  // private_records one so a failure in either cannot stop the other.
+  window.addEventListener("online", () => { flushCommunityOutbox(); });
   window.addEventListener("haimunia-sync-needed", () => { maybeAutoStartBackup(); flushOutbox(); pingActivity(); });
   if (client) {
     client.auth.onAuthStateChange((_event, session) => {
@@ -12221,7 +12778,7 @@
         // not-yet-loaded boot). loadProfile()/loadChallenges() stay eager
         // here too, same reasoning as refreshSession().
         loadRedemption()
-          .then(() => Promise.all([loadProfile(), loadChallenges(), loadClubFeatures(), flushOutbox()]))
+          .then(() => Promise.all([loadProfile(), loadChallenges(), loadClubFeatures(), flushOutbox(), flushCommunityOutbox()]))
           .then(pullPrivateRecords)
           .then(pingActivity)
           .then(() => { if (typeof window.syncCommunityMilestones === "function") window.syncCommunityMilestones(); })
@@ -12255,6 +12812,7 @@
         // (state.ui.tab, state.leaderboard.hideMine, the two localStorage-
         // backed switches, featureFlags). Assign leaves, never a namespace.
         state.profile = null; state.redemption = null; state.signupStarted = false;
+        state.profileLoadError = false; state.redemptionLoadError = false;
         state.avatarUpload = { status: "idle", error: "" }; state.permissions = []; state.permissionsLoaded = false;
         state.ui.fieldErrors = {}; state.ui.confirmDialog = null;
         // hideMine is per-device and outlives the session - see the literal.
@@ -12345,6 +12903,7 @@
   document.addEventListener("input", (e) => {
     const t = e.target;
     if (!t || !t.dataset) return;
+    if ("inviteCode" in t.dataset) { state.ui.inviteCodeDraft = t.value; return; }
     if ("composerBody" in t.dataset) composerSetBody(t.value);
     else if ("commentInput" in t.dataset) onCommentInput(t);
     else if ("commentEditInput" in t.dataset && state.engagement.commentEdit) state.engagement.commentEdit.body = t.value;
@@ -12444,6 +13003,10 @@
       return;
     }
     if (e.key !== "Escape") return;
+    // Launch-readiness audit, A3. Checked first, same reasoning as its
+    // CLOUD_DIALOGS position above: askConfirm() renders on top of whatever
+    // triggered it, so Escape must close IT, not the dialog underneath.
+    if (state.ui.confirmDialog) { e.preventDefault(); closeConfirm(); return; }
     if (state.admin.reportSheet) { e.preventDefault(); closeReportSheet(); return; }
     if (state.admin.modAction) { e.preventDefault(); closeModAction(); return; }
     if (state.admin.modContext) { e.preventDefault(); closeModContext(); return; }
@@ -12467,6 +13030,17 @@
     const spec = CLOUD_DIALOGS.find((d) => d.key === key);
     if (spec) spec.close();
   });
+  // Launch-readiness audit, RELIABILITY. Registered at module load, before
+  // any flush can run, so a queue drained on the very first `online` event
+  // already knows how to send every action it might be holding from a
+  // previous session.
+  registerOutboxHandlers();
+  if (window.HaimuniaOutbox) {
+    // Keep the banner's counts live when the queue changes underneath a
+    // render (a background flush completing, a retry succeeding).
+    window.HaimuniaOutbox.onChange(() => { refreshOutboxState().then(rerender); });
+  }
+
   // Consume PR_CREATED from the product event bus (COMM-012). Detection is the
   // achievements agent's COMM-132; this only reacts to the record it passes.
   if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.PR_CREATED) {

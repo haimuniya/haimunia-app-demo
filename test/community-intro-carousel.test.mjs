@@ -35,8 +35,8 @@ async function signUpToCarousel(window) {
   submit(window, "communityInviteCode");
   await waitFor(() => !!window.document.getElementById("communityCredentials"), 3000);
   window.document.querySelector('#communityCredentials input[name="username"]').value = "dana";
-  window.document.querySelector('#communityCredentials input[name="password"]').value = "correcthorse";
-  window.document.querySelector('#communityCredentials input[name="passwordConfirm"]').value = "correcthorse";
+  window.document.querySelector('#communityCredentials input[name="password"]').value = "CorrectHorse9";
+  window.document.querySelector('#communityCredentials input[name="passwordConfirm"]').value = "CorrectHorse9";
   submit(window, "communityCredentials");
   await waitFor(() => !!window.document.querySelector('[data-intro-carousel="1"]'), 3000);
 }
@@ -91,8 +91,8 @@ test("every OTHER test's default boot never sees the carousel - bootCommunity's 
   submit(window, "communityInviteCode");
   await waitFor(() => !!window.document.getElementById("communityCredentials"), 3000);
   window.document.querySelector('#communityCredentials input[name="username"]').value = "gil";
-  window.document.querySelector('#communityCredentials input[name="password"]').value = "correcthorse";
-  window.document.querySelector('#communityCredentials input[name="passwordConfirm"]').value = "correcthorse";
+  window.document.querySelector('#communityCredentials input[name="password"]').value = "CorrectHorse9";
+  window.document.querySelector('#communityCredentials input[name="passwordConfirm"]').value = "CorrectHorse9";
   submit(window, "communityCredentials");
   await waitFor(() => !!window.document.getElementById("communityProfile"), 3000);
   assert.ok(!window.document.querySelector('[data-intro-carousel="1"]'), "goes straight to profile completion, matching every pre-Phase-3 test in this repo");
@@ -152,8 +152,8 @@ test("abandoning the carousel and signing out does not start the next member mid
   submit(window, "communityInviteCode");
   await waitFor(() => !!window.document.getElementById("communityCredentials"), 3000);
   window.document.querySelector('#communityCredentials input[name="username"]').value = "gil";
-  window.document.querySelector('#communityCredentials input[name="password"]').value = "correcthorse";
-  window.document.querySelector('#communityCredentials input[name="passwordConfirm"]').value = "correcthorse";
+  window.document.querySelector('#communityCredentials input[name="password"]').value = "CorrectHorse9";
+  window.document.querySelector('#communityCredentials input[name="passwordConfirm"]').value = "CorrectHorse9";
   submit(window, "communityCredentials");
   await waitFor(() => !!window.document.querySelector('[data-intro-carousel="1"]'), 3000);
   assert.equal(window.document.querySelector('[data-intro-carousel="1"]').dataset.introStep, "welcome_intro", "the next member starts at screen 1, not wherever the previous one abandoned");

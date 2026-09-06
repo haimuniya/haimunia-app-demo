@@ -37,5 +37,10 @@ test("refreshSession() flushes the outbox before pulling private records, same a
 // why). The flush-before-pull invariant this test guards still has to
 // hold on the sign-in path.
 test("the onAuthStateChange path still flushes before pulling too (regression guard, not just refreshSession)", () => {
-  assert.match(src, /Promise\.all\(\[loadProfile\(\), loadChallenges\(\), loadClubFeatures\(\), flushOutbox\(\)\]\)\)\s*\n\s*\.then\(pullPrivateRecords\)/);
+  // flushCommunityOutbox() joined the same Promise.all (launch-readiness
+  // audit, RELIABILITY) - it drains the community write queue, which has
+  // the same "send what is queued before pulling remote state" requirement
+  // the private_records flush has. The property under test is unchanged:
+  // both flushes complete before pullPrivateRecords runs.
+  assert.match(src, /Promise\.all\(\[loadProfile\(\), loadChallenges\(\), loadClubFeatures\(\), flushOutbox\(\), flushCommunityOutbox\(\)\]\)\)\s*\n\s*\.then\(pullPrivateRecords\)/);
 });

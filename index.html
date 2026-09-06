@@ -33,13 +33,25 @@
   both apps is the same one: moving off GitHub Pages (or fronting it with an
   edge layer) to get real response headers.
 -->
+<!-- Launch-readiness audit, SEC-004. script-src and frame-src carry exactly
+     two extra hosts: Cloudflare Turnstile and hCaptcha, the two providers
+     cloud-config.js's captchaProvider allows. This is a real, deliberate
+     narrowing of SEC-015's mitigation (a strict `script-src 'self'` is
+     what stops an injected script loading remote code), traded for bot
+     protection on free anonymous account creation, which SEC-004 rates the
+     larger risk once anonymous sign-in is enabled. Both are single,
+     well-known, pinned hosts - not a wildcard and not a general CDN - and
+     `connect-src` is deliberately NOT widened, so neither host can be used
+     to exfiltrate a stolen token. Remove whichever provider the project
+     does not use. -->
 <meta http-equiv="Content-Security-Policy" content="
   default-src 'self';
-  script-src 'self';
+  script-src 'self' https://challenges.cloudflare.com https://js.hcaptcha.com https://newassets.hcaptcha.com;
   style-src 'self' 'unsafe-inline';
   font-src 'self';
   img-src 'self' data: blob: https://jajmlyrjlkhclgphbfbb.supabase.co;
-  connect-src 'self' https://jajmlyrjlkhclgphbfbb.supabase.co wss://jajmlyrjlkhclgphbfbb.supabase.co;
+  connect-src 'self' https://jajmlyrjlkhclgphbfbb.supabase.co wss://jajmlyrjlkhclgphbfbb.supabase.co https://challenges.cloudflare.com https://api.hcaptcha.com;
+  frame-src https://challenges.cloudflare.com https://newassets.hcaptcha.com;
   manifest-src 'self';
   worker-src 'self';
   object-src 'none';
@@ -1084,21 +1096,44 @@
      are the one thing EVERYTHING below depends on, so they load first:
      src/constants.js binds them as bare identifiers for app.js, and cloud.js
      reads window.BoxLogSafe.esc directly (COMM-367). See src/shared/README.md. -->
-<script src="./src/shared/safe-helpers.js"></script>
-<script src="./vendor/supabase.js"></script>
-<script src="./cloud-config.js"></script>
+<!-- Launch-readiness audit, PERF-1. `defer` on every one of these, and on
+     none of them before: 1.35 MB of JS (cloud.js alone is 868 KB) sat as
+     parser-blocking <script> tags. They are at the end of <body>, so first
+     paint of the markup was never blocked, but each one still stalled the
+     parser while it downloaded on a slow connection. Deferred, they
+     download in parallel and execute in document order after parsing -
+     which preserves the load order every one of them depends on
+     (safe-helpers -> supabase -> config -> platform -> cloud -> app).
+     theme-init.js stays synchronous in <head> on purpose: it exists to set
+     the theme before first paint, and deferring it would reintroduce the
+     flash of wrong theme it was written to prevent.
+
+     NOT lazy-loaded on first Community-tab open, which the audit floated as
+     the bigger win: cloud.js is not Community-only. maybeAutoStartBackup()
+     fires on the member's first LOCAL write with no Community involvement
+     at all, and the `online` handler drains the private-records outbox.
+     Deferring cloud.js until the Community tab opened would silently break
+     cloud backup for every member who never opens it - a real regression
+     traded for a load-time win. See docs/audit/PERFORMANCE_AUDIT.md. -->
+<script defer src="./src/shared/safe-helpers.js"></script>
+<script defer src="./vendor/supabase.js"></script>
+<script defer src="./cloud-config.js"></script>
 <!-- Shared platform modules (COMM-012 to COMM-015). Loaded before
      cloud.js and app.js because both reach them through window, so
      they have to exist by the time either one runs. -->
-<script src="./src/eventbus.js"></script>
-<script src="./src/analytics.js"></script>
-<script src="./src/realtime.js"></script>
-<script src="./src/image.js"></script>
-<script src="./cloud.js"></script>
-<script src="./src/constants.js"></script>
-<script src="./src/format.js"></script>
-<script src="./src/sanitize.js"></script>
-<script src="./src/db.js"></script>
-<script src="./app.js"></script>
+<script defer src="./src/eventbus.js"></script>
+<script defer src="./src/analytics.js"></script>
+<script defer src="./src/realtime.js"></script>
+<script defer src="./src/image.js"></script>
+<!-- The community write queue. Must load before cloud.js, which registers
+     its handlers at module load so a queue drained on the first `online`
+     event already knows how to send what it is holding. -->
+<script defer src="./src/outbox.js"></script>
+<script defer src="./cloud.js"></script>
+<script defer src="./src/constants.js"></script>
+<script defer src="./src/format.js"></script>
+<script defer src="./src/sanitize.js"></script>
+<script defer src="./src/db.js"></script>
+<script defer src="./app.js"></script>
 </body>
 </html>

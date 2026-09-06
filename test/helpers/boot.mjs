@@ -49,6 +49,9 @@ const platformSrcPaths = [
   path.join(root, "src", "analytics.js"),
   path.join(root, "src", "realtime.js"),
   path.join(root, "src", "image.js"),
+  // The community write queue. Same position as index.html: before
+  // cloud.js, which registers its handlers at load.
+  path.join(root, "src", "outbox.js"),
 ];
 function readPlatformSrc() {
   return platformSrcPaths.map((p) => readFileSync(p, "utf8")).join("\n");

@@ -53,7 +53,7 @@ const CORE_SRC_SCRIPTS = ["./src/constants.js", "./src/format.js", "./src/saniti
 
 test("every core src/*.js file (constants, format, sanitize, db) is a required precache asset", () => {
   const requiredBlock = sw.slice(sw.indexOf("const REQUIRED_ASSETS"), sw.indexOf("const OPTIONAL_ASSETS"));
-  const srcScripts = [...html.matchAll(/<script src="(\.\/src\/[^"]+)"/g)].map((m) => m[1]);
+  const srcScripts = [...html.matchAll(/<script(?: defer)? src="(\.\/src\/[^"]+)"/g)].map((m) => m[1]);
   assert.ok(srcScripts.length > 0, "sanity check: index.html should load at least one ./src/*.js file to compare against");
   for (const src of CORE_SRC_SCRIPTS) {
     assert.ok(srcScripts.includes(src), `sanity check: index.html should still load ${src}`);
@@ -66,7 +66,7 @@ test("every src/*.js file index.html loads is precached, required or optional", 
   // offline shell or the community layer with no install-time signal.
   const requiredBlock = sw.slice(sw.indexOf("const REQUIRED_ASSETS"), sw.indexOf("const OPTIONAL_ASSETS"));
   const optionalBlock = sw.slice(sw.indexOf("const OPTIONAL_ASSETS"), sw.indexOf("const ASSETS ="));
-  const srcScripts = [...html.matchAll(/<script src="(\.\/src\/[^"]+)"/g)].map((m) => m[1]);
+  const srcScripts = [...html.matchAll(/<script(?: defer)? src="(\.\/src\/[^"]+)"/g)].map((m) => m[1]);
   for (const src of srcScripts) {
     const inRequired = requiredBlock.includes(`"${src}"`);
     const inOptional = optionalBlock.includes(`"${src}"`);

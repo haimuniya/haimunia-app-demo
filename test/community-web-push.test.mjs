@@ -234,7 +234,7 @@ test("the explicit device control revokes: sets revoked_at, never deletes the ro
 
 test("a permission revoked outside the app is detected on the next load and marks revoked_at, without deleting the row", async () => {
   const mock = seeded();
-  mock.seedCredentials("u1", "dana@members.haimuniya.invalid", "correcthorse");
+  mock.seedCredentials("u1", "dana@members.haimuniya.invalid", "CorrectHorse9");
   const window = await bootCommunity(mock, { syncEnabled: false, localStorage: { "haimunia-demo:notifPushFlag": "1" } });
   const push = stubPushApis(window);
   await openAccount(window);
@@ -257,7 +257,7 @@ test("a permission revoked outside the app is detected on the next load and mark
   // cycle.)
   window.document.querySelector('[data-community-action="sign-out"]').click();
   await waitFor(() => !!window.document.getElementById("communityLogin"), 4000);
-  await mock.client.auth.signInWithPassword({ email: "dana@members.haimuniya.invalid", password: "correcthorse" });
+  await mock.client.auth.signInWithPassword({ email: "dana@members.haimuniya.invalid", password: "CorrectHorse9" });
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 4000);
   window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();
   await waitFor(() => !!window.document.querySelector('[data-community-action="notif-pref"]'), 4000);

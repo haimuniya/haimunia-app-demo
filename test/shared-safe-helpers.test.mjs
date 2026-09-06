@@ -78,7 +78,7 @@ test("no file in this repo re-declares a shared helper - there is exactly one im
 });
 
 test("index.html loads the shared module before everything that depends on it", () => {
-  const scripts = [...html.matchAll(/<script src="([^"]+)"/g)].map((m) => m[1]);
+  const scripts = [...html.matchAll(/<script(?: defer)? src="([^"]+)"/g)].map((m) => m[1]);
   const shared = scripts.indexOf("./src/shared/safe-helpers.js");
   assert.ok(shared >= 0, "index.html must load ./src/shared/safe-helpers.js");
   for (const dep of ["./cloud.js", "./src/constants.js", "./src/format.js", "./src/sanitize.js", "./app.js"]) {

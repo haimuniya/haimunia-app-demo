@@ -4,12 +4,19 @@
 // github.io), just different paths, and IndexedDB is scoped per-origin,
 // not per-path — reusing that name would mean a real member's local
 // training data and this demo's community/social code share one database.
-const DB_NAME = "haimunia-demo-db", STORE = "entries", MOVSTORE = "movements", WODSTORE = "wodEntries", CUSTOMWODSTORE = "customWods", BWSTORE = "bodyweight", SETTINGSTORE = "settings", MEASTYPESTORE = "measureTypes", MEASSTORE = "measurements", OUTBOXSTORE = "syncOutbox", WODTAGSTORE = "wodMovementTags";
+const DB_NAME = "haimunia-demo-db", STORE = "entries", MOVSTORE = "movements", WODSTORE = "wodEntries", CUSTOMWODSTORE = "customWods", BWSTORE = "bodyweight", SETTINGSTORE = "settings", MEASTYPESTORE = "measureTypes", MEASSTORE = "measurements", OUTBOXSTORE = "syncOutbox", WODTAGSTORE = "wodMovementTags",
+      // Launch-readiness audit, RELIABILITY. The community write queue -
+      // deliberately a SECOND store rather than more rows in syncOutbox:
+      // syncOutbox is a last-write-wins mirror of private_records, this one
+      // is an ordered, attempt-counted event queue. See src/outbox.js.
+      COMMOUTBOXSTORE = "communityOutbox";
 let _dbPromise = null;
 function openDB() {
   if (_dbPromise) return _dbPromise;
   _dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 9);
+    // v10 adds communityOutbox. onupgradeneeded is guarded per store, so an
+    // existing v9 database gains the new store and keeps every other one.
+    const req = indexedDB.open(DB_NAME, 10);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: "id" });
@@ -27,6 +34,7 @@ function openDB() {
       // through to IndexedDB - it vanished on reload, and re-building a
       // similar WOD meant re-categorizing the same movement from scratch.
       if (!db.objectStoreNames.contains(WODTAGSTORE)) db.createObjectStore(WODTAGSTORE, { keyPath: "name" });
+      if (!db.objectStoreNames.contains(COMMOUTBOXSTORE)) db.createObjectStore(COMMOUTBOXSTORE, { keyPath: "id" });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => { _dbPromise = null; reject(req.error); };
@@ -342,6 +350,34 @@ async function dbDeleteSyncOutbox(id) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(OUTBOXSTORE, "readwrite");
     tx.objectStore(OUTBOXSTORE).delete(id);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+// The community write queue (src/outbox.js). Same three-call shape as the
+// private_records outbox above, against its own store.
+async function dbPutCommunityOutboxRow(row) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(COMMOUTBOXSTORE, "readwrite");
+    tx.objectStore(COMMOUTBOXSTORE).put(row);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function dbLoadCommunityOutbox() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(COMMOUTBOXSTORE, "readonly").objectStore(COMMOUTBOXSTORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function dbDeleteCommunityOutbox(id) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(COMMOUTBOXSTORE, "readwrite");
+    tx.objectStore(COMMOUTBOXSTORE).delete(id);
     tx.oncomplete = resolve;
     tx.onerror = () => reject(tx.error);
   });

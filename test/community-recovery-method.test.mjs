@@ -31,8 +31,8 @@ test("full signup stamps recovery_verified_at and lands the member in the commun
   await waitFor(() => !!window.document.getElementById("communityCredentials"), 3000);
 
   window.document.querySelector('#communityCredentials input[name="username"]').value = "dana";
-  window.document.querySelector('#communityCredentials input[name="password"]').value = "correcthorse";
-  window.document.querySelector('#communityCredentials input[name="passwordConfirm"]').value = "correcthorse";
+  window.document.querySelector('#communityCredentials input[name="password"]').value = "CorrectHorse9";
+  window.document.querySelector('#communityCredentials input[name="passwordConfirm"]').value = "CorrectHorse9";
   submit(window, "communityCredentials");
   await waitFor(() => !!window.document.getElementById("communityProfile"), 3000);
 
@@ -55,7 +55,7 @@ test("a member whose profile is still unverified sees the Hebrew recovery gate, 
     invite_redemptions: [{ user_id: "u1", invite_id: "inv-1", role: "member", redeemed_at: new Date().toISOString() }],
   });
   mock.setUser({ id: "u1", is_anonymous: false, email: "dana@members.haimuniya.invalid" });
-  mock.seedCredentials("u1", "dana@members.haimuniya.invalid", "correcthorse");
+  mock.seedCredentials("u1", "dana@members.haimuniya.invalid", "CorrectHorse9");
 
   const window = await bootCommunity(mock, { syncEnabled: false });
   window.document.getElementById("tabCommunityBtn").click();
@@ -109,14 +109,14 @@ test("recovery on a new device: signing in with the same credentials reaches the
     profiles: [{ id: "coach-9", handle: "yael", display_name: "יעל", is_admin: false, recovery_verified_at: "2026-08-01T00:00:00.000Z" }],
     invite_redemptions: [{ user_id: "coach-9", invite_id: "inv-1", role: "coach", redeemed_at: "2026-08-01T00:00:00.000Z" }],
   });
-  mock.seedCredentials("coach-9", "yael@members.haimuniya.invalid", "correcthorse");
+  mock.seedCredentials("coach-9", "yael@members.haimuniya.invalid", "CorrectHorse9");
 
   const window = await bootCommunity(mock, { syncEnabled: false });
   window.document.getElementById("tabCommunityBtn").click();
   await waitFor(() => !!window.document.getElementById("communityLogin"), 3000);
 
   window.document.querySelector('#communityLogin input[name="username"]').value = "yael";
-  window.document.querySelector('#communityLogin input[name="password"]').value = "correcthorse";
+  window.document.querySelector('#communityLogin input[name="password"]').value = "CorrectHorse9";
   submit(window, "communityLogin");
 
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);

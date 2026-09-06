@@ -19,4 +19,27 @@ window.HAIMUNIA_CONFIG = Object.freeze({
   // the repo. Behind NOTIF_PUSH_ENABLED / state.featureFlags.notifPush,
   // which stays default off in production until that provisioning happens.
   notifPushVapidPublicKey: "BD16mHSAcS-jU5cV2xEqkNy09hCQ7MTjkY22CK8UrRw1JpI_5kjReL7tME6O4BFmQhuiaOVCWQ-nqsnoa1_0nAo",
+
+  // Launch-readiness audit, SEC-004: bot protection on account creation.
+  //
+  // Anonymous sign-in is enabled (it is how every signup bootstraps - see
+  // COMMUNITY_SETUP.md "Sign-in has no email"), so without a CAPTCHA an
+  // attacker can mint unlimited free `authenticated` identities in a loop.
+  // That is the raw material for feed scraping, telemetry/storage flooding
+  // and invite-code guessing at scale.
+  //
+  // A SITE KEY IS PUBLIC by design - it is meant to ship in the browser,
+  // exactly like supabasePublishableKey above. The matching SECRET key is
+  // never in this repo: it goes in the Supabase dashboard only
+  // (Authentication -> Bot and Abuse Protection), which is what actually
+  // verifies the token server-side.
+  //
+  // LEAVE THIS EMPTY STRING to keep CAPTCHA off. The client treats "" as
+  // "not configured" and behaves exactly as it did before this feature
+  // existed, so a project that has not enabled it in the dashboard yet is
+  // not broken by this file. Turning it on is: set the provider + secret
+  // in the dashboard, paste the site key here, deploy.
+  // See COMMUNITY_SETUP.md "CAPTCHA on sign-up" for the full runbook.
+  captchaProvider: "turnstile", // "turnstile" | "hcaptcha"
+  captchaSiteKey: "",
 });

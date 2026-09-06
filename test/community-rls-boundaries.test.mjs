@@ -492,7 +492,38 @@ test("invite_attempts [partial]: the answer and the increment are identical whet
 });
 
 // ---------------------------------------------------------------------------
-// The gap COMM-019 cannot close in this repo today.
+// The gap COMM-019 named - now closed, so the placeholder skip is replaced by
+// a real assertion.
 // ---------------------------------------------------------------------------
-
-test("TRUE RLS enforcement for two auth roles is not covered here - needs a pgTAP suite under supabase/tests/ run by migration-check", { skip: "infra not yet in repo - see COMM-019 report; est. ~1 day to add supabase/tests/ + one CI step" }, () => {});
+//
+// This file used to end with a permanently-skipped placeholder test whose
+// reason read "infra not yet in repo - see COMM-019 report; est. ~1 day to
+// add supabase/tests/ + one CI step". That infra HAS since landed and the
+// reason is now false: supabase/tests/ holds a full pgTAP suite that
+// impersonates real auth users and asserts allow/deny against live RLS, and
+// .github/workflows/test.yml's migration-check job runs it with
+// `supabase test db` as a hard gate. Verified 2026-09-06 against a real
+// PostgreSQL 17 via `supabase db reset && supabase test db`:
+// Files=79, Tests=2747, Result: PASS.
+//
+// A skip that describes work already done is worse than no test - it reads as
+// a known gap forever. Replaced with an assertion that pins the two things
+// that must stay true for the gap to STAY closed, both checkable from here.
+test("TRUE RLS enforcement for two auth roles is covered by the pgTAP suite, which CI runs as a hard gate", () => {
+  const testsDir = new URL("../supabase/tests/", import.meta.url);
+  const files = fs.readdirSync(testsDir).filter((f) => f.endsWith("_test.sql"));
+  assert.ok(
+    files.length >= 70,
+    `expected the pgTAP suite to still be present and substantial, found ${files.length} *_test.sql files`,
+  );
+  // rls_helpers.sql is what makes these tests REAL RLS tests rather than
+  // static assertions: set_auth() swaps request.jwt.claims and the session
+  // role, so a policy is evaluated against an actual impersonated auth user.
+  const helpers = fs.readFileSync(new URL("rls_helpers.sql", testsDir), "utf8");
+  assert.match(helpers, /set_config\(\s*'request\.jwt\.claims'/);
+  assert.match(helpers, /set_config\('role', 'authenticated', true\)/);
+  // And the CI gate that runs them, with no continue-on-error escape hatch.
+  const wf = fs.readFileSync(new URL("../.github/workflows/test.yml", import.meta.url), "utf8");
+  assert.match(wf, /supabase test db/, "migration-check must still run the pgTAP suite");
+  assert.doesNotMatch(wf, /continue-on-error/, "no CI job may opt out of failing the build");
+});

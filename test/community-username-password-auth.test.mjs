@@ -24,12 +24,19 @@ test("the synthetic email is built locally from a username, never collected as r
 
 test("login() signs in with the synthetic email + typed password, and does not create a new session type", () => {
   assert.match(src, /async function login\(form\)/);
-  assert.match(src, /client\.auth\.signInWithPassword\(\{ email: usernameToEmail\(username\), password \}\)/);
+  // Wrapped in withCaptcha() (SEC-004): the credentials object is built the
+  // same way and merged with { options: { captchaToken } } only when a site
+  // key is configured. Still the synthetic-email password grant, still no
+  // new session type.
+  assert.match(src, /client\.auth\.signInWithPassword\(Object\.assign\(\s*\n\s*\{ email: usernameToEmail\(username\), password \},/);
 });
 
 test("setCredentials() upgrades the anonymous session in place via updateUser, and refreshes state.user from the result", () => {
   assert.match(src, /async function setCredentials\(form\)/);
-  assert.match(src, /client\.auth\.updateUser\(\{ email: usernameToEmail\(username\), password \}\)/);
+  // Wrapped in withCaptcha() (SEC-004). updateUser takes the captchaToken
+  // as its second argument rather than inside the attributes object, which
+  // is why this call's shape differs from signInWithPassword's above.
+  assert.match(src, /client\.auth\.updateUser\(\s*\n\s*\{ email: usernameToEmail\(username\), password \},\s*\n\s*captchaToken \? \{ captchaToken \} : undefined,/);
   assert.match(src, /state\.user = data\.user;/);
 });
 

@@ -209,7 +209,7 @@ const boot = fs.readFileSync(new URL("test/helpers/boot.mjs", root), "utf8");
 const PLATFORM_FILES = ["./src/eventbus.js", "./src/analytics.js", "./src/realtime.js", "./src/image.js"];
 
 test("every platform module is loaded by index.html before cloud.js and app.js", () => {
-  const scripts = [...html.matchAll(/<script src="([^"]+)"><\/script>/g)].map((m) => m[1]);
+  const scripts = [...html.matchAll(/<script(?: defer)? src="([^"]+)"><\/script>/g)].map((m) => m[1]);
   const cloudAt = scripts.indexOf("./cloud.js");
   const appAt = scripts.indexOf("./app.js");
   assert.ok(cloudAt > 0 && appAt > 0, "sanity check: index.html loads cloud.js and app.js");
@@ -230,7 +230,7 @@ test("the boot helper loads the platform modules in the same order index.html do
   // module that reads another one's window global at load time would
   // otherwise pass in the browser and fail (or worse, silently no-op) in
   // the test harness.
-  const scripts = [...html.matchAll(/<script src="([^"]+)"><\/script>/g)].map((m) => m[1]).filter((s) => PLATFORM_FILES.includes(s));
+  const scripts = [...html.matchAll(/<script(?: defer)? src="([^"]+)"><\/script>/g)].map((m) => m[1]).filter((s) => PLATFORM_FILES.includes(s));
   assert.deepStrictEqual(listed.filter((f) => PLATFORM_FILES.includes(f)), scripts);
   assert.ok(boot.includes("readPlatformSrc()"), "boot.mjs must actually eval the platform sources");
 });

@@ -50,8 +50,19 @@ test("cloud.js calls the new RPCs instead of writing to the tables directly, and
   // own regression test for that). The two-argument wrapper still exists
   // in SQL for any older caller (asserted above), but the client uses the
   // 4-arg one.
-  assert.match(cloudJs, /client\.rpc\("add_post_comment", \{ p_post_id: postId, p_body: resolved\.stored, p_parent_comment_id: parentCommentId \|\| null, p_mentions: resolved\.mentions\.map\(\(m\) => m\.user_id\) \}\)/);
-  assert.match(cloudJs, /client\.rpc\("toggle_reaction", \{ p_post_id: postId \}\)/);
+  // Both of these now go through communityRpc() rather than client.rpc()
+  // directly (launch-readiness audit, RELIABILITY): it attaches a
+  // p_idempotency_key and, when the request cannot reach the network,
+  // persists the write to the community outbox instead of dropping it.
+  // communityRpc() itself calls client.rpc() with the same argument object,
+  // so the property this test actually cares about - "the client goes
+  // through the guarded RPC and never inserts into the table directly" - is
+  // unchanged, and the doesNotMatch assertions below still pin it.
+  assert.match(cloudJs, /communityRpc\("add_post_comment", \{ p_post_id: postId, p_body: resolved\.stored, p_parent_comment_id: parentCommentId \|\| null, p_mentions: resolved\.mentions\.map\(\(m\) => m\.user_id\) \}\)/);
+  assert.match(cloudJs, /communityRpc\("toggle_reaction", \{ p_post_id: postId \}\)/);
+  // And communityRpc really does reach client.rpc under the hood, so the
+  // indirection above is not hiding a table write.
+  assert.match(cloudJs, /async function communityRpc\([\s\S]{0,900}?await client\.rpc\(action, withKey\)/);
   // COMM-151 replaced submit_report with report(p_target_type, p_target_id,
   // p_reason, p_note), so a comment can be reported too. The two-argument
   // submit_report still exists in SQL (asserted above) for any older caller.

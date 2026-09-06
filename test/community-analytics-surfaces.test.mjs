@@ -101,11 +101,11 @@ test("signing out and back in does not stack a second bus bridge", async () => {
   const mock = seeded([row(1)]);
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openCommunity(window);
-  mock.seedCredentials("u1", "dana@members.haimuniya.invalid", "correcthorse");
+  mock.seedCredentials("u1", "dana@members.haimuniya.invalid", "CorrectHorse9");
 
   await mock.client.auth.signOut();
   await waitFor(() => !!window.document.getElementById("communityLogin"), 4000);
-  await mock.client.auth.signInWithPassword({ email: "dana@members.haimuniya.invalid", password: "correcthorse" });
+  await mock.client.auth.signInWithPassword({ email: "dana@members.haimuniya.invalid", password: "CorrectHorse9" });
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 4000);
 
   assert.equal(window.HaimuniaEvents.handlerCount("POST_CREATED"), 1, "one bridge, however many sessions");

@@ -68,8 +68,8 @@ test("a real second pull only fetches records newer than the cursor left by the 
     return chain;
   };
 
-  mock.seedCredentials("u1", "dana@members.haimuniya.invalid", "correcthorse");
-  await mock.client.auth.signInWithPassword({ email: "dana@members.haimuniya.invalid", password: "correcthorse" });
+  mock.seedCredentials("u1", "dana@members.haimuniya.invalid", "CorrectHorse9");
+  await mock.client.auth.signInWithPassword({ email: "dana@members.haimuniya.invalid", password: "CorrectHorse9" });
   await waitFor(() => selectedRows !== null, 3000);
 
   assert.equal(selectedRows.length, 1, "the second pull must only fetch the one record newer than the cursor, not both");

@@ -13,7 +13,8 @@
 //
 // Dialogs covered: post composer, PR share prompt, achievement celebration,
 // member profile overlay, notification centre, report sheet, moderation
-// review sheet, moderation context sheet.
+// review sheet, moderation context sheet, challenge/event/recap view, and
+// (launch-readiness audit, A3) the confirm sheet.
 //
 // The Escape wiring itself is also spot-checked in the per-cluster files;
 // this file is the single place the whole focus contract is pinned so a
@@ -535,4 +536,32 @@ test("recapView: focus-in, trap, Escape restores focus, backdrop closes", async 
   await waitFor(() => !!window.document.querySelector('[data-cloud-dialog="recapView"] [data-community-action="share-recap"]'), 3000);
 
   await assertDialogContract(window, "recapView", getOpener, async () => { getOpener().click(); });
+});
+
+// ===== confirm sheet (launch-readiness audit, finding A3) ==========
+//
+// askConfirm() gates ~19 destructive actions and, until this migration, was
+// invisible to CLOUD_DIALOGS entirely: no data-cloud-dialog attribute, no
+// registry entry, absent from the Escape chain. A real Chromium check found
+// that when it stacks on another open dialog, the Tab trap locked focus in
+// the dialog UNDERNEATH (covered, non-interactive) and Escape closed that
+// one instead - jsdom cannot reproduce the stacked case (no hit-testing),
+// but the shared five-point contract itself is fully testable unstacked,
+// which is what this pins. delete-account is the simplest trigger: no
+// dataset beyond the action name, reachable with no fixture setup.
+test("confirm sheet: focus-in, trap, Escape restores focus, backdrop closes", async () => {
+  const mock = createMockSupabase({
+    profiles: [{ id: "u1", handle: "dana", display_name: "דנה", is_admin: false, recovery_verified_at: VERIFIED }],
+    invite_redemptions: [{ user_id: "u1", invite_id: "inv-1", role: "member", redeemed_at: VERIFIED }],
+    community_feed: [],
+  });
+  mock.setUser({ id: "u1", is_anonymous: false, email: "dana@members.haimuniya.invalid" });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCommunity(window);
+
+  const opener = makeOpener(window, { communityAction: "delete-account" });
+  opener.click();
+  await waitFor(() => !!window.document.querySelector('[data-cloud-dialog="confirmSheet"]'), 3000);
+
+  await assertDialogContract(window, "confirmSheet", opener, async () => { opener.click(); });
 });
