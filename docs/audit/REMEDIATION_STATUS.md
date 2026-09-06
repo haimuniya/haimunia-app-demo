@@ -191,16 +191,25 @@ npm run check-deploy-readiness -> READY (all 5 RPC signatures resolve)
   reactions, member_achievements, invite_redemptions all unchanged
   before/after.
 
-### NOT verified from here — one query still owed
+### Scheduler — confirmed by query, not inferred
 
-`pg_dump` excludes extension-owned tables, so `cron.job` could not be read.
-The `cron.schedule()` calls are inside migrations that exited 0, which is
-strong evidence they ran — but given this audit's headline finding was a
-function that existed and was never scheduled, that inference deserves
-confirming rather than assuming. Run in the SQL editor:
+`pg_dump` excludes extension-owned tables, so `cron.job` could not be read
+from here. Confirmed instead by running the query on the project:
 
-```sql
-select jobname, schedule, active from cron.job order by jobname;
--- expect 10, including 'purge-due-accounts'
-select * from public.scheduled_job_health() where not healthy;
-```
+- **All 10 jobs registered and `active`**, including `purge-due-accounts`
+  at `59 3 * * *` — the function that existed for the life of the project
+  and was never scheduled. `feed-weights-recompute` correctly absent
+  (FEAT-010 unscheduled the no-op stub).
+- **pg_cron is genuinely executing, not just configured.**
+  `notif-batch-flush` (every 15 min) came back `succeeded` / `healthy: true`
+  on the next check. That distinction matters: registration proves the
+  migration ran, execution proves the scheduler works — and only the second
+  means `purge_due_accounts` will actually fire.
+
+That real output also surfaced a bug in the monitoring itself, fixed in
+`202609060018`: the flat 8-day staleness window would have reported
+`recap_monthly` (which runs on the 1st) unhealthy ~23 days of every month.
+An alert that cries wolf gets muted, which is the same failure mode that let
+`purge_due_accounts` go unnoticed — one layer up. Window now derives from
+each job's own cadence; verified it keeps catching a failed run, a
+5-day-stale daily job and a 40-day-stale monthly one.
