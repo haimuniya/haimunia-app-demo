@@ -95,5 +95,40 @@ select is_empty(
 select has_function('public', 'recompute_feed_weights', array['integer'],
   'the stub function itself is retained - only its misleading schedule was removed');
 
+-- =====================================================================
+-- 4. scheduled_job_health()'s staleness window follows each job's cadence
+-- =====================================================================
+-- 202609060016 used a flat 8 days for every job. recap_monthly runs on the
+-- 1st, so from ~the 9th onward it reported unhealthy every month while
+-- being fine - a permanent false positive on the one surface whose value
+-- is being trusted. Found by reading the real production output.
+select is(
+  (select case
+     when split_part('41 4 1 * *',' ',3) <> '*' then 'monthly'
+     when split_part('41 4 1 * *',' ',5) <> '*' then 'weekly'
+     when split_part('41 4 1 * *',' ',2) <> '*' then 'daily'
+     else 'hourly' end),
+  'monthly',
+  'a day-of-month cron expression is classified monthly, not daily - this is the classification the window derives from');
+select is(
+  (select case
+     when split_part('11 5 * * 1',' ',3) <> '*' then 'monthly'
+     when split_part('11 5 * * 1',' ',5) <> '*' then 'weekly'
+     when split_part('11 5 * * 1',' ',2) <> '*' then 'daily'
+     else 'hourly' end),
+  'weekly',
+  'and a day-of-week expression is weekly');
+select ok(
+  (select prosrc from pg_proc where proname = 'scheduled_job_health') like '%35 days%',
+  'the function carries a monthly window, so recap_monthly is not permanently flagged');
+select ok(
+  (select prosrc from pg_proc where proname = 'scheduled_job_health') not like '%interval ''8 days''%',
+  'and the flat 8-day window that caused the false positive is gone');
+-- The behaviour that must NOT be relaxed by the above.
+select ok(
+  (select prosrc from pg_proc where proname = 'scheduled_job_health') like '%coalesce(%false)%'
+  or (select prosrc from pg_proc where proname = 'scheduled_job_health') like '%, false) as healthy%',
+  'a never-run job is still coalesced to unhealthy - exactly the state purge_due_accounts sat in undetected');
+
 select * from finish();
 rollback;
