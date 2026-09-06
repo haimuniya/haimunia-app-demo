@@ -14,21 +14,21 @@ This is a different verdict from the previous pass's "verification
 incomplete", and the difference is real: **the database work is now
 verified against live PostgreSQL**, not asserted.
 
-## Launch-readiness score: **86 / 100**
+## Launch-readiness score: **91 / 100**
 
-Previous: 58/100.
+Previous: 58/100, then 86 before the final A5/DEP-4 round.
 
 | Category | Available | Score | Basis |
 |---|---:|---:|---|
 | Security | 25 | 22 | P0 closed and verified against real PostgreSQL. Every P1/P2 security finding closed with a pgTAP assertion that fails on regression, or disproven with evidence. −3: CAPTCHA and response headers are code-complete but need one external action each. |
 | Reliability & data integrity | 20 | 18 | Write idempotency (incl. the silent challenge double-count), a complete community outbox, the 30-day purge actually running, 6 FKs that would have aborted it. −2: no executed restore/rollback drill. |
-| Functional correctness | 15 | 15 | Nine defects found by execution, all fixed and regression-tested — including two the browser suite had been failing on for weeks and one that could permanently strand a new member. |
-| Testing | 15 | 14 | 1156 node (0 skipped), 2826 pgTAP across 83 files, 29/29 browser — all green on the final tree, and the browser suite is now deterministic. −1: no automated a11y scanner. |
-| Deployment & recovery | 10 | 6 | CI hardened: migration-immutability gate, pinned CLI, `npm audit`, version + sha256 integrity checks, Dependabot. −4: restore/rollback unexecuted, branch protection unverifiable from here. |
+| Functional correctness | 15 | 15 | Thirteen defects found by execution, all fixed and regression-tested — including two the browser suite had been failing on for weeks and one that could permanently strand a new member. |
+| Testing | 15 | 15 | 1156 node (0 skipped), 2826 pgTAP across 83 files, 30/30 browser — all green on the final tree, and the browser suite is now deterministic. axe-core now sweeps 7 screens as a hard gate. |
+| Deployment & recovery | 10 | 7 | CI hardened: migration-immutability gate, pinned CLI, `npm audit`, version + sha256 integrity checks, Dependabot, and Edge Function lockfiles verified with `deno cache --frozen`. −3: restore/rollback unexecuted, branch protection unverifiable from here. |
 | Performance | 5 | 4 | `defer` on 1.35 MB of JS, bounded queries, debounced search. −1: lazy-loading `cloud.js` deliberately rejected (it would break cloud backup for members who never open Community) — documented, not silently skipped. |
 | UX & visual quality | 5 | 5 | Keyboard access to ~19 destructive actions, moderation queue corrected, and the invite-code erasure bug fixed. |
-| Accessibility & privacy | 5 | 4 | A1/A2/A4 resolved and tested; two privacy decisions made and enforced. −1: A5 scanner. |
-| **Total** | **100** | **86** | |
+| Accessibility & privacy | 5 | 5 | A1/A2/A4 resolved and tested; two privacy decisions made and enforced. A5 done, and it found four real violations that are now fixed. |
+| **Total** | **100** | **91** | |
 
 No Critical or High security issue remains open, so no score cap applies.
 
@@ -36,7 +36,7 @@ No Critical or High security issue remains open, so no score cap applies.
 
 **The unlock:** the previous pass reported `supabase test db` as unrunnable.
 It was runnable — Docker was live and the CLI installs from npm. Running it
-did not merely confirm prior work; **it found nine real defects static
+did not merely confirm prior work; **it found thirteen real defects static
 review had missed**, three of them introduced by the previous pass's own
 fixes:
 
@@ -61,6 +61,20 @@ fixes:
 9. One of my own new tests encoded a wrong assumption about block
    visibility; the code was right and the test was corrected.
 
+Then installing the accessibility scanner (A5) found four more, none of
+which any hand-written test could have caught:
+
+10. **A critical broken ARIA structure** — the feed-filter `role="tablist"`
+    had non-tab children, because the *parked* chips never got `role="tab"`.
+11. **The active bottom-tab label failed contrast in both themes.** The
+    existing contrast test measures tokens against the page background; the
+    label actually sits on a tinted active-tab background it never checked.
+12. **WCAG 2.2 target-size**: sign-out was 42×13 px, delete-account 92×13 px,
+    against a 24×24 minimum. Nothing in the repo had ever checked 2.5.8.
+13. **Calendar status flags failed contrast** — and the green variant was a
+    *latent* failure the fixture never rendered, found by computing it
+    directly rather than waiting for it to appear.
+
 ## Release blockers (all external)
 
 1. Enable CAPTCHA in the Supabase dashboard and paste the site key
@@ -68,7 +82,7 @@ fixes:
 2. Front the site with a host that can set response headers (`_headers` and
    `docs/deploy/HEADERS.md` are ready), then `curl -sI` to confirm.
 3. Perform one backup-restore drill (`docs/ops/INCIDENT_RESPONSE.md`).
-4. Confirm GitHub branch protection requires all three CI jobs.
+4. Confirm GitHub branch protection requires all four CI jobs.
 5. Wire the monitoring alert query to something that notifies a human
    (`docs/ops/MONITORING.md`).
 
@@ -101,7 +115,7 @@ fixes:
 |---|---|
 | `npm test` | **1156 / 1156**, 0 fail, **0 skipped** |
 | `supabase test db` | **Files=83, Tests=2826, PASS** |
-| `run-all.mjs` (Chromium) | **29 / 29**, exit 0 |
+| `run-all.mjs` (Chromium) | **30 / 30**, exit 0 (incl. the axe sweep) |
 | `npm audit` (both trees) | 0 vulnerabilities |
 | Version / vendor / migration-immutability | All OK (integrity pin tamper-tested) |
 
@@ -112,7 +126,8 @@ short, well-documented task; none requires further code. Once CAPTCHA and
 the headers are live and a restore has been rehearsed, this reaches
 "Ready for production, every item resolved and verified".
 
-The honest summary: the application is in materially better shape than the
-score alone suggests — nine real defects were removed this pass, including
-two that would have hit real members — and what blocks release is a set of
-actions that can only be performed by whoever holds the accounts.
+The honest summary: thirteen real defects were removed this pass, including
+two that would have hit real members and four accessibility failures on
+shipped UI. Nothing that could be done from inside this repository is left
+undone. What blocks release is a set of actions that can only be performed
+by whoever holds the accounts.

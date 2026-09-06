@@ -140,7 +140,16 @@
        intended value was always 1.2, matching the other app's reference
        value; restored here rather than keeping the smaller regressed one. */
     --text-scale: 1.2;
-  }
+    /* Launch-readiness audit, A5 (axe). --energy and --red are ACCENT
+     colours, tuned for fills, borders and the active-tab tint. Used as
+     small TEXT they fell below WCAG AA 4.5:1 - the active bottom-tab
+     label measured 3.53:1 (light) and 3.88:1 (dark), and the
+     delete-account link 3.57:1 in dark. These two tokens exist so text
+     can meet contrast without shifting the brand accent everywhere it
+     is used as a fill (lightening --red itself would have broken the
+     white-on-red badge, which is why they are separate). */
+  --energy-text:#AD4023; --red-text:#C0382C; --green-text:#256B3D;
+}
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
       --bg:#152342; --surface:#1F3057; --surface2:#2A3D6B; --border:#425481;
@@ -153,7 +162,8 @@
       --stripe-a:var(--energy); --stripe-b:#ffffff;
       --shadow-card: 0 1px 0 rgba(255,255,255,.04) inset, 0 14px 28px -18px rgba(0,0,0,.65);
       --shadow-sm: 0 1px 3px rgba(0,0,0,.4);
-    }
+        --energy-text:#FF7F53; --red-text:#FF7869; --green-text:#5CBB74; --red:#D2433A;
+  }
   }
   :root[data-theme="dark"]{
     --bg:#152342; --surface:#1F3057; --surface2:#2A3D6B; --border:#425481;
@@ -166,6 +176,7 @@
     --stripe-a:var(--energy); --stripe-b:#ffffff;
     --shadow-card: 0 1px 0 rgba(255,255,255,.04) inset, 0 14px 28px -18px rgba(0,0,0,.65);
     --shadow-sm: 0 1px 3px rgba(0,0,0,.4);
+      --energy-text:#FF7F53; --red-text:#FF7869; --green-text:#5CBB74; --red:#D2433A;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   /* Headings carry no visual weight of their own here - every size/weight/
@@ -253,7 +264,7 @@
      inset is this bar's OWN bottom padding. */
   .tabbar{ max-width:480px; margin:0 auto; display:flex; background:var(--surface); border-top:1px solid var(--border); padding:8px 10px calc(env(safe-area-inset-bottom,0px) + 8px); gap:2px; box-shadow:0 -4px 16px rgba(0,0,0,.18); }
   .tabbtn{ position:relative; flex:1; min-width:0; min-height:44px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; padding:10px 2px 8px; border-radius:14px; font-weight:700; font-size:10.5px; color:var(--steel); border:1px solid transparent; transition:background-color .15s, color .15s; white-space:nowrap; }
-  .tabbtn.active{ background:color-mix(in srgb, var(--energy) 14%, transparent); color:var(--energy); box-shadow:var(--shadow-sm); }
+  .tabbtn.active{ background:color-mix(in srgb, var(--energy) 14%, transparent); color:var(--energy-text); box-shadow:var(--shadow-sm); }
   /* A short energy-colored cap above the active tab: the tinted background
      alone reads as "slightly different" at a glance mid-workout, which is
      exactly when this bar has to answer "where am I?" without being studied. */
@@ -339,7 +350,13 @@
   .icon-chip-steel{ background:var(--surface2); color:var(--steel); }
   .footer{ text-align:center; margin-top:28px; }
   .footer-note{ color:var(--steel); font-size:11px; margin-bottom:8px; }
-  .link-btn{ color:var(--steel); font-size:11px; text-decoration:underline; }
+    /* Launch-readiness audit, A5 (axe, WCAG 2.2 AA 2.5.8 target-size).
+     These rendered 42x13 and 92x13 CSS px - well under the 24x24
+     minimum - so sign-out and delete-account were genuinely hard to
+     hit on a phone. inline-flex + min-height gives a real hit area
+     without changing where the text sits. */
+  .link-btn{ color:var(--steel); font-size:11px; text-decoration:underline;
+    display:inline-flex; align-items:center; min-height:24px; padding:2px 4px; }
   /* COMM-323: card-based Settings redesign. Noam's own .settings-* CSS
      wasn't something this workspace could copy verbatim (crossfit-pwa-Noam
      isn't checked out here) - this reuses already-established components
@@ -596,7 +613,7 @@
      duplicated verbatim at two confirm-dialog call sites). Combined with
      .primary for the full-fill confirm/run buttons; alone for a plain chip
      that just needs to read as destructive (remove member, delete draft). */
-  .chip-btn.danger{ border-color:var(--red); color:var(--red); }
+  .chip-btn.danger{ border-color:var(--red); color:var(--red-text); }
   .chip-btn.primary.danger{ background:var(--red); border-color:var(--red); color:#fff; }
   /* No rule anywhere styled [disabled] - 75+ disabled buttons across the
      app (a busy submit, a parked filter, a checkbox mid-save) rendered
@@ -633,7 +650,7 @@
      the flex default of min-width:auto, which is what was refusing to
      shrink the input below its content size in the first place. */
   .flex:not(.col) > .field{ flex:1; min-width:0; }
-  .field-error{ display:block; color:var(--red); font-size:12px; margin-top:5px; }
+  .field-error{ display:block; color:var(--red-text); font-size:12px; margin-top:5px; }
   .text-input[aria-invalid="true"]{ border-color:var(--red); }
   .ach-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(72px,1fr)); gap:16px 8px; }
 
@@ -669,7 +686,7 @@
   .post-menu-wrap{ position:relative; margin-inline-start:auto; }
   .post-menu{ position:absolute; inset-inline-start:0; top:100%; z-index:30; min-width:150px; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:4px; box-shadow:0 10px 30px rgba(0,0,0,.25); }
   .post-menu-item{ display:block; width:100%; text-align:right; padding:9px 12px; background:none; border:0; color:var(--chalk); font-size:13px; cursor:pointer; }
-  .post-menu-item.danger{ color:var(--red); }
+  .post-menu-item.danger{ color:var(--red-text); }
   .progress-track{ background:var(--border); border-radius:999px; height:6px; overflow:hidden; margin-top:4px; }
   .progress-track > div{ height:100%; background:var(--brass); }
   .notif-group{ border-inline-start:3px solid transparent; }
@@ -901,7 +918,7 @@
       <div class="wodbuild-card-details">
         <div style="color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; margin-bottom:6px;" id="wodBuilderNameLabel">שם</div>
         <input id="wodBuilderName" class="text-input" dir="auto" maxlength="80" autocomplete="off" placeholder="לדוגמה: אימון יום שני" aria-labelledby="wodBuilderNameLabel" aria-describedby="wodBuilderNameHint" style="margin-bottom:6px;" />
-        <div id="wodBuilderNameHint" role="alert" style="color:var(--red); font-size:11px; margin-bottom:16px; display:none;"></div>
+        <div id="wodBuilderNameHint" role="alert" style="color:var(--red-text); font-size:11px; margin-bottom:16px; display:none;"></div>
 
         <div style="color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; margin-bottom:6px;" id="wodBuilderFormatLabel">פורמט</div>
         <div class="flex" style="gap:8px; margin-bottom:4px;" id="wodBuilderFormats" role="radiogroup" aria-labelledby="wodBuilderFormatLabel" aria-describedby="wodBuilderFormatHint">

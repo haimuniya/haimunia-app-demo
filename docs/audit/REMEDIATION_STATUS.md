@@ -24,10 +24,10 @@ runnable.** Docker 29.7.2 was live and the Supabase CLI installs from npm
 supabase db reset   -> exit 0, all 85 migrations applied from empty
 supabase test db    -> Files=83, Tests=2826, Result: PASS
 npm test            -> 1156 tests, 1156 pass, 0 fail, 0 skipped
-run-all.mjs         -> 29/29 scenarios, exit 0
+run-all.mjs         -> 30/30 scenarios, exit 0 (incl. the new axe sweep)
 ```
 
-Running it did not just confirm the previous pass's work — **it found nine
+Running it did not just confirm the previous pass's work — **it found thirteen
 real defects that static review had missed**, including three introduced by
 the previous pass's own "fixes" and one long-standing user-facing bug.
 
@@ -44,6 +44,10 @@ the previous pass's own "fixes" and one long-standing user-facing bug.
 | 7 | browser-check | **`redeemCode()` stranded members permanently.** A successful redemption (code already consumed) followed by one racing read left the invite form on screen; re-submitting returned "invalid". |
 | 8 | browser-check | **A background render silently erased the invite code being typed.** `maybeAutoStartBackup()`'s message re-rendered `#content`, replacing the form. This was the "flaky under CPU contention" failure the suite carried for weeks — neither flaky nor contention. |
 | 9 | pgTAP (my own new test) | Assumed a blocked member cannot see the block edge. They can, deliberately — `cloud.js:3570` depends on it. My assumption was wrong, not the code. |
+| 10 | axe-core (A5) | **`aria-required-children` [critical]** — the feed-filter `role="tablist"` had non-tab children: the *parked* chips were plain `<button aria-disabled>` while the live ones had `role="tab"`. A tablist whose children are not tabs is a broken structure assistive tech can mis-announce or skip entirely. |
+| 11 | axe-core (A5) | **Active bottom-tab label failed contrast in BOTH themes** (3.53:1 light, 3.29:1 dark; needs 4.5:1 at 10.5px bold). `brass-contrast.test.mjs` could never have caught this: it tests tokens against `--surface`/`--bg`, not against the tinted active-tab background the label actually sits on. |
+| 12 | axe-core (A5) | **`target-size` [serious], WCAG 2.2 AA 2.5.8** — sign-out rendered 42×13 px and delete-account 92×13 px against a 24×24 minimum. Genuinely hard to hit on a phone, and 2.5.8 is a 2.2-level criterion nothing in the repo had ever checked. |
+| 13 | axe-core (A5) | **Calendar status flags failed contrast** — red 2.58:1 and (latent, not in the fixture) green 3.45:1 on their own tinted chip backgrounds. Found only because the scanner computes against *rendered pixels*, not stylesheet tokens. |
 
 ---
 
@@ -93,6 +97,7 @@ the previous pass's own "fixes" and one long-standing user-facing bug.
 | CQ-004 | Signed URLs cached past expiry | **Resolved and verified** | `{url, expiresAt}` + 5-min skew + `onerror` eviction |
 | CQ-005 | `map_link` client validation | **Not applicable, proven with evidence** | Already fixed by a prior pass — `cloud.js:8535` |
 | DEP-1/2 | No Dependabot, no CI `npm audit` | **Resolved and verified** | `.github/dependabot.yml` (3 ecosystems) + `npm audit --audit-level=high` in CI. Both audits: 0 vulnerabilities |
+| DEP-4 | No `deno.lock` for Edge Functions | **Resolved and verified** | Deno installs from npm. All three functions carry a `deno.lock` with a sha256 per remote module; new `edge-function-lockfiles` CI job runs `deno cache --frozen`. **Negative-tested**: corrupting one hash exits 10, restoring exits 0 |
 | DEP-3 | No integrity pin on the vendored bundle | **Resolved and verified** | sha256 pin in `check-vendored-supabase-version.mjs`. **Negative-tested**: appending one line makes it fail, restoring makes it pass |
 | INF-1 | `setup-cli` installed `latest` | **Resolved and verified** | Pinned to `2.116.0` — the version this pass actually verified against |
 | FEAT-004 | `community_health_generate()` had no producer | **Resolved and verified** | Scheduled weekly; `0081` |
@@ -113,6 +118,7 @@ the previous pass's own "fixes" and one long-standing user-facing bug.
 | DB-M4 | Foundation-era migrations lacked pgTAP | **Resolved and verified** | `0082_foundation_era_rls_test.sql`, 17 assertions — including `private_records`, the training log, which had **no direct cross-member read test at all** |
 | A1 | Tab pattern half-declared | **Resolved and verified** | `aria-controls` on both tab bars + `#content` labelled by the active tab; `test/community-a11y-structure.test.mjs` |
 | A2 | "Community ships 5 headings" | **Resolved and verified** (finding partly corrected) | The 5 was a **source** count; helpers render ~56. Real gap fixed: all 13 dialog titles are now `<h2>` with pinned margins |
+| A5 | No automated a11y scanner | **Resolved and verified** | `scripts/browser-check/a11y-axe-scan.mjs` — axe-core vs real Chromium, 7 screens, WCAG 2.2 AA, serious/critical = hard fail, auto-discovered by `run-all.mjs`. **Found 4 violation classes the whole prior audit missed** (defects 10-13); all fixed, sweep clean, exit 0 |
 | A4 | Contrast: one token, one theme | **Resolved and verified** | Extended to `--steel` and the dark palette (6 new combinations, all ≥4.5:1) + a drift check between the two dark blocks |
 | MON-1 | No monitoring | **Resolved and verified** | `scheduled_job_health()` + `docs/ops/MONITORING.md`. `coalesce(...,false)` is load-bearing — without it `where not healthy` skips never-run jobs, the one state it exists to catch |
 | INC-1 | No incident process | **Resolved and verified** | `docs/ops/INCIDENT_RESPONSE.md` |
@@ -124,9 +130,7 @@ the previous pass's own "fixes" and one long-standing user-facing bug.
 |---|---|---|---|
 | SEC-004 | CAPTCHA dashboard activation | **Implemented, verification pending** | Code done and tested; needs a Turnstile/hCaptcha site key + secret only the project owner can create. Runbook: `COMMUNITY_SETUP.md` |
 | SEC-014 | Response headers live | **Implemented, verification pending** | `_headers` + docs shipped; needs the site fronted by a host that can set headers, then `curl -sI` to confirm |
-| A5 | No automated a11y scanner | **Open** | axe-core is not installed and adding it needs a network install into `scripts/browser-check`. Structural a11y is covered by 4 test files; a scanner would add breadth. Not done — recorded rather than claimed |
-| DEP-4 | No `deno.lock` for Edge Functions | **Open** | Requires the Deno toolchain, which is not present here. The three functions pin their one import to an exact version (`@supabase/supabase-js@2.57.4`), so the exposure is bounded but not lockfile-pinned |
-| INF-2 | Branch protection requires all 3 CI jobs | **Open** | Not inspectable or settable from inside a repository. Must be confirmed in GitHub settings — `LAUNCH_CHECKLIST.md` |
+| INF-2 | Branch protection requires all 4 CI jobs | **Open** | Not inspectable or settable from inside a repository. Must be confirmed in GitHub settings — `LAUNCH_CHECKLIST.md` |
 | OPS-1 | Backup restore drill | **Open** | Needs the live Supabase dashboard. Procedure documented in `INCIDENT_RESPONSE.md`; performing it is external |
 
 ---
@@ -138,7 +142,7 @@ the previous pass's own "fixes" and one long-standing user-facing bug.
 | `supabase db reset` | exit 0 — 85 migrations from empty, no error |
 | `supabase test db` | **Files=83, Tests=2826, Result: PASS** |
 | `npm test` | **1156 pass / 0 fail / 0 skipped** |
-| `run-all.mjs` (Chromium) | **29/29, exit 0** |
+| `run-all.mjs` (Chromium) | **30/30, exit 0** (incl. `a11y-axe-scan.mjs`) |
 | `npm audit --audit-level=high` (root + browser-check) | 0 vulnerabilities |
 | `npm run check-version` | APP_VERSION = SW_VERSION = 4.4.0 |
 | `npm run check-vendor-version` | version + sha256 both match (tamper-tested) |

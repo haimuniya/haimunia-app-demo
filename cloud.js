@@ -1626,7 +1626,7 @@
   // at all. Shared by the feed top area and the "today's note" card.
   function announcementPriorityBadge(a) {
     const priority = (a && a.priority) || "normal";
-    if (priority === "urgent") return `<span class="admin-tag" role="status" style="color:var(--red);background:color-mix(in srgb, var(--red) 16%, transparent);border-color:var(--red);">🚨 דחוף</span>`;
+    if (priority === "urgent") return `<span class="admin-tag" role="status" style="color:var(--red-text);background:color-mix(in srgb, var(--red) 16%, transparent);border-color:var(--red);">🚨 דחוף</span>`;
     if (priority === "important") return `<span class="admin-tag" role="status" style="color:var(--brass);background:color-mix(in srgb, var(--brass) 14%, transparent);border-color:var(--brass);">❗ חשוב</span>`;
     return "";
   }
@@ -5527,7 +5527,7 @@
               <div style="font-weight:800;">${esc(MOD_TARGET_LABEL[r.target_type] || "פוסט")} · ${esc(r.content_author_name || "חבר/ה שהוסר/ה")}</div>
               <div style="color:var(--steel);font-size:12.5px;margin-top:4px;white-space:pre-wrap;">${esc(String(r.content_excerpt || "התוכן הוסר").slice(0, 240))}</div>
             </div>
-            <span class="admin-tag" style="${r.status === "open" ? "background:rgba(194,57,44,.12);border-color:var(--red);color:var(--red);" : ""}">${esc(MOD_STATUS_LABEL[r.status] || r.status)}</span>
+            <span class="admin-tag" style="${r.status === "open" ? "background:rgba(194,57,44,.12);border-color:var(--red);color:var(--red-text);" : ""}">${esc(MOD_STATUS_LABEL[r.status] || r.status)}</span>
           </div>
           <div style="color:var(--steel);font-size:12px;margin-top:8px;">
             ${Number(r.reporter_count || 0)} דיווחים · ${reasons.map(reportReasonLabel).map(esc).join(", ") || "—"} · ${relativeTime(r.created_at)}
@@ -6428,7 +6428,7 @@
       const dropped = communityHealthComponentDropped(comp);
       const valueText = communityHealthComponentValueText(key, comp);
       const weightHtml = dropped
-        ? `<span data-community-health-dropped="1" style="color:var(--red);">לא נכלל בציון השבוע</span>`
+        ? `<span data-community-health-dropped="1" style="color:var(--red-text);">לא נכלל בציון השבוע</span>`
         : `<span style="color:var(--steel);">במשקל ${Math.round(Number(comp.weight_applied) * 1000) / 10}%</span>`;
       return `<div class="log-row" data-community-health-component="${key}">
         <span>${esc(COMMUNITY_HEALTH_COMPONENT_LABELS[key] || key)}</span>
@@ -6507,7 +6507,7 @@
     return `<div class="chart-card" id="communityPinnedStrip" style="margin-bottom:12px;">
       <div style="font-weight:800;font-size:13px;margin-bottom:8px;">מוצמד</div>
       <div class="chip-row" style="margin:0;">${chips}</div>
-      ${state.admin.pinError ? `<div class="footer-note" role="alert" style="color:var(--red);margin-top:6px;">${esc(state.admin.pinError)}</div>` : ""}
+      ${state.admin.pinError ? `<div class="footer-note" role="alert" style="color:var(--red-text);margin-top:6px;">${esc(state.admin.pinError)}</div>` : ""}
     </div>`;
   }
 
@@ -11399,7 +11399,7 @@
           <div class="log-list">${reasons}</div>
           <label class="field" style="margin-top:12px;"><span class="field-label">פרטים נוספים (רשות)</span>
             <textarea class="text-input" data-report-note maxlength="500" placeholder="אפשר להוסיף הקשר">${esc(s.note || "")}</textarea></label>
-          ${s.error ? `<div class="footer-note" role="alert" style="color:var(--red);">${esc(s.error)}</div>` : ""}
+          ${s.error ? `<div class="footer-note" role="alert" style="color:var(--red-text);">${esc(s.error)}</div>` : ""}
           <div class="chip-row" style="margin-top:12px;">
             <button class="chip-btn" data-community-action="report-close">ביטול</button>
             <button class="chip-btn primary" data-community-action="report-submit"${s.saving ? " disabled" : ""}>${s.saving ? "שולח…" : "שליחת דיווח"}</button>
@@ -11424,7 +11424,7 @@
           ${days}
           <label class="field" style="margin-top:10px;"><span class="field-label">הערה (רשות)</span>
             <textarea class="text-input" data-mod-note maxlength="500" placeholder="נרשמת ביומן">${esc(a.note || "")}</textarea></label>
-          ${a.error ? `<div class="footer-note" role="alert" style="color:var(--red);">${esc(a.error)}</div>` : ""}
+          ${a.error ? `<div class="footer-note" role="alert" style="color:var(--red-text);">${esc(a.error)}</div>` : ""}
           <div class="chip-row" style="margin-top:12px;">
             <button class="chip-btn" data-community-action="mod-action-cancel">ביטול</button>
             <button class="chip-btn primary${def.destructive ? " danger" : ""}" data-community-action="mod-action-run"${a.saving ? " disabled" : ""}>${a.saving ? "מבצע…" : "אישור"}</button>
@@ -11610,8 +11610,16 @@
 
     // COMM-111 filter chips. My Classes is rendered disabled, tied to
     // COMM-P01, and setFeedScope refuses it on the way in as well.
+    // Launch-readiness audit, A5 (axe, aria-required-children - CRITICAL).
+    // The PARKED chips were plain <button aria-disabled>, with no role="tab",
+    // while the live ones had it. A role="tablist" whose children are not all
+    // tabs is a broken ARIA structure: assistive tech is told "this is a set
+    // of tabs" and then handed something that is not one, so the whole set
+    // can be mis-announced or skipped. A disabled tab is still a tab -
+    // aria-disabled is the right way to say "not selectable yet", not
+    // dropping the role.
     const filterHtml = `<div class="chip-row" id="communityFeedFilters" role="tablist" aria-label="סינון הפיד" style="margin:0 0 10px;">${FEED_SCOPES.map((s) => s.parked
-      ? `<button class="chip-btn" data-community-action="feed-scope" data-scope="${s.id}" disabled aria-disabled="true" title="בקרוב, ממתין למודול הנוכחות">${esc(s.label)} · בקרוב</button>`
+      ? `<button class="chip-btn" data-community-action="feed-scope" data-scope="${s.id}" disabled role="tab" aria-selected="false" tabindex="-1" aria-disabled="true" title="בקרוב, ממתין למודול הנוכחות">${esc(s.label)} · בקרוב</button>`
       : `<button class="chip-btn${state.feed.scope === s.id ? " selected" : ""}" data-community-action="feed-scope" data-scope="${s.id}" role="tab" aria-selected="${state.feed.scope === s.id ? "true" : "false"}" tabindex="${state.feed.scope === s.id ? "0" : "-1"}">${esc(s.label)}</button>`).join("")}</div>`;
 
     const feed = state.feed.loading && !state.feed.items.length
@@ -11638,7 +11646,7 @@
     const feedMoreHtml = !state.feed.items.length ? ""
       : state.feed.end ? `<div class="footer-note" style="text-align:center;margin-top:10px;">הגעתם לסוף. הכול מעודכן.</div>`
       : `<div id="communityFeedSentinel" style="height:1px;"></div>
-        ${state.feed.moreError ? `<div class="footer-note" role="alert" style="text-align:center;color:var(--red);">לא ניתן היה לטעון עוד.</div>` : ""}
+        ${state.feed.moreError ? `<div class="footer-note" role="alert" style="text-align:center;color:var(--red-text);">לא ניתן היה לטעון עוד.</div>` : ""}
         <div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="feed-load-more"${state.feed.loadingMore ? " disabled" : ""}>${state.feed.loadingMore ? "טוען…" : state.feed.moreError ? "ניסיון חוזר" : "טעינת עוד"}</button></div>`;
     const composeBtn = `<button class="chip-btn primary" data-community-action="open-composer" style="margin:0 0 10px;">כתיבת פוסט</button>`;
     const feedHtml = `<div class="ach-section">${sectionHead("var(--blue)", "הפיד שלי")}${composeBtn}${filterHtml}${classmatesTodayHtml}${feed}${upcomingEventHtml}${feedMoreHtml}</div>`;
@@ -11742,7 +11750,7 @@
     const movedToManageNote = staff ? `<div class="footer-note" style="color:var(--steel);text-align:center;margin:16px 0 4px;">כלי ניהול עברו ל"ניהול" בתפריט התחתון</div>` : "";
     const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderMyAchievements() + renderNotifPrefsPanel() + movedToManageNote
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
-      + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red);">בקשת מחיקת חשבון</button>`;
+      + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red-text);">בקשת מחיקת חשבון</button>`;
 
     // ---- Directory tab: the club roster (COMM-231) -----------------------
     const directoryTab = renderDirectorySection();
@@ -11853,7 +11861,7 @@
     }
     if (failed.length) {
       html += `<div class="chart-card" role="alert" style="margin-bottom:10px;border-color:var(--red);">
-        <div style="font-weight:800;font-size:13.5px;color:var(--red);">${failed.length} ${failed.length === 1 ? "פעולה נכשלה" : "פעולות נכשלו"}</div>
+        <div style="font-weight:800;font-size:13.5px;color:var(--red-text);">${failed.length} ${failed.length === 1 ? "פעולה נכשלה" : "פעולות נכשלו"}</div>
         <div style="color:var(--steel);font-size:12.5px;margin:4px 0 8px;">אפשר לנסות שוב או להסיר מהתור.</div>
         ${failed.map((r) => `<div style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px;">
           <div style="font-weight:700;font-size:12.5px;">${esc(outboxActionLabel(r.action))}</div>

@@ -2348,7 +2348,7 @@ function renderLogTab() {
 
   return `
     ${renderTabHeader("add")}
-    ${!storageOK ? `<div class="footer-note" style="color:var(--red); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
+    ${!storageOK ? `<div class="footer-note" style="color:var(--red-text); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
     ${editingEntryId ? `
     <div style="background:rgba(232,185,138,.12); border:1px solid var(--brass); border-radius:12px; padding:10px 14px; margin-bottom:12px; display:flex; align-items:center; justify-content:space-between;">
       <span style="color:var(--brass); font-weight:700; font-size:13px;">עריכת סט קיים</span>
@@ -2837,9 +2837,9 @@ function renderVolumeReport() {
     const lastDate = catEntries.length ? catEntries.map((e) => e.date).sort().slice(-1)[0] : null;
     const diff = lastDate ? Math.round((new Date(todayISO()) - new Date(lastDate)) / 86400000) : null;
     let flagColor = "var(--steel)", flagBg = "rgba(138,143,151,.15)", flagText = daysAgoLabel(lastDate);
-    if (diff === null) { flagColor = "var(--red)"; flagBg = "rgba(216,69,60,.15)"; }
-    else if (diff <= 7) { flagColor = "var(--green)"; flagBg = "rgba(75,155,95,.15)"; }
-    else if (diff > 14) { flagColor = "var(--red)"; flagBg = "rgba(216,69,60,.15)"; }
+    if (diff === null) { flagColor = "var(--red-text)"; flagBg = "rgba(216,69,60,.15)"; }
+    else if (diff <= 7) { flagColor = "var(--green-text)"; flagBg = "rgba(75,155,95,.15)"; }
+    else if (diff > 14) { flagColor = "var(--red-text)"; flagBg = "rgba(216,69,60,.15)"; }
     return `
       <div class="report-row">
         <div class="flex items-center gap-8">
@@ -3001,7 +3001,7 @@ function renderHistoryTab() {
 
   return `
     ${renderTabHeader("history")}
-    ${!storageOK ? `<div class="footer-note" style="color:var(--red); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
+    ${!storageOK ? `<div class="footer-note" style="color:var(--red-text); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
     <div class="stat-row">
       <div class="stat-card" style="text-align:center;"><div class="stat-value mono" style="color:var(--brass); font-size:20px;">${prCountThisMonth}</div><div class="stat-label">שיאים החודש</div></div>
       <div class="stat-card" style="text-align:center;"><div class="stat-value mono" style="font-size:20px;">${sessionsThisWeek}</div><div class="stat-label">אימונים השבוע</div></div>
@@ -3077,7 +3077,7 @@ function renderSettingsBody() {
 
       <div class="settings-block">
         <div class="settings-block-title">נתונים וגיבוי</div>
-        <div class="footer-note"${storageOK ? "" : ' style="color:var(--red);" role="alert"'}>${storageOK ? esc(typeof cloudStorageStatusText === "function" ? cloudStorageStatusText() : "נשמר במכשיר הזה בלבד, ללא שרת") : esc(storageErrMsg || "שמירה נכשלה — בדקו את מקום האחסון")}</div>
+        <div class="footer-note"${storageOK ? "" : ' style="color:var(--red-text);" role="alert"'}>${storageOK ? esc(typeof cloudStorageStatusText === "function" ? cloudStorageStatusText() : "נשמר במכשיר הזה בלבד, ללא שרת") : esc(storageErrMsg || "שמירה נכשלה — בדקו את מקום האחסון")}</div>
         ${staleBackupNote}
         <div class="flex items-center justify-center gap-10" style="margin-bottom:8px; flex-wrap:wrap;">
           <button class="link-btn" data-action="export-data">ייצוא גיבוי</button>
@@ -3094,7 +3094,7 @@ function renderSettingsBody() {
       </div>
 
       <div class="settings-block">
-        <div class="settings-block-title" style="color:var(--red);">אזור מסוכן</div>
+        <div class="settings-block-title" style="color:var(--red-text);">אזור מסוכן</div>
         ${!confirmClear
           ? `<div style="text-align:center;"><button class="chip-btn danger" data-action="ask-clear">מחיקת כל הנתונים</button></div>`
           : `
@@ -3299,7 +3299,7 @@ function render() {
   } catch (err) {
     console.error("render error:", err);
     content = `<div style="padding:40px 16px; text-align:center;">
-      <div style="color:var(--red); font-weight:700; margin-bottom:8px;">משהו השתבש בהצגת הטאב הזה</div>
+      <div style="color:var(--red-text); font-weight:700; margin-bottom:8px;">משהו השתבש בהצגת הטאב הזה</div>
       <div style="color:var(--steel); font-size:12px;">${esc((err && err.message) ? err.message : String(err))}</div>
     </div>`;
   }
@@ -3608,7 +3608,7 @@ function renderWodBenchmarksSection() {
 function renderWodTab() {
   return `
     ${renderTabHeader("wod")}
-    ${!storageOK ? `<div class="footer-note" style="color:var(--red); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
+    ${!storageOK ? `<div class="footer-note" style="color:var(--red-text); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
     <div class="subtabbar" role="tablist">
       <button class="subtabbtn ${wodSubTab === "log" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="log" role="tab" aria-selected="${wodSubTab === "log"}" aria-controls="wodContent" tabindex="${wodSubTab === "log" ? "0" : "-1"}">רישום</button>
       <button class="subtabbtn ${wodSubTab === "history" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="history" role="tab" aria-selected="${wodSubTab === "history"}" aria-controls="wodContent" tabindex="${wodSubTab === "history" ? "0" : "-1"}">היסטוריה</button>
@@ -3957,7 +3957,7 @@ function renderWodPickerList(query) {
           </div>
           ${selectedWodId === w.id ? `<div class="dot" style="background:var(--brass);"></div>` : ""}
         </button>
-        ${w.category === "Custom" && wodEntriesFor(w.id).length === 0 ? `<button data-action="delete-custom-wod" data-id="${esc(w.id)}" aria-label="מחיקת ${esc(w.name)}" style="padding:12px; color:var(--red);">✕</button>` : ""}
+        ${w.category === "Custom" && wodEntriesFor(w.id).length === 0 ? `<button data-action="delete-custom-wod" data-id="${esc(w.id)}" aria-label="מחיקת ${esc(w.name)}" style="padding:12px; color:var(--red-text);">✕</button>` : ""}
         </div>`).join("")}
     </div>`).join("");
 }

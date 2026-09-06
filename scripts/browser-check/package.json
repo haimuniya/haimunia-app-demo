@@ -12,5 +12,8 @@
   },
   "dependencies": {
     "playwright": "^1.48.0"
+  },
+  "devDependencies": {
+    "axe-core": "^4.13.0"
   }
 }

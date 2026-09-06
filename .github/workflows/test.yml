@@ -28,6 +28,29 @@ jobs:
         # Same audit, same finding: 0 vulnerabilities today, but nothing
         # gated a future one. audit-level=high so a low/moderate advisory
         # with no fix available yet does not block every push.
+
+  # Launch-readiness audit, DEP-4. The three Edge Functions import
+  # @supabase/supabase-js straight from esm.sh at a pinned version, but had
+  # no lockfile - so the exact bytes behind that URL were never verified,
+  # and a compromised or re-published module would have been picked up
+  # silently on the next deploy. deno.lock records a sha256 per remote
+  # module; --frozen fails the build if the resolved graph no longer
+  # matches, which is the whole control.
+  edge-function-lockfiles:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: denoland/setup-deno@e95548e56dfa95d4e1a28d6f422fafe75c4c26fb # v2.0.3
+        with:
+          deno-version: v2.x
+      - name: verify each Edge Function against its lockfile
+        run: |
+          for fn in supabase/functions/*/; do
+            [ -f "$fn/index.ts" ] || continue
+            echo "--- $fn"
+            (cd "$fn" && deno cache --frozen --lock=deno.lock index.ts)
+          done
+
   browser-checks:
     runs-on: ubuntu-latest
     steps:
