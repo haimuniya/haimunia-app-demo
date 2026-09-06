@@ -38,6 +38,14 @@ client shipped ahead of its migrations answers PGRST202 on every write.
 Two real controls now exist, so this is no longer a paragraph you have to
 remember at the wrong moment:
 
+- [ ] **Take a dump first** — this is what makes a surprise recoverable:
+
+      supabase db dump --linked -f pre-audit-backup.sql
+
+  The migrations were rehearsed against representative existing data and
+  applied cleanly (`MIGRATION_REHEARSAL.md`), but that used synthetic rows,
+  not your production data.
+
 - [ ] **Run the preflight against the project you are about to deploy to:**
 
       npm run check-deploy-readiness
