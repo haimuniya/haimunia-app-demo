@@ -74,7 +74,10 @@ await page.fill('#communityProfile input[name="handle"]', "new_member");
 await page.locator("#communityProfile").evaluate((form) => form.requestSubmit());
 await page.waitForSelector(".subtabbar", { timeout: 5000 });
 check("profile completion lands in the normal tabbed Community UI", true);
-check("the carousel never reappears once a profile exists", (await page.$('[data-intro-carousel="1"]')) === null);
+// Not a reload/persistence check (this script never reloads the page) -
+// just confirming the carousel stays gone, not re-inserted, now that the
+// tabbed Community UI itself has rendered on top of it.
+check("the carousel is still absent now that the tabbed Community UI has loaded", (await page.$('[data-intro-carousel="1"]')) === null);
 
 check("no console errors", errors.length === 0, errors.join(" | "));
 

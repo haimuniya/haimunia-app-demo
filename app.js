@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.2.0";
+const APP_VERSION = "4.3.0";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -107,7 +107,11 @@ function getNavItems() {
   // "showManageTab: isAdmin" behaviour (here: coach and up, see cloud.js's
   // isStaff(), the same access these tools already had inside Account).
   if (typeof window.communityIsStaff === "function" && window.communityIsStaff()) {
-    items.push({ id: "manage", tab: "manage", rowId: "tabManageBtn", label: "ניהול", tint: "steel", icon: ICONS.settingsIcon, main: true });
+    // Redesign, Phase 3 fix: the moderation-queue badge used to live only
+    // on Community's own "חשבון" pill, which stopped meaning anything once
+    // moderation moved to Manage - see cloud.js's pendingModerationCount().
+    const badge = typeof window.communityPendingModerationCount === "function" ? window.communityPendingModerationCount() : 0;
+    items.push({ id: "manage", tab: "manage", rowId: "tabManageBtn", label: "ניהול", tint: "steel", icon: ICONS.manageTabIcon, main: true, badge });
   }
   return items;
 }
@@ -121,8 +125,8 @@ function renderBottomTabBar() {
   return getNavItems().filter((item) => item.main).map((item) => {
     const isActive = tab === item.tab;
     return `
-      <button class="tabbtn${isActive ? " active" : ""}" id="${item.rowId}" data-action="switch-tab" data-tab="${item.tab}" role="tab" aria-selected="${isActive}" aria-controls="content" tabindex="${isActive ? "0" : "-1"}">
-        ${item.icon}
+      <button class="tabbtn${isActive ? " active" : ""}" id="${item.rowId}" data-action="switch-tab" data-tab="${item.tab}" role="tab" aria-selected="${isActive}" aria-controls="content" tabindex="${isActive ? "0" : "-1"}"${item.badge ? ` aria-label="${esc(item.label)}, ${item.badge} דיווחים ממתינים"` : ""}>
+        <span style="position:relative;display:inline-flex;">${item.icon}${item.badge ? `<span class="tab-badge" aria-hidden="true" style="position:absolute;top:-4px;left:-8px;margin:0;min-width:14px;height:14px;font-size:9px;">${item.badge}</span>` : ""}</span>
         <span>${esc(item.label)}</span>
       </button>`;
   }).join("");
@@ -203,6 +207,21 @@ function renderTabHeader(navId) {
   if (!item) return "";
   return `<h1 class="page-title">${esc(item.label)}</h1>`;
 }
+// Redesign, Phase 3 fix: cloud.js's setCommunityTab() is Community's own
+// internal sub-tab switch - every existing caller assumed the top-level
+// `tab` here was already "community" (true whenever the click came from
+// inside a Community-rendered element). Once Manage became a separate
+// top-level tab, two cross-tab callers in cloud.js (a moderation-context
+// "open in feed" button, and a push-notification/deep-link tap) could fire
+// setCommunityTab() while `tab` was "manage" - state.ui.tab changed and
+// setCommunityTab's own rerender() ran, but render() still read
+// tab === "manage" and re-rendered Manage, so the button/notification
+// silently did nothing. Exposed so cloud.js can correct the top-level tab
+// first; the very next render() (triggered by setCommunityTab's own
+// rerender() right after) then actually shows Community. No render() call
+// here on purpose - firing one before state.ui.tab is updated would just
+// be a wasted extra render.
+window.switchToCommunityTopTab = function () { tab = "community"; };
 function renderNavSettingsRow() {
   return `
     <div class="divider-label">חשבון</div>
@@ -875,6 +894,32 @@ function updateNotificationsBadge() {
   badge.textContent = count > 9 ? "9+" : String(count);
   badge.style.display = count > 0 ? "flex" : "none";
 }
+// A real, user-reported bug: on Chrome/Android, "every time I open the app
+// it looks a bit up, then a scroll fixes it" - the bottom tab bar
+// specifically, confirmed by the user. Root cause: while a boot-time modal
+// (welcome / onboarding / release-notes) is open, document.body.style.overflow
+// is "hidden" (each open*() below sets it), which keeps the page unscrollable
+// - and Chrome will not collapse its own URL bar while the page can't scroll.
+// Closing the modal restores scrollability, but the browser only re-collapses
+// its chrome in response to an actual scroll gesture, not automatically. Until
+// that happens, #bottomBar/#bottomTabBar (position:fixed; bottom:0) are laid
+// out against the taller, stale viewport and sit visibly higher than their
+// real resting place - exactly "a bit up" - until the user's own first scroll
+// fixes it. A version bump (like this session's) makes this hit almost every
+// returning member on their next open, since openNotifications() below is
+// what shows them "what's new".
+//
+// Fix: nudge the browser into recalculating immediately instead of waiting
+// for the user. #app's own bottom padding (200px + safe-area-inset-bottom)
+// guarantees real scrollable room even on a short tab, so this always has
+// somewhere to move. rAF-deferred so it runs after the overflow unlock (and
+// this modal's close animation, if any) has actually taken effect.
+function nudgeViewportAfterModalClose() {
+  requestAnimationFrame(() => {
+    window.scrollBy(0, 1);
+    window.scrollBy(0, -1);
+  });
+}
 let notificationsOpenerEl = null;
 function openNotifications() {
   notificationsOpenerEl = document.activeElement;
@@ -886,6 +931,7 @@ function openNotifications() {
 }
 function closeNotifications() {
   document.body.style.overflow = "";
+  nudgeViewportAfterModalClose();
   document.getElementById("notificationsOverlay").classList.remove("open");
   if (notificationsOpenerEl && typeof notificationsOpenerEl.focus === "function") notificationsOpenerEl.focus();
   notificationsOpenerEl = null;
@@ -911,6 +957,7 @@ function closeOnboarding() {
   hasOnboarded = true;
   dbSetSetting(HAS_ONBOARDED_KEY, true).catch(noteStorageError);
   document.body.style.overflow = "";
+  nudgeViewportAfterModalClose();
   document.getElementById("onboardingOverlay").classList.remove("open");
   if (onboardingOpenerEl && typeof onboardingOpenerEl.focus === "function") onboardingOpenerEl.focus();
   onboardingOpenerEl = null;
@@ -969,7 +1016,20 @@ function emitCommunityPrCreated(entry, mov, detail) {
   // Keys match exactly what the posts-cluster PR prompt reads
   // (record_id, movement, new_result, previous_result, improvement).
   // Server recomputes improvement from the record before any post.
-  const record = { record_id: entry.id, movement: mov.name, new_result: newResult };
+  //
+  // Launch-readiness audit item 1: onPrCreatedForChallenges (cloud.js) reads
+  // a *numeric* value to drive an individual_performance challenge's
+  // progress, and new_result/previous_result/improvement above are
+  // formatted DISPLAY STRINGS ('150 ק"ג × 5', '~150 ק"ג (1RM משוער)') that
+  // must stay display strings for onPrCreated's share-prompt consumer. This
+  // is the one raw number this event actually has before formatting -
+  // detail.weight for a rep-record PR, detail.est (the estimated 1RM) for
+  // an est-1RM-only PR - added under its own key so neither consumer has to
+  // parse the other's shape.
+  const record = {
+    record_id: entry.id, movement: mov.name, new_result: newResult,
+    new_value_numeric: detail.repRecordPR ? detail.weight : detail.est,
+  };
   if (prevResult) record.previous_result = prevResult;
   if (improvement) record.improvement = improvement;
   communityPrEmitted.add(entry.id);
@@ -1069,10 +1129,18 @@ function endLadder() {
   ladderBlockLabel = null;
 }
 
-let syncApplyingRemote = false;
+// Keyed by the same `${recordType}:${id}` shape as the outbox row's own id
+// below, not a single global flag: a bare boolean blocked queueSyncRecord()
+// for EVERY record, not just the one being applied, so a local edit to a
+// different record made while a remote pull was mid-flight (there are
+// several `await`s inside applyRemotePrivateRecord below) was silently
+// dropped from the outbox and never pushed to the cloud - a real, silent
+// backup gap, not just a redundant echo-back of the record that just
+// arrived (which is the one case this guard is actually for).
+const syncApplyingRemote = new Set();
 async function queueSyncRecord(recordType, record, deleted = false) {
-  if (syncApplyingRemote) return;
   if (!record || !record.id) return;
+  if (syncApplyingRemote.has(`${recordType}:${record.id}`)) return;
   const row = { id: `${recordType}:${record.id}`, recordType, recordId: record.id, payload: deleted ? {} : record, deleted, queuedAt: Date.now() };
   try {
     await dbPutSyncOutboxRow(row);
@@ -1115,16 +1183,17 @@ async function applyRemotePrivateRecord(row) {
     : row.record_type === "measurement" ? sanitizeMeasurement(payload) : null;
   if (!deleted && !clean) return;
   if (!deleted && clean && !shouldApplyRemote(row.record_type, row.record_id, clean.ts)) return;
-  syncApplyingRemote = true;
+  const key = `${row.record_type}:${row.record_id}`;
+  syncApplyingRemote.add(key);
   try {
     if (row.record_type === "movement") deleted ? await dbDeleteMovementRecord(row.record_id) : await dbAddMovement(clean);
     else if (row.record_type === "custom_wod") deleted ? await dbDeleteCustomWod(row.record_id) : await dbAddCustomWod(clean);
     else if (row.record_type === "strength_entry") deleted ? await dbDelete(row.record_id) : await dbPut(clean);
     else if (row.record_type === "wod_entry") deleted ? await dbDeleteWodEntry(row.record_id) : await dbPutWodEntry(clean);
-    else if (row.record_type === "bodyweight" && !deleted) await dbPutBodyweight(clean);
+    else if (row.record_type === "bodyweight") deleted ? await dbDeleteBodyweight(row.record_id) : await dbPutBodyweight(clean);
     else if (row.record_type === "measure_type") deleted ? await dbDeleteMeasureType(row.record_id) : await dbAddMeasureType(clean);
     else if (row.record_type === "measurement") deleted ? await dbDeleteMeasurement(row.record_id) : await dbPutMeasurement(clean);
-  } finally { syncApplyingRemote = false; }
+  } finally { syncApplyingRemote.delete(key); }
 }
 
 function endEntryEditIfActive() {
@@ -1364,6 +1433,7 @@ function openWelcomeModal(editing) {
 }
 function closeWelcomeModal() {
   document.body.style.overflow = "";
+  nudgeViewportAfterModalClose();
   const overlay = document.getElementById("welcomeOverlay");
   if (overlay) overlay.classList.remove("open");
   if (welcomeOpenerEl && typeof welcomeOpenerEl.focus === "function") welcomeOpenerEl.focus();
@@ -2167,6 +2237,13 @@ const ICONS = {
   logIcon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6M7 7v10M17 7v10M20 9v6M7 12h10"/></svg>',
   communityIcon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M2 20c0-3.5 3-6 7-6s7 2.5 7 6"/><circle cx="17" cy="9" r="2.3"/><path d="M16.3 14c2.6.2 4.5 2.1 5 5"/></svg>',
   settingsIcon: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
+  // Redesign, Phase 3 fix: byte-identical gear glyph to settingsIcon above,
+  // just 22x22 instead of 20x20 - settingsIcon was sized for the 30px
+  // .icon-chip context (nav menu / settings row) and reusing it directly
+  // for the bottom tab bar's "ניהול" icon made it render 2px smaller than
+  // its five 22x22 siblings in the same row. Keep settingsIcon itself
+  // untouched so its existing .icon-chip usage doesn't shift.
+  manageTabIcon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
 };
 
 // ---------- Rendering ----------

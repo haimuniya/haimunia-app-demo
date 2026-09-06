@@ -86,6 +86,18 @@ test("COMM-120: tapping the reaction adds it, tapping again removes it, optimist
   assert.match(card(window).querySelector(".reaction-strip").textContent, /הגבתם/);
   assert.equal(mock.db.reactions.filter((r) => (r.kind || "cheer") === "cheer").length, 1, "one reaction row, one type");
 
+  // The launch-readiness audit added an in-flight guard to react() (same
+  // shape as pinTarget/unpinTarget's existing pinBusy) so a real double-tap
+  // can't fire toggle_reaction twice before the first response lands. In a
+  // real browser that in-flight window is a network round trip, dwarfing
+  // any human double-tap cadence; in this jsdom harness the mock resolves
+  // near-instantly, but the promise continuation still needs a real tick to
+  // run (see the other `setTimeout(r, ...)` flush waits throughout this
+  // suite) - without it this second click can land while the guard from
+  // the first click's still-settling promise is up, and get silently
+  // dropped instead of exercising the toggle-off path this test is for.
+  await new Promise((r) => setTimeout(r, 20));
+
   window.document.querySelector('[data-post-id="p1"] [data-community-action="cheer"]').click();
   await waitFor(() => mock.db.reactions.length === 0, 3000);
   await waitFor(() => !card(window).querySelector(".reaction-strip"), 3000);
@@ -202,8 +214,39 @@ test("COMM-122: deleting an own comment goes through the shared confirm dialog",
   await waitFor(() => !!window.document.getElementById("communityConfirmTitle"), 3000);
   window.document.querySelector('[data-community-action="confirm-yes"]').click();
 
-  await waitFor(() => !mock.db.post_comments.some((c) => c.id === "c1"), 3000);
+  // Bug fix: this used to be a hard DELETE (row gone entirely). It now
+  // routes through comment_delete()'s soft delete - the row survives with
+  // status='removed', which is what keeps a reply's parent_comment_id
+  // intact instead of it being silently reparented to top-level.
+  await waitFor(() => mock.db.post_comments.find((c) => c.id === "c1")?.status === "removed", 3000);
+  assert.ok(!!mock.db.post_comments.find((c) => c.id === "c1"), "the row itself still exists - a soft delete, not a hard one");
   await waitFor(() => !/למחוק אותי/.test(card(window).textContent), 3000);
+  await waitFor(() => /התגובה נמחקה/.test(card(window).textContent), 3000);
+});
+
+test("COMM-122 bug fix: deleting a parent comment with a real reply keeps the reply attached, not reparented to top-level", async () => {
+  const mock = seeded({
+    post_comments: [
+      { id: "c1", post_id: "p1", author_id: "u1", body: "הורה", parent_comment_id: null, created_at: "2026-08-28T08:00:00.000Z", status: "active", profiles: { handle: "dana", display_name: "דנה" } },
+      { id: "c2", post_id: "p1", author_id: "u2", body: "תשובה אמיתית", parent_comment_id: "c1", created_at: "2026-08-28T08:01:00.000Z", status: "active", profiles: { handle: "ron", display_name: "רון" } },
+    ],
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openFeed(window);
+  await openComments(window);
+  // Replies render collapsed behind a "N תשובות" toggle by default.
+  await waitFor(() => !!window.document.querySelector('[data-post-id="p1"] [data-community-action="toggle-replies"]'), 3000);
+  window.document.querySelector('[data-post-id="p1"] [data-community-action="toggle-replies"]').click();
+  await waitFor(() => /תשובה אמיתית/.test(card(window).textContent), 3000);
+
+  window.document.querySelector('[data-post-id="p1"] [data-community-action="delete-comment"]').click();
+  await waitFor(() => !!window.document.getElementById("communityConfirmTitle"), 3000);
+  window.document.querySelector('[data-community-action="confirm-yes"]').click();
+
+  await waitFor(() => mock.db.post_comments.find((c) => c.id === "c1")?.status === "removed", 3000);
+  assert.equal(mock.db.post_comments.find((c) => c.id === "c2").parent_comment_id, "c1",
+    "the real reply's parent_comment_id is untouched - a hard delete would have nulled it via on delete set null and silently promoted this reply to top-level");
+  await waitFor(() => /התגובה נמחקה/.test(card(window).textContent) && /תשובה אמיתית/.test(card(window).textContent), 3000);
 });
 
 test("COMM-122: a reply whose parent is gone renders a comment-removed placeholder", async () => {
@@ -248,6 +291,38 @@ test("COMM-123: a typed mention resolves to a member and rides COMMENT_CREATED a
   const stored = mock.db.post_comments.find((c) => c.author_id === "u1");
   assert.match(stored.body, /@\[רון\]\(11111111-1111-1111-1111-111111111111\)/, "the marker is stored id-keyed, not by display string");
   assert.ok(events.length && events[events.length - 1].mentions.some((m) => m.user_id === RON_ID), "the mention rode the event as a signal");
+});
+
+// Bug fix regression test: addComment() used to call add_post_comment's
+// 3-arg overload (no p_mentions), which PostgREST resolves to the version
+// that never writes comment_mentions - so notif_on_mention's trigger never
+// fired and a mention has never once produced a real notification, despite
+// the COMMENT_CREATED bus event above (a client-side analytics signal only)
+// looking like it worked. This asserts the actual RPC call carries
+// p_mentions, the one thing that routes to the real 4-arg overload.
+test("COMM-123 bug fix: a resolved mention is sent as p_mentions, so the server side that actually notifies the target member fires", async () => {
+  const mock = seeded({
+    profiles: [
+      { id: "u1", handle: "dana", display_name: "דנה", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true },
+      { id: RON_ID, handle: "ron", display_name: "רון", visible_to_club: true },
+    ],
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openFeed(window);
+  await openComments(window);
+
+  const input = window.document.querySelector('[data-comment-post-id="p1"] input[data-comment-input]');
+  fireInput(window, input, "@ro");
+  await waitFor(() => !!window.document.querySelector('.mention-picker [data-community-action="mention-pick"]'), 3000);
+  window.document.querySelector('.mention-picker [data-community-action="mention-pick"]').click();
+  await waitFor(() => window.document.querySelector('[data-comment-post-id="p1"] input[data-comment-input]').value.indexOf("@[רון](" + RON_ID + ")") === 0, 3000);
+  submit(window, window.document.querySelector('form[data-comment-post-id="p1"]:not([data-comment-parent-id])'));
+
+  await waitFor(() => mock.db.post_comments.some((c) => c.author_id === "u1"), 3000);
+  const comment = mock.db.post_comments.find((c) => c.author_id === "u1");
+  await waitFor(() => mock.db.comment_mentions.some((m) => m.comment_id === comment.id), 3000);
+  assert.ok(mock.db.comment_mentions.some((m) => m.comment_id === comment.id && m.mentioned_user_id === RON_ID),
+    "a real comment_mentions row exists for the mentioned member - the row the server's notif_on_mention trigger fires from");
 });
 
 test("COMM-123: a mention of a member with allow_mentions off renders as plain text and sends no signal", async () => {

@@ -347,6 +347,53 @@ test("the audit view is gated on community.analytics.view and reads admin_action
   assert.match(w2.document.body.textContent, /הצמדת תוכן/, "an audit row renders");
 });
 
+// Launch-readiness audit bug fix: 6 action_type values and 3 target_type
+// values already live in admin_actions' own CHECK constraints
+// (invite/shared-code/onboarding/password-reset actions, shipped across
+// 202609030001, 202609030002, 202609030004 and 202609050001) had no client
+// label at all, so the log rendered raw English next to every other row's
+// Hebrew - the exact bug COMM-154 already fixed once for a different three.
+test("every admin_actions action_type and target_type the schema allows has a Hebrew audit-log label, not raw English", async () => {
+  const mock = baseMock({
+    profiles: [
+      { id: "adm-1", handle: "adm", display_name: "מנהל", is_admin: true, recovery_verified_at: VERIFIED, visible_to_club: true },
+    ],
+    invite_redemptions: [
+      { user_id: "adm-1", invite_id: "i1", role: "member", redeemed_at: VERIFIED },
+    ],
+    admin_actions: [
+      { id: "aa-1", admin_id: "adm-1", action_type: "invite_created", target_type: "invite", target_id: "inv-9", before_data: null, after_data: null, created_at: VERIFIED },
+      { id: "aa-2", admin_id: "adm-1", action_type: "invite_revoked", target_type: "invite_code", target_id: "code-9", before_data: null, after_data: null, created_at: VERIFIED },
+      { id: "aa-3", admin_id: "adm-1", action_type: "shared_code_created", target_type: "invite_code", target_id: "code-8", before_data: null, after_data: null, created_at: VERIFIED },
+      { id: "aa-4", admin_id: "adm-1", action_type: "shared_code_status_changed", target_type: "invite_code", target_id: "code-8", before_data: null, after_data: null, created_at: VERIFIED },
+      { id: "aa-5", admin_id: "adm-1", action_type: "onboarding_content_updated", target_type: "onboarding_step", target_id: "step-1", before_data: null, after_data: null, created_at: VERIFIED },
+      { id: "aa-6", admin_id: "adm-1", action_type: "member_password_reset", target_type: "member", target_id: "u1", before_data: null, after_data: null, created_at: VERIFIED },
+    ],
+  });
+  mock.setUser({ id: "adm-1", is_anonymous: false, email: "adm@members.haimuniya.invalid" });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openManageModeration(window);
+  await waitFor(() => /יומן פעולות ניהול/.test(window.document.body.textContent), 3000);
+  // The heading renders before loadAuditLog()'s admin_actions_page() round
+  // trip resolves - wait for the real row list, not just the section shell.
+  await waitFor(() => /שלב קליטה/.test(window.document.body.textContent), 3000);
+  const body = window.document.body.textContent;
+  for (const raw of ["invite_created", "invite_revoked", "shared_code_created", "shared_code_status_changed", "onboarding_content_updated", "member_password_reset", "invite_code", "onboarding_step"]) {
+    assert.doesNotMatch(body, new RegExp(raw), `${raw} never renders as raw English`);
+  }
+  assert.match(body, /יצירת הזמנה/);
+  assert.match(body, /ביטול הזמנה/);
+  assert.match(body, /יצירת קוד שיתוף/);
+  assert.match(body, /שינוי סטטוס קוד שיתוף/);
+  assert.match(body, /עדכון תוכן קליטה/);
+  assert.match(body, /איפוס סיסמה לחבר\/ה/);
+  assert.match(body, /קוד הזמנה/);
+  assert.match(body, /שלב קליטה/);
+  // The filter row's chip list is the other half of AUDIT_ACTION_TYPES -
+  // a type missing from that array has no way to filter down to it.
+  assert.ok(window.document.querySelector('[data-community-action="audit-filter"][data-type="member_password_reset"]'), "the new type has its own filter chip");
+});
+
 // ===== COMM-155 pins ================================================
 
 test("the pinned strip renders at the top of the feed and a fourth pin is refused with a clear message", async () => {

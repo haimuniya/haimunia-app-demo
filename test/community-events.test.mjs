@@ -383,3 +383,131 @@ test("notifResolveTarget routes an event_cancelled deep link to the event, not t
   const target = window.notifResolveTarget({ deep_link: "/community/feed?event=abc-123", type: "event_cancelled" });
   assert.deepEqual(target, { tab: "feed", event: "abc-123" });
 });
+
+// Launch-readiness audit bug fix: start_at/end_at/registration_deadline are
+// stored as UTC ISO, but formatEventDate/formatEventTime used to render a
+// bare string slice of that UTC value - the wrong wall-clock time for
+// anyone off UTC, and (via openEventForm's identically-broken prefill)
+// silently shifted an event's stored instant on every edit that never
+// touched the time fields, since datetime-local's value has no zone of
+// its own and submitEventForm reinterprets it as local time.
+test("an event's date and time render in the viewer's local clock, not a raw UTC slice of the stored ISO value", async () => {
+  const start = iso(24);
+  const mock = seeded({
+    events: [{ id: "e1", event_type: "workshop", title: "אימון בוקר", description: "", status: "published", start_at: start, end_at: null, location: null, capacity: null, registration_deadline: null, created_by: "coach1" }],
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openBoards(window);
+  await waitFor(() => !!window.document.querySelector('[data-event-id="e1"]'), 3000);
+  const d = new Date(start);
+  const pad = (n) => String(n).padStart(2, "0");
+  const expectedDate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const expectedTime = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const cardText = window.document.querySelector('[data-event-id="e1"]').textContent;
+  assert.ok(cardText.includes(expectedDate), `expected local date ${expectedDate} in card text: ${cardText}`);
+  assert.ok(cardText.includes(expectedTime), `expected local time ${expectedTime} in card text: ${cardText}`);
+});
+
+test("editing an event without touching its time fields preserves the exact stored instant - no timezone drift on save", async () => {
+  const d = new Date(Date.now() + 90 * 60000);
+  d.setSeconds(0, 0);
+  const originalStart = d.toISOString();
+  const pad = (n) => String(n).padStart(2, "0");
+  const local = new Date(originalStart);
+  const expectedInputValue = `${local.getFullYear()}-${pad(local.getMonth() + 1)}-${pad(local.getDate())}T${pad(local.getHours())}:${pad(local.getMinutes())}`;
+  const mock = seeded({
+    events: [{ id: "e1", event_type: "workshop", title: "אימון קבוע", description: "", status: "published", start_at: originalStart, end_at: null, location: null, capacity: null, registration_deadline: null, created_by: "coach1" }],
+  }, true);
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openBoards(window);
+  await waitFor(() => !!window.document.querySelector('[data-event-id="e1"]'), 3000);
+  openEventCard(window, "e1");
+  await waitFor(() => !!eventViewDialog(window), 3000);
+  await waitFor(() => !!eventViewDialog(window).querySelector('[data-community-action="event-edit"]'), 3000);
+  eventViewDialog(window).querySelector('[data-community-action="event-edit"]').click();
+  await waitFor(() => !!window.document.getElementById("communityEventForm"), 3000);
+  // Editing from the detail dialog must close it (COMM edit-from-dialog fix)
+  // rather than leaving the form invisible behind the still-open overlay.
+  assert.equal(eventViewDialog(window), null, "opening the edit form from the detail dialog closes it");
+  const startInput = window.document.querySelector('#communityEventForm [name="startAt"]');
+  assert.equal(startInput.value, expectedInputValue, "the prefilled value is the local wall-clock time, not a UTC slice");
+  submit(window, "communityEventForm");
+  await waitFor(() => window.document.getElementById("communityEventForm") == null, 3000);
+  const saved = mock.db.events.find((e) => e.id === "e1");
+  assert.equal(saved.start_at, originalStart, "an untouched edit round-trips the exact same instant");
+});
+
+test("editing an event opened from the feed top area (not Boards) closes the detail dialog and lands on the reachable Boards form", async () => {
+  const mock = seeded({
+    events: [{ id: "e1", event_type: "workshop", title: "סדנת ריצה", description: "", status: "published", start_at: iso(6), end_at: null, location: null, capacity: null, registration_deadline: null, created_by: "coach1" }],
+  }, true);
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  await waitFor(() => !!window.document.querySelector('[data-event-id="e1"] [data-community-action="open-event"]'), 3000);
+  window.document.querySelector('[data-event-id="e1"] [data-community-action="open-event"]').click();
+  await waitFor(() => !!eventViewDialog(window), 3000);
+  await waitFor(() => !!eventViewDialog(window).querySelector('[data-community-action="event-edit"]'), 3000);
+  eventViewDialog(window).querySelector('[data-community-action="event-edit"]').click();
+  // The form only ever renders inside Boards' own section, so successfully
+  // finding it here proves both the dialog closed AND the top-level tab
+  // switched to Boards - not just a dead click from the feed sub-tab.
+  await waitFor(() => !!window.document.getElementById("communityEventForm"), 3000);
+  assert.equal(eventViewDialog(window), null, "the detail dialog closes when opening the edit form");
+  assert.ok(window.document.body.textContent.includes("אירועי המועדון"), "Boards is now the active sub-tab");
+});
+
+test("a companion-post failure on publish surfaces a real error and stays fixable via a retry, instead of a silently comment-less published event", async () => {
+  const mock = seeded({}, true);
+  // No onRpc("post_create", ...) handler is registered, so the mock's own
+  // catch-all fallback answers { data: null, error: null } - the same
+  // "no post id came back" shape ensureEventCompanionPost() treats as a
+  // real failure.
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openBoards(window);
+  window.document.querySelector('[data-community-action="open-event-form"]').click();
+  await waitFor(() => !!window.document.getElementById("communityEventForm"), 3000);
+  const form = window.document.getElementById("communityEventForm");
+  form.querySelector('[name="title"]').value = "אירוע ללא פוסט";
+  form.querySelector('[name="startAt"]').value = "2027-05-01T18:00";
+  form.querySelector('[name="publishNow"]').checked = true;
+  submit(window, "communityEventForm");
+  await waitFor(() => mock.db.events.some((e) => e.title === "אירוע ללא פוסט"), 3000);
+  const created = mock.db.events.find((e) => e.title === "אירוע ללא פוסט");
+  assert.equal(created.status, "published", "the event itself still saves even though its companion post failed");
+  await waitFor(() => window.document.body.textContent.includes("יצירת פוסט הדיון נכשלה"), 3000);
+  openEventCard(window, created.id);
+  await waitFor(() => !!eventViewDialog(window), 3000);
+  await waitFor(() => !!eventViewDialog(window).querySelector('[data-community-action="event-companion-retry"]'), 3000);
+  mock.onRpc("post_create", (args, ctx) => {
+    const id = "post-retry";
+    ctx.db.workout_posts = ctx.db.workout_posts || [];
+    ctx.db.workout_posts.push({ id, author_id: ctx.currentUser && ctx.currentUser.id, post_type: "POST_TEXT", body: args.body, visibility: args.visibility, metadata: {}, status: "active", created_at: new Date().toISOString() });
+    return { data: id, error: null };
+  });
+  eventViewDialog(window).querySelector('[data-community-action="event-companion-retry"]').click();
+  await waitFor(() => mock.db.workout_posts.some((p) => p.post_type === "POST_EVENT" && p.metadata && p.metadata.event_id === created.id), 3000);
+});
+
+test("buildEventIcs folds a long line to RFC 5545's 75-octet limit with a CRLF-space continuation, never splitting a multi-byte character", async () => {
+  const window = await bootCommunity(seeded(), { syncEnabled: false });
+  const longDescription = "תיאור ארוך מאוד לאירוע שאמור לחצות את הגבול של שבעים וחמישה בייטים בקידוד UTF-8 ולהיות מקופל לשורה חדשה כמו שדורש התקן";
+  const ics = window.buildEventIcs({
+    id: "e1", title: "אירוע", description: longDescription, location: null,
+    start_at: "2027-03-01T09:00:00.000Z", end_at: null,
+  }, "https://app.example/community/feed?event=e1");
+  const rawLines = ics.split("\r\n");
+  for (const line of rawLines) {
+    const byteLen = [...line].reduce((n, ch) => n + (ch.codePointAt(0) < 0x80 ? 1 : ch.codePointAt(0) < 0x800 ? 2 : ch.codePointAt(0) < 0x10000 ? 3 : 4), 0);
+    // A continuation line's leading space counts toward its own 75-octet
+    // budget, so allow exactly 75; nothing may exceed it.
+    assert.ok(byteLen <= 75, `line exceeds 75 octets (${byteLen}): ${JSON.stringify(line)}`);
+  }
+  assert.ok(rawLines.some((l) => l.startsWith(" ")), "the long DESCRIPTION line folds onto a continuation line prefixed by a space");
+  // Rejoining the folded continuation (stripping exactly one leading space
+  // per RFC 5545) must reconstitute the original, un-mangled description -
+  // proof no multi-byte Hebrew character was cut across a fold boundary.
+  const unfolded = ics.split("\r\n").reduce((acc, line) => (line.startsWith(" ") ? acc + line.slice(1) : (acc ? acc + "\r\n" + line : line)), "");
+  assert.match(unfolded, /DESCRIPTION:/);
+  assert.ok(unfolded.includes(longDescription.slice(0, 20)), "the description survives folding intact");
+});

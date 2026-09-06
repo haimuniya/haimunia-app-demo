@@ -259,6 +259,33 @@ test("opening comments records an open interaction and flips opened", async () =
   assert.equal(mock.db.feed_impressions[0].opened, true);
 });
 
+// Launch-readiness audit bug fix (202609060010): feed_record_interaction's
+// opened/engaged back-stamp used to be scoped only by user_id + post_id, so
+// an interaction in today's session flipped every impression that member
+// ever had for that post - including ones from long-past, unrelated
+// sessions. It has to land only on the impression row from the CURRENT
+// session's feed_session_id.
+test("an interaction only flips opened/engaged on the current session's impression, never a stale one from an earlier session", async () => {
+  const mock = seeded([row(1)]);
+  // A stale impression from a completely different, earlier session -
+  // exactly what a member who scrolled past this post yesterday would have.
+  mock.db.feed_impressions.push({ user_id: "u1", post_id: "p1", position: 0, feed_session_id: "old-session", shown_at: new Date(Date.now() - 86400000).toISOString(), opened: false, engaged: false });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openFeed(window);
+  await dwell();
+  window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();
+  await waitFor(() => mock.db.feed_impressions.some((i) => i.feed_session_id !== "old-session"), 3000);
+  window.document.querySelector('[data-community-action="set-tab"][data-tab="feed"]').click();
+  await waitFor(() => renderedIds(window).length === 1, 3000);
+
+  window.document.querySelector('[data-post-id="p1"] [data-community-action="toggle-comments"]').click();
+  await waitFor(() => mock.db.feed_interactions.some((i) => i.kind === "open" && i.post_id === "p1"), 3000);
+  const stale = mock.db.feed_impressions.find((i) => i.feed_session_id === "old-session");
+  const current = mock.db.feed_impressions.find((i) => i.feed_session_id !== "old-session");
+  assert.equal(stale.opened, false, "yesterday's impression is untouched by today's interaction");
+  assert.equal(current.opened, true, "this session's own impression is the one that flips");
+});
+
 test("react, hide, save and profile open each record their own interaction kind", async () => {
   const mock = seeded([row(1, { author_id: "u2" })]);
   const window = await bootCommunity(mock, { syncEnabled: false });

@@ -209,8 +209,12 @@ select results_eq(
      from public.workout_posts p
      where p.post_type = 'POST_ATTENDANCE_MILESTONE'
        and (p.metadata ->> 'member_id') = tests.uid('m1')::text $$,
+  -- The literal is the definition's shipped Hebrew name. It was the English
+  -- placeholder '25 classes' until 202609060008 replaced the copy on all four
+  -- ATTENDANCE_RECORDED rows; the assertion below this one is the one that
+  -- pins label-follows-definition regardless of what the copy says.
   format($$ values ('POST_ATTENDANCE_MILESTONE', 'club', 'active',
-                    null::uuid, 'member', %L::uuid, '25 classes', 25) $$,
+                    null::uuid, 'member', %L::uuid, '25 שיעורים', 25) $$,
          tests.uid('m1')::text),
   'the post is authorless, club-visible and active, with source_type member - the same shape post_new_member_on_join and challenge_progress_apply''s cooperative milestone already write - and metadata carries the milestone_label and count keys renderAttendanceMilestonePostCard has read since Phase 1');
 
@@ -333,7 +337,8 @@ select results_eq(
      from public.workout_posts p
      where p.post_type = 'POST_ATTENDANCE_MILESTONE'
        and (p.metadata ->> 'member_id') = tests.uid('m3')::text $$,
-  $$ values (100, '100 classes') $$,
+  -- Hebrew since 202609060008 replaced the English placeholder copy.
+  $$ values (100, '100 שיעורים') $$,
   'and posts it, because the toggle is on now - exactly one post for this member, carrying the hundred and not the twenty-five they crossed in private');
 
 -- =====================================================================
@@ -360,7 +365,7 @@ insert into public.workout_posts
   (author_id, post_type, visibility, body, metadata, status, published_at, source_type, source_id)
 values (
   null, 'POST_ATTENDANCE_MILESTONE', 'club', 'planted by the test',
-  jsonb_build_object('member_id', tests.uid('norec'), 'milestone_label', '25 classes', 'count', 25),
+  jsonb_build_object('member_id', tests.uid('norec'), 'milestone_label', '25 שיעורים', 'count', 25),
   'active', now(), 'member', tests.uid('norec'));
 
 insert into public.attendance_log (user_id, occurred_on)

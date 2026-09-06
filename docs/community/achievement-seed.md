@@ -91,6 +91,55 @@ on conflict (code) do update set
   config = excluded.config;
 ```
 
+## The four attendance rows
+
+These are **not** part of the seed block above and are not inserted by it.
+They were created by `202608280007` as deliberate placeholders — English
+name, English description, no icon, `enabled = false` — to be switched on
+once a real attendance source existed. `202608310007` built that source and
+flipped the flag with a single
+
+```sql
+update public.achievement_definitions set enabled = true
+where trigger_type = 'ATTENDANCE_RECORDED' and not enabled;
+```
+
+and never came back for the copy. So four placeholders became four live
+producers in one statement, and `attendance_first_class` has `threshold 1`,
+which means it fires for essentially every member on their first synced
+session. The English reached the unlock sheet, "ההישגים שלי", the
+notification, the monthly recap, and `metadata.milestone_label` on the club
+feed card that `attendance_milestones_on_log` writes.
+
+`202609060008` replaced the copy. The current content of the four rows, for
+reference — it is an `update ... where code = ...` per row, not an insert,
+because the rows have existed since Phase 0:
+
+| code | name | description | icon | threshold | repeatable |
+| --- | --- | --- | --- | --- | --- |
+| `attendance_first_class` | השיעור הראשון | השתתפות ראשונה בשיעור במועדון | 👋 | 1 | no |
+| `attendance_25_classes` | 25 שיעורים | נוכחות ב-25 שיעורים במועדון | 💪 | 25 | no |
+| `attendance_100_classes` | 100 שיעורים | נוכחות ב-100 שיעורים במועדון | 💯 | 100 | no |
+| `attendance_weekly_streak` | רצף שבועי | נוכחות בכל שבוע, ארבעה שבועות ברצף | ⚡ | 4 | yes |
+
+Rules these four follow, beyond the general ones above:
+
+- The wording says **שיעור** and **נוכחות**, never **רישום אימון**. That
+  distinction is the whole reason these exist beside `sessions_25` and
+  `consistency_weeks_4`: those count what the member wrote in their own log,
+  these count verified `attendance_log` rows. Copy that blurred it would make
+  two different badges read as a duplicate.
+- None is `client_claimable` and all four have an empty `config`. The count
+  comes from `attendance_log`, which the browser cannot compute or inflate,
+  so `ach_claim` refuses these codes outright and only
+  `attendance_milestones_on_log` writes them.
+- The four icons (👋 💪 💯 ⚡) collide with none of the 27 above, so a badge
+  stays identifiable at a glance in a list.
+- `attendance_weekly_streak` is the only repeatable one. Its description says
+  "ארבעה שבועות ברצף" rather than naming a total, because `202608310007`'s
+  fresh-crossing rule re-fires it on week 4 of each later run after a streak
+  is broken and rebuilt.
+
 ## Client mirror
 
 `communityMilestoneCodes()` in `app.js` evaluates the `client_claimable`

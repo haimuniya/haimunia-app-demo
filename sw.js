@@ -2,7 +2,7 @@
 // Version is the single source of truth for the cache name — bumping
 // APP_VERSION in app.js is what ships an update. Don't edit SW_VERSION by
 // hand: run `npm run sync-version` (see app.js) to copy it here.
-const SW_VERSION = "4.2.0";
+const SW_VERSION = "4.3.0";
 // "haimunia-demo-v..." — deliberately distinct from the production app's
 // own "haimunia-v..." cache prefix. Both service workers are scoped to
 // the same origin (haimuniya.github.io), and the activate handler below
@@ -47,8 +47,12 @@ const OPTIONAL_ASSETS = [
   "./src/realtime.js",
   "./src/image.js",
   "./vendor/supabase.js",
-  "./PRIVACY.md",
-  "./TERMS.md",
+  // Settings links to these two styled pages (app.js), not the raw .md
+  // source files - precaching the .md files meant the actual legal pages
+  // a member taps were never cached and silently fell back to the network
+  // (or failed) offline.
+  "./privacy.html",
+  "./terms.html",
   "./manifest.json",
   "./icon-192.png",
   "./icon-512.png",

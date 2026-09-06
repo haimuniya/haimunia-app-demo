@@ -124,7 +124,7 @@ function groupRows(window, group) {
 
 // ===== COMM-209 challenge realtime progress ============================
 
-test("COMM-209: opening a challenge detail opens exactly two channels, filtered to that challenge, on challenge_progress INSERT and challenge_participants UPDATE", async () => {
+test("COMM-209: opening a challenge detail opens exactly two channels, filtered to that challenge, on challenge_progress INSERT and every challenge_participants event", async () => {
   const mock = seeded({
     challenges: [coopChallenge],
     challenge_participants: [{ challenge_id: "c1", user_id: "u1", status: "active", progress_value: 40, joined_at: iso(-2), team_id: null }],
@@ -139,8 +139,12 @@ test("COMM-209: opening a challenge detail opens exactly two channels, filtered 
   assert.deepStrictEqual(bindingFor(mock, "chal-progress-c1"), {
     event: "INSERT", schema: "public", table: "challenge_progress", filter: "challenge_id=eq.c1",
   });
+  // Launch-readiness audit item 3: UPDATE-only missed another member's
+  // join (INSERT) or leave (DELETE) on challenge_participants while this
+  // detail was open. Widened to the postgres_changes wildcard so all three
+  // event types land on the one channel/binding.
   assert.deepStrictEqual(bindingFor(mock, "chal-participants-c1"), {
-    event: "UPDATE", schema: "public", table: "challenge_participants", filter: "challenge_id=eq.c1",
+    event: "*", schema: "public", table: "challenge_participants", filter: "challenge_id=eq.c1",
   });
   // One detail screen stays far under the harness cap.
   assert.ok(window.HaimuniaRealtime.count() <= window.HaimuniaRealtime.MAX_SUBSCRIPTIONS);
@@ -190,6 +194,52 @@ test("COMM-209: a burst of contributions is debounced into one re-read, not one 
   await waitFor(() => /50 \/ 100/.test(dialogText(window)), 4000);
   await new Promise((r) => setTimeout(r, 600));
   assert.strictEqual(mock.callsTo("chal_progress").length - before, 1, "six events, one re-read");
+});
+
+// Launch-readiness audit item 3. Before this fix the challenge_participants
+// channel was filtered to UPDATE only, so another member joining (INSERT)
+// or leaving (DELETE) this challenge while the detail was open never
+// triggered a live refresh - the participant list/count went stale until
+// the viewer closed and reopened the dialog.
+test("COMM-209: another member joining live (an INSERT on challenge_participants) refreshes the open detail's participant list and count", async () => {
+  const mock = seeded({
+    challenges: [coopChallenge],
+    challenge_participants: [{ challenge_id: "c1", user_id: "u1", status: "active", progress_value: 40, joined_at: iso(-2), team_id: null }],
+    challenge_progress: [{ id: "cp1", challenge_id: "c1", user_id: "u1", delta: 40, created_at: iso(-1) }],
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCoopDetail(window);
+  assert.match(dialogText(window), /משתתפים \(1\)/);
+
+  // The row lands server-side (another member's own join), then the
+  // channel pushes the event - the payload itself is never trusted, the
+  // client re-reads the participant list and chal_progress().
+  mock.db.challenge_participants.push({ challenge_id: "c1", user_id: "u2", status: "active", progress_value: 0, joined_at: new Date().toISOString(), team_id: null, profiles: { display_name: "נועם", handle: "noam", avatar_url: null, visible_to_club: true } });
+  assert.strictEqual(mock.emitRealtime("chal-participants-c1", { eventType: "INSERT", new: { challenge_id: "c1", user_id: "u2" } }), 1);
+
+  await waitFor(() => /משתתפים \(2\)/.test(dialogText(window)), 4000);
+  assert.match(dialogText(window), /נועם/, "the newly joined member's name renders without a reopen");
+});
+
+test("COMM-209: another member leaving live (a DELETE on challenge_participants) refreshes the open detail's participant list and count", async () => {
+  const mock = seeded({
+    challenges: [coopChallenge],
+    challenge_participants: [
+      { challenge_id: "c1", user_id: "u1", status: "active", progress_value: 40, joined_at: iso(-2), team_id: null },
+      { challenge_id: "c1", user_id: "u2", status: "active", progress_value: 0, joined_at: iso(-1), team_id: null, profiles: { display_name: "נועם", handle: "noam", avatar_url: null, visible_to_club: true } },
+    ],
+    challenge_progress: [{ id: "cp1", challenge_id: "c1", user_id: "u1", delta: 40, created_at: iso(-1) }],
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCoopDetail(window);
+  await waitFor(() => /משתתפים \(2\)/.test(dialogText(window)), 4000);
+  assert.match(dialogText(window), /נועם/);
+
+  mock.db.challenge_participants = mock.db.challenge_participants.filter((p) => p.user_id !== "u2");
+  assert.strictEqual(mock.emitRealtime("chal-participants-c1", { eventType: "DELETE", old: { challenge_id: "c1", user_id: "u2" } }), 1);
+
+  await waitFor(() => /משתתפים \(1\)/.test(dialogText(window)), 4000);
+  assert.doesNotMatch(dialogText(window), /נועם/, "the departed member's name is gone without a reopen");
 });
 
 test("COMM-209: closing the detail closes its channels, and so does leaving the sub-tab", async () => {

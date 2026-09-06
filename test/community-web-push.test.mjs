@@ -105,9 +105,9 @@ test("with the flag off (V1 default), Push stays disabled even on a browser that
   stubPushApis(window);
   await openAccount(window);
 
-  const push = window.document.querySelector('[data-community-action="notif-pref"][data-type="comments"][data-channel="push"]');
+  const push = window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_on_post"][data-channel="push"]');
   assert.ok(push.disabled, "Push is disabled while the flag is off");
-  assert.match(window.document.querySelector('[data-community-action="notif-pref"][data-type="comments"]').closest(".log-row").textContent, /בקרוב/);
+  assert.match(window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_on_post"]').closest(".log-row").textContent, /בקרוב/);
 
   push.click();
   await new Promise((r) => setTimeout(r, 30));
@@ -174,8 +174,8 @@ test("a device that is already subscribed does not re-prompt when a second type 
   await openAccount(window);
 
   // First switch loads this device's existing subscription status.
-  window.document.querySelector('[data-community-action="notif-pref"][data-type="comments"][data-channel="push"]').click();
-  await waitFor(() => mock.db.notification_preferences.some((r) => r.type === "comments" && r.channel === "push"), 4000);
+  window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_on_post"][data-channel="push"]').click();
+  await waitFor(() => mock.db.notification_preferences.some((r) => r.type === "comment_on_post" && r.channel === "push"), 4000);
   const promptsAfterFirst = push.calls.requestPermission;
   const subscribesAfterFirst = push.calls.subscribe;
 
@@ -196,7 +196,7 @@ test("flag on, a browser with no Push API: the option is disabled with a real ex
   // PushManager nor Notification.
   await openAccount(window);
 
-  const btn = window.document.querySelector('[data-community-action="notif-pref"][data-type="comments"][data-channel="push"]');
+  const btn = window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_on_post"][data-channel="push"]');
   assert.ok(btn.disabled);
   const row = btn.closest(".log-row");
   assert.match(row.textContent, /לא תומך בהתראות דחיפה/);
@@ -210,7 +210,7 @@ test("flag on, iOS Safari without an installed PWA: the option is disabled with 
   stubIOSNonStandalone(window);
   await openAccount(window);
 
-  const btn = window.document.querySelector('[data-community-action="notif-pref"][data-type="comments"][data-channel="push"]');
+  const btn = window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_on_post"][data-channel="push"]');
   assert.ok(btn.disabled);
   assert.match(btn.closest(".log-row").textContent, /להוסיף את האפליקציה למסך הבית/);
 });
@@ -239,7 +239,7 @@ test("a permission revoked outside the app is detected on the next load and mark
   const push = stubPushApis(window);
   await openAccount(window);
 
-  window.document.querySelector('[data-community-action="notif-pref"][data-type="comments"][data-channel="push"]').click();
+  window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_on_post"][data-channel="push"]').click();
   await waitFor(() => mock.db.push_subscriptions.length === 1, 4000);
   assert.equal(mock.db.push_subscriptions[0].revoked_at, null);
 

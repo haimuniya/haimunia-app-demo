@@ -43,10 +43,14 @@ test("the direct INSERT grant is revoked on all three tables, so the RPC can't b
 });
 
 test("cloud.js calls the new RPCs instead of writing to the tables directly, and surfaces a rate-limited message", () => {
-  // COMM-121 wired the parent argument through, so add_post_comment is now
-  // the three-argument form. The two-argument wrapper still exists in SQL for
-  // any older caller (asserted above), but the client uses the new one.
-  assert.match(cloudJs, /client\.rpc\("add_post_comment", \{ p_post_id: postId, p_body: resolved\.stored, p_parent_comment_id: parentCommentId \|\| null \}\)/);
+  // COMM-121 wired the parent argument through; a later bug fix added
+  // p_mentions so this resolves to the real 4-arg overload that actually
+  // writes comment_mentions (the 3-arg form silently dropped every
+  // mention's notification - see community-engagement-cluster.test.mjs's
+  // own regression test for that). The two-argument wrapper still exists
+  // in SQL for any older caller (asserted above), but the client uses the
+  // 4-arg one.
+  assert.match(cloudJs, /client\.rpc\("add_post_comment", \{ p_post_id: postId, p_body: resolved\.stored, p_parent_comment_id: parentCommentId \|\| null, p_mentions: resolved\.mentions\.map\(\(m\) => m\.user_id\) \}\)/);
   assert.match(cloudJs, /client\.rpc\("toggle_reaction", \{ p_post_id: postId \}\)/);
   // COMM-151 replaced submit_report with report(p_target_type, p_target_id,
   // p_reason, p_note), so a comment can be reported too. The two-argument

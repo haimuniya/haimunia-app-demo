@@ -53,14 +53,21 @@ whole of "support" for this app.
   which community content you view or interact with (for example, opening
   the feed, viewing a post, or visiting a profile) — not the training-log
   data itself, just that an interaction happened and when. This is
-  aggregated into club-wide participation metrics (such as how active the
-  community is week to week) and into a per-member engagement signal (for
-  example, flagging that a member's participation appears to be trending
-  down) that coaches and admins can see, so they can reach out rather than
-  a member quietly drifting away unnoticed. This data is kept for 90 days
-  and then deleted; it is never sold or shared outside the coaching team,
-  and it is not used to make any automated decision about you — only to
-  prompt a human coach to check in.
+  aggregated into club-wide participation metrics, such as how active the
+  community is week to week. This data is kept for 90 days and then
+  deleted; it is never sold or shared outside the coaching team, and it is
+  not used to make any automated decision about you.
+- **Attendance-based coach engagement signal.** Separately from the above,
+  your class attendance history (not what you view or click in the app) is
+  used to compute a simple week-to-week attendance rate for you and compare
+  it against your own recent baseline. If that comparison shows your
+  attendance trending down, coaches and admins can see the flag — your
+  baseline rate and your recent rate, not a detailed log — so they can
+  reach out rather than a member quietly drifting away unnoticed. It is not
+  used to make any automated decision about you, only to prompt a human
+  coach to check in, and a coach can dismiss a flag once reviewed. This
+  signal is not currently deleted on a fixed schedule; it persists until a
+  coach reviews or dismisses it.
 
 We do not collect government ID, precise location, financial account
 numbers, or biometric data, and we do not use any of the above for
@@ -103,11 +110,12 @@ only hidden in the app's screens.
   policy set by admins can also make attendance visible to admins even when
   a member's own attendance toggle is off; it does not override any other
   privacy toggle.
-- **Coaches and admins** can also see the per-member engagement signal
-  described above (a general "trending down" flag, not a detailed log of
-  what you viewed or when) — this is separate from, and not limited by,
-  your own profile-visibility toggles, since it exists specifically to
-  support outreach from the people already responsible for the club.
+- **Coaches and admins** can also see the attendance-based engagement
+  signal described above (a general "trending down" flag built from your
+  attendance rate, not a log of what you viewed or clicked) — this is
+  separate from, and not limited by, your own profile-visibility toggles,
+  since it exists specifically to support outreach from the people already
+  responsible for the club.
 - **We (the coaching team)** and our subprocessors below can access data as
   needed to run, secure, and support the service. We do not sell personal
   information, and we do not share it with third parties for their own
@@ -149,8 +157,11 @@ follow our hosting provider's own standard backup-rotation and log-retention
 windows — we don't separately extend those windows or track them by an
 exact day count, and they are not used for anything beyond restoring
 service or investigating abuse before they age out. The engagement and
-usage analytics described above follow their own, shorter 90-day window
-and are deleted on that schedule regardless of account status.
+usage analytics described above follow their own, shorter 90-day window and
+are deleted on that schedule regardless of account status. The
+attendance-based coach engagement signal is not on a fixed deletion
+schedule today; a flag persists until a coach reviews or dismisses it, or
+until the account itself is deleted per the rule above.
 
 ## Your rights
 

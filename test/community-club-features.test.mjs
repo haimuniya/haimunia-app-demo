@@ -167,7 +167,8 @@ test("coach_tools off removes the לוח מאמנים pill for a coach, even tho
 });
 
 test("each of the three coach-tool sub-flags independently hides its own section, leaving the others visible", async () => {
-  for (const [key, marker] of [["member_of_week", "חבר/ת השבוע"], ["welcome_flow", "קבלת פנים"], ["monthly_recap", "סיכום חודשי למועדון"]]) {
+  const COACH_TOOL_MARKERS = [["member_of_week", "חבר/ת השבוע"], ["welcome_flow", "קבלת פנים"], ["monthly_recap", "סיכום חודשי למועדון"]];
+  for (const [key, marker] of COACH_TOOL_MARKERS) {
     const mock = seeded({ club_features: allModulesOn(key) }, "coach");
     const window = await bootCommunity(mock, { syncEnabled: false });
     window.document.getElementById("tabCommunityBtn").click();
@@ -175,6 +176,14 @@ test("each of the three coach-tool sub-flags independently hides its own section
     window.document.querySelector('[data-community-action="set-tab"][data-tab="coach"]').click();
     await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
     assert.ok(!window.document.body.textContent.includes(marker), `${key} off hides its own "${marker}" section`);
+    // The point of this test is independence, not just that toggling
+    // works at all - the other two markers must still be on screen while
+    // this one flag alone is off, proving the three sub-flags don't share
+    // a single "coach tools content" gate under the hood.
+    for (const [otherKey, otherMarker] of COACH_TOOL_MARKERS) {
+      if (otherKey === key) continue;
+      assert.ok(window.document.body.textContent.includes(otherMarker), `${key} off leaves the unrelated "${otherMarker}" (${otherKey}) section visible`);
+    }
   }
 });
 

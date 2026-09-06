@@ -2,8 +2,19 @@
 // visibility, delete. Other member's post: save, hide, report, block. Save
 // and hide are direct own-row RLS writes; caption, visibility and delete go
 // through post_edit_caption / post_set_visibility / post_delete.
+//
+// Launch-readiness audit, finding 8: until 202609060007 neither
+// post_edit_caption nor post_set_visibility EXISTED. Everything below passed
+// the whole time, because mock.onRpc() answers any name it is given - which
+// is exactly how two dead buttons stayed green in CI while answering PGRST202
+// in production. The two assertions at the bottom of this file are what
+// closes that: they read the shipped SQL and check that the function really
+// exists with the argument NAMES these tests send, since PostgREST resolves
+// an RPC by argument name and a right function with wrong parameter names is
+// still unreachable.
 import { test } from "node:test";
 import assert from "node:assert";
+import fs from "node:fs";
 import { bootCommunity, waitFor } from "./helpers/boot.mjs";
 import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
@@ -133,4 +144,36 @@ test("delete goes through the single confirm dialog then post_delete, and remove
   await waitFor(() => !!mock.db.__deleted, 3000);
   assert.deepEqual(mock.db.__deleted, { post_id: "own1" });
   await waitFor(() => window.document.querySelector('[data-post-id="own1"]') === null, 3000);
+});
+
+// The two functions the six tests above mock actually exist, with the
+// argument names those tests send. Behaviour is asserted in pgTAP
+// (supabase/tests/0073_post_edit_rpcs_test.sql); this is the existence check
+// a mock can never make, and the one that was missing for as long as the
+// buttons were dead.
+test("the three menu RPCs exist in the migrations with the argument names cloud.js sends", () => {
+  const edits = fs.readFileSync(new URL("../supabase/migrations/202609060007_post_edit_rpcs.sql", import.meta.url), "utf8");
+  assert.match(edits, /create or replace function public\.post_edit_caption\(post_id uuid, body text\) returns void/);
+  assert.match(edits, /create or replace function public\.post_set_visibility\(post_id uuid, visibility public\.post_visibility\) returns void/);
+  assert.match(edits, /revoke all on function public\.post_edit_caption\(uuid, text\) from public, anon;/);
+  assert.match(edits, /grant execute on function public\.post_edit_caption\(uuid, text\) to authenticated;/);
+  assert.match(edits, /revoke all on function public\.post_set_visibility\(uuid, public\.post_visibility\) from public, anon;/);
+  assert.match(edits, /grant execute on function public\.post_set_visibility\(uuid, public\.post_visibility\) to authenticated;/);
+
+  const mod = fs.readFileSync(new URL("../supabase/migrations/202608280025_moderation_reshape.sql", import.meta.url), "utf8");
+  assert.match(mod, /create or replace function public\.post_delete\(post_id uuid\) returns void/);
+});
+
+test("both new RPCs gate on the author and neither carries a moderator branch", () => {
+  const edits = fs.readFileSync(new URL("../supabase/migrations/202609060007_post_edit_rpcs.sql", import.meta.url), "utf8");
+  const caption = edits.slice(edits.indexOf("function public.post_edit_caption"), edits.indexOf("revoke all on function public.post_edit_caption"));
+  assert.match(caption, /v_row\.author_id is distinct from v_uid then raise exception 'not authorized'/);
+  assert.ok(!/has_perm|is_admin/.test(caption), "author only - a moderator removes a post, they do not rewrite it");
+  assert.match(caption, /is_community_member\(\)/, "an edit is a community write and carries the recovery gate");
+  assert.match(caption, /is_posting_restricted\(v_uid\)/, "and the COMM-153 restriction, so an old post cannot be rewritten into new content");
+
+  const vis = edits.slice(edits.indexOf("function public.post_set_visibility"), edits.indexOf("revoke all on function public.post_set_visibility"));
+  assert.match(vis, /v_row\.author_id is distinct from v_uid then raise exception 'not authorized'/);
+  assert.ok(!/has_perm|is_admin/.test(vis), "author only here too");
+  assert.match(vis, /v_new_rank > v_old_rank and public\.is_posting_restricted/, "the restriction applies to a WIDENING only - narrowing your own post must always work");
 });

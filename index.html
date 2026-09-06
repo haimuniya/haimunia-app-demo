@@ -437,7 +437,7 @@
      count), not just a styling gap. .cal-panel wraps header+grid+legend+
      stats in one bordered/shadowed card, matching every other data
      surface (.card/.chart-card) in this app. */
-  .cal-panel{ background:var(--surface); border:1px solid var(--border); border-radius:20px; padding:16px; box-shadow:var(--shadow-card); margin-bottom:16px; }
+  .cal-panel{ background:var(--surface); border:1px solid var(--border); border-radius:20px; padding:16px; box-shadow:var(--shadow-card); margin-bottom:16px; overflow:hidden; }
   .cal-legend{ display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-top:4px; }
   .cal-legend-item{ display:flex; align-items:center; gap:6px; color:var(--steel); font-size:11px; }
   .cal-month-stats{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:14px; }
@@ -450,7 +450,7 @@
   .cal-weekdays{ display:grid; grid-template-columns:repeat(7,1fr); gap:4px; margin-bottom:6px; }
   .cal-weekday{ text-align:center; color:var(--steel); font-size:10px; font-weight:700; }
   .cal-grid{ display:grid; grid-template-columns:repeat(7,1fr); gap:4px; margin-bottom:18px; }
-  .cal-cell{ aspect-ratio:1; display:flex; flex-direction:column; align-items:center; justify-content:center; border-radius:10px; background:var(--surface); border:1px solid var(--border); position:relative; gap:2px; }
+  .cal-cell{ aspect-ratio:1; min-width:0; display:flex; flex-direction:column; align-items:center; justify-content:center; border-radius:10px; background:var(--surface); border:1px solid var(--border); position:relative; gap:2px; }
   .cal-cell.empty{ background:transparent; border-color:transparent; }
   .cal-cell.today{ border-color:var(--chalk); }
   .cal-cell.selected{ background:var(--surface2); border-color:var(--brass); }
@@ -610,6 +610,17 @@
      layout direction - so the rule above was pushing the second of every
      side-by-side pair down by 10px and breaking their alignment. */
   .flex:not(.col) > .field + .field{ margin-top:0; }
+  /* Same two-up form rows as the comment above. Without this, a .field flex
+     child has no flex-basis of its own, so its width is whatever its
+     content (a datetime-local/number input, which the browser gives its own
+     minimum rendering width for the native picker UI) refuses to shrink
+     below - two of those side by side inside a narrow RTL modal add up to
+     more than the row's available width, and the row does not wrap, so one
+     side visibly overflows past the modal's edge instead of the two inputs
+     sharing the row evenly. flex:1 shares the row; min-width:0 overrides
+     the flex default of min-width:auto, which is what was refusing to
+     shrink the input below its content size in the first place. */
+  .flex:not(.col) > .field{ flex:1; min-width:0; }
   .field-error{ display:block; color:var(--red); font-size:12px; margin-top:5px; }
   .text-input[aria-invalid="true"]{ border-color:var(--red); }
   .ach-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(72px,1fr)); gap:16px 8px; }

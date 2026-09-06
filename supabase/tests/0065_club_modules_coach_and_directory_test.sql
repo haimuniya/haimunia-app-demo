@@ -87,5 +87,93 @@ select public.admin_set_club_feature('directory', true);
 select public.admin_set_club_feature('coach_tools', true);
 select tests.clear_auth();
 
+-- =====================================================================
+-- 4. THE OTHER HALF OF #3, actually exercising the coach RPCs behind
+-- coach_tools/member_of_week/welcome_flow/monthly_recap - not just the
+-- "no RLS on an unrelated table" proof #3 already gives for directory.
+-- One representative RPC per flag, all four off at once, proven both
+-- directions: a plain member gets the exact same 'not authorized' the
+-- flag-on case already gives (the flag never OPENS a door), and a real
+-- staff/admin caller gets straight PAST the auth check into the RPC's own
+-- business logic - a real result, or a real business-rule error like
+-- 'recap not found' - never 'not authorized' (the flag never CLOSES one).
+-- =====================================================================
+select tests.set_auth(tests.uid('owner'));
+select public.admin_set_club_feature('coach_tools', false);
+select public.admin_set_club_feature('member_of_week', false);
+select public.admin_set_club_feature('welcome_flow', false);
+select public.admin_set_club_feature('monthly_recap', false);
+select tests.clear_auth();
+
+-- coach_tools: coach_inactive_members(), is_staff()-gated inline
+-- (202608270005), same as it always was.
+select tests.set_auth(tests.uid('m1'));
+select throws_ok(
+  $$ select * from public.coach_inactive_members() $$,
+  'P0001', 'not authorized',
+  'coach_tools off does not open coach_inactive_members to a plain member');
+select tests.clear_auth();
+select tests.set_auth(tests.uid('coach'));
+select lives_ok(
+  $$ select * from public.coach_inactive_members() $$,
+  'coach_tools off does not lock coach_inactive_members away from a real coach either - same is_staff() gate as always');
+select tests.clear_auth();
+
+-- welcome_flow: coach_assign_coach(), is_staff()-gated. The section's own
+-- new-members LIST is coach_new_members() (already covered for coach_tools
+-- above, and identically gated) - this checks the section's own WRITE path
+-- instead, so the two flags are not proven by the same one call.
+select tests.set_auth(tests.uid('m1'));
+select throws_ok(
+  format($$ select public.coach_assign_coach(%L, null) $$, tests.uid('m1')::text),
+  'P0001', 'not authorized',
+  'welcome_flow off does not open coach_assign_coach to a plain member');
+select tests.clear_auth();
+select tests.set_auth(tests.uid('coach'));
+select lives_ok(
+  format($$ select public.coach_assign_coach(%L, null) $$, tests.uid('m1')::text),
+  'welcome_flow off does not lock coach_assign_coach away from a real coach either');
+select tests.clear_auth();
+
+-- member_of_week: member_of_week_candidates(), is_staff()-gated
+-- (202609010001) - the suggestion read, not the publish write, so this
+-- does not also need mow_base()'s week-scoped fixture data.
+select tests.set_auth(tests.uid('m1'));
+select throws_ok(
+  $$ select public.member_of_week_candidates(null) $$,
+  'P0001', 'not authorized',
+  'member_of_week off does not open member_of_week_candidates to a plain member');
+select tests.clear_auth();
+select tests.set_auth(tests.uid('coach'));
+select lives_ok(
+  $$ select public.member_of_week_candidates(null) $$,
+  'member_of_week off does not lock member_of_week_candidates away from a real coach either');
+select tests.clear_auth();
+
+-- monthly_recap: recap_monthly_publish(), gated on its OWN narrower check
+-- (has_perm('community.analytics.view') or is_admin() - not is_staff(),
+-- per that function's own AUTH note) - a plain coach fixture holds
+-- neither, so 'owner' (which is seeded community.analytics.view directly,
+-- 202608280001) stands in for the authorized caller here instead.
+select tests.set_auth(tests.uid('m1'));
+select throws_ok(
+  $$ select public.recap_monthly_publish('00000000-0000-0000-0000-000000000000') $$,
+  'P0001', 'not authorized',
+  'monthly_recap off does not open recap_monthly_publish to a plain member');
+select tests.clear_auth();
+select tests.set_auth(tests.uid('owner'));
+select throws_ok(
+  $$ select public.recap_monthly_publish('00000000-0000-0000-0000-000000000000') $$,
+  'P0001', 'recap not found',
+  'monthly_recap off does not stop an authorized owner reaching past the auth check into the RPC''s own business logic - a real "not found", never "not authorized"');
+select tests.clear_auth();
+
+select tests.set_auth(tests.uid('owner'));
+select public.admin_set_club_feature('coach_tools', true);
+select public.admin_set_club_feature('member_of_week', true);
+select public.admin_set_club_feature('welcome_flow', true);
+select public.admin_set_club_feature('monthly_recap', true);
+select tests.clear_auth();
+
 select * from finish();
 rollback;

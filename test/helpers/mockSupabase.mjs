@@ -444,14 +444,30 @@ export function createMockSupabase(seedTables = {}) {
         if (name === "feed_record_interaction") {
           const kind = args && args.p_kind;
           const postId = args && args.p_post_id;
+          // 202609060010 (bug fix: the opened/engaged back-stamp used to fan
+          // out across every impression that member ever had for the post,
+          // instead of just the one from the session the interaction
+          // actually happened in). p_feed_session_id is a required
+          // parameter server-side, no default - PostgREST refuses to
+          // resolve a call missing it, so a mock caller omitting it entirely
+          // is a real bug in the caller, not something to paper over here.
+          if (!("p_feed_session_id" in (args || {}))) {
+            return Promise.resolve({ data: null, error: { message: "PGRST202: could not find the function" } });
+          }
+          const sessionId = args.p_feed_session_id;
           if (!["open", "react", "comment", "share", "hide", "save", "profile_open"].includes(kind)) {
             return Promise.resolve({ data: null, error: { message: `unknown interaction kind ${kind}` } });
           }
           rows("feed_interactions").push({ user_id: currentUser && currentUser.id, post_id: postId, kind });
-          for (const imp of rows("feed_impressions")) {
-            if (imp.user_id !== (currentUser && currentUser.id) || imp.post_id !== postId) continue;
-            if (kind === "open") imp.opened = true;
-            if (["react", "comment", "share", "save"].includes(kind)) imp.engaged = true;
+          // A null session id (server: no exception, just no row to match)
+          // skips the update entirely rather than falling back to every
+          // session, which is exactly the bug this migration fixed.
+          if (sessionId != null) {
+            for (const imp of rows("feed_impressions")) {
+              if (imp.user_id !== (currentUser && currentUser.id) || imp.post_id !== postId || imp.feed_session_id !== sessionId) continue;
+              if (kind === "open") imp.opened = true;
+              if (["react", "comment", "share", "save"].includes(kind)) imp.engaged = true;
+            }
           }
           return Promise.resolve({ data: null, error: null });
         }
@@ -488,7 +504,34 @@ export function createMockSupabase(seedTables = {}) {
           }
           const id = `c-${++uidCounter}`;
           cs.push({ id, post_id: pid, author_id: currentUser && currentUser.id, body, parent_comment_id: parent, created_at: new Date().toISOString(), edited_at: null, deleted_at: null, status: "active" });
+          // Bug fix (real regression: the client used to call the 3-arg
+          // overload, so this was never exercised at all). Mirrors
+          // 202608280021's own shape closely enough for a client test: cap
+          // at 10, drop the caller's own id, write one comment_mentions row
+          // per remaining target. Real per-target allow_mentions/block
+          // filtering already happened client-side in
+          // resolveCommentMentions() before this call, so the mock does not
+          // re-derive it.
+          const mentions = Array.isArray(args && args.p_mentions) ? args.p_mentions : [];
+          if (mentions.length > 10) return Promise.resolve({ data: null, error: { message: "at most 10 mentions per comment" } });
+          const targets = [...new Set(mentions)].filter((t) => t && t !== (currentUser && currentUser.id));
+          const cm = rows("comment_mentions");
+          for (const target of targets) cm.push({ comment_id: id, mentioned_user_id: target });
           return Promise.resolve({ data: id, error: null });
+        }
+        // Bug fix: deleteComment() used to hard-DELETE the row directly;
+        // now it calls this real soft-delete RPC
+        // (202608280021_comment_mentions_and_self_delete.sql), which keeps
+        // the row (and any reply's parent_comment_id) intact.
+        if (name === "comment_delete") {
+          const c = rows("post_comments").find((x) => x.id === (args && args.p_comment_id));
+          if (!c) return Promise.resolve({ data: null, error: { message: "comment not found" } });
+          if (c.author_id !== (currentUser && currentUser.id)) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          if (c.deleted_at || c.status !== "active") return Promise.resolve({ data: null, error: null });
+          c.status = "removed";
+          c.deleted_at = new Date().toISOString();
+          c.deleted_by = currentUser && currentUser.id;
+          return Promise.resolve({ data: null, error: null });
         }
         if (name === "comment_edit") {
           const c = rows("post_comments").find((x) => x.id === (args && args.p_comment_id));
@@ -1188,10 +1231,17 @@ export function createMockSupabase(seedTables = {}) {
       },
       storage: {
         from: (bucket) => ({
-          createSignedUrl: () => Promise.resolve({ data: { signedUrl: "https://mock/signed" }, error: null }),
+          // Echoes the bucket and path rather than returning one constant, so
+          // a test can tell WHICH object was signed. Both buckets are private
+          // now (202609060003 flipped avatar-photos), so this is the read
+          // path for a feed photo and for an avatar alike.
+          createSignedUrl: (path) => Promise.resolve({ data: { signedUrl: `https://mock/signed/${bucket}/${path}` }, error: null }),
           upload: () => Promise.resolve({ error: null }),
-          // COMM-318. avatar-photos is public - no signed URL, a plain
-          // deterministic public URL the client cache-busts itself.
+          // Still used for avatar-photos, on a bucket that is no longer
+          // public: profiles.avatar_url stores this form as a stable
+          // IDENTIFIER for the object (and as the carrier for the client's
+          // own ?t= cache-bust), and the bytes are fetched through
+          // createSignedUrl above. See uploadAvatarPhoto() in cloud.js.
           getPublicUrl: (path) => ({ data: { publicUrl: `https://mock/public/${bucket}/${path}` } }),
           remove: () => Promise.resolve({ error: null }),
         }),

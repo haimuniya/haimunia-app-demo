@@ -541,6 +541,14 @@
     },
   };
   const photoUrlCache = {};
+  // Same idea for avatars, since 202609060003 made avatar-photos a private
+  // bucket. Keyed by the STORED profiles.avatar_url (cache-bust included),
+  // valued with a signed URL for the storage path inside it. See avatarHtml()
+  // for why the key is the url and not the path. avatarInFlight stops one
+  // render pass from firing thirty identical sign requests for thirty cards
+  // that all show the same coach.
+  const avatarUrlCache = {};
+  const avatarInFlight = {};
 
   // COMM-141. The notification badge refreshes on a realtime own-row
   // event. That subscription was written before public.notifications was
@@ -689,6 +697,30 @@
   // review_report(), the posts_select_admin_review RLS bypass, and the
   // admin_* member-management RPCs. Every other gate uses hasPerm().
   function isAdmin() { return !!(state.profile && state.profile.is_admin); }
+  // COMM-152, consolidated. The one place this count is computed - it used
+  // to be duplicated inline at the old Community "חשבון" badge and at
+  // getCommunityNavPreview(), which is exactly how the badge staying on
+  // that pill after moderation moved to Manage went unnoticed (two call
+  // sites drifting from a third, the real one, is what the redesign's own
+  // getCommunityNavPreview bug already showed once). Exposed on window so
+  // app.js's getNavItems() can badge the Manage bottom-tab nav item.
+  function pendingModerationCount() {
+    return (hasPerm(PERM.COMMENT_MODERATE) || isAdmin())
+      ? state.admin.modQueue.filter((r) => r.status === "open").length : 0;
+  }
+  // COMM-140/141, hoisted. Used to be built inline only inside feedTab's
+  // club-strip block, which meant the bell - and the unread-notification
+  // badge on it - was unreachable from anywhere the feed pill isn't shown:
+  // a club that turns the feed module off loses the bell for every member,
+  // and staff living on the new Manage tab had no bell at all. Standalone
+  // now so both feedTab and renderManageApp() can mount it.
+  function renderNotificationBell() {
+    const club = state.club.row || null;
+    const unread = state.notif.unreadLoaded
+      ? Number(state.notif.unread) || 0
+      : Number((club && club.unread_notifications) || 0);
+    return `<button class="chip-btn" data-community-action="feed-notifications" aria-label="התראות${unread ? `, ${unread} חדשות` : ""}" aria-haspopup="dialog" style="position:relative;">🔔${unread ? `<span class="tab-badge" aria-hidden="true">${unread}</span>` : ""}</button>`;
+  }
   function rerender() { if (typeof window.render === "function") window.render(); }
   function setMessage(message) { state.ui.message = message || ""; rerender(); }
   function todayIso() { return new Date().toISOString().slice(0, 10); }
@@ -707,7 +739,34 @@
   function avatarHtml(name, size, avatarUrl) {
     const px = size || 36;
     if (avatarUrl) {
-      return `<img alt="" aria-hidden="true" class="avatar-badge" src="${esc(avatarUrl)}" style="width:${px}px;height:${px}px;object-fit:cover;"/>`;
+      // The avatar-photos bucket is PRIVATE (202609060003 flipped it; while
+      // it was public the object URL served every member's face to the open
+      // internet with no session at all). profiles.avatar_url still stores
+      // the /object/public/ form, but that form is now an IDENTIFIER, not a
+      // fetchable URL - it 400s if anyone hits it directly, which is the
+      // point. The bytes come from a short-lived signed URL instead, the
+      // same photoUrlCache/resolvePhotoUrl shape post-photos has always
+      // used.
+      //
+      // The cache is keyed by the STORED url, cache-bust and all, not by the
+      // storage path: an avatar is overwritten in place (upsert:true), so
+      // two uploads share one path and only the ?t= stamp distinguishes
+      // them. Keying by path would pin the first upload's signed URL
+      // forever.
+      const cached = avatarSignedUrl(avatarUrl);
+      if (cached) {
+        return `<img alt="" aria-hidden="true" class="avatar-badge" src="${esc(cached)}" style="width:${px}px;height:${px}px;object-fit:cover;"/>`;
+      }
+      // Not one of ours (nothing writes such a value today, but the column
+      // is plain text with only a scheme CHECK on it) - render it directly,
+      // exactly as before.
+      if (!avatarPathFromUrl(avatarUrl)) {
+        return `<img alt="" aria-hidden="true" class="avatar-badge" src="${esc(avatarUrl)}" style="width:${px}px;height:${px}px;object-fit:cover;"/>`;
+      }
+      // Ours, not resolved yet: kick off the signing and fall through to the
+      // initials badge for this one paint. resolveAvatarUrl() rerenders when
+      // it lands, the same way resolvePhotoUrl() does for a feed photo.
+      resolveAvatarUrl(avatarUrl);
     }
     // Two conventions call this: some sites pass the bare handle
     // (`display_name || handle`), others the display string
@@ -3024,6 +3083,25 @@
     const { error } = await client.storage.from("post-photos").upload(path, file, { contentType: file.type, upsert: false });
     return error ? null : path;
   }
+  // COMM-318 / 202609060003. The avatar half of the pattern below. Reads the
+  // cache only - avatarHtml() runs during render and must never await.
+  function avatarSignedUrl(storedUrl) {
+    return storedUrl ? (avatarUrlCache[storedUrl] || null) : null;
+  }
+  // Fire-and-forget, exactly like resolvePhotoUrl. A failure (a member who
+  // hid from the club, a block edge, an object that was removed) is left
+  // uncached on purpose: the initials badge is a correct answer for "you may
+  // not see this face", so there is nothing to report and nothing to retry
+  // until the next render decides to ask again.
+  async function resolveAvatarUrl(storedUrl) {
+    if (!storedUrl || avatarUrlCache[storedUrl] || avatarInFlight[storedUrl]) return;
+    const path = avatarPathFromUrl(storedUrl);
+    if (!path) return;
+    avatarInFlight[storedUrl] = true;
+    const { data, error } = await client.storage.from("avatar-photos").createSignedUrl(path, 3600);
+    delete avatarInFlight[storedUrl];
+    if (!error && data && data.signedUrl) { avatarUrlCache[storedUrl] = data.signedUrl; rerender(); }
+  }
   async function resolvePhotoUrl(path) {
     if (!path || photoUrlCache[path]) return;
     const { data, error } = await client.storage.from("post-photos").createSignedUrl(path, 3600);
@@ -3109,6 +3187,13 @@
   // commented deep in the list does not get collapsed back to twenty items.
   async function loadFeed() {
     if (!state.user) return;
+    // COMM-321-style module gate (same reasoning as renderEventsListSection's
+    // and renderChallengesListSection's own guards): loadFeed() sits
+    // unconditionally in the boot Promise.all, so a club that has turned the
+    // feed module off was still paying for the feed_page ranking RPC on
+    // every single boot for no reason - nothing ever renders feedTab's
+    // content in that state.
+    if (!isModuleEnabled("feed")) { state.feed.items = []; state.feed.error = false; state.feed.loading = false; return; }
     const pages = Math.max(1, state.feed.pagesLoaded || 1);
     startFeedSession();
     state.ui.loading = true;
@@ -3205,7 +3290,11 @@
   function trackFeedInteraction(postId, kind) {
     if (!client || !state.user || !postId) return;
     if (FEED_INTERACTION_KINDS.indexOf(kind) < 0) return;
-    try { Promise.resolve(client.rpc("feed_record_interaction", { p_post_id: postId, p_kind: kind })).catch(() => {}); } catch (e) {}
+    // p_feed_session_id is required server-side (202609060010): the
+    // interaction's opened/engaged back-stamp is scoped to the impression
+    // row from THIS session, never to every impression that member has
+    // ever had for the post.
+    try { Promise.resolve(client.rpc("feed_record_interaction", { p_post_id: postId, p_kind: kind, p_feed_session_id: state.feed.sessionId })).catch(() => {}); } catch (e) {}
   }
   // Exposed so a later share affordance on a card (posts cluster) can record
   // the `share` kind without reaching into the feed's internals.
@@ -3374,8 +3463,15 @@
     const row = findFeedPost(postId);
     if (row) { row.reaction_count = count; row.cheer_count = count; }
   }
+  // Same in-flight guard shape as pinBusy above: a fast double-tap used to
+  // fire toggle_reaction twice before the first response landed, which
+  // both re-toggles the optimistic UI back to its starting state AND
+  // sends two real toggles to the server (net no-op there, but not on a
+  // flaky connection where the two responses can land out of order).
+  const reactionBusy = {};
   async function react(postId) {
-    if (!state.user) return;
+    if (!state.user || reactionBusy[postId]) return;
+    reactionBusy[postId] = true;
     const before = reactionState(postId);
     const wasMine = !!before.mine;
     const others = (before.list || []).filter((r) => r.id !== state.user.id);
@@ -3392,6 +3488,7 @@
     state.engagement.reactionError = null;
     rerender();
     const { error } = await client.rpc("toggle_reaction", { p_post_id: postId });
+    reactionBusy[postId] = false;
     if (error) {
       state.engagement.reactions[postId] = before;
       syncFeedReactionCount(postId, before.count);
@@ -3503,7 +3600,16 @@
     rerender();
 
     const resolved = await resolveCommentMentions(body);
-    const { data, error } = await client.rpc("add_post_comment", { p_post_id: postId, p_body: resolved.stored, p_parent_comment_id: parentCommentId || null });
+    // Bug fix: this was calling the 3-arg overload (no p_mentions), which
+    // PostgREST resolves to the OLDER add_post_comment that never writes
+    // comment_mentions - resolveCommentMentions() already did all the
+    // allow_mentions/block filtering above and the result went nowhere but
+    // a client-side analytics emit, so a mention has never once produced a
+    // notification. Passing p_mentions routes this to the real 4-arg
+    // overload (202608280021_comment_mentions_and_self_delete.sql), which
+    // writes comment_mentions and is what the notif_on_mention trigger
+    // actually hangs off.
+    const { data, error } = await client.rpc("add_post_comment", { p_post_id: postId, p_body: resolved.stored, p_parent_comment_id: parentCommentId || null, p_mentions: resolved.mentions.map((m) => m.user_id) });
     state.engagement.commentSending = null;
     if (error) {
       state.engagement.commentErrors[key] = commentErrorMessage(error);
@@ -3540,9 +3646,19 @@
     // is not offered here.
     if (target && target.author_id !== state.user.id) return;
     const snapshot = list.slice();
-    state.engagement.comments[postId] = list.filter((c) => c.id !== commentId);
+    // Bug fix: this used to be a raw hard DELETE, which (parent_comment_id
+    // is `on delete set null`) silently reparented any reply to the deleted
+    // comment up to top-level, and never showed the "התגובה נמחקה"
+    // placeholder renderCommentBubble already has a real branch for.
+    // comment_delete() (202608280021) is the soft-delete this was always
+    // meant to route through - it stamps status='removed' and leaves the
+    // row (and its replies' parent link) in place. Mark the comment removed
+    // in place here too, rather than filtering it out of the array, so a
+    // reply keeps its visual parent immediately instead of only after the
+    // reload below.
+    if (target) { target.status = "removed"; target.deleted_at = new Date().toISOString(); }
     rerender();
-    const { error } = await client.from("post_comments").delete().eq("id", commentId).eq("author_id", state.user.id);
+    const { error } = await client.rpc("comment_delete", { p_comment_id: commentId });
     if (error) {
       state.engagement.comments[postId] = snapshot;
       setMessage("מחיקת התגובה נכשלה");
@@ -5011,6 +5127,13 @@
       // narrow by them at all.
       member_of_week_publish: "פרסום חבר/ת השבוע", monthly_recap_publish: "פרסום סיכום חודשי",
       club_feature_toggle: "שינוי מודול מועדון",
+      // 6 more action_type values that were already live in
+      // admin_actions_action_type_check (202609030001, 202609030002,
+      // 202609030004, 202609050001) but never got a client label - the log
+      // rendered them same as the three above did before COMM-154's fix.
+      invite_created: "יצירת הזמנה", invite_revoked: "ביטול הזמנה",
+      shared_code_created: "יצירת קוד שיתוף", shared_code_status_changed: "שינוי סטטוס קוד שיתוף",
+      onboarding_content_updated: "עדכון תוכן קליטה", member_password_reset: "איפוס סיסמה לחבר/ה",
     }[t] || t;
   }
   // The other half of an audit row's headline. admin_actions.target_type is
@@ -5023,9 +5146,12 @@
       achievement: "עיטור", event: "אירוע", announcement: "הודעה", report: "דיווח",
       club: "מועדון", monthly_club_recap: "סיכום חודשי",
       challenge_participant: "משתתף/ת באתגר", challenge_team: "קבוצה באתגר",
+      // 3 more target_type values already live in admin_actions_target_type_check
+      // (202609030001, 202609030004) but never labelled here.
+      invite: "הזמנה", invite_code: "קוד הזמנה", onboarding_step: "שלב קליטה",
     }[t] || t;
   }
-  const AUDIT_ACTION_TYPES = ["content_delete", "content_hide", "member_restrict", "member_unrestrict", "role_change", "challenge_edit", "achievement_edit", "privacy_config", "content_pin", "content_unpin", "report_review", "member_of_week_publish", "monthly_recap_publish", "club_feature_toggle"];
+  const AUDIT_ACTION_TYPES = ["content_delete", "content_hide", "member_restrict", "member_unrestrict", "role_change", "challenge_edit", "achievement_edit", "privacy_config", "content_pin", "content_unpin", "report_review", "member_of_week_publish", "monthly_recap_publish", "club_feature_toggle", "invite_created", "invite_revoked", "shared_code_created", "shared_code_status_changed", "onboarding_content_updated", "member_password_reset"];
   function renderAuditLog() {
     if (!hasPerm(PERM.ANALYTICS_VIEW)) return "";
     const filterChips = `<div class="chip-row" style="margin:0 0 10px;">
@@ -6376,6 +6502,13 @@
       id, loading: true, error: false, challenge: null, progress: null, teams: [], participants: [], contributors: [], myParticipant: null,
       joining: false, leaving: false, teamJoining: null, sharing: false,
       logForm: { delta: "", note: "", busy: false, error: "" },
+      // Launch-readiness audit item 2. Own state for the consistency "week
+      // hit" tap, separate from logForm above: logForm is a manual numeric
+      // entry the member types, while this tap now goes through a real
+      // attendance_log read with no form input at all - reusing logForm's
+      // busy/error would make an unrelated manual-entry error message
+      // linger under the consistency button, or vice versa.
+      consistencyCheck: { busy: false, error: "" },
       coachEntry: { drafts: {}, busy: {}, error: "" },
       // COMM-211/212. feed_leaderboard(mode='progress') rows for this
       // challenge, fetched only for the two types whose panel shows a board.
@@ -6466,7 +6599,42 @@
     const v = state.challenges.view;
     const c = (v && v.challenge) || state.challenges.items.find((x) => x.id === id);
     if (v && v.id === id) { v.joining = true; rerender(); }
-    const { error } = await client.from("challenge_participants").insert({ challenge_id: id, user_id: state.user.id });
+    // Launch-readiness audit item 5. challenge_progress is NOT deleted when
+    // a member leaves - there is no FK from challenge_progress to
+    // challenge_participants at all (only to challenges and profiles, both
+    // on delete cascade for THOSE rows' own deletion), and 202608280009's
+    // own comment on challenge_progress.team_id says so directly: a
+    // "departed member's historical contributions would have no team to be
+    // attributed to once their participant row was gone" is exactly why
+    // that snapshot column exists. Only the challenge_participants row (and
+    // its progress_value cache) goes away on leave. A plain re-insert would
+    // leave the new row at the table's default progress_value of 0, which
+    // would render as "0 / target" even though every prior contribution is
+    // still sitting in challenge_progress and still counts toward a
+    // cooperative club_total or a team_total for the whole time the member
+    // was away - a silent full progress loss on the member's own read of
+    // their own standing. This re-sums the member's own prior
+    // challenge_progress rows for this challenge (self-read, already
+    // allowed under challenge_progress_read, the same table
+    // maybeCelebrateChallengeCompletion's callers already read from) and
+    // seeds the new row with that real total, plus - for the two types
+    // challenge_progress_apply itself auto-completes - the same completion
+    // flip a first-time insert of that total would have triggered, so a
+    // rejoin cannot land a member who already cleared the target back in
+    // 'active'.
+    const { data: priorRows, error: priorErr } = await client.from("challenge_progress")
+      .select("delta").eq("challenge_id", id).eq("user_id", state.user.id);
+    const priorTotal = priorErr ? 0 : (priorRows || []).reduce((sum, r) => sum + Number(r.delta || 0), 0);
+    // status is set explicitly rather than left to the column's own
+    // 'active' default - the same reasoning as everywhere else in this
+    // model: a status this client computed from a real completion check
+    // should never be one accidental column omission away from silently
+    // reading as whatever the table default happens to be.
+    const insertPayload = { challenge_id: id, user_id: state.user.id, progress_value: priorTotal, status: "active" };
+    const canComplete = c && ["individual_target", "individual_performance"].indexOf(c.challenge_type) >= 0
+      && c.target_value != null && priorTotal >= Number(c.target_value);
+    if (canComplete) { insertPayload.status = "completed"; insertPayload.completed_at = new Date().toISOString(); }
+    const { error } = await client.from("challenge_participants").insert(insertPayload);
     if (v && v.id === id) v.joining = false;
     if (error) { setMessage("לא ניתן היה להצטרף לאתגר. נסו שוב."); return rerender(); }
     if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.CHALLENGE_JOINED) {
@@ -6666,13 +6834,74 @@
   // COMM-205. Consistency has no numeric delta from the member: one tap logs
   // exactly one "week hit" once a week's target is reached. Detail-only, no
   // dedicated dialog.
+  //
+  // Launch-readiness audit item 2. This used to just call submitChallengeLog()
+  // with a hardcoded delta of "1" on every tap - an unrated, unlimited
+  // client-side action with no read of anything real. A member could tap
+  // "week completed" as many times as they liked with zero relationship to
+  // whether they had actually trained. onWorkoutCompletedForChallenges'
+  // consistency branch below DOES tally real sessions per ISO week, but that
+  // fires on a training-log completion event (WORKOUT_COMPLETED), which has
+  // no producer anywhere in this codebase (see the comment above that
+  // function) - this button is the only path actually reachable from the
+  // UI (data-community-action="challenge-log-week-hit"), so it is the one
+  // that needed real verification, not the dormant one.
+  //
+  // "Real verification" here means attendance_log (COMM-300): the member's
+  // own, server-recorded, per-calendar-day training log, one row per day by
+  // its own unique(user_id, occurred_on) constraint, read under
+  // attendance_log_self_select the same direct-RLS way
+  // loadOnboardingAttendance() already reads it elsewhere in this file. This
+  // reads the caller's own attendance_log rows for the current ISO week
+  // (Monday-Sunday, isoWeekBounds()) and only logs the week-hit delta once
+  // that real count actually reaches config.times_per_week.
+  //
+  // A second, independent guard: challenge_progress is append-only and this
+  // is a direct RLS insert, so nothing server-side stops a second click on
+  // an already-qualifying week from inserting a second delta. This checks
+  // the caller's own prior challenge_progress rows for THIS challenge with
+  // source_type 'attendance_week_hit' whose created_at already falls inside
+  // this ISO week and refuses a repeat - a real server-data check, not only
+  // an in-memory flag that would reset on reload.
   async function logConsistencyWeekHit() {
     const v = state.challenges.view;
-    if (!v) return;
+    if (!v || !v.challenge || v.consistencyCheck.busy) return;
     const challengeId = v.id;
-    v.logForm.delta = "1";
-    v.logForm.note = "";
-    await submitChallengeLog();
+    const timesPerWeek = Number((v.challenge.config && v.challenge.config.times_per_week) || 0);
+    v.consistencyCheck.busy = true; v.consistencyCheck.error = ""; rerender();
+    const { start, end } = isoWeekBounds();
+    const [alreadyRes, attendedRes] = await Promise.all([
+      client.from("challenge_progress").select("id")
+        .eq("challenge_id", challengeId).eq("user_id", state.user.id).eq("source_type", "attendance_week_hit")
+        .gte("created_at", start + "T00:00:00.000Z").lte("created_at", end + "T23:59:59.999Z"),
+      client.from("attendance_log").select("occurred_on")
+        .eq("user_id", state.user.id).gte("occurred_on", start).lte("occurred_on", end),
+    ]);
+    if (alreadyRes.error || attendedRes.error) {
+      v.consistencyCheck.busy = false;
+      v.consistencyCheck.error = "לא ניתן היה לבדוק את הנוכחות. נסו שוב.";
+      return rerender();
+    }
+    if (Array.isArray(alreadyRes.data) && alreadyRes.data.length) {
+      v.consistencyCheck.busy = false;
+      v.consistencyCheck.error = "השבוע הזה כבר נרשם.";
+      return rerender();
+    }
+    const attendedCount = Array.isArray(attendedRes.data) ? attendedRes.data.length : 0;
+    if (!timesPerWeek || attendedCount < timesPerWeek) {
+      v.consistencyCheck.busy = false;
+      v.consistencyCheck.error = `עדיין לא הגעת ${timesPerWeek} פעמים השבוע (${attendedCount} מתוך ${timesPerWeek}).`;
+      return rerender();
+    }
+    const { error } = await client.from("challenge_progress")
+      .insert({ challenge_id: challengeId, user_id: state.user.id, delta: 1, source_type: "attendance_week_hit" });
+    v.consistencyCheck.busy = false;
+    if (error) {
+      v.consistencyCheck.error = "לא ניתן היה לעדכן את ההתקדמות.";
+      return rerender();
+    }
+    await refreshChallengeView(challengeId);
+    await loadChallenges();
     // challenge_progress_apply (contracts.md, "Needs from schema,
     // challenges") deliberately excludes consistency and team from its
     // auto-complete list - my_status there stays whatever the participant
@@ -6761,6 +6990,15 @@
       metricLabel: (existing.config && existing.config.metric_label) || "",
       timesPerWeek: (existing.config && existing.config.times_per_week) || "",
       weeks: (existing.config && existing.config.weeks) || "",
+      // Launch-readiness audit item 4. submitChallengeForm's edit path used
+      // to write `config` (built fresh from only the fields the CURRENT
+      // form type shows) straight over the row's whole config column, so
+      // any key not on that form - a future image_url, or simply a
+      // property this ticket's own two managed types (coach, consistency)
+      // do not both share - silently vanished on save. Kept here so submit
+      // can merge onto it instead of replacing it outright; see there for
+      // exactly which keys get overwritten vs. preserved.
+      originalConfig: existing.config || {},
       teamNames: "", saving: false, error: "",
     } : {
       mode: "create", id: null, status: "draft", challengeType: "individual_target",
@@ -6812,11 +7050,34 @@
     if (Object.keys(errors).length) return setFieldErrors("communityChallengeForm", errors);
     setFieldErrors("communityChallengeForm", {});
     f.saving = true; f.error = ""; rerender();
+    // Launch-readiness audit item 4. `config` above is built fresh every
+    // submit from only the fields f.challengeType's form currently shows -
+    // exactly right for `create` (there is no prior config to lose), but
+    // an `edit` save used to write it straight over the row's whole config
+    // column, silently dropping any key that form does not manage (a future
+    // image_url, or any key this ticket's two managed types - coach,
+    // consistency - do not both carry). This merges onto the challenge's
+    // real config instead: start from what openChallengeForm actually read
+    // off the row (f.originalConfig, the exact source the edit form's own
+    // prefill already uses), clear only the keys THIS type's form is
+    // authoritative for (so a field the member intentionally blanked out,
+    // e.g. metricLabel, still clears rather than reverting to its old
+    // value), then lay this submit's freshly-validated values back on top.
+    // Type cannot change in edit mode (setChallengeFormType refuses once
+    // f.mode === "edit"), so the "this type's own keys" set below always
+    // matches the config the row was actually created with.
+    let finalConfig = config;
+    if (f.mode === "edit") {
+      finalConfig = Object.assign({}, f.originalConfig || {});
+      if (f.challengeType === "coach") { delete finalConfig.rules_text; delete finalConfig.metric_label; }
+      if (f.challengeType === "consistency") { delete finalConfig.times_per_week; delete finalConfig.weeks; }
+      Object.assign(finalConfig, config);
+    }
     const payload = {
       title, description, metric_type: metricType,
       target_value: targetRaw ? Number(targetRaw) : null,
       start_at: new Date(startAt).toISOString(), end_at: new Date(endAt).toISOString(),
-      visibility: "club", config,
+      visibility: "club", config: finalConfig,
     };
     let error;
     if (f.mode === "create") {
@@ -6904,10 +7165,35 @@
     const weekNr = 1 + Math.round(((target - firstThursday) / 86400000 - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7);
     return `${target.getUTCFullYear()}-W${String(weekNr).padStart(2, "0")}`;
   }
+  // Launch-readiness audit item 2. The Monday-Sunday calendar-day bounds of
+  // the same ISO week isoWeekKey() names, as plain "YYYY-MM-DD" strings -
+  // what logConsistencyWeekHit() needs to scope a real attendance_log read
+  // (a date column) and a challenge_progress dedupe read (a timestamptz
+  // column, so `start`/`end` are widened to whole-day UTC bounds at the
+  // call site) to "this week", the same week boundary the rest of this
+  // cluster already uses.
+  function isoWeekBounds(when) {
+    const date = new Date(when || Date.now());
+    const truncated = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    const dayNr = (truncated.getUTCDay() + 6) % 7;
+    const monday = new Date(truncated); monday.setUTCDate(monday.getUTCDate() - dayNr);
+    const sunday = new Date(monday); sunday.setUTCDate(sunday.getUTCDate() + 6);
+    const fmt = (d) => d.toISOString().slice(0, 10);
+    return { start: fmt(monday), end: fmt(sunday) };
+  }
   function onWorkoutCompletedForChallenges() {
     if (!state.user) return;
     // individual_target: every logged session is one unit toward a
-    // session-count target.
+    // session-count target. Launch-readiness audit item 1 asked whether
+    // this branch also needs a metric_type-vs-movement check like
+    // onPrCreatedForChallenges got. Deliberately NOT added here: this
+    // comment's own "every logged session is one unit" is the documented
+    // intent of the type, i.e. movement-agnostic by design (a 12-sessions-
+    // this-month target counts any session, not sessions of one specific
+    // movement) - individual_performance is the type this app uses when a
+    // challenge is about one specific metric/movement. Gating this branch on
+    // metric_type would silently stop counting most real sessions against a
+    // target that was never meant to be movement-scoped.
     for (const c of activeChallengeParticipations(["individual_target"])) {
       logAutoChallengeProgress(c.id, 1, "workout_completed");
     }
@@ -6926,18 +7212,50 @@
     }
   }
   // Consumes the same PR_CREATED payload onPrCreated already reacts to. Only
-  // a genuinely numeric result (a payload shape a future producer would need
-  // to supply, e.g. `new_result_value`) drives an individual_performance
-  // challenge - a formatted display string like '140 ק"ג" is deliberately
-  // never parsed here, so a malformed or unexpected payload silently no-ops
-  // instead of writing a wrong progress delta.
+  // a genuinely numeric result drives an individual_performance challenge -
+  // a formatted display string like '140 ק"ג" is deliberately never parsed
+  // here, so a malformed or unexpected payload silently no-ops instead of
+  // writing a wrong progress delta.
+  //
+  // Launch-readiness audit item 1. This was dead code end to end: the real
+  // (and only) producer, emitCommunityPrCreated() in app.js, never emitted
+  // `new_result_value` or `new_value_numeric` - it only ever set
+  // new_result/previous_result/improvement, all formatted display strings,
+  // so `Number(value)` was NaN on every real PR and this path never fired.
+  // Fixed at the source: emitCommunityPrCreated now also sets
+  // `new_value_numeric` (the raw weight or estimated 1RM, before
+  // formatting). `new_result_value` is kept as a fallback key only so a
+  // differently-shaped future producer (or a test) is not forced to use
+  // this exact name.
+  //
+  // metric_type match. challenges.metric_type is free text a coach typed
+  // once (submitChallengeForm), independently of record.movement (a
+  // movement display name from the exercise library) - the two are never
+  // guaranteed to be drawn from the same list. Exact string equality is too
+  // strict for two independently-typed free-text values (a trailing space
+  // or one different letter would silently stop every future PR from
+  // counting), so this normalizes to a trimmed, case-insensitive compare -
+  // a sensible minimum bar. It deliberately stops there and does not go on
+  // to fuzzy/partial matching (e.g. "squat" matching "back squat"): a
+  // partial match risks crediting a challenge from the wrong movement
+  // entirely, which is worse than a real PR occasionally not matching a
+  // sloppily-typed metric_type. A coach who wants exact metric-type
+  // matching needs to type it the same way (case aside) as the movement's
+  // display name - a support-story tradeoff, not a hidden one.
+  function challengeMetricMatchesMovement(metricType, movement) {
+    const a = String(metricType || "").trim().toLowerCase();
+    const b = String(movement || "").trim().toLowerCase();
+    return !!a && !!b && a === b;
+  }
   function onPrCreatedForChallenges(payload) {
     if (!state.user) return;
     const record = payload && (payload.record || payload);
     const value = record && (record.new_result_value != null ? record.new_result_value : record.new_value_numeric);
     const numeric = Number(value);
     if (!Number.isFinite(numeric) || numeric <= 0) return;
+    const movement = record && record.movement;
     for (const c of activeChallengeParticipations(["individual_performance"])) {
+      if (!challengeMetricMatchesMovement(c.metric_type, movement)) continue;
       logAutoChallengeProgress(c.id, numeric, "pr_created");
     }
   }
@@ -7252,9 +7570,14 @@
       return `<div class="ach-section" style="margin-top:18px;">${head}<div class="empty">לא ניתן היה לטעון את התקציר לתצוגה מקדימה.<div class="chip-row" style="justify-content:center;"><button class="chip-btn" data-community-action="coach-monthly-recap-retry">ניסיון חוזר</button></div></div></div>`;
     }
     if (!s.row) {
-      // No scheduler is built (the migration's own note): a draft only
-      // exists once someone has run recap_monthly_generate() by hand, so a
-      // clean "nothing yet" is a real state, not an error.
+      // A clean "nothing yet" is a real state, not an error. This used to
+      // read "no scheduler is built, so a draft only exists once someone
+      // has run recap_monthly_generate() by hand" - true when COMM-309
+      // shipped, no longer true since 202609050005 scheduled the
+      // 'recap_monthly' job for 04:41 on the 1st. The empty state stands on
+      // its own without that reason: the very first month of a new club has
+      // no completed prior month to summarise, so the newest-row query
+      // honestly answers nothing until the job's first run.
       return `<div class="ach-section" style="margin-top:18px;">${head}<div class="empty">עדיין לא נוצר תקציר חודשי.</div></div>`;
     }
     const r = s.row;
@@ -7285,7 +7608,13 @@
   function renderMonthlyRecapMemberSection() {
     const r = state.recaps.monthly.row;
     if (!r) return "";
-    return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--purple)", "סיכום החודש של הקהילה")}<div class="chart-card"><div class="field-label" style="margin-bottom:6px;">${esc(r.month_start)}</div>${renderMonthlyRecapFigures(r)}</div></div>`;
+    // data-monthly-recap-section: the scrollIntoView anchor a
+    // `target.recapMonth` notification tap (navigateToNotifTarget) uses.
+    // There is only ever one row to show (the newest published month), so
+    // unlike the weekly recap's per-week dialog this never needs to
+    // distinguish which month by id - landing on this one section IS
+    // landing on the exact item the notification pointed at.
+    return `<div class="ach-section" data-monthly-recap-section style="margin-top:18px;">${sectionHead("var(--purple)", "סיכום החודש של הקהילה")}<div class="chart-card"><div class="field-label" style="margin-bottom:6px;">${esc(r.month_start)}</div>${renderMonthlyRecapFigures(r)}</div></div>`;
   }
   // COMM-226 built this absent entirely (not merely styled hidden) unless
   // the flag is on; COMM-304 flips that flag default-on and gives it real
@@ -7533,8 +7862,8 @@
       <div class="field-label" style="margin-bottom:6px;">${hit} מתוך ${weeks} שבועות · ${timesPerWeek} אימונים בשבוע</div>
       <div>${boxes}</div>
       ${emptyMsg}${completeMsg}
-      ${part.status !== "completed" ? `<button class="chip-btn" data-community-action="challenge-log-week-hit" style="margin-top:8px;"${v.logForm.busy ? " disabled" : ""}>${v.logForm.busy ? "שומר…" : "סימון שבוע שהושלם"}</button>` : ""}
-      ${v.logForm.error ? `<div class="field-error" role="alert" style="margin-top:6px;">${esc(v.logForm.error)}</div>` : ""}
+      ${part.status !== "completed" ? `<button class="chip-btn" data-community-action="challenge-log-week-hit" style="margin-top:8px;"${v.consistencyCheck.busy ? " disabled" : ""}>${v.consistencyCheck.busy ? "בודק/ת נוכחות…" : "בדיקת נוכחות ועדכון השבוע"}</button>` : ""}
+      ${v.consistencyCheck.error ? `<div class="field-error" role="alert" style="margin-top:6px;">${esc(v.consistencyCheck.error)}</div>` : ""}
     </div>`;
   }
   // COMM-211. This panel used to rank chal_progress()'s own simpler
@@ -7668,12 +7997,25 @@
   ];
   function eventTypeDef(id) { return EVENT_TYPES.find((t) => t.id === id) || { id, label: id || "", icon: "📅" }; }
   function eventTypeBadge(id) { const d = eventTypeDef(id); return `${d.icon} ${d.label}`; }
-  // Deliberately a bare string slice, not a Date().toLocaleString() call:
-  // the value already carries no timezone ambiguity worth resolving here
-  // (matches formatChallengeDate's same choice) and stays deterministic
-  // under test.
-  function formatEventDate(iso) { return iso ? String(iso).slice(0, 10) : ""; }
-  function formatEventTime(iso) { return iso ? String(iso).slice(11, 16) : ""; }
+  // start_at/end_at/registration_deadline are stored as UTC ISO, but must
+  // display - and round-trip through a <input type="datetime-local"> -
+  // in the viewer's local clock. A bare string slice of the UTC value
+  // showed the wrong wall-clock time and, worse, silently shifted an
+  // event's stored instant by the local UTC offset on every edit that
+  // didn't touch the date fields: datetime-local's value carries no zone
+  // of its own, so submitEventForm's `new Date(startAt)` reinterprets
+  // whatever was prefilled as local time, and a UTC-sliced prefill is
+  // local-time-shifted the moment it round-trips back through that.
+  function pad2(n) { return String(n).padStart(2, "0"); }
+  function eventLocalParts(iso) {
+    if (!iso) return null;
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return null;
+    return { y: d.getFullYear(), mo: pad2(d.getMonth() + 1), da: pad2(d.getDate()), h: pad2(d.getHours()), mi: pad2(d.getMinutes()) };
+  }
+  function formatEventDate(iso) { const p = eventLocalParts(iso); return p ? `${p.y}-${p.mo}-${p.da}` : ""; }
+  function formatEventTime(iso) { const p = eventLocalParts(iso); return p ? `${p.h}:${p.mi}` : ""; }
+  function eventDateTimeLocalValue(iso) { const p = eventLocalParts(iso); return p ? `${p.y}-${p.mo}-${p.da}T${p.h}:${p.mi}` : ""; }
   function eventStatusLabel(e) { return { draft: "טיוטה", published: "פורסם", cancelled: "בוטל", past: "הסתיים" }[e && e.status] || ""; }
   // Upcoming/Past split (COMM-213): "split on status and start_at" means
   // both together, not either alone - a published event whose start_at has
@@ -7780,10 +8122,10 @@
       mode: "edit", id: existing.id, status: existing.status, eventType: existing.event_type,
       title: existing.title, description: existing.description || "",
       imageUrl: existing.image_url || "", location: existing.location || "", mapLink: existing.map_link || "",
-      startAt: existing.start_at ? String(existing.start_at).slice(0, 16) : "",
-      endAt: existing.end_at ? String(existing.end_at).slice(0, 16) : "",
+      startAt: eventDateTimeLocalValue(existing.start_at),
+      endAt: eventDateTimeLocalValue(existing.end_at),
       capacity: existing.capacity != null ? String(existing.capacity) : "",
-      registrationDeadline: existing.registration_deadline ? String(existing.registration_deadline).slice(0, 16) : "",
+      registrationDeadline: eventDateTimeLocalValue(existing.registration_deadline),
       saving: false, error: "",
     } : {
       mode: "create", id: null, status: "draft", eventType: "workshop",
@@ -7846,9 +8188,14 @@
     // becomes published, whether that is "publish now" on create or a later
     // draft-to-published toggle (publishEventDraft, below) - never at draft
     // save, since a draft has no attendees to discuss it with yet.
-    if (publishNow) await ensureEventCompanionPost(Object.assign({}, payload));
+    // A companion-post failure does not roll back the event itself (it's
+    // already saved) - it used to just be swallowed, reporting success on
+    // a permanently comment-less event. Surface it instead; the event view
+    // dialog offers a direct retry (retryEventCompanionPost) once a staff
+    // member notices the missing thread there.
+    const companionId = publishNow ? await ensureEventCompanionPost(Object.assign({}, payload)) : null;
     state.events.form = null;
-    setMessage("האירוע נשמר");
+    setMessage(publishNow && !companionId ? "האירוע פורסם, אך יצירת פוסט הדיון נכשלה. ניתן לנסות שוב מתוך פרטי האירוע." : "האירוע נשמר");
     await loadEvents();
     rerender();
   }
@@ -7856,11 +8203,28 @@
     const { error } = await client.from("events").update({ status: "published" }).eq("id", id);
     if (error) return setMessage("הפעולה נכשלה");
     const event = state.events.byId[id];
-    if (event) await ensureEventCompanionPost(Object.assign({}, event, { status: "published" }));
+    const companionId = event ? await ensureEventCompanionPost(Object.assign({}, event, { status: "published" })) : null;
     state.events.form = null;
-    setMessage("האירוע פורסם");
+    setMessage(companionId ? "האירוע פורסם" : "האירוע פורסם, אך יצירת פוסט הדיון נכשלה. ניתן לנסות שוב מתוך פרטי האירוע.");
     await loadEvents();
     if (state.events.view && state.events.view.id === id) await refreshEventView(id);
+    rerender();
+  }
+  // Retry hook for the failure case above: findEventCompanionPost() inside
+  // ensureEventCompanionPost() means calling it again is exactly a retry,
+  // not a duplicate-post risk, whether the original attempt happened at
+  // create/publish time or a previous retry.
+  async function retryEventCompanionPost(id) {
+    const v = state.events.view;
+    if (!v || v.id !== id || v.companionBusy) return;
+    v.companionBusy = true; v.companionError = ""; rerender();
+    const event = state.events.byId[id] || v.event;
+    const companionId = event ? await ensureEventCompanionPost(event) : null;
+    v.companionBusy = false;
+    if (!companionId) { v.companionError = "לא ניתן היה ליצור את פוסט הדיון. נסו שוב."; return rerender(); }
+    v.companionPostId = companionId;
+    state.engagement.openComments[companionId] = true;
+    await loadCommentsFor(companionId);
     rerender();
   }
   function confirmCancelEvent(id) {
@@ -7928,7 +8292,7 @@
   async function openEvent(id, source) {
     if (!id) return;
     track(A.EVENT_VIEWED, { event_id: id, source: source || "events" });
-    state.events.view = { id, loading: true, error: false, event: null, attendees: [], organizer: null, companionPostId: null, rsvpBusy: null, rsvpError: "", icsBusy: false, icsError: "" };
+    state.events.view = { id, loading: true, error: false, event: null, attendees: [], organizer: null, companionPostId: null, rsvpBusy: null, rsvpError: "", icsBusy: false, icsError: "", companionBusy: false, companionError: "" };
     rerender();
     await refreshEventView(id);
   }
@@ -8048,6 +8412,36 @@
   // iCalendar content without depending on jsdom's Blob/URL support, which
   // it does not have (the same gap composerAddPhoto already works around
   // with a try/catch around URL.createObjectURL).
+  // RFC 5545 3.1: a content line over 75 octets must fold onto a
+  // continuation line prefixed by a single space. Fold on whole-character
+  // boundaries by UTF-8 byte weight (never a raw string slice, which would
+  // cut a multi-byte sequence - every Hebrew character here - in half) so
+  // this works without TextEncoder/TextDecoder, which aren't guaranteed on
+  // every `window` this code runs inside (jsdom's test window included).
+  function icsUtf8Len(codePoint) { return codePoint < 0x80 ? 1 : codePoint < 0x800 ? 2 : codePoint < 0x10000 ? 3 : 4; }
+  function icsFoldLine(line) {
+    const chars = Array.from(line);
+    let totalBytes = 0;
+    for (const ch of chars) totalBytes += icsUtf8Len(ch.codePointAt(0));
+    if (totalBytes <= 75) return line;
+    const parts = [];
+    let current = "";
+    let currentBytes = 0;
+    let limit = 75;
+    for (const ch of chars) {
+      const chBytes = icsUtf8Len(ch.codePointAt(0));
+      if (currentBytes + chBytes > limit) {
+        parts.push(current);
+        current = "";
+        currentBytes = 0;
+        limit = 74;
+      }
+      current += ch;
+      currentBytes += chBytes;
+    }
+    if (current) parts.push(current);
+    return parts.join("\r\n ");
+  }
   function buildEventIcs(event, appUrl) {
     const start = event.start_at;
     // COMM-215: end_at null defaults to start_at plus one hour.
@@ -8066,7 +8460,7 @@
     if (appUrl) descParts.push(appUrl);
     if (descParts.length) lines.push("DESCRIPTION:" + icsEscape(descParts.join("\n\n")));
     lines.push("END:VEVENT", "END:VCALENDAR");
-    return lines.join("\r\n");
+    return lines.map(icsFoldLine).join("\r\n");
   }
   function eventAppLink(eventId) {
     return String((window.location && window.location.origin) || "") + "/community/feed?event=" + eventId;
@@ -8132,7 +8526,14 @@
     // this thin is enough: renderComments()/reactionStripHtml() only ever
     // read post.id.
     const commentsHtml = v.companionPostId ? renderComments({ id: v.companionPostId }) : "";
-    return `${metaHtml}${staffToolbar}${image}${description}${locationHtml}${capacityHtml}${deadlineHtml}${organizerHtml}${actions}${icsBtn}${attendeesHtml}<div style="margin-top:14px;">${commentsHtml}</div>`;
+    // A published event with no companion post means an earlier create/
+    // publish attempt failed partway (see ensureEventCompanionPost's
+    // callers) - offer staff a direct retry instead of a silently
+    // comment-less event with no way back in.
+    const companionRetryHtml = (staff && e.status === "published" && !v.companionPostId)
+      ? `<div class="empty">לא נוצר פוסט דיון לאירוע זה.<div class="chip-row" style="justify-content:center;margin-top:6px;"><button class="chip-btn" data-community-action="event-companion-retry" data-id="${esc(e.id)}"${v.companionBusy ? " disabled" : ""}>${v.companionBusy ? "יוצר…" : "יצירת פוסט דיון"}</button></div>${v.companionError ? `<div class="field-error" role="alert">${esc(v.companionError)}</div>` : ""}</div>`
+      : "";
+    return `${metaHtml}${staffToolbar}${image}${description}${locationHtml}${capacityHtml}${deadlineHtml}${organizerHtml}${actions}${icsBtn}${attendeesHtml}<div style="margin-top:14px;">${commentsHtml}${companionRetryHtml}</div>`;
   }
   function renderEventViewOverlay() {
     const v = state.events.view;
@@ -8680,9 +9081,21 @@
     // upsert:true above, there is nothing stale to remove).
     if (prevPath && prevPath !== path) client.storage.from("avatar-photos").remove([prevPath]).catch(() => {});
     const { data } = client.storage.from("avatar-photos").getPublicUrl(path);
+    // Still getPublicUrl(), on a bucket that has been PRIVATE since
+    // 202609060003. That is deliberate and is not a leftover: this string is
+    // now an IDENTIFIER for the object, not a fetchable URL. Hitting it
+    // directly 400s, which is the entire point of the bucket flip; the bytes
+    // are served through a short-lived signed URL that avatarHtml() resolves
+    // at render time. Keeping this exact shape means every already-stored
+    // row stays valid, avatarPathFromUrl() keeps parsing, and the column
+    // keeps satisfying its ^https?:// CHECK (202609060006). getPublicUrl()
+    // makes no network call - it only formats.
+    //
     // Cache-busting belongs on the STORED url, not the bare getPublicUrl()
     // result - overwriting the same storage path means a re-upload could
-    // otherwise silently fail to visibly update anywhere without it.
+    // otherwise silently fail to visibly update anywhere without it. It is
+    // also what keys the signed-URL cache, so the stamp is what makes a
+    // re-upload resolve to fresh bytes rather than the previous signature.
     return (data && data.publicUrl) ? `${data.publicUrl}?t=${Date.now()}` : null;
   }
   // Fires immediately on upload success or remove, matching
@@ -9066,8 +9479,40 @@
     welcomed_member: { title: "קבלת פנים", explanation: "עזרת לקבל חבר/ה חדש/ה במועדון.", icon: "🙌" },
     challenge_finisher: { title: "סיום אתגר", explanation: "השלמת אתגר מועדון.", icon: "🏁" },
     challenge_winner: { title: "מנצח/ת אתגר", explanation: "מקום ראשון באתגר מועדון.", icon: "🥇" },
+    // The four ATTENDANCE_RECORDED codes. These went live in 202608310007
+    // with English placeholder copy and no icon and were missing from this
+    // map entirely, so achMeta() fell all the way through to the bare code
+    // and the celebration sheet literally read "attendance_first_class".
+    // 202609060008 fixed the rows; these keep the client's own copy in step
+    // with them. The wording says "שיעור"/"נוכחות", never "רישום אימון",
+    // because these count VERIFIED attendance while sessions_* above count
+    // what the member wrote in their own log - two different badges.
+    attendance_first_class: { title: "השיעור הראשון", explanation: "השתתפות ראשונה בשיעור במועדון.", icon: "👋" },
+    attendance_25_classes: { title: "25 שיעורים", explanation: "נוכחות ב-25 שיעורים במועדון.", icon: "💪" },
+    attendance_100_classes: { title: "100 שיעורים", explanation: "נוכחות ב-100 שיעורים במועדון.", icon: "💯" },
+    attendance_weekly_streak: { title: "רצף שבועי", explanation: "נוכחות בכל שבוע, ארבעה שבועות ברצף.", icon: "⚡" },
   };
-  function achMeta(code) { return COMMUNITY_ACHIEVEMENT_META[code] || { title: code || "עיטור חדש", explanation: "", icon: "🏅" }; }
+  // Three tiers, in this order, so a gap between the seed and this map
+  // degrades instead of leaking a raw code string at a member:
+  //   1. the hand-written entry above (has an explanation, which the
+  //      definition row has no client-facing equivalent of on every surface)
+  //   2. the DEFINITION'S OWN name/icon, which loadMyAchievements() and
+  //      ach_claim already fetch - `row` is the member_achievements row the
+  //      caller already has in hand, so this costs no round trip
+  //   3. the bare code, which is what the four attendance achievements
+  //      printed at members for as long as they were live
+  // Tier 2 is the one this fix adds. Every call site passes its row where it
+  // has one; the signature stays code-first so a call with only a code keeps
+  // working exactly as before.
+  function achMeta(code, row) {
+    const known = COMMUNITY_ACHIEVEMENT_META[code];
+    if (known) return known;
+    const def = row && (row.achievement_definitions || (row.code ? row : null));
+    const name = def && def.name;
+    const icon = def && def.icon;
+    if (name) return { title: name, explanation: (def && def.description) || "", icon: icon || "🏅" };
+    return { title: code || "עיטור חדש", explanation: "", icon: icon || "🏅" };
+  }
   function achCodeOf(row) { return row && (row.code || (row.achievement_definitions && row.achievement_definitions.code)) || ""; }
 
   async function loadMyAchievements() {
@@ -9110,7 +9555,17 @@
   function onAchievementUnlocked(payload) {
     const code = payload && payload.code;
     if (!code) return;
-    const meta = achMeta(code);
+    // ach_claim_row carries only {code, member_achievement_id, visibility} -
+    // no name and no icon - so achMeta's definition fallback needs a row from
+    // somewhere. state.achievements.mine is already loaded and already
+    // carries achievement_definitions(code,name,icon), so this is a local
+    // lookup and not a round trip. It misses only for a first-ever unlock of
+    // a code the member has never held, which is exactly when tier 3 (the
+    // bare code) would have been the answer before this fix anyway.
+    const known = Array.isArray(state.achievements.mine)
+      ? state.achievements.mine.find((r) => achCodeOf(r) === code && r.achievement_definitions && r.achievement_definitions.name)
+      : null;
+    const meta = achMeta(code, known);
     state.achievements.unlock = {
       code,
       memberAchievementId: (payload && payload.member_achievement_id) || null,
@@ -9188,13 +9643,24 @@
     const list = Array.isArray(state.achievements.mine) ? state.achievements.mine : [];
     const rowsHtml = list.map((r) => {
       const code = achCodeOf(r);
-      const meta = achMeta(code);
+      // The row is already in hand and already carries the definition's own
+      // name and icon (loadMyAchievements selects them), so a code this map
+      // has never heard of renders the seeded Hebrew label rather than the
+      // raw code.
+      const meta = achMeta(code, r);
       const share = r.shared_at
         ? `<span style="color:var(--steel);font-size:12px;">שותף</span>`
         : r.visibility === "only_me"
           ? ""
           : `<button class="chip-btn" data-community-action="ach-share-later" data-id="${esc(r.id)}" data-code="${esc(code)}">שיתוף</button>`;
-      return `<div class="log-row"><span>${esc(meta.icon)} ${esc(meta.title)}</span>${share}</div>`;
+      // data-achievement-id: the anchor a `target.achievement` notification
+      // tap (navigateToNotifTarget) scrolls to and briefly highlights - the
+      // same scrollIntoView pattern the `target.post` branch already uses
+      // off data-post-id. r.id is member_achievements.id, the exact value
+      // notif_on_achievement's own deep link carries (`?ma=<member_
+      // achievements.id>`), so the notification's target and this row's
+      // anchor always agree.
+      return `<div class="log-row" data-achievement-id="${esc(r.id)}"><span>${esc(meta.icon)} ${esc(meta.title)}</span>${share}</div>`;
     }).join("");
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--brass)", "ההישגים שלי")}${list.length ? `<div class="log-list">${rowsHtml}</div>` : `<div class="empty">אין עדיין הישגים במועדון</div>`}</div>`;
   }
@@ -9497,21 +9963,54 @@
   // which is why the client label is preferred everywhere else. The
   // immediate/batched split here MUST match the server trigger set - see
   // the routing table in contracts.md.
+  //
+  // `pref` values below match `public.notif_pref_key()` (202608280026, as
+  // amended). Three were re-keyed (COMM-218/219): `comment_reply` now reads
+  // `comment_reply` (was the client-only `replies`), `comment_on_post` and
+  // `comment_also` both now read `comment_on_post` (was `comments`), and
+  // `achievement_unlocked` now reads `achievement_unlocked` (was
+  // `achievements`) - each one made its Settings toggle actually suppress
+  // delivery for the first time, since the server's identity fallback maps
+  // an unmapped type to itself, not to the client's old coarse name.
+  // `challenge_ending_soon`/`challenge_update` are DELIBERATELY left on the
+  // shared client-only key `challenges`: the server has no arm for either
+  // (each falls through to its own raw type name), so there is no single
+  // server-side key a combined client toggle could honestly map to today.
+  // Splitting that one toggle into two, or adding the server arms, is a
+  // separate, larger change (schema coordination or a UX change) and is a
+  // documented known gap, same as contracts.md already records it.
+  //
+  // `new_report` (202609050003) and `monthly_club_recap` (202609010002) are
+  // both real server-emitted types with no `notif_pref_key` arm, so - same
+  // reasoning as the three above - each MUST use its own literal type name
+  // as `pref`, matching the server's identity fallback exactly.
+  // `new_report` is moderators-only (`mod_alert_recipients()`: is_admin or a
+  // role holding `community.comment.moderate`, owner included) - a plain
+  // member is never a recipient, so its Settings row is gated to staff in
+  // `renderNotifPrefsPanel()` (`staffOnly` below) rather than shown to
+  // everyone as a toggle that would never do anything for them.
+  // `monthly_club_recap` fans out club-wide to every member, so it gets an
+  // ordinary toggle everyone sees, sibling to `weekly_recap`. It is
+  // IMMEDIATE, not batched, per contracts.md: it fires at most twelve times
+  // a year, at the moment a staff member deliberately publishes it, so
+  // there is nothing to roll up.
   const NOTIF_TYPES = {
-    comment_reply:         { category: "community",  mode: "immediate", pref: "replies",             icon: "↩️", title: "תגובה חדשה לתגובה שלך" },
-    comment_on_post:       { category: "community",  mode: "immediate", pref: "comments",            icon: "💬", title: "תגובה חדשה על הפוסט שלך" },
-    comment_also:          { category: "community",  mode: "batched",   pref: "comments",            icon: "💬", title: "תגובות חדשות בשיחה שהשתתפת בה" },
+    comment_reply:         { category: "community",  mode: "immediate", pref: "comment_reply",       icon: "↩️", title: "תגובה חדשה לתגובה שלך" },
+    comment_on_post:       { category: "community",  mode: "immediate", pref: "comment_on_post",     icon: "💬", title: "תגובה חדשה על הפוסט שלך" },
+    comment_also:          { category: "community",  mode: "batched",   pref: "comment_on_post",     icon: "💬", title: "תגובות חדשות בשיחה שהשתתפת בה" },
     mention:               { category: "community",  mode: "immediate", pref: "mentions",            icon: "@",  title: "תייגו אותך בתגובה" },
     coach_mention:         { category: "community",  mode: "immediate", pref: "mentions",            icon: "@",  title: "מאמן/ת תייג/ה אותך" },
     reaction:              { category: "community",  mode: "batched",   pref: "reactions",           icon: "🔥", title: "עידודים חדשים על הפוסט שלך" },
     feed_activity:         { category: "community",  mode: "batched",   pref: "comments",            icon: "📣", title: "פעילות חדשה בפיד" },
-    achievement_unlocked:  { category: "training",   mode: "immediate", pref: "achievements",        icon: "🏅", title: "פתחת הישג חדש" },
+    new_report:            { category: "community",  mode: "immediate", pref: "new_report",          icon: "🚩", title: "דיווח חדש לבדיקה" },
+    achievement_unlocked:  { category: "training",   mode: "immediate", pref: "achievement_unlocked",icon: "🏅", title: "פתחת הישג חדש" },
     friend_achievement:    { category: "training",   mode: "batched",   pref: "friend_achievements", icon: "🎉", title: "חברים פתחו הישגים" },
     challenge_ending_soon: { category: "challenges", mode: "immediate", pref: "challenges",          icon: "⏳", title: "אתגר מסתיים בקרוב" },
     challenge_update:      { category: "challenges", mode: "batched",   pref: "challenges",          icon: "🏆", title: "עדכונים באתגר" },
     event_cancelled:       { category: "events",     mode: "immediate", pref: "events",              icon: "🚫", title: "אירוע בוטל" },
     announcement:          { category: "club",       mode: "immediate", pref: "announcements", operational: true, serverTitle: true, icon: "📢", title: "הודעה חשובה מהמועדון" },
     weekly_recap:          { category: "club",       mode: "batched",   pref: "weekly_recap",        icon: "📅", title: "הסיכום השבועי שלך" },
+    monthly_club_recap:    { category: "club",       mode: "immediate", pref: "monthly_club_recap",  icon: "🗓️", title: "סיכום החודש של הקהילה" },
   };
   function notifTypeDef(type) { return NOTIF_TYPES[type] || null; }
 
@@ -9521,17 +10020,35 @@
   // used by COMM-219 so "כבוי" on `announcements` does not read as "silences
   // everything": important/urgent announcements are operational
   // (`notif_is_operational`) and always land in-app regardless of this row.
+  // Keys `comments`/`replies`/`achievements` were renamed to
+  // `comment_on_post`/`comment_reply`/`achievement_unlocked` (COMM-218/219)
+  // to match `NOTIF_TYPES[...].pref`, which now matches the server's real
+  // `notif_pref_key()` output - see the long note above NOTIF_TYPES. This is
+  // a stored-preference-row rename: a member's existing `notification_
+  // preferences` row keyed `comments`/`replies`/`achievements` is orphaned by
+  // this change (a fresh row under the new key reverts to the in_app
+  // default) exactly the way any other client-side re-key would; there is no
+  // migration step for it because notification_preferences is 100%
+  // client-written and this repo does not touch that table's data.
+  // `challenges` is UNCHANGED and stays a documented known gap (see above).
+  // `staffOnly: true` (added for `new_report`) hides the row from a plain
+  // member's Settings panel - `new_report` is never delivered to one, per
+  // `mod_alert_recipients()` - while keeping the key valid for `setNotifPref`
+  // (NOTIF_PREF_KEYS below is built from every entry, gated or not) so a
+  // moderator's own toggle still writes and reads correctly.
   const NOTIF_PREF_TYPES = [
-    { key: "comments",            label: "תגובות על הפוסטים שלי" },
-    { key: "replies",             label: "תגובות לתגובות שלי" },
+    { key: "comment_on_post",     label: "תגובות על הפוסטים שלי" },
+    { key: "comment_reply",       label: "תגובות לתגובות שלי" },
     { key: "mentions",            label: "תיוגים" },
     { key: "reactions",           label: "עידודים" },
-    { key: "achievements",        label: "הישגים שנפתחו" },
+    { key: "achievement_unlocked",label: "הישגים שנפתחו" },
     { key: "friend_achievements", label: "הישגים של חברים" },
     { key: "challenges",          label: "אתגרים" },
     { key: "events",              label: "אירועים" },
     { key: "announcements",       label: "הודעות מהמועדון", note: "הודעות ברמת ❗ חשוב ו-🚨 דחוף יגיעו אליכם גם כשזה כבוי." },
     { key: "weekly_recap",        label: "סיכום שבועי" },
+    { key: "monthly_club_recap",  label: "סיכום חודשי" },
+    { key: "new_report",          label: "דיווחים חדשים לבדיקה", staffOnly: true },
   ];
   const NOTIF_PREF_KEYS = new Set(NOTIF_PREF_TYPES.map((t) => t.key));
   const NOTIF_CHANNELS = ["push", "in_app", "off"];
@@ -9887,6 +10404,19 @@
     if (q.ma || q.achievement || st === "achievement" || /\/achievements(\/|$)/.test(path)) return { tab: "account", achievement: q.ma || q.achievement || sid };
     if (q.announcement || st === "announcement" || /\/announcement/.test(path)) return { tab: "feed", announcement: q.announcement || sid };
     if (q.event || st === "event" || /\/events(\/|$)/.test(path)) return { tab: "feed", event: q.event || sid };
+    // COMM-309. monthly_club_recap's own deep link is
+    // /community/recap/monthly?month=<the month's first day> - recap_
+    // monthly_publish's real notif_create() call, contracts.md's "Later-
+    // phase types" entry for monthly_club_recap. This branch MUST come
+    // before the weekly one just below: that branch's own /\/recap(\/|$)/
+    // regex matches ANY path starting with "/recap", including
+    // "/community/recap/monthly" (it has a "/recap/" substring), so without
+    // this guard every monthly recap notification silently opened as a
+    // weekly one. There is no monthly-recap dialog to open (see openRecap's
+    // own comment - the monthly card is an inline Account-tab section, not a
+    // per-month browsable surface), so this resolves to a distinct
+    // `recapMonth` key rather than reusing `recapWeek`'s shape.
+    if (q.month || st === "monthly_club_recap" || /\/recap\/monthly(\/|$)/.test(path)) return { tab: "account", recapMonth: q.month || null };
     // COMM-220/221. weekly_recap's own deep link is /community/recap?week=<monday>.
     if (q.week || st === "weekly_recap" || /\/recap(\/|$)/.test(path)) return { tab: "account", recapWeek: q.week || null };
     return { tab: "feed" };
@@ -9898,6 +10428,10 @@
   // mark read). Pulled out as its own function rather than duplicated so
   // there is exactly one navigation path to keep correct.
   function navigateToNotifTarget(target) {
+    // Redesign, Phase 3 fix: a notification/deep-link tap can fire while
+    // the top-level app is on Manage, not Community - see
+    // window.switchToCommunityTopTab's own comment in app.js.
+    if (typeof window.switchToCommunityTopTab === "function") window.switchToCommunityTopTab();
     setCommunityTab(target.tab || "feed");
     if (target.post) {
       state.engagement.openComments[target.post] = true;
@@ -9912,8 +10446,50 @@
       openEvent(target.event, "notification");
     } else if (target.profile) {
       viewCommunityProfile(target.profile);
+    } else if (target.challenge) {
+      // Same shape as the target.event branch just above: resolveNotifTarget
+      // already puts the tab on "boards", this opens the specific challenge
+      // detail on top of it (challenge_ending_soon/challenge_update).
+      openChallenge(target.challenge, "notification");
+    } else if (target.announcement) {
+      // Announcements render inline in the feed (there is no separate
+      // announcement dialog) - data-announcement-id on both the pinned card
+      // and the plain list rows (renderFeedTab) is the anchor, the same
+      // scrollIntoView pattern target.post already uses off data-post-id.
+      // loadAnnouncements() runs in the boot Promise.all, not lazily on tab
+      // entry, so the row is already in the DOM once the feed tab renders.
+      rerender();
+      setTimeout(() => {
+        const sel = '[data-announcement-id="' + String(target.announcement).replace(/"/g, '\\"') + '"]';
+        const node = document.querySelector(sel);
+        if (node && node.scrollIntoView) node.scrollIntoView({ block: "center" });
+      }, 60);
+    } else if (target.achievement) {
+      // data-achievement-id on renderMyAchievements()'s own rows is the
+      // anchor (added alongside this fix - there was none before).
+      // loadMyAchievements() also runs in the boot Promise.all, so the row
+      // is already in state by the time the Account tab renders.
+      rerender();
+      setTimeout(() => {
+        const sel = '[data-achievement-id="' + String(target.achievement).replace(/"/g, '\\"') + '"]';
+        const node = document.querySelector(sel);
+        if (node && node.scrollIntoView) node.scrollIntoView({ block: "center" });
+      }, 60);
     } else if (target.recapWeek !== undefined) {
       openRecap(target.recapWeek || null, "notification");
+    } else if (target.recapMonth !== undefined) {
+      // No dialog to open (see renderMonthlyRecapMemberSection's own
+      // comment) - setCommunityTab("account") above already re-renders,
+      // which re-arms the lazy `!state.recaps.monthly.loaded` load effect
+      // (afterRenderCommunity) the first time a session reaches this tab.
+      // Scrolling to data-monthly-recap-section is still worth doing on its
+      // own timeout: a session that already visited Account this run has
+      // the row cached and rendered immediately, with nothing else to
+      // trigger the scroll.
+      setTimeout(() => {
+        const node = document.querySelector('[data-monthly-recap-section]');
+        if (node && node.scrollIntoView) node.scrollIntoView({ block: "center" });
+      }, 60);
     } else {
       rerender();
     }
@@ -10019,8 +10595,19 @@
     window.HaimuniaRealtime.subscribe(progressName,
       { table: "challenge_progress", event: "INSERT", filter: "challenge_id=eq." + openId },
       function () { onChallengeRealtime(openId); });
+    // Launch-readiness audit item 3. This used to filter to UPDATE only, so
+    // another member joining or leaving this challenge (an INSERT or DELETE
+    // on challenge_participants) while this detail was open never triggered
+    // a live refresh - the participant list/count went stale until the
+    // viewer closed and reopened the dialog. src/realtime.js's bind()
+    // already defaults `event` to "*" (the postgres_changes wildcard
+    // covering INSERT/UPDATE/DELETE in one binding on one channel) whenever
+    // no event is passed - the same shape the feed's shared reactions
+    // channel already relies on (see the "*" `event` COMM-227's
+    // feed-reactions binding uses) - so this only has to stop passing
+    // "UPDATE" rather than add a second subscribe call per event.
     window.HaimuniaRealtime.subscribe(participantsName,
-      { table: "challenge_participants", event: "UPDATE", filter: "challenge_id=eq." + openId },
+      { table: "challenge_participants", filter: "challenge_id=eq." + openId },
       function () { onChallengeRealtime(openId); });
     state.challenges._rtId = openId;
   }
@@ -10266,8 +10853,15 @@
         ${explainHtml}
       </div>`;
     };
+    // `staffOnly` (currently just `new_report`) is hidden from a plain
+    // member: that type is never delivered to one (mod_alert_recipients()
+    // is moderators/admin/owner only), so showing the toggle to everyone
+    // would be a control that never does anything for most members. Same
+    // permission pair the moderation queue itself gates on (hasPerm/isAdmin
+    // above the queue render, and mod_alert_recipients() on the server).
+    const visiblePrefTypes = NOTIF_PREF_TYPES.filter((t) => !t.staffOnly || hasPerm(PERM.COMMENT_MODERATE) || isAdmin());
     const rows = state.notif.prefsLoaded
-      ? NOTIF_PREF_TYPES.map(rowFor).join("")
+      ? visiblePrefTypes.map(rowFor).join("")
       : `<div class="log-row" aria-hidden="true"><span style="height:12px;width:60%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`.repeat(4);
     // COMM-229. One device-level control, not one per row: a
     // PushSubscription is per browser/device, so "turn push off" is a
@@ -10426,13 +11020,24 @@
     // credentials exist (so is_anonymous is already false and this gate is
     // reached at all) but before profile completion, which is what makes
     // "המשך להשלמת הפרופיל" on the last screen an honest label rather than
-    // a lie about what happens next. hasSeenIntroCarousel() is checked
-    // AFTER the credentials gate above and BEFORE the profile gate below on
-    // purpose - a returning member (who already has a profile) never
-    // reaches this line at all, so there is no separate "already a member"
-    // check needed here beyond the existing !state.profile the surrounding
-    // gates already run on.
-    if (!hasSeenIntroCarousel()) return renderIntroCarousel();
+    // a lie about what happens next.
+    //
+    // BOTH HALVES OF THE PREDICATE ARE LOAD-BEARING, and the first one was
+    // missing until a launch-readiness re-audit reproduced it live. The
+    // original comment here claimed "a returning member (who already has a
+    // profile) never reaches this line at all", inferring it from the
+    // credentials gate above. That inference was wrong: the gates above only
+    // establish a session, a redemption and non-anonymity, all three of
+    // which a returning member logging in ON A NEW DEVICE satisfies - and
+    // the seen-flag is per-device localStorage, so it is unset for them.
+    // They landed on all three intro screens and had to click through them
+    // before reaching the club, and the last screen's "המשך להשלמת הפרופיל"
+    // promised a profile form they were never going to see because they
+    // already have a profile. !state.profile is what actually expresses
+    // "brand-new member, has not completed signup yet" - the same condition
+    // the profile-completion gate immediately below runs on, so the carousel
+    // now precedes exactly the flow it was written for and nothing else.
+    if (!state.profile && !hasSeenIntroCarousel()) return renderIntroCarousel();
     // Without this gate, a fresh code-redeemer landed straight on the Feed
     // sub-tab — mostly empty, nothing prompting them to the profile form
     // buried in Account — with no clear signal anything had actually been
@@ -10466,7 +11071,13 @@
     // refetch.
     const liveAnnouncements = state.club.announcements.filter((a) => !isAnnouncementExpired(a));
     const pinnedToday = liveAnnouncements.find((a) => a.pinned_date === todayIso());
-    const pinnedHtml = pinnedToday ? `<div class="chart-card admin-card" style="margin-bottom:12px;${announcementAccentStyle(pinnedToday)}"><div style="font-weight:800;margin-bottom:6px;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">📌 הערת האימון להיום${announcementPriorityBadge(pinnedToday)}</div><div style="font-weight:700;">${esc(pinnedToday.title)}</div><div style="color:var(--steel);font-size:13px;margin-top:4px;">${esc(pinnedToday.body)}</div></div>` : "";
+    // data-announcement-id on both this card and each otherAnnouncements
+    // row below is the scrollIntoView anchor a `target.announcement`
+    // notification tap (navigateToNotifTarget) needs - the same pattern
+    // data-post-id already gives the `target.post` branch. Without it, a
+    // tap on an announcement notification switched to the Feed tab (via
+    // setCommunityTab) and did nothing further.
+    const pinnedHtml = pinnedToday ? `<div class="chart-card admin-card" data-announcement-id="${esc(pinnedToday.id)}" style="margin-bottom:12px;${announcementAccentStyle(pinnedToday)}"><div style="font-weight:800;margin-bottom:6px;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">📌 הערת האימון להיום${announcementPriorityBadge(pinnedToday)}</div><div style="font-weight:700;">${esc(pinnedToday.title)}</div><div style="color:var(--steel);font-size:13px;margin-top:4px;">${esc(pinnedToday.body)}</div></div>` : "";
     // COMM-321. announcements_read already empties liveAnnouncements above
     // once the module is off; the composer form has no data of its own to
     // fall silent through, so it needs its own explicit gate.
@@ -10478,7 +11089,7 @@
     // control render for every one of the four target types.
     const canPinContent = hasPerm(PERM.CONTENT_PIN);
     const isPinned = (type, id) => state.admin.pins.some((p) => p.target_type === type && p.target_id === id);
-    const announcementsList = otherAnnouncements.length ? `<div class="log-list">${otherAnnouncements.map((a) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:4px;${announcementAccentStyle(a)}"><div style="font-weight:700;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">${esc(a.title)}${announcementPriorityBadge(a)}</div><div style="color:var(--steel);font-size:13px;">${esc(a.body)}</div><div style="color:var(--steel);font-size:11px;">${esc(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div>${canPinContent ? `<button class="link-btn" data-community-action="${isPinned("announcement", a.id) ? "unpin" : "pin"}" data-type="announcement" data-id="${esc(a.id)}" data-note="${esc(a.title)}" style="margin:2px 0 0;">${isPinned("announcement", a.id) ? "ביטול הצמדה" : "הצמדה למעלה"}</button>` : ""}</div>`).join("")}</div>` : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
+    const announcementsList = otherAnnouncements.length ? `<div class="log-list">${otherAnnouncements.map((a) => `<div class="log-row" data-announcement-id="${esc(a.id)}" style="align-items:flex-start;flex-direction:column;gap:4px;${announcementAccentStyle(a)}"><div style="font-weight:700;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">${esc(a.title)}${announcementPriorityBadge(a)}</div><div style="color:var(--steel);font-size:13px;">${esc(a.body)}</div><div style="color:var(--steel);font-size:11px;">${esc(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div>${canPinContent ? `<button class="link-btn" data-community-action="${isPinned("announcement", a.id) ? "unpin" : "pin"}" data-type="announcement" data-id="${esc(a.id)}" data-note="${esc(a.title)}" style="margin:2px 0 0;">${isPinned("announcement", a.id) ? "ביטול הצמדה" : "הצמדה למעלה"}</button>` : ""}</div>`).join("")}</div>` : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
     const announcementsHtml = `<div class="ach-section">${sectionHead("var(--brass)", "הודעות מהמועדון")}${pinnedHtml}${announcementsList}${announceComposer}</div>`;
 
     // Sharing itself no longer lives here - it was a standing list of the
@@ -10497,13 +11108,6 @@
       ? `<img src="${esc(club.image_url)}" alt="" style="width:44px;height:44px;border-radius:14px;object-fit:cover;"/>`
       : avatarHtml((club && club.name) || "המועדון", 44);
     const activeChallenge = club && club.active_challenge ? club.active_challenge : null;
-    // COMM-141. notif_unread_count() drives the badge; club_summary's
-    // count is only a first-paint fallback until that RPC resolves.
-    const unread = state.notif.unreadLoaded
-      ? Number(state.notif.unread) || 0
-      : Number((club && club.unread_notifications) || 0);
-    // COMM-140. The bell opens the notification centre.
-    const bellHtml = `<button class="chip-btn" data-community-action="feed-notifications" aria-label="התראות${unread ? `, ${unread} חדשות` : ""}" aria-haspopup="dialog" style="position:relative;">🔔${unread ? `<span class="tab-badge" aria-hidden="true">${unread}</span>` : ""}</button>`;
     const clubTopHtml = club ? `<div class="chart-card" id="communityClubTop" style="margin-bottom:12px;">
       <div class="flex" style="justify-content:space-between;align-items:center;gap:10px;">
         <div class="flex gap-10" style="align-items:center;min-width:0;">
@@ -10513,7 +11117,7 @@
             <div style="color:var(--steel);font-size:12px;">${Number(club.member_count || 0)} חברי מועדון</div>
           </div>
         </div>
-        ${bellHtml}
+        ${renderNotificationBell()}
       </div>
       ${activeChallenge ? `<div class="chip-row" style="margin-top:10px;"><button class="chip-btn primary" data-community-action="open-active-challenge" data-id="${esc(activeChallenge.id || "")}">🏆 ${esc(activeChallenge.title || "אתגר פעיל")}</button></div>` : ""}
     </div>` : "";
@@ -10669,10 +11273,6 @@
     // ---- Directory tab: the club roster (COMM-231) -----------------------
     const directoryTab = renderDirectorySection();
 
-    // COMM-152. The badge counts open queue items for a holder of the
-    // moderation permission (or a real admin), not the legacy reports list.
-    const pendingReports = (hasPerm(PERM.COMMENT_MODERATE) || isAdmin())
-      ? state.admin.modQueue.filter((r) => r.status === "open").length : 0;
     // Redesign, Phase 2: feed and directory are now conditional pushes, same
     // shape as the staff-only "coach" push just below - a module that's off
     // removes its PILL entirely, not just its content, matching the
@@ -10687,7 +11287,13 @@
     if (isModuleEnabled("feed")) tabs.push({ id: "feed", label: "פיד", html: feedTab });
     tabs.push({ id: "boards", label: "לוחות", html: boardsTab });
     if (isModuleEnabled("directory")) tabs.push({ id: "directory", label: "חברים", html: directoryTab });
-    tabs.push({ id: "account", label: "חשבון", html: accountTab, badge: pendingReports });
+    // Redesign, Phase 1 fix: the pendingReports badge used to sit here
+    // because moderation itself lived in this Account pill. It moved to
+    // Manage's own bottom-tab nav item and its מודרציה sub-tab (see
+    // getNavItems() and manageTabs below) - a badge on a pill with no
+    // moderation content in it any more was a dead end for the exact
+    // person it was meant to help.
+    tabs.push({ id: "account", label: "חשבון", html: accountTab });
     // COMM-223. A dedicated 4th sub-tab, added only for isStaff(), as an
     // `if (staff)` push rather than an inline ternary render gate (that
     // literal ternary pattern is what community-coach-tier.test.mjs counts
@@ -10701,7 +11307,25 @@
     // sub-tab for every coach, same as a role downgrade would.
     if (staff && isModuleEnabled("coach_tools")) tabs.push({ id: "coach", label: "לוח מאמנים", html: renderCoachTab() });
     const activeTab = tabs.find((t) => t.id === state.ui.tab) || tabs[0];
-    const tabBar = `<div class="subtabbar">${tabs.map((t) => `<button class="subtabbtn${t.id === activeTab.id ? " active" : ""}" data-community-action="set-tab" data-tab="${t.id}">${t.label}${t.badge ? `<span class="tab-badge" aria-label="${t.badge} דיווחים ממתינים">${t.badge}</span>` : ""}</button>`).join("")}</div>`;
+    // Redesign, Phase 2 fix: a module toggled off (or a stale value from
+    // getCommunityNavPreview()'s desktop-sidebar preview drifting from this
+    // same array) used to leave state.ui.tab pointing at a pill that no
+    // longer exists, while the fallback above only fixed what's DISPLAYED.
+    // Every reader of state.ui.tab elsewhere (ensureFeedRealtime,
+    // club_tab_viewed/feed_viewed/directory_opened analytics, the feed/
+    // boards lazy loads in afterRenderCommunity) kept reading the stale
+    // name, so - among other things - live feed comment/reaction updates
+    // silently died while the feed was genuinely on screen. Reconciling
+    // here, once, fixes every one of those readers at the source.
+    state.ui.tab = activeTab.id;
+    // role="tablist"/"tab" + aria-selected + roving tabindex, same
+    // convention app.js's own WOD subtabbar already carries (see
+    // tablistTabs()'s own comment, COMM-358) - this bar was missed the
+    // first time that shared keyboard handler landed, leaving Community's
+    // own sub-tabs (and Manage's, see manageTabBar below) with no
+    // Arrow/Home/End support even though the generic listener already
+    // covers any group shaped this way for free.
+    const tabBar = `<div class="subtabbar" role="tablist">${tabs.map((t) => `<button class="subtabbtn${t.id === activeTab.id ? " active" : ""}" data-community-action="set-tab" data-tab="${t.id}" role="tab" aria-selected="${t.id === activeTab.id}" tabindex="${t.id === activeTab.id ? "0" : "-1"}">${t.label}${t.badge ? `<span class="tab-badge" aria-label="${t.badge} דיווחים ממתינים">${t.badge}</span>` : ""}</button>`).join("")}</div>`;
 
     // COMM-329 (remaining scope). The Community tab was the one solo tab
     // with no top-level <h1> of its own - it never calls renderTabHeader(),
@@ -10734,11 +11358,17 @@
   // already gates on the same permission, so this is a second, matching
   // gate for a tidy empty state rather than the only one.
   function renderManageDashboard() {
-    const canModerate = hasPerm(PERM.COMMENT_MODERATE) || isAdmin();
-    const pendingReports = canModerate ? state.admin.modQueue.filter((r) => r.status === "open").length : 0;
+    // Redesign, Phase 3 fix: this row used to be gated on canModerate alone
+    // (truthy for any moderator regardless of the actual count), so a
+    // moderator with a genuinely empty queue permanently saw a red
+    // "0 דיווחים ממתינים למודרציה" row, and the green all-clear empty state
+    // below was unreachable for the exact people it was written for. Gated
+    // on the real count now, same shape as the inactiveCount row right
+    // after it.
+    const pendingReports = pendingModerationCount();
     const inactiveCount = state.club.inactiveMembers.length;
     const attentionRows = [
-      canModerate ? `<button class="log-row" data-community-action="set-manage-tab" data-tab="moderation" style="width:100%;text-align:right;border:1px solid var(--red);border-radius:10px;padding:10px 12px;background:transparent;cursor:pointer;">
+      pendingReports ? `<button class="log-row" data-community-action="set-manage-tab" data-tab="moderation" style="width:100%;text-align:right;border:1px solid var(--red);border-radius:10px;padding:10px 12px;background:transparent;cursor:pointer;">
           <span>${pendingReports} דיווחים ממתינים למודרציה</span><span aria-hidden="true">‹</span>
         </button>` : "",
       inactiveCount ? `<button class="log-row" data-community-action="set-manage-tab" data-tab="members" style="width:100%;text-align:right;border:1px solid var(--yellow);border-radius:10px;padding:10px 12px;background:transparent;cursor:pointer;">
@@ -10751,22 +11381,43 @@
     return renderCommunityHealthScore() + attentionHtml;
   }
   window.renderManageApp = function () {
-    if (!isStaff()) return renderTabHeader("manage") + `<div class="empty">אין הרשאה לצפות בעמוד זה.</div>`;
+    // Redesign, Phase 3 fix: renderTabHeader("manage") resolves through
+    // getNavItems(), which omits the "manage" entry entirely for a
+    // non-staff caller (by design - see app.js) - so this deny branch used
+    // to render with no heading at all for the exact caller who reaches
+    // it. The label is stated directly here instead of round-tripping
+    // through a registry that deliberately doesn't know this page exists
+    // for them.
+    if (!isStaff()) return `<h1 class="page-title">ניהול</h1><div class="empty">אין הרשאה לצפות בעמוד זה.</div>`;
     const manageTabs = [
       { id: "dashboard", label: "דשבורד", html: renderManageDashboard() },
       { id: "members", label: "חברים", html: renderMemberManagement() + renderMemberRoster() },
       { id: "onboarding", label: "קליטה", html: renderOnboardingContentEditor() + renderIntroCarouselContentEditor() },
-      { id: "moderation", label: "מודרציה", html: renderModeration() + renderAuditLog() },
-      { id: "settings", label: "הגדרות", html: renderClubModulesPanel() },
+      { id: "moderation", label: "מודרציה", html: renderModeration() + renderAuditLog(), badge: pendingModerationCount() },
+      // Redesign, Phase 3 fix: a coach who is staff-enough to see this whole
+      // tab often holds neither community.club.manage_modules nor
+      // community.analytics.view - both renderClubModulesPanel() and
+      // renderAdminAnalyticsDashboard() correctly self-gate to "" for them,
+      // which used to leave these two sub-tabs rendering nothing at all,
+      // not even an explanation. A real empty state now covers that case
+      // without changing who can do what.
+      { id: "settings", label: "הגדרות", html: renderClubModulesPanel() || `<div class="empty">אין לך הרשאה לצפות בהגדרות המודולים.</div>` },
       // renderAdminAnalyticsDashboard() still includes renderRegistrationFunnel()
       // nested inside itself (see that function's own comment) - not a
       // separate call here.
-      { id: "analytics", label: "אנליטיקס", html: renderAdminAnalyticsDashboard() + renderRetentionCorrelations() },
+      { id: "analytics", label: "אנליטיקס", html: (renderAdminAnalyticsDashboard() + renderRetentionCorrelations()) || `<div class="empty">אין לך הרשאה לצפות באנליטיקס.</div>` },
       { id: "invites", label: "הזמנות", html: renderInviteManagement() },
     ];
     const activeManageTab = manageTabs.find((t) => t.id === state.ui.manageTab) || manageTabs[0];
-    const manageTabBar = `<div class="subtabbar">${manageTabs.map((t) => `<button class="subtabbtn${t.id === activeManageTab.id ? " active" : ""}" data-community-action="set-manage-tab" data-tab="${t.id}">${t.label}</button>`).join("")}</div>`;
-    return renderTabHeader("manage")
+    // Same role="tablist"/"tab" convention as the Community sub-tab bar
+    // above - see that bar's own comment (COMM-358).
+    const manageTabBar = `<div class="subtabbar" role="tablist">${manageTabs.map((t) => `<button class="subtabbtn${t.id === activeManageTab.id ? " active" : ""}" data-community-action="set-manage-tab" data-tab="${t.id}" role="tab" aria-selected="${t.id === activeManageTab.id}" tabindex="${t.id === activeManageTab.id ? "0" : "-1"}">${t.label}${t.badge ? `<span class="tab-badge" aria-label="${t.badge} דיווחים ממתינים">${t.badge}</span>` : ""}</button>`).join("")}</div>`;
+    // Redesign, Phase 3 fix: the notification bell used to live only inside
+    // feedTab's club-strip - unreachable from Manage entirely. A staff
+    // member who now lives primarily on Manage had no unread indicator at
+    // all while there, even though the underlying realtime count kept
+    // updating correctly the whole time.
+    return `<h1 class="page-title" style="display:flex;align-items:center;justify-content:space-between;gap:10px;"><span>ניהול</span>${renderNotificationBell()}</h1>`
       + manageTabBar
       + (state.ui.message ? `<div class="footer-note" role="status" style="color:var(--brass);margin-bottom:14px;">${esc(state.ui.message)}</div>` : "")
       + activeManageTab.html;
@@ -11041,9 +11692,20 @@
       if (!state.coach.welcome.loaded && !state.coach.welcome.loading) loadCoachWelcome();
       if (!state.coach.memberOfWeek.loaded && !state.coach.memberOfWeek.loading) loadCoachMemberOfWeek();
       // COMM-309. The staff preview, same lazy sub-tab pattern as the three
-      // loads above it - no flag gate, since this section renders for every
-      // isStaff() caller (the button inside it is what is permission-gated,
-      // not the section itself).
+      // loads above it. NO FLAG GATE HERE, and since Redesign Phase 2 that
+      // is a deliberate asymmetry rather than the "there is no flag" it
+      // originally described: renderCoachMonthlyRecapSection() now returns
+      // "" unless isModuleEnabled("monthly_recap"), exactly as
+      // renderCoachMemberOfWeekSection() (loaded one line up) already did.
+      // The gate stays on the SECTION and off the loader for the same
+      // reason it is a clientOnly toggle in the first place - it hides a
+      // coach-facing preview, it is not a data boundary - so a club can
+      // flip it on and see the current month immediately, and the cost of
+      // being wrong is one unrendered query rather than a stale screen.
+      // Nothing server-side consults it: the 'recap_monthly' cron job
+      // (202609050005) is plain SQL calling recap_monthly_generate(), so
+      // drafts keep accruing month after month whether or not any club
+      // chose to show the preview section.
       if (!state.coach.monthlyRecap.loaded && !state.coach.monthlyRecap.loading) loadCoachMonthlyRecap();
       if (state.featureFlags.coachEngage && !state.coach.engage.loaded && !state.coach.engage.loading) loadCoachEngageFlags();
     }
@@ -11252,7 +11914,7 @@
     else if (action === "mod-queue-retry") loadModQueue();
     else if (action === "mod-context") openModContext(el.dataset.id);
     else if (action === "mod-context-close") closeModContext();
-    else if (action === "mod-context-open-feed") { closeModContext(); setCommunityTab("feed"); }
+    else if (action === "mod-context-open-feed") { closeModContext(); if (typeof window.switchToCommunityTopTab === "function") window.switchToCommunityTopTab(); setCommunityTab("feed"); }
     else if (action === "mod-action") openModAction(el.dataset.id, el.dataset.decision);
     else if (action === "mod-action-cancel") closeModAction();
     else if (action === "mod-action-run") runModAction();
@@ -11410,10 +12072,23 @@
     else if (action === "event-rsvp") rsvpEvent(el.dataset.id, el.dataset.response);
     else if (action === "events-retry") loadEvents();
     else if (action === "open-event-form") openEventForm(null);
-    else if (action === "event-edit") { const existing = state.events.byId[el.dataset.id] || (state.events.view && state.events.view.event); openEventForm(existing); }
+    else if (action === "event-edit") {
+      // The edit button lives inside the eventView overlay, which
+      // renderConfirmDialog() mounts globally so an event can be opened
+      // from a feed card, search, a recap, or a notification while the
+      // Boards sub-tab (or even the Community top-level tab) isn't
+      // active - but the form itself only renders inside Boards'
+      // section, so opening it from anywhere else was a silent no-op.
+      const existing = state.events.byId[el.dataset.id] || (state.events.view && state.events.view.event);
+      state.events.view = null;
+      if (typeof window.switchToCommunityTopTab === "function") window.switchToCommunityTopTab();
+      setCommunityTab("boards");
+      openEventForm(existing);
+    }
     else if (action === "event-form-cancel") closeEventForm();
     else if (action === "event-form-type") setEventFormType(el.dataset.type);
     else if (action === "event-publish") publishEventDraft(el.dataset.id);
+    else if (action === "event-companion-retry") retryEventCompanionPost(el.dataset.id);
     else if (action === "event-cancel-confirm") confirmCancelEvent(el.dataset.id);
     else if (action === "event-ics") downloadEventIcs(el.dataset.id);
     // COMM-222 onboarding sequence.
@@ -11455,29 +12130,36 @@
   // renderManageApp() itself re-checks internally (defense in depth against
   // a forced ?tab=manage), just exposed for the nav-item decision.
   window.communityIsStaff = function () { return isStaff(); };
+  // Redesign, Phase 3 fix: app.js's getNavItems() needs this to badge the
+  // Manage bottom-tab nav item - see pendingModerationCount()'s own comment.
+  window.communityPendingModerationCount = function () { return pendingModerationCount(); };
   window.shareAchievementToCommunity = function (achievementId, title, rule) { publishAchievement(achievementId, title, rule); };
   // Exported for app.js's Community sub-nav (the UI-restructuring track) so
   // it can switch cloud.js's own sub-tab without re-deriving any of the
   // teardown/analytics logic setCommunityTab already does internally.
   window.setCommunityTab = setCommunityTab;
-  // Same track, same reason: the four/five sub-tab ids, labels and badge
-  // counts a non-staff/staff caller actually sees, without app.js
-  // re-deriving the staff gate or the moderation-queue badge count itself.
-  // Mirrors the real `tabs` array built inline in renderCommunityApp() -
-  // same ids, same order, same "coach" entry only when isStaff() - but
+  // Same track, same reason: the sub-tab ids and labels a non-staff/staff
+  // caller actually sees, without app.js re-deriving the staff/module gates
+  // itself. Mirrors the real `tabs` array built inline in
+  // renderCommunityApp() - same ids, same order, same conditions - but
   // computed standalone (no render bodies) so it is cheap to call on every
   // nav-menu open, not just once per Community render.
+  //
+  // Redesign, Phase 2 fix: this used to push feed/directory/coach
+  // unconditionally (or coach on isStaff() alone), which drifted the
+  // instant the real array grew module-flag conditions - the desktop
+  // sidebar could then offer a "חברים" entry that does not exist,
+  // producing the exact stale-state.ui.tab bug fixed above. Every
+  // condition here must stay byte-identical to renderCommunityApp()'s own
+  // tabs-array construction.
   window.getCommunityNavPreview = function () {
     const staff = isStaff();
-    const pendingReports = (hasPerm(PERM.COMMENT_MODERATE) || isAdmin())
-      ? state.admin.modQueue.filter((r) => r.status === "open").length : 0;
-    const tabs = [
-      { id: "feed", label: "פיד" },
-      { id: "boards", label: "לוחות" },
-      { id: "directory", label: "חברים" },
-      { id: "account", label: "חשבון", badge: pendingReports },
-    ];
-    if (staff) tabs.push({ id: "coach", label: "לוח מאמנים" });
+    const tabs = [];
+    if (isModuleEnabled("feed")) tabs.push({ id: "feed", label: "פיד" });
+    tabs.push({ id: "boards", label: "לוחות" });
+    if (isModuleEnabled("directory")) tabs.push({ id: "directory", label: "חברים" });
+    tabs.push({ id: "account", label: "חשבון" });
+    if (staff && isModuleEnabled("coach_tools")) tabs.push({ id: "coach", label: "לוח מאמנים" });
     return tabs;
   };
   document.addEventListener("submit", (event) => {
@@ -11624,9 +12306,20 @@
         // stepContent/editor just above - the next member on this device
         // gets a fresh load and a fresh editor, never a stale copy or an
         // in-progress edit left over from whoever was signed in before.
-        // step (which carousel screen) is deliberately NOT reset here -
-        // hasSeenIntroCarousel() is what actually gates the carousel, and
-        // that is a per-device localStorage flag, not per-session state.
+        //
+        // `step` IS reset, and the original decision not to reset it was
+        // wrong. That decision reasoned that hasSeenIntroCarousel() alone
+        // gates the carousel and is per-device, so the step index could not
+        // matter. It does matter in exactly the case where the flag is still
+        // unset: member A starts the carousel, reaches screen 2, ABANDONS
+        // (which is precisely why the flag was never stamped - it is only
+        // written by the final Next) and signs out. Member B signs up on the
+        // same device, the unset flag correctly shows them the carousel, and
+        // A's leftover index put them on screen 2 with screen 1 skipped and
+        // no way to reach it except the Back button they have no reason to
+        // press. Reproduced live against the real gate cascade before this
+        // line was added.
+        state.intro.step = 0;
         state.intro.content = {}; state.intro.contentLoaded = false; state.intro.contentError = false;
         state.intro.editor = { drafts: {}, saving: {}, saved: {} };
         state.analytics.registrationFunnel = { loading: false, loaded: false, error: false, errorText: "", data: null };

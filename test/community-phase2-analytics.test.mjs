@@ -424,8 +424,8 @@ test("push_opt_in is recorded once the subscription row is written, with the con
 
   // A device has one subscription however many types route through it, so
   // a second type switched to Push is not a second opt-in.
-  window.document.querySelector('[data-community-action="notif-pref"][data-type="comments"][data-channel="push"]').click();
-  await waitFor(() => mock.db.notification_preferences.some((r) => r.type === "comments" && r.channel === "push"), 4000);
+  window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_on_post"][data-channel="push"]').click();
+  await waitFor(() => mock.db.notification_preferences.some((r) => r.type === "comment_on_post" && r.channel === "push"), 4000);
   assert.equal(events(mock, "push_opt_in").length, 1);
 });
 

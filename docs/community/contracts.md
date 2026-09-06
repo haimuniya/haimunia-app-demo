@@ -339,11 +339,11 @@ client was already built against.
   matches the cadence this schema already runs its other periodic
   recomputations on — consistency streaks are a week-shaped question and
   `recap_weekly` is literally weekly — so the module has one periodic rhythm
-  rather than three. **Nothing schedules it**: `pg_cron` is not guaranteed
-  present in the CI stack, and the cadence is expressed in exactly one place,
-  the commented cron line in 202608310006
-  (`'17 4 * * 1'`, Monday 04:17 UTC). Changing it is an edit to that one line;
-  no schema depends on it.
+  rather than three. **Now scheduled**: 202609050005 wired
+  `cron.schedule('feed-weights-recompute', '17 4 * * 1', ...)` — Monday
+  04:17 UTC, the exact cadence this section already named before a
+  scheduler existed. Changing it is an edit to that one `cron.schedule`
+  call; no schema depends on the literal string.
 
 ### relationship_score(p_viewer uuid, p_other uuid, p_as_of timestamptz default now()) returns numeric
 
@@ -576,17 +576,48 @@ client was already built against.
 - Side effects: idempotent. A repeated batch collides on (user_id,
   feed_session_id, post_id) and does nothing.
 
-### feed_record_interaction(p_post_id uuid, p_kind text) returns void
+### feed_record_interaction(p_post_id uuid, p_kind text, p_feed_session_id uuid) returns void
 
-- Shipped in 202608280006.
+- Shipped in 202608280006 as `(p_post_id uuid, p_kind text)`. **Amended by
+  202609060010**, which DROPPED that two-argument version and created this
+  three-argument one. There is exactly one function by this name and there
+  must stay exactly one — `create or replace` with a different argument list
+  adds an overload rather than replacing, which is how a client RPC silently
+  resolves to a stale body (see the three coexisting `add_post_comment`
+  overloads). The migration ends with a `do` block that fails the apply if a
+  second one ever appears.
 - Purpose: record one feed interaction and flip `opened` or `engaged` on the
-  matching impression.
+  single impression row from the session the interaction happened in.
 - Params: `p_kind` one of open, react, comment, share, hide, save,
-  profile_open.
+  profile_open. `p_feed_session_id` is the `feed_session_id` the client passed
+  to `feed_record_impressions` for the session currently on screen.
+- `p_feed_session_id` is REQUIRED — no default, deliberately. The bug
+  202609060010 fixes was an over-broad scope, so a `default null` meaning
+  "then stamp every session" would be the same bug with a friendlier name. A
+  caller that omits the key fails PostgREST resolution (PGRST202 / 404), which
+  is loud. A caller that supplies the key with a null VALUE still gets its
+  `feed_interactions` row and simply flips no flag: raising there would roll
+  the interaction insert back too, and the only caller is fire-and-forget, so
+  that would lose strictly more data than the flag alone.
 - Auth: security definer, own-row via auth.uid(). Rejects a post the caller
   cannot see. Rate limited at 300 per 10 minutes.
-- Side effects: feed_impressions has no UPDATE grant or policy, so this
-  function is the only thing that can flip those two flags.
+- Side effects: the UPDATE is scoped `user_id = auth.uid() and post_id =
+  p_post_id and feed_session_id = p_feed_session_id`, which is the full unique
+  key of `feed_impressions`, so it touches at most one row. Matching zero rows
+  is a normal outcome, not an error — a post opened from a notification, a
+  permalink, a profile or a search result was never shown in a feed session.
+  feed_impressions has no UPDATE grant or policy, so this function is still
+  the only thing that can flip those two flags.
+- What it used to do, recorded because the data it produced is still in the
+  table: the UPDATE was scoped by `(user_id, post_id)` only, so one open
+  back-stamped `opened`/`engaged` onto every impression that member had ever
+  recorded for that post, across all past sessions, and onto each future
+  session's row the first time it was touched. The flags are monotonic, so it
+  only ever accumulated. That erased the "shown and ignored" negative signal
+  the personalised feed weights (202608310006) rank on and inflated the
+  open/engagement rates the analytics dashboard (202609010006) divides.
+  Historical rows are NOT backfilled: which row each flag belonged to is
+  exactly the information the bug destroyed.
 
 ### leaderboard_row composite type
 
@@ -859,12 +890,67 @@ should read those entries instead.
 
 ### post_set_visibility(post_id uuid, visibility post_visibility) returns void
 
-- Auth: author only. Side effects: updates visibility, re-evaluates who can
-  see it.
+- Shipped in 202609060007. It was documented here from Phase 1 and **never
+  built**: cloud.js's own-post menu item ("שינוי נראוּת",
+  `postApplyVisibility`) called it by this exact name and got PGRST202 every
+  time, so the button had been dead since the day it shipped. Found by the
+  launch-readiness audit.
+- Argument names are `post_id` / `visibility`, unprefixed, because PostgREST
+  resolves an RPC by argument name and those are the names the shipped client
+  sends. Same shape as `post_delete(post_id uuid)` next to it.
+- `visibility` is the `post_visibility` **enum**, exactly as `post_create`'s
+  own parameter is, so the type is the validation and an unknown label is
+  refused before the body runs. All five labels are accepted, including the
+  legacy `public` and `followers` that pre-202608280004 rows still carry, so
+  an author can move an old post without a migration.
+- Auth: security definer, `auth.uid()` checked first, then **author only** —
+  there is no moderator branch, deliberately: a moderator removes a post,
+  they do not re-aim it.
+- Raises (all P0001): `not authorized` for a null caller or a non-author,
+  `visibility is required` for null, `post not found`,
+  `post is no longer editable` for a deleted or non-active post, and
+  `posting_restricted` when a COMM-153-restricted member tries to **widen**
+  the audience. The audience ordering is `only_me` <
+  `friends`/`followers` < `club`/`public`. Narrowing is always allowed,
+  restricted or not — a member must be able to take their own content down.
+  Setting the value it already has returns early and is never an error.
+- Deliberately **not** gated on `is_community_member()`: re-aiming words
+  already published is not a new community write, the same reasoning
+  `comment_delete` and `toggle_reaction` give.
+- Side effects: sets `workout_posts.visibility` and nothing else, which
+  re-evaluates `posts_feed_select` for every viewer.
 
 ### post_edit_caption(post_id uuid, body text) returns void
 
-- Auth: author only. Updates `body` only. `body` up to 1000 chars.
+- Shipped in 202609060007. Same history as `post_set_visibility` above —
+  documented from Phase 1, never built, and cloud.js's "עריכת כיתוב" menu
+  item (`postSaveCaption`) had been answering PGRST202 the whole time.
+- Argument names are `post_id` / `body`, for the same PostgREST reason.
+- Auth: security definer, `auth.uid()` checked first, then **author only**.
+- Raises (all P0001): `not authorized` for a null caller or a non-author,
+  `post not found`, `post is no longer editable` for a deleted or non-active
+  post, `recovery method required` when not `is_community_member()`,
+  `posting_restricted` under an active COMM-153 restriction, `rate_limited`
+  past 30 calls per 10 minutes under the `post_edit_caption` key (the same
+  budget `comment_edit` uses), and
+  `a post needs text or at least one photo` when the normalised body is empty
+  and the post carries neither a `post_media` row nor a legacy `photo_path`.
+- An edit carries the same gates a create does, for the reason
+  `comment_edit`'s own comment gives: rewriting an old post into new content
+  is the obvious way around a posting restriction.
+- Body normalisation is `post_create`'s, exactly — control characters
+  `0x01-0x08` and `0x0B-0x1F` stripped (tab and newline kept, since the card
+  renders `white-space: pre-wrap`), trimmed, capped at 1000, empty stored as
+  NULL.
+- Side effects: sets `workout_posts.body` and nothing else. There is no
+  `edited_at` column on `workout_posts`; `updated_at` is stamped by the
+  existing `workout_posts_touch` trigger, so an edit is still never silent.
+- Neither function is the only write path. Unlike `post_comments`,
+  `workout_posts` does carry an UPDATE grant and `posts_update_self` permits
+  an author any column of their own row, so these are the **supported** path
+  and the gates above are the rule it follows — not a boundary the way
+  `comment_edit` is. Making them the only path would mean revoking UPDATE on
+  `workout_posts`, which several shipped writes still need.
 
 ### post_delete(post_id uuid) returns void
 
@@ -1315,10 +1401,10 @@ challenge is `club_total = null`).
   challenge and writes nothing - this is what keeps the send to "at most
   once per `(challenge_id, user_id)` pair" without a per-user flag, per
   COMM-208's validation rule.
-- SCHEDULER is not built here, same open item as the notification batch
-  flusher: needs a `pg_cron` entry or a scheduled Edge Function once one
-  exists for either. Until then `chal_notify_ending_soon()` has to be called
-  by hand or from a one-off script.
+- **Now scheduled.** 202609050005 wired `cron.schedule('chal-notify-ending-soon',
+  '23 * * * *', ...)` — hourly, so "ending soon" is never more than an hour
+  late; the `ending_soon_notified_at` stamp makes the extra runs free. See
+  "### The schedule (202609050005)" below for the full table.
 
 ### notif_on_challenge_join (AFTER INSERT on challenge_participants)
 
@@ -2071,12 +2157,10 @@ appends `renderComments(post)` inside the article and exposes
   already filtered at enqueue time by the trigger that called
   `notif_queue_batched`, and a rolled-up row is by definition not a
   duplicate.
-- SCHEDULER is infra, deliberately not built: pg_cron is not guaranteed in
-  the CI stack. Wire it as a `cron.schedule('notif-batch-flush', '*/15 * *
-  * *', $$select public.notif_batch_flush_due()$$)` entry once the
-  extension is enabled, or a scheduled Edge Function calling it with the
-  service role. Until then batched notifications accumulate in
-  `notification_batches` undelivered.
+- **Now scheduled.** 202609050005 wired exactly the entry this section
+  proposed: `cron.schedule('notif-batch-flush', '*/15 * * * *', $$select
+  public.notif_batch_flush_due()$$)`. Batched notifications no longer
+  accumulate in `notification_batches` undelivered.
 
 ### notif_category_surface(p_category text) returns text
 
@@ -2316,13 +2400,56 @@ documented under "## Challenges" above, not here.
 
 ### is_community_member() returns boolean
 
-- Shipped in 202608280003.
+- Shipped in 202608280003. Re-declared in 202609060001 with the same
+  signature and the same meaning, as **security definer**.
 - Purpose: the community access predicate. True when the caller has a live
   profile, a non-null `recovery_verified_at`, and an invite redemption.
 - Used by: post insert, comment create, reaction create, challenge join,
-  challenge progress, event RSVP, and post_media insert. Read paths are
-  deliberately not gated, so an account still setting up its recovery method
-  can look around but cannot contribute.
+  challenge progress, event RSVP, and post_media insert — **and, since
+  202609060001, by the three member-data READ policies as well**:
+  `profiles_read_authenticated`, `posts_feed_select` and
+  `announcements_read`, plus the `community_streaks` view and the
+  `avatar-photos` SELECT policy.
+- **The read gate reverses this entry's original "read paths are deliberately
+  not gated" line, and on purpose.** That line was written before anonymous
+  sign-in was enabled. With it on and the publishable key in the browser,
+  anyone can mint a real `authenticated` JWT with no invite, no profile and
+  no recovery method, and every one of those relations answered them in full
+  — verified live. The reserved read window it protected is also unreachable
+  in the shipped client: `renderCommunityApp()` returns the COMM-016 recovery
+  card and nothing else while `recovery_verified_at` is null, and
+  `ensureCommunityDataLoaded()` runs no loader at all until it is stamped.
+- The **self branches stay outside the gate** on `profiles`
+  (`id = auth.uid()`), on `workout_posts` (`author_id = auth.uid()`) and on
+  the avatar bucket (own path prefix). Without the first, the client could
+  never read back the profile it just created and onboarding would dead-end
+  on the "complete your profile" form.
+- Deliberately **not** applied to `intro_carousel_content`,
+  `onboarding_step_content` or `club_features`: those are the
+  pre-redemption onboarding screens themselves, and none carries a
+  member-identifying field.
+- Auth: **security definer** since 202609060001, and this is load-bearing
+  rather than stylistic. The function reads `public.profiles`; as an invoker
+  function called from `profiles`' own policy, Postgres refuses with
+  "infinite recursion detected in policy for relation profiles". Same reason
+  `can_view_profile_field()` next to it is definer. `auth.uid()` is checked
+  first and null returns false. Semantics are unchanged: definer rights reach
+  the same two rows (the caller's own profile, the caller's own redemption)
+  that RLS already returned to their owner.
+- pgTAP: `supabase/tests/0067_anonymous_read_gate_test.sql` (the policies) and
+  `supabase/tests/0075_definer_read_gate_test.sql` (the definer functions,
+  below).
+- **The gate is in nine places, not three.** 202609060001 covered the three
+  read policies the audit sampled. Re-probing a ghost session against the
+  fixed stack — which that migration's own instructions asked for — showed
+  the five SECURITY DEFINER read functions still answering in full, because
+  a definer function never evaluates a policy and each had re-stated exactly
+  one rule: `if auth.uid() is null then raise 'not authorized'`. An anonymous
+  session HAS an `auth.uid()`. 202609060009 closed those:
+  `feed_page`, `community_search`, `community_profile`, `club_summary` and
+  `member_roles`. Plus the `community_streaks` view (202609060002) and the
+  `avatar-photos` SELECT policy (202609060003). See the audit section at the
+  end of this document.
 
 ### are_friends(p_other uuid) returns boolean
 
@@ -2421,8 +2548,11 @@ documented under "## Challenges" above, not here.
 - Self-reporting a profile is possible and deliberately not special-cased:
   `report()` has never checked self-targeting for posts or comments either, and
   the unique key collapses it to one row.
-- The client also records `feed_record_interaction(p_target_id, 'hide')` when
-  the target is a post (COMM-151). A comment or a profile records nothing.
+- The client also records `feed_record_interaction(p_target_id, 'hide',
+  <current feed session id>)` when the target is a post (COMM-151). A comment
+  or a profile records nothing. The third argument became required in
+  202609060010; a `hide` flips neither flag, so the only thing it changes here
+  is that the call must carry the key to resolve at all.
 
 ### mod_queue(p_status text, p_cursor timestamptz, p_limit int) returns setof mod_queue_item
 
@@ -4074,16 +4204,20 @@ Four reasons, recorded here because the ticket left the choice open:
    own "did this row already exist" check.
 4. It matches the two most recent precedents — `chal_notify_ending_soon()`
    and `coach_detect_engagement_decline()` — both scheduled jobs expressed
-   as service-role-only Postgres functions with the scheduler deliberately
-   not built.
+   as service-role-only Postgres functions, at the time with the scheduler
+   deliberately not yet built (see below — it now is).
 
-**Consequence, stated rather than hidden: no scheduler exists, so no draft
-appears on its own.** Until one does, a draft is produced by running
-`select public.recap_monthly_generate();` as the service role. The staff
-preview surface must render an honest empty state rather than assume a row
-is there. Same open infra item `notif_batch_flush_due()`,
+**Now scheduled**: 202609050005 wired `cron.schedule('recap_monthly', '41
+4 1 * *', ...)` — 04:41 UTC on the 1st of each month, calling
+`recap_monthly_generate()` to produce the draft automatically; a staff
+member still calls `recap_monthly_publish()` by hand to make it visible to
+members (publishing is a deliberate human act, never scheduled). Before
+this migration landed, the only way to produce a draft was running `select
+public.recap_monthly_generate();` as the service role by hand — the staff
+preview surface still renders an honest empty state for the (now rare) case
+that no draft exists yet for the current month. `notif_batch_flush_due()`,
 `chal_notify_ending_soon()`, `coach_detect_engagement_decline()` and
-`recap_weekly` all already carry.
+`recap_weekly` are all scheduled the same way now — see 202609050005.
 
 ### monthly_club_recaps (table, 202609010002)
 
@@ -4226,13 +4360,11 @@ is there. Same open infra item `notif_batch_flush_due()`,
   row — that is how the "already published, did nothing" branch is detected,
   and the id is then re-selected so the caller still gets one.
 - **Cadence: monthly**, on the 1st, after the month it summarises has
-  closed. Expressed in exactly one place, the commented `cron.schedule` line
-  in 202609010002 (`'41 4 1 * *'`), the same discipline 202608310006 uses for
-  `recompute_feed_weights`. Nothing schedules it — `pg_cron` is not
-  guaranteed present in the CI stack. Note this is the **second** periodic
-  rhythm the module has: `recompute_feed_weights`' contract argued for one
-  weekly rhythm rather than three, and a monthly recap cannot be weekly, so
-  this is a deliberate second cadence rather than a drift.
+  closed. **Now scheduled** by 202609050005's `cron.schedule('recap_monthly',
+  '41 4 1 * *', ...)`. Note this is the **second** periodic rhythm the
+  module has: `recompute_feed_weights`' contract argued for one weekly
+  rhythm rather than three, and a monthly recap cannot be weekly, so this is
+  a deliberate second cadence rather than a drift.
 - Side effects: one `monthly_club_recaps` row inserted or updated. Nothing
   else. No notification, ever.
 - **Logging:** returns the row id; there is no per-member loop, so there is
@@ -5133,10 +5265,16 @@ because:
   over unchanged data reproduces the same score. Unlike `monthly_club_recaps`
   there is **no freeze** — there is no publish step, no member ever sees the
   number, and a recompute is a legitimate act rather than a rewrite of history.
-- **No scheduler is built.** The same open infra item
-  `recap_monthly_generate()`, `purge_abandoned_profiles()`,
+- **No scheduler is built for this function specifically.** 202609050005
+  wired a real `pg_cron` schedule for six of this module's periodic
+  functions (`recap_monthly_generate()`, `purge_abandoned_profiles()`,
   `coach_detect_engagement_decline()`, `chal_notify_ending_soon()`,
-  `notif_batch_flush_due()` and `recap_weekly` all carry.
+  `notif_batch_flush_due()` and `recap_weekly`), closing that open infra
+  item for all of them — but `community_health_generate()` was not among
+  the six it covers and remains unscheduled today, same as before: it is
+  `service_role`-only with no client grant, reachable only by running it
+  by hand as that role, exactly as every other function on this list was
+  before 202609050005.
 - Side effects: writes `community_health_scores` and nothing else.
 
 ### The four components, and exactly where each number comes from
@@ -5456,7 +5594,10 @@ boundaries follow the club's local week, not UTC" gap `202609010006`,
 
 ### purge_abandoned_profiles — SHIPPED
 
-- Schedule: daily (no scheduler wired — see below). Versioned. Idempotent.
+- Schedule: daily. Now scheduled by 202609050005:
+  `cron.schedule('purge-abandoned-profiles', '31 3 * * *', ...)` — 03:31
+  UTC daily (see below for the history of this being unscheduled).
+  Versioned. Idempotent.
   Phase 3, COMM-314. Shipped as
   `supabase/functions/purge_abandoned_profiles/index.ts`, calling
   `public.purge_abandoned_profiles(p_retention_days integer default 30)`
@@ -5501,10 +5642,10 @@ boundaries follow the club's local week, not UTC" gap `202609010006`,
 - Runbook: `docs/community/abandoned-profile-purge-runbook.md` (not the
   `attendance-purge-runbook.md` path this stub originally suggested — see
   that file's own header for why the name changed).
-- **Nothing schedules this yet** — same open infra item `recap_weekly`,
-  `notif_batch_flush_due()`, `chal_notify_ending_soon()`,
-  `coach_detect_engagement_decline()` and `recap_monthly_generate()` all
-  already carry.
+- **Now scheduled** — 202609050005 closed this open infra item for this
+  function and for `recap_weekly`, `notif_batch_flush_due()`,
+  `chal_notify_ending_soon()`, `coach_detect_engagement_decline()` and
+  `recap_monthly_generate()` all together, in one migration.
 
 ## Phase 3 forward contracts (not yet built)
 
@@ -6257,6 +6398,142 @@ updated_at timestamptz not null default now()
   otherwise log a change that did not happen).
 - Step precedence is untouched; this ships copy editing only.
 
+### intro_carousel_content (table, Redesign Phase 3) — shipped as proposed
+
+```
+step text primary key check (step in
+  ('welcome_intro','club_rules','getting_started'))
+title text not null check (char_length(title) <= 120)
+body  text not null check (char_length(body) <= 2000)
+updated_by uuid references auth.users(id)
+updated_at timestamptz not null default now()
+```
+
+- **A new, sibling table, not a widening of `onboarding_step_content`.**
+  That table is a closed five-row *recurring* lifecycle system (one card
+  shown at different points over a member's first month, gated by
+  attendance/elapsed time); this is a closed three-row *one-time* system
+  (three screens shown back-to-back, once, before a profile even exists).
+  Folding three more keys into the five-row table would break its own
+  documented "exactly five, always" invariant for every existing reader,
+  for no shared benefit — the two systems share no code path.
+- `step` is not an FK to anything: the three names are a client-side
+  constant (`INTRO_CAROUSEL_STEPS`, cloud.js) and the CHECK is the only
+  place a fourth step name could be refused.
+- Seeded with the mockup's own three screens, translated into the
+  club-agnostic voice every other seeded string in this schema uses
+  (`welcome_intro`, `club_rules`, `getting_started`).
+- RLS, byte-identical shape to `onboarding_step_content`'s own, renamed:
+  `grant select, update to authenticated`; read policy `using (true)`;
+  write policy `using (has_perm('community.content.manage_onboarding') or
+  is_admin())` with the same `WITH CHECK`. **No insert or delete grant to
+  any client role, admin included** — the step set is exactly three and
+  changing it is a migration, not an app action.
+- `intro_carousel_content_pin` (BEFORE UPDATE) pins `step = old.step`,
+  `updated_by = auth.uid()`, `updated_at = now()` — same shape and same
+  reasoning as `onboarding_step_content_pin_updated_by`.
+- `intro_carousel_content_audit` (AFTER UPDATE) reuses
+  `onboarding_step_content`'s own audit label — `log_admin_action`
+  with `action_type = 'onboarding_content_updated'`, `target_type =
+  'onboarding_step'` — deliberately, not a new label: both tables are
+  "staff edited onboarding copy" from an audit reader's point of view, and
+  this admin_actions label was already in the closed list since
+  `onboarding_step_content`'s own migration (202609030004).
+- A member's UPDATE does not raise, for the same reason
+  `onboarding_step_content`'s doesn't: a failing RLS `USING` clause on
+  UPDATE matches zero rows rather than erroring.
+
+### Nine client-reachable functions with no contract entry (launch-readiness audit gap-fill)
+
+All nine shipped correctly and are already exercised by client code and/or
+pgTAP; the gap was purely documentation — none of the nine had ever had its
+signature, auth model or deviations written down here. Filled in as found,
+with no behavior change.
+
+**`club_feature_enabled(p_module_key text, p_sub_key text default null)
+returns boolean`** — shipped 202609010012 (Club Modules). `stable security
+definer`, granted to `authenticated`. The single predicate every
+module-gated RLS policy and `isModuleEnabled()` (cloud.js) both call.
+Returns `true` when no `club_features` row exists for the key — a module
+this migration doesn't seed (or a future client-only-hidden one) is never
+accidentally locked out by a missing row. `p_sub_key`, when given, ANDs the
+module's own `enabled` with `coalesce((config ->> p_sub_key)::boolean,
+true)` — an absent sub-key defaults open, same reasoning as the missing-row
+case. Six seeded modules today: `announcements`, `events`, `challenges`,
+`achievements`, `feed`, `leaderboards` — comments/reactions/workout-sharing,
+directory and notifications are deliberately NOT gateable here (see the
+migration's own header for why each was excluded). Writes go exclusively
+through `admin_set_club_feature()`, not a direct table write.
+
+**`request_account_deletion() returns void`** — shipped 202608260001.
+`security definer`, granted to `authenticated`, no `auth.uid()`-null guard
+needed since RLS/grants already require a session to call it. Upserts an
+`account_deletion_requests` row (`purge_after = now() + 30 days`, resets on
+a repeat call) and immediately soft-deletes the caller's own `profiles` row
+and every `workout_posts` row they authored (`deleted_at = now()`) — the
+account becomes invisible right away; the 30-day window is a recovery grace
+period before `purge_due_accounts()` (below) actually removes the
+`auth.users` row.
+
+**`admin_remove_member(p_user_id uuid) returns void`** — shipped
+202608270011. `security definer`, granted to `authenticated`; inline
+`is_admin()` check (`raise 'not authorized'` otherwise), a real
+`profiles.is_admin` row, not `is_staff()` — a coach cannot remove a member.
+Refuses `'use account deletion for your own account'` when
+`p_user_id = auth.uid()`, forcing an admin through their own
+`request_account_deletion()` for themselves. Otherwise mirrors that
+function's exact effect (same upsert, same immediate soft-delete of profile
+and posts) triggered on someone else's behalf.
+
+**`purge_due_accounts() returns integer`** — shipped 202608260001,
+`service_role` only (`revoke ... from public, anon, authenticated`), no
+`auth.uid()` check — there is no session to check, the documented exception
+every scheduled-job function in this schema carries (same shape as
+`notif_batch_flush_due()`, `coach_detect_engagement_decline()`,
+`recap_weekly`). Hard-deletes every `auth.users` row whose
+`account_deletion_requests.purge_after <= now()` (cascading through
+`profiles`' own FK). Returns the number of rows actually removed. **No
+scheduler invokes this today** — 202609050005 wired a real `pg_cron`
+schedule for six of this module's other periodic functions (see "### The
+schedule (202609050005)" below) but did not include this one; it remains
+reachable only by running it by hand as `service_role`. A cron/Edge
+Function wiring is a separate ticket, not a bug in this function.
+
+**`can_upload_post_photo(p_name text) returns boolean`** — shipped
+202608270006, the Storage `post-photos_insert_own` policy's `WITH CHECK`.
+`stable security definer`, granted to `authenticated`. True only when: the
+caller has a session, the object path's first segment is literally the
+caller's own `auth.uid()` (so nobody can write into another member's
+prefix), the caller is a live (`deleted_at is null`), invite-redeemed
+member, and the caller already has fewer than 20 objects under their own
+prefix in `post-photos` — a per-member photo-count cap enforced at the
+Storage layer, not just a client-side limit.
+
+**`can_write_own_avatar(p_name text) returns boolean`** — shipped
+202609010010, the `avatar-photos` bucket's own INSERT/UPDATE `WITH CHECK`
+(both are required, not just INSERT: the client uploads with
+`upsert:true`, and Storage evaluates that as `INSERT ... ON CONFLICT DO
+UPDATE`, so the UPDATE path needs the identical check). Same shape as
+`can_upload_post_photo` (own-prefix ownership + live redeemed member) but
+**no object-count cap** — an avatar is one-per-member by client convention
+(always uploaded to `{auth.uid()}/avatar.{ext}`), unlike post photos which
+legitimately accumulate many-per-member across many posts.
+
+**`club_summary() returns jsonb`** — shipped 202608280019, re-covered by
+the SECURITY DEFINER read gate (202609060009, see "The gate is in nine
+places" above — this was one of the five). `stable security definer`,
+`auth.uid()`-null refused. Answers the club-header card in one round trip:
+`name` and an `image_url` read off `clubs.settings` (**`TODO COMM-115`,
+written into the function itself: `clubs` has no real image column yet —
+the mark falls back to a lettermark client-side when unset**), a real
+`member_count` (definer, so it's every live profile, not "everyone this
+viewer hasn't blocked" a client-side count through
+`profiles_read_authenticated` would give), the single active
+`challenges` row ending soonest, falling back to the current
+`weekly_challenges` row when `challenges` (Phase 2) has none active — which
+is the only path that actually renders today, since `challenges` starts
+empty — and the caller's own unread notification count.
+
 ### admin_member_roster(p_cursor timestamptz default null, p_limit int default 25) (COMM-374)
 
 - **DEVIATION:** `returns table(id uuid, handle text, display_name text,
@@ -6660,3 +6937,241 @@ pgTAP: `supabase/tests/0065_club_modules_coach_and_directory_test.sql`.
 Client: new tests in `test/community-club-features.test.mjs` covering pill
 removal, the coach master switch, the three independent coach-section
 flags, and the Boards empty-state's exact trigger condition.
+
+## Launch-readiness audit, Phases 1–2 (202609060001–202609060008)
+
+Eight migrations, one per finding, each with the matching pgTAP file
+(`0067`–`0074`). The `is_community_member()` read gate (finding 1) is
+documented in **Identity and privacy** above; the two post RPCs (finding 8)
+in **Posts**; the achievement copy fix (finding 9) in
+`docs/community/achievement-seed.md`. What follows is the rest.
+
+### community_streaks (view, re-declared in 202609060002)
+
+- Same columns, same types, same order, still **not** `security_invoker` —
+  it has to run with the owner's rights to aggregate past `activity_pings`'
+  owner-only RLS, which is exactly why it re-applies every access rule by
+  hand.
+- It re-applied `deleted_at` and blocks and **nothing else**, so a member who
+  switched `visible_to_club`, `in_leaderboards` and `show_attendance` all off
+  was still fully readable through it — handle, display name, streak, and a
+  raw `last_activity_on` date. Every sibling leaderboard surface
+  (`feed_leaderboard`, `chal_progress`, `coach_celebrate_feed`,
+  `member_of_week_candidate_set`) already got this right.
+- Rules now: `deleted_at`, blocks in both directions, `is_community_member()`,
+  and — for anyone but the caller — the subject's own `visible_to_club` AND
+  `in_leaderboards`, tested **both** as raw columns and through
+  `can_view_profile_field()`, so an admin's own rank cannot decide what the
+  club is told (the doubled form `member_of_week_candidate_set` uses).
+- **`show_attendance` gates the `last_activity_on` COLUMN, not the row**, and
+  this is a considered deviation from a literal copy of the sibling pattern.
+  That column is the only raw per-day date here, it is the one 202608270001
+  routed through the admin-gated `coach_inactive_members()` instead of
+  activity_pings' own RLS, and `show_attendance` defaults to **false** while
+  the other two default to true. Gating the row on it would empty the view
+  for the whole club — breaking the coach Welcome surface — for a toggle
+  whose subject (verified class attendance) this view's source (`activity_pings`,
+  days the member opened the app) does not expose. Self and, through
+  `can_view_profile_field`'s admin branch, an admin, are exempt.
+- pgTAP: `supabase/tests/0068_community_streaks_privacy_test.sql`.
+
+### avatar-photos bucket + avatar_photos_select_own_or_visible (202609060003)
+
+- The bucket was created `public = true`. A public bucket is served by an
+  endpoint that does not evaluate SELECT RLS at all, so an unauthenticated
+  GET of `/storage/v1/object/public/avatar-photos/{uuid}/avatar.webp`
+  returned the bytes — verified live — and the path is
+  `{member uuid}/avatar.{ext}`, so a listing enumerates member UUIDs. It is
+  private now, matching `post-photos`.
+- `avatar_photos_select_all` was `for select` with no `to` clause, i.e.
+  `to public`, anon included. Replaced by
+  `avatar_photos_select_own_or_visible`, scoped `to authenticated`: own
+  object always (a member must see the photo they just uploaded, including
+  mid-onboarding), anyone else's behind `is_community_member()` AND
+  `can_view_profile_field(owner, 'visible_to_club')` — the same resolution
+  point `profiles_read_authenticated` uses, which settles blocks on the way.
+  The owner is resolved from the object's own path prefix, compared as text
+  so an arbitrary object name cannot raise on a uuid cast.
+- The three write policies (`avatar_photos_insert_own`/`update_own`/
+  `delete_own`, all keyed to `can_write_own_avatar`) are unchanged.
+- **Client half, shipped with it.** `avatarHtml()` (cloud.js) resolves a
+  short-lived signed URL through an `avatarUrlCache`, the same
+  `photoUrlCache`/`resolvePhotoUrl` shape post-photos has always used, and
+  renders the initials badge for the one paint before it lands (and
+  permanently if signing is refused, which is a correct answer to "you may
+  not see this face"). `profiles.avatar_url` still stores the
+  `/object/public/` form: it is now an **identifier** for the object and the
+  carrier for the `?t=` cache-bust, not a fetchable URL — it 400s if hit
+  directly, which is the point. That keeps every stored row valid,
+  `avatarPathFromUrl()` parsing, and the column satisfying its
+  `^https?://` CHECK. The cache is keyed by the stored URL, not the path,
+  because an avatar is overwritten in place and only the `?t=` stamp
+  distinguishes two uploads.
+- pgTAP: `supabase/tests/0069_avatar_bucket_private_test.sql` (the suite's
+  first coverage of `storage.objects` RLS). Client:
+  `test/community-avatar-upload.test.mjs`.
+
+### workout_posts_guard_privileged_type() (BEFORE INSERT OR UPDATE OF post_type on workout_posts, 202609060004)
+
+- Raises `post type is staff only` (P0001) when a row would carry
+  `POST_COACH`, `POST_ANNOUNCEMENT`, `POST_SYSTEM` or `POST_NEW_MEMBER` and
+  its `author_id` is a member who is neither redeemed at
+  `role_rank(...) >= 20` nor `profiles.is_admin`.
+- Both vectors were live and both were verified: a plain member could
+  `insert ... (author_id, post_type) values (me, 'POST_COACH')` **and**
+  `update workout_posts set post_type = 'POST_COACH' where id = <own post>`.
+  `posts_insert_self`/`posts_update_self` gate the author and say nothing
+  about `post_type`; `default_post_type()` only fills the column when it
+  arrives NULL. The label buys the "מאמן/ת" badge, 10 of `feed_page`'s 110
+  ranking points, and membership of the `coach` feed scope.
+- The predicate is byte-for-byte `feed_page`'s own `author_is_staff` branch,
+  so the badge, the boost and the scope cannot disagree about who is staff.
+- `author_id is null` is exempt, and that exemption is load-bearing: every
+  legitimate producer of these four labels writes an authorless row
+  (`post_new_member_on_join`, `member_of_week_publish`,
+  `challenge_progress_apply`'s cooperative milestone,
+  `attendance_milestones_on_log`).
+- An UPDATE that leaves `post_type` unchanged returns early, so editing a
+  real coach post is untouched. It has to be a trigger: an UPDATE policy's
+  WITH CHECK sees only the new row and cannot tell "already was POST_COACH"
+  from "is being promoted right now".
+- **Not** scoped to `auth.role() = 'authenticated'`, unlike the 202609010005
+  guards: this asserts a fact about the row's author, which is equally true
+  for the service role and a dashboard edit.
+- The two legitimate client writes — `congratulateCelebrateItem()` and
+  `coachEngageReachOut()`, both `post_create` then one own-row update to
+  `POST_COACH`, both on staff-gated surfaces — keep working unchanged.
+- pgTAP: `supabase/tests/0070_post_type_privilege_guard_test.sql`.
+
+### weekly_challenges policies (202609060005)
+
+- `weekly_challenges_insert_admin` now checks
+  `has_perm('community.challenge.create')` instead of `is_staff()`. `staff`
+  ranks 40 (so `is_staff()` is true for it) and is **not** a seeded holder of
+  `community.challenge.create`, which every other write in the Phase 2
+  challenge model checks — so the two predicates genuinely disagreed for that
+  role. Latent, not live: no shipped path grants `staff`.
+- `announcements_insert_admin`'s `is_staff()` gate is deliberately **left
+  alone**. It looked like the same bug and is not: every seeded role of rank
+  >= 20 holds `community.announcement.publish`, so there is no member for
+  whom the two disagree. 0071 asserts that, so the non-change is pinned
+  rather than remembered.
+- New: `weekly_challenges_update_perm` and `weekly_challenges_delete_perm`,
+  both `has_perm('community.challenge.create')`, plus the UPDATE and DELETE
+  grants. The table had carried a read policy and an insert policy and
+  nothing else since 202608270001, so a typo in a challenge title was
+  uncorrectable and unremovable by anyone, admin and owner included, short of
+  a migration. Not scoped to `created_by`, matching `challenges_update_perm`.
+- pgTAP: `supabase/tests/0071_challenge_write_boundaries_test.sql`.
+
+### challenge_participants_guard_progress() (BEFORE UPDATE OF progress_value, status on challenge_participants, 202609060005)
+
+- Raises `progress is server derived` (P0001) for **any** authenticated
+  change to `progress_value`, staff included. There is no legitimate direct
+  writer: the total is derived from the append-only `challenge_progress` log
+  and a correction is a compensating negative delta through
+  `chal_record_progress`, which is the mechanism 202608280009 already chose.
+- Raises `status is server derived` for a status change other than (a) a
+  `community.challenge.create` holder administering the challenge, or (b) the
+  member's own row moving `active` -> `completed`, which is COMM-205's
+  consistency self-completion and the one direct status write the shipped
+  client makes (`logConsistencyWeekHit`).
+- This closes the half of `challenge_participants_update_self`'s unrestricted
+  self-row UPDATE that 202609010005 named and deliberately left open ("a
+  member can still edit their own status and progress_value directly ... a
+  separate, pre-existing question"). The inflation vector was live:
+  `update challenge_participants set progress_value = 999999 where
+  user_id = auth.uid()` was accepted.
+- `completed_at` is deliberately not in the trigger's column list — it is
+  meaningless without a status beside it, and including it would refuse the
+  one legitimate write, which sets both in one statement.
+- Both rules are bypassed inside the transaction-local
+  **`app.allow_progress_apply`** pin, which only `challenge_progress_apply()`
+  sets, around its own UPDATE. Same GUC-pin shape as
+  `app.allow_captain_set` (202609010005) and for the same reason:
+  `auth.role()` still reads `authenticated` inside a SECURITY DEFINER trigger.
+  `challenge_progress_apply()` is re-declared in 202609060005, byte-identical
+  except for the two `set_config` calls.
+- Skipped entirely when `auth.role()` is not `authenticated`.
+- pgTAP: `supabase/tests/0071_challenge_write_boundaries_test.sql`.
+
+### profiles_avatar_url_check (202609060006)
+
+- `avatar_url is null or (char_length(avatar_url) <= 500 and avatar_url ~*
+  '^https?://')`. The column was plain `text` with no constraint at all,
+  while `profiles_update_self` is unrestricted by column — so any member
+  could store `javascript:...` in a value ~30 cloud.js call sites hand
+  straight to an `<img src>` and that `admin_search_members()`,
+  `member_roster()`, `people_suggestions()` and `community_search()`
+  republish onto other members' screens.
+- Exactly the rule `events.map_link` got in 202609050004, applied to the one
+  remaining client-writable column rendered as a URL, and by a wider set of
+  writers: `map_link` needs `community.event.manage`, this needs only
+  membership.
+- Drop-and-re-add by constraint-definition lookup, the mechanism
+  202609050004/202609030004/202609050002 all use, so a live project that grew
+  one by hand is corrected rather than left with two contradicting
+  constraints. Added VALIDATED: a pre-existing bad row fails the migration
+  loudly rather than being grandfathered in.
+- pgTAP: `supabase/tests/0072_profiles_avatar_url_scheme_test.sql`.
+
+### The SECURITY DEFINER read gate (202609060009)
+
+Finding 1, part 2, and the reason `is_community_member()` now appears in nine
+places rather than three.
+
+- **What was still open after 202609060001.** Re-probing a ghost session
+  against the already-fixed stack:
+
+  | function | what a ghost got |
+  | --- | --- |
+  | `feed_page(null, 20, 'for_you')` | the whole club feed, every author attached |
+  | `community_search('me', 10)` | members, posts and events, from two characters |
+  | `community_profile(<uuid>)` | a complete member: tenure, follows, posts, achievements |
+  | `club_summary()` | club name, image and `member_count` |
+  | `member_roles(array[<uuid>])` | who is a coach |
+
+- **Why the policies did not cover them.** All five are SECURITY DEFINER, so
+  they read their base tables with the owner's rights and RLS never runs —
+  that is the point of them (`feed_page` has to score across posts one at a
+  time that the viewer may not be able to read one at a time). Every access
+  rule therefore has to be re-stated inside the function, and each of these
+  had re-stated exactly one: "somebody sent a token".
+- **The gate is one line per function**, immediately after the existing
+  `auth.uid()` check and nowhere else:
+  `if not public.is_community_member() then raise exception 'recovery method required'; end if;`
+  — same predicate, same message, same position every write path in the
+  module already uses.
+- **`community_profile` is the exception, with a self branch**, placed the
+  same way `profiles_read_authenticated`'s is: reading your OWN profile is
+  outside the gate. It sits *after* `v_target := coalesce(user_id, v_uid)`,
+  because "is this me" cannot be asked before the coalesce (a null argument
+  has always meant "my own profile"). It is not a hole — a ghost has no
+  profile row, so asking for its own gets `profile not found` — and it is
+  load-bearing: `0040` already asserts that a caller with their own
+  `show_attendance` off still reads their own `current_streak` back.
+- **`member_roles` returns an empty set rather than raising.** It is a
+  best-effort badge cache (202609010011) that has always tolerated a missing
+  row, so it must not start throwing at a client that never checked. The
+  predicate is in its WHERE clause.
+- **Why five functions and not seventy.** Every other client-callable definer
+  read was probed in the same pass and already refuses, because it resolves
+  `my_role_code()` — null for a caller with no profile row — rather than only
+  asking whether a token arrived: `people_suggestions`, `feed_leaderboard`,
+  `attendance_classmates_today`, `chal_progress`, and every `coach_*` and
+  `admin_*` function. `my_permissions()` answers with nothing for the same
+  reason. `0075` asserts that control set, so "five and not seventy" is a
+  test rather than a claim.
+- **The bodies were not retyped.** Each was read back out of the database
+  with `pg_get_functiondef()` and re-emitted with the one line added, so
+  nothing else can have drifted in transcription. Same
+  full-recreation-with-one-added-gate shape 202609010012 used for
+  `feed_leaderboard`, and the only mechanism Postgres offers — a function
+  body cannot be patched in place. **The corollary matters for whoever edits
+  `feed_page` next: 202609060009 is now the live definition of all four
+  plpgsql functions, not 202608310006 / 202608290008 / 202608310004 /
+  202609010012.**
+- No client change. All five are reached only from surfaces that already
+  require a stamped `recovery_verified_at`: `ensureCommunityDataLoaded()` is
+  the sole caller of `loadFeed()`, `loadClubSummary()` and the role cache,
+  and it returns early until the column is set.

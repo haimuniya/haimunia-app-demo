@@ -177,12 +177,51 @@ test("seed doc covers all six categories, keeps codes snake case, is idempotent,
   assert.match(seed, /on conflict \(code\) do update/, "re-run is idempotent");
   assert.match(seed, /week[_ ]streak/i, "consistency rows are week-streak based");
   assert.match(seed, /שלוש פעמים|three-times-per-week|3x/i, "the 3x per week tolerance is documented");
-  assert.ok(!/attendance_first_class|attendance_weekly_streak/.test(seed),
-    "the disabled attendance rows stay owned by 202608280007, not this seed");
+  // The four attendance rows stay owned by 202608280007: they are not in the
+  // seed INSERT block and 202608280020 must never re-insert them. They ARE
+  // documented further down the file since 202609060008 replaced their
+  // English placeholder copy, so the check is scoped to the block rather
+  // than to the whole document.
+  const block = seed.slice(seed.indexOf("insert into public.achievement_definitions"), seed.indexOf("on conflict (code) do update"));
+  assert.ok(!/attendance_first_class|attendance_weekly_streak/.test(block),
+    "the attendance rows are not in the seed insert block - that block is 202608280020's and they belong to 202608280007");
   // every quoted code literal is lower snake case
   for (const m of seed.matchAll(/\('([a-z0-9_]+)',/g)) {
     assert.match(m[1], /^[a-z][a-z0-9_]{2,63}$/, `${m[1]} is a valid code`);
   }
+});
+
+// Launch-readiness audit, finding 9. The four ATTENDANCE_RECORDED codes have
+// been live producers since 202608310007 flipped enabled = true, and had
+// English placeholder copy, no icon, and no COMMUNITY_ACHIEVEMENT_META entry
+// the whole time - so achMeta() fell through to the bare code and the
+// celebration sheet literally read "attendance_first_class".
+test("the four live attendance achievements have Hebrew copy in the migration, in cloud.js and in the seed doc, and the three agree", () => {
+  const mig = readFileSync(path.join(ROOT, "supabase", "migrations", "202609060008_attendance_achievement_copy.sql"), "utf8");
+  const cloud = readFileSync(path.join(ROOT, "cloud.js"), "utf8");
+  const seed = readFileSync(path.join(ROOT, "docs", "community", "achievement-seed.md"), "utf8");
+  const expected = {
+    attendance_first_class: { name: "השיעור הראשון", icon: "👋" },
+    attendance_25_classes: { name: "25 שיעורים", icon: "💪" },
+    attendance_100_classes: { name: "100 שיעורים", icon: "💯" },
+    attendance_weekly_streak: { name: "רצף שבועי", icon: "⚡" },
+  };
+  for (const [code, { name, icon }] of Object.entries(expected)) {
+    const stmt = mig.slice(mig.indexOf("update public.achievement_definitions set\n  name = '" + name));
+    assert.ok(stmt.startsWith("update public.achievement_definitions set\n  name = '" + name), `${code}: the migration sets a Hebrew name`);
+    assert.match(mig, new RegExp(`icon = '${icon}'\\nwhere code = '${code}'`), `${code}: the migration sets its icon`);
+    assert.match(cloud, new RegExp(`${code}: \\{ title: "${name}", explanation: "[^"]+", icon: "${icon}" \\}`), `${code}: cloud.js carries the same title and icon`);
+    assert.ok(seed.includes("`" + code + "`") && seed.includes(name), `${code}: the seed doc records it`);
+  }
+  assert.ok(!/'First class'|'25 classes'|'100 classes'|'Weekly streak'/.test(mig), "no English placeholder survives in the corrected copy");
+});
+
+test("achMeta falls back to the definition's own name and icon before the bare code", () => {
+  const cloud = readFileSync(path.join(ROOT, "cloud.js"), "utf8");
+  const fn = cloud.slice(cloud.indexOf("function achMeta(code, row)"), cloud.indexOf("function achCodeOf(row)"));
+  assert.match(fn, /COMMUNITY_ACHIEVEMENT_META\[code\]/, "tier 1 is still the hand-written map");
+  assert.match(fn, /row\.achievement_definitions/, "tier 2 is the definition row the caller already holds - no round trip");
+  assert.match(fn, /code \|\| "עיטור חדש"/, "tier 3, the bare code, is last rather than second");
 });
 
 test("contracts.md documents ach_claim as a needed schema function", () => {

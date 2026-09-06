@@ -196,6 +196,15 @@ async function dbPutBodyweight(entry) {
     tx.onerror = () => reject(tx.error);
   });
 }
+async function dbDeleteBodyweight(id) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(BWSTORE, "readwrite");
+    tx.objectStore(BWSTORE).delete(id);
+    tx.oncomplete = () => { queueSyncRecord("bodyweight", { id }, true); resolve(); };
+    tx.onerror = () => reject(tx.error);
+  });
+}
 async function dbClearBodyweight() {
   const db = await openDB();
   return new Promise((resolve, reject) => {

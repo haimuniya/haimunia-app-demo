@@ -16,6 +16,19 @@
 //   (disabled), In-app and Off; a change is a direct own-row upsert into
 //   notification_preferences and reverts on error.
 //
+// - Launch-readiness pass: `new_report` (202609050003) and
+//   `monthly_club_recap` (202609010002) are registered in NOTIF_TYPES with
+//   Hebrew copy instead of falling through to a raw-English unknown-type
+//   render; `resolveNotifTarget` tells a monthly recap deep link apart from
+//   a weekly one (both match `/\/recap(\/|$)/`, so the monthly one used to
+//   silently open the weekly dialog); `NOTIF_PREF_TYPES`' `comment_reply`/
+//   `comment_on_post`/`achievement_unlocked` keys were re-keyed to match
+//   the server's real `notif_pref_key()` output (COMM-218/219 known
+//   drift), leaving `challenges` a documented gap; `navigateToNotifTarget`
+//   gained branches for `target.challenge`/`target.announcement`/
+//   `target.achievement`, which `resolveNotifTarget` already resolved but
+//   which previously landed on the right tab and did nothing further.
+//
 // WHAT THIS FILE DOES NOT VERIFY
 // The server trigger set that creates the rows and the batch flusher.
 // Those are Postgres, documented in contracts.md under "Needs from
@@ -32,6 +45,8 @@ const VERIFIED = new Date().toISOString();
 // threshold and fails this suite's own relative-time assertions on any
 // day after that, regardless of the product code being correct.
 const BASE = Date.now() - 5 * 60000;
+
+function iso(days) { return new Date(Date.now() + days * 86400000).toISOString(); }
 
 function notif(i, extra) {
   return Object.assign({
@@ -372,18 +387,45 @@ test("the Account panel lists every type with Push (disabled), In-app and Off", 
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openAccount(window);
 
+  // "comments"/"replies"/"achievements" were re-keyed to their real server
+  // notif_pref_key() names (comment_on_post/comment_reply/achievement_
+  // unlocked, COMM-218/219) and monthly_club_recap was added (COMM-309).
+  // new_report is staff/moderator-only (mod_alert_recipients()) and is
+  // deliberately absent here: this seeded member holds no moderation
+  // permission, so its row is gated out - see the dedicated staff test
+  // below.
   const types = new Set([...window.document.querySelectorAll('[data-community-action="notif-pref"]')].map((b) => b.dataset.type));
   assert.deepEqual([...types].sort(), [
-    "achievements", "announcements", "challenges", "comments", "events",
-    "friend_achievements", "mentions", "reactions", "replies", "weekly_recap",
-  ], "all ten preference types are listed");
+    "achievement_unlocked", "announcements", "challenges", "comment_on_post", "comment_reply",
+    "events", "friend_achievements", "mentions", "monthly_club_recap", "reactions", "weekly_recap",
+  ], "all eleven member-visible preference types are listed");
+  assert.ok(!types.has("new_report"), "the moderator-only type is not shown to a plain member");
 
-  const push = window.document.querySelector('[data-community-action="notif-pref"][data-type="comments"][data-channel="push"]');
+  const push = window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_on_post"][data-channel="push"]');
   assert.ok(push.disabled, "Push is disabled in V1");
   assert.equal(push.getAttribute("aria-disabled"), "true");
-  const inApp = window.document.querySelector('[data-community-action="notif-pref"][data-type="comments"][data-channel="in_app"]');
+  const inApp = window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_on_post"][data-channel="in_app"]');
   assert.ok(!inApp.disabled, "In-app works");
   assert.ok(inApp.className.includes("selected"), "the default selection is In-app");
+});
+
+test("a moderator sees the new_report preference row; a plain member never does", async () => {
+  const modMock = createMockSupabase({
+    profiles: [{ id: "u1", handle: "dana", display_name: "דנה", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true }],
+    invite_redemptions: [{ user_id: "u1", invite_id: "inv-1", role: "coach", redeemed_at: VERIFIED }],
+    clubs: [{ id: "club-1", name: "חיימוניה" }],
+    notifications: [], notification_preferences: [], feed_page_rows: [],
+    follows: [], hidden_posts: [], saved_posts: [],
+  });
+  modMock.setUser({ id: "u1", is_anonymous: false, email: "dana@members.haimuniya.invalid" });
+  const modWindow = await bootCommunity(modMock, { syncEnabled: false });
+  await openAccount(modWindow);
+  assert.ok(modWindow.document.querySelector('[data-community-action="notif-pref"][data-type="new_report"]'), "a coach (community.comment.moderate) sees the row");
+
+  const memberMock = seeded([]);
+  const memberWindow = await bootCommunity(memberMock, { syncEnabled: false });
+  await openAccount(memberWindow);
+  assert.ok(!memberWindow.document.querySelector('[data-community-action="notif-pref"][data-type="new_report"]'), "a plain member does not");
 });
 
 test("changing a preference is a direct own-row upsert into notification_preferences", async () => {
@@ -408,12 +450,12 @@ test("changing a preference is a direct own-row upsert into notification_prefere
 test("stored preferences load and drive the panel selection", async () => {
   const mock = seeded([], { notification_preferences: [
     { user_id: "u1", type: "reactions", channel: "off" },
-    { user_id: "u1", type: "replies", channel: "in_app" },
+    { user_id: "u1", type: "comment_reply", channel: "in_app" },
   ] });
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openAccount(window);
   assert.ok(window.document.querySelector('[data-community-action="notif-pref"][data-type="reactions"][data-channel="off"]').className.includes("selected"));
-  assert.ok(window.document.querySelector('[data-community-action="notif-pref"][data-type="replies"][data-channel="in_app"]').className.includes("selected"));
+  assert.ok(window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_reply"][data-channel="in_app"]').className.includes("selected"));
 });
 
 test("a failed preference save reverts the control and shows the Hebrew error", async () => {
@@ -462,8 +504,155 @@ test("no push subscription is created and push stays disabled in V1", async () =
   mock.client.from = (table) => { seenTables.push(table); return realFrom(table); };
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openAccount(window);
-  window.document.querySelector('[data-community-action="notif-pref"][data-type="comments"][data-channel="push"]').click();
+  window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_on_post"][data-channel="push"]').click();
   await new Promise((r) => setTimeout(r, 40));
   assert.ok(!seenTables.includes("push_subscriptions"), "nothing writes push_subscriptions in V1");
   assert.equal(mock.db.notification_preferences.length, 0, "a disabled Push control writes nothing");
+});
+
+// ===== Launch-readiness fix 1: new_report / monthly_club_recap registered ==
+
+test("new_report and monthly_club_recap render with Hebrew client copy, not the server's raw English/unknown-type fallback", async () => {
+  const mock = seeded([
+    notif(1, { type: "new_report", category: "community", title: "New report to review", body: "A post was reported (spam)" }),
+    notif(2, { type: "monthly_club_recap", category: "club", title: "סיכום החודש של הקהילה", body: "42 אימונים, 11 פוסטים ו-3 חברים חדשים החודש." }),
+  ]);
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCenter(window);
+  const html = window.document.querySelector("[data-notif-center]").innerHTML;
+  const text = centerText(window);
+  assert.match(html, /🚩/, "new_report gets its own registered icon, not the generic 🔔 unknown-type fallback");
+  assert.match(text, /דיווח חדש לבדיקה/, "new_report's Hebrew client label wins over the server's English title");
+  assert.doesNotMatch(text, /New report to review/, "the raw English server title never leaks into the centre");
+  assert.match(html, /🗓️/, "monthly_club_recap gets its own registered icon");
+  assert.match(text, /סיכום החודש של הקהילה/);
+  assert.equal(window.classifyNotification({ type: "new_report" }), "immediate");
+  assert.equal(window.classifyNotification({ type: "monthly_club_recap" }), "immediate", "COMM-309: fires at most 12x/year on a deliberate publish, nothing to roll up");
+});
+
+// ===== Launch-readiness fix 2: monthly recap deep link vs weekly (COMM-309) =
+
+test("deep link resolution tells a monthly club recap apart from a weekly one", async () => {
+  const mock = seeded([notif(1)]);
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCommunity(window);
+  const R = window.notifResolveTarget;
+  // Both real deep links share the "/community/recap" prefix and both would
+  // match the weekly branch's own /\/recap(\/|$)/ regex - this is exactly
+  // the bug: without a month-specific branch ABOVE it, every monthly recap
+  // notification resolved as if it were a weekly one.
+  assert.deepEqual(R({ deep_link: "/community/recap/monthly?month=2026-08-01" }), { tab: "account", recapMonth: "2026-08-01" });
+  assert.deepEqual(R({ deep_link: "/community/recap?week=2026-08-24" }), { tab: "account", recapWeek: "2026-08-24" });
+  assert.deepEqual(R({ source_type: "monthly_club_recap", source_id: "mcr-1" }), { tab: "account", recapMonth: null }, "source_type fallback also resolves to the monthly target, not the weekly one");
+});
+
+test("tapping a monthly club recap notification lands on the Account tab's recap card, never the weekly recap dialog", async () => {
+  const recapRow = {
+    id: "mcr-1", club_id: "club-1", month_start: "2026-08-01",
+    sessions_logged: 42, posts_created: 11, new_members: 3,
+    challenges_completed: 5, events_held: 2, generated_at: VERIFIED, published_at: VERIFIED,
+  };
+  const mock = seeded(
+    [notif(1, { type: "monthly_club_recap", category: "club", deep_link: "/community/recap/monthly?month=2026-08-01" })],
+    { monthly_club_recaps: [recapRow] },
+  );
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCenter(window);
+
+  window.document.querySelector('[data-community-action="notif-open"]').click();
+  await waitFor(() => !window.document.querySelector("[data-notif-center]"), 4000);
+  await waitFor(() => !!window.document.querySelector("[data-monthly-recap-section]"), 4000);
+
+  const accountTabBtn = window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]');
+  assert.ok(accountTabBtn.className.includes("active"), "the account tab is the active screen");
+  assert.ok(!window.document.querySelector('[data-cloud-dialog="recapView"]'), "the weekly recap dialog (openRecap) never opens for a monthly recap");
+  assert.match(window.document.querySelector("[data-monthly-recap-section]").textContent, /2026-08-01/);
+  assert.deepEqual(mock.callsTo("notif_mark_read").slice(-1)[0], { p_ids: ["n1"] }, "the tapped row was marked read");
+});
+
+// ===== Launch-readiness fix 3: NOTIF_PREF_TYPES keys match the server ======
+
+test("comment_reply/comment_on_post/achievement_unlocked route on the server's real notif_pref_key(), the old client-only keys do nothing", async () => {
+  const mock = seeded([notif(1)]);
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCommunity(window);
+  // Server mapping (202608280026, unamended by this fix): comment_reply ->
+  // comment_reply; comment_on_post/comment_also -> comment_on_post;
+  // achievement_unlocked -> achievement_unlocked.
+  assert.deepEqual(window.notifRoute("comment_reply", { comment_reply: "off" }), { channel: "off", mode: "immediate", suppressed: true });
+  assert.equal(window.notifRoute("comment_reply", { replies: "off" }).channel, "in_app", "the old client-only 'replies' key no longer has any effect on this type");
+  assert.deepEqual(window.notifRoute("comment_on_post", { comment_on_post: "off" }), { channel: "off", mode: "immediate", suppressed: true });
+  assert.deepEqual(window.notifRoute("comment_also", { comment_on_post: "off" }), { channel: "off", mode: "batched", suppressed: true }, "comment_also shares comment_on_post's key on the server too");
+  assert.equal(window.notifRoute("comment_on_post", { comments: "off" }).channel, "in_app", "the old client-only 'comments' key no longer has any effect");
+  assert.deepEqual(window.notifRoute("achievement_unlocked", { achievement_unlocked: "off" }), { channel: "off", mode: "immediate", suppressed: true });
+  assert.equal(window.notifRoute("achievement_unlocked", { achievements: "off" }).channel, "in_app", "the old client-only 'achievements' key no longer has any effect");
+  // Known, documented gap left alone on purpose: the server has no arm for
+  // either challenge type, so a combined client 'challenges' toggle still
+  // has no real server-side counterpart to line up with.
+  assert.equal(window.notifRoute("challenge_ending_soon", { challenges: "off" }).channel, "off", "still suppresses client-side rendering...");
+});
+
+test("the comment_reply toggle writes the server's real preference key, not the old client-only 'replies'", async () => {
+  const mock = seeded([]);
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openAccount(window);
+  window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_reply"][data-channel="off"]').click();
+  await waitFor(() => mock.db.notification_preferences.some((r) => r.type === "comment_reply" && r.channel === "off"), 4000);
+  assert.ok(!mock.db.notification_preferences.some((r) => r.type === "replies"), "the server-unrecognised key 'replies' is never written");
+});
+
+// ===== Launch-readiness fix 4: navigateToNotifTarget's missing branches ====
+
+test("tapping a challenge notification opens the challenge's own detail dialog, not just the Boards tab", async () => {
+  const mock = seeded(
+    [notif(1, { type: "challenge_ending_soon", category: "challenges", deep_link: "/community/boards?challenge=c1" })],
+    {
+      challenges: [{ id: "c1", challenge_type: "individual_target", title: "12 אימונים החודש", description: "", metric_type: "session_count", target_value: 12, start_at: iso(-5), end_at: iso(20), status: "active", join_mode: "open", visibility: "club", created_by: "coach1", config: {} }],
+      challenge_participants: [], challenge_teams: [], challenge_progress: [],
+    },
+  );
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCenter(window);
+
+  window.document.querySelector('[data-community-action="notif-open"]').click();
+  await waitFor(() => !window.document.querySelector("[data-notif-center]"), 4000);
+  await waitFor(() => !!window.document.querySelector('[data-cloud-dialog="challengeView"]'), 4000);
+
+  const boardsTabBtn = window.document.querySelector('[data-community-action="set-tab"][data-tab="boards"]');
+  assert.ok(boardsTabBtn.className.includes("active"), "the boards tab is the active screen");
+  assert.match(window.document.querySelector('[data-cloud-dialog="challengeView"]').textContent, /12 אימונים החודש/, "the specific challenge's own detail is open, not merely the tab");
+});
+
+test("tapping an achievement-unlocked notification scrolls to that achievement in the Account tab", async () => {
+  const mock = seeded(
+    [notif(1, { type: "achievement_unlocked", category: "training", deep_link: "/community/account/achievements?ma=ma1" })],
+    { member_achievements: [{ id: "ma1", user_id: "u1", achievement_id: "ad-1", code: "first_pr", visibility: "club", shared_at: null, unlocked_at: VERIFIED, achievement_definitions: { code: "first_pr", name: "PR ראשון", icon: "🏋️" } }] },
+  );
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCenter(window);
+
+  window.document.querySelector('[data-community-action="notif-open"]').click();
+  await waitFor(() => !window.document.querySelector("[data-notif-center]"), 4000);
+  await waitFor(() => !!window.document.querySelector('[data-achievement-id="ma1"]'), 4000);
+
+  const accountTabBtn = window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]');
+  assert.ok(accountTabBtn.className.includes("active"), "the account tab is the active screen");
+  assert.ok(window.document.querySelector('[data-achievement-id="ma1"]'), "the specific unlocked achievement has a real DOM anchor to scroll to");
+});
+
+test("tapping an announcement notification scrolls to that announcement in the feed", async () => {
+  const mock = seeded(
+    [notif(1, { type: "announcement", category: "club", title: "תחזוקה מתוכננת", deep_link: "/community/feed?announcement=a1" })],
+    { announcements: [{ id: "a1", author_id: "coach1", title: "תחזוקה מתוכננת", body: "המערכת תהיה מושבתת בלילה", created_at: new Date(BASE).toISOString(), pinned_date: null, priority: "normal", expires_at: null, profiles: { handle: "coach1", display_name: "מאמן" } }] },
+  );
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCenter(window);
+
+  window.document.querySelector('[data-community-action="notif-open"]').click();
+  await waitFor(() => !window.document.querySelector("[data-notif-center]"), 4000);
+  await waitFor(() => !!window.document.querySelector('[data-announcement-id="a1"]'), 4000);
+
+  const feedTabBtn = window.document.querySelector('[data-community-action="set-tab"][data-tab="feed"]');
+  assert.ok(feedTabBtn.className.includes("active"), "the feed tab is the active screen");
+  assert.match(window.document.querySelector('[data-announcement-id="a1"]').textContent, /תחזוקה מתוכננת/, "the specific announcement has a real DOM anchor to scroll to");
 });

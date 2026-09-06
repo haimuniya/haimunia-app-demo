@@ -21,10 +21,18 @@
 //   edges, visible_to_club, show_attendance on both the subject and each
 //   candidate) lives inside that function, not here; this file only
 //   stores whatever jsonb array it returns.
-// - Never wires a scheduler (pg_cron or otherwise) - explicitly out of
-//   this ticket's scope, the same "storage exists, scheduler does not"
-//   shape the Phase 1 notification batch flusher left. Invoking this
-//   function on a schedule is a separate, later decision.
+// - Does not wire its own scheduler, and no longer needs to: that separate,
+//   later decision has since been made. 202609050005_scheduled_jobs.sql
+//   schedules the 'recap-weekly' pg_cron job for 05:11 UTC every Monday,
+//   which reaches this function through public.cron_invoke_edge_function
+//   ('recap_weekly') - a pg_net POST carrying the service-role key read at
+//   run time out of Supabase Vault, which is the exact caller shape the
+//   Authorization check at the bottom of this file requires. That job is
+//   INERT on any stack whose edge_functions_* Vault secrets are still the
+//   committed placeholders (every local and CI stack), so `supabase start`
+//   does not start firing weekly recaps at a hostname that does not exist.
+//   Monday is deliberate: targetWeek() below summarises the most recently
+//   COMPLETED ISO week, so the run has to land after a Monday boundary.
 //
 // "Active member", a judgment call the ticket asks this file to document:
 // WCAM (docs/community/metrics.md, ACTIVE_MEMBER_EVENTS in

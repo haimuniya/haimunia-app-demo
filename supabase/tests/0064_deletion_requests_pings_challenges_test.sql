@@ -361,13 +361,13 @@ select throws_ok(
      values ('movement:snatch:est1rm', 'Member-declared week', current_date, current_date + 3, tests.uid('admin')) $$,
   '42501',
   null,
-  'and cannot get there by putting an admin''s id in created_by - the WITH CHECK requires BOTH created_by = auth.uid() AND is_staff()');
+  'and cannot get there by putting an admin''s id in created_by - the WITH CHECK requires BOTH created_by = auth.uid() AND has_perm(''community.challenge.create'')');
 
 select tests.set_auth(tests.uid('coach'));
 select lives_ok(
   $$ insert into public.weekly_challenges (id, comparison_key, title, starts_on, ends_on, created_by)
      values ('c0640000-0000-4000-8000-000000000013', 'movement:clean:est1rm', 'Coach week', current_date, current_date + 3, tests.uid('coach')) $$,
-  'a coach can - is_staff() is coach rank or above, which is what 202608270005 and 202608270006 rebound this policy onto');
+  'a coach can - coach is a seeded holder of community.challenge.create, which 202609060005 rebound this policy onto (it checked is_staff() from 202608270006 until then)');
 select throws_ok(
   $$ insert into public.weekly_challenges (comparison_key, title, starts_on, ends_on, created_by)
      values ('movement:jerk:est1rm', 'Ghost-written week', current_date, current_date + 3, tests.uid('admin')) $$,
@@ -380,9 +380,11 @@ select lives_ok(
      values ('c0640000-0000-4000-8000-000000000014', 'movement:press:est1rm', 'Admin week', current_date, current_date + 3, tests.uid('admin')) $$,
   'and an admin can too');
 
--- Same silent-no-op shape as activity_pings: the grants are there, the
--- policies are not. Worth pinning because it is a real product constraint -
--- a coach cannot fix a typo in a challenge from the app, only add a new row.
+-- UPDATE and DELETE. Until 202609060005 this table had the GRANTS and no
+-- policies for either, so both were accepted and silently changed nothing -
+-- a typo in a challenge title was uncorrectable by anyone, admin included,
+-- short of a migration. 0071 owns the full boundary; these two keep the
+-- section's own end-to-end shape honest.
 select ok(
   pg_catalog.has_table_privilege('authenticated', 'public.weekly_challenges', 'update')
   and pg_catalog.has_table_privilege('authenticated', 'public.weekly_challenges', 'delete'),
@@ -391,15 +393,20 @@ select tests.set_auth(tests.uid('coach'));
 select lives_ok(
   $$ update public.weekly_challenges set title = 'Renamed by its own author'
      where id = 'c0640000-0000-4000-8000-000000000013' $$,
-  'so a coach editing the challenge they themselves created is accepted...');
-select lives_ok(
-  $$ delete from public.weekly_challenges where id = 'c0640000-0000-4000-8000-000000000013' $$,
-  '...as is deleting it');
+  'a coach editing the challenge they themselves created is accepted...');
 select tests.clear_auth();
 select results_eq(
   $$ select title from public.weekly_challenges where id = 'c0640000-0000-4000-8000-000000000013' $$,
-  $$ values ('Coach week') $$,
-  'and both changed nothing: with no UPDATE or DELETE policy the board is insert-only for every client, author included');
+  $$ values ('Renamed by its own author') $$,
+  '...and really changed the row, because weekly_challenges_update_perm exists now');
+select tests.set_auth(tests.uid('coach'));
+select lives_ok(
+  $$ delete from public.weekly_challenges where id = 'c0640000-0000-4000-8000-000000000013' $$,
+  'and deleting it is accepted too...');
+select tests.clear_auth();
+select is_empty(
+  $$ select 1 from public.weekly_challenges where id = 'c0640000-0000-4000-8000-000000000013' $$,
+  '...and really removed it');
 
 -- =====================================================================
 -- 9. weekly_challenge_leaderboard - the read path built on the table
