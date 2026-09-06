@@ -203,5 +203,22 @@ select isnt_empty(
   $$ select 1 from cron.job where jobname = 'idempotency-purge' $$,
   'and the purge is actually scheduled, not just defined - the mistake purge_due_accounts() shipped with');
 
+-- =====================================================================
+-- 8. event_rsvp - the fifth queued action
+-- =====================================================================
+-- Added by 202609060017 after curling real PostgREST revealed that
+-- communityRpc() sends p_idempotency_key to all FIVE OUTBOX_ACTIONS while
+-- only four functions accepted it. event_rsvp returned PGRST202 for every
+-- call - RSVP was completely dead - and all three suites were green on it,
+-- because none of them crossed the client's call shape against the
+-- server's real signature.
+select has_function('public', 'event_rsvp', array['uuid','text','uuid'],
+  'event_rsvp accepts the idempotency key the client always sends');
+select is(
+  (select count(*)::int from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = 'event_rsvp'),
+  1,
+  'and exactly ONE event_rsvp exists - two overloads differing only by the optional key would make a named-argument call ambiguous');
+
 select * from finish();
 rollback;
