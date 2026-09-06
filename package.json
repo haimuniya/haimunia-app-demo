@@ -12,7 +12,8 @@
     "check-vendor-version": "node scripts/check-vendored-supabase-version.mjs",
     "smoke-test-anon-key": "node scripts/smoke-test-anon-key.mjs",
     "setup-hooks": "node scripts/setup-hooks.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "check-deploy-readiness": "node scripts/check-deploy-readiness.mjs"
   },
   "devDependencies": {
     "fake-indexeddb": "^6.0.0",

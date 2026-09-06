@@ -35,6 +35,7 @@ the previous pass's own "fixes" and one long-standing user-facing bug.
 
 | # | Found by | Defect |
 |---|---|---|
+| 14 | curling real PostgREST while preparing to push | **This audit's own `202609060014` broke RSVP completely.** `communityRpc()` sends `p_idempotency_key` to all five OUTBOX_ACTIONS; only four functions got the parameter. Every RSVP returned PGRST202. All three suites were green on it — pgTAP calls the SQL directly, the browser check uses a mock that accepts any argument shape, and the node tests assert source text. **Nothing crossed the client's call shape against the server's real signature.** |
 | 1 | pgTAP run 1 | `member_achievements_read` re-typed from memory **dropped `club_feature_enabled('achievements')`** — turning the achievements module off no longer hid achievements. Introduced by the previous pass. |
 | 2 | pgTAP run 1 | `clubs_guard_single_row` fired **before** RLS, handing a plain member a schema-internals error where RLS should have said 42501. |
 | 3 | pgTAP run 1 | Wrong table name (`person_invites` vs the real `public.invites`) — the migration would have failed outright. |
@@ -143,6 +144,7 @@ the previous pass's own "fixes" and one long-standing user-facing bug.
 | `supabase test db` | **Files=83, Tests=2826, Result: PASS** |
 | `npm test` | **1156 pass / 0 fail / 0 skipped** |
 | `run-all.mjs` (Chromium) | **30/30, exit 0** (incl. `a11y-axe-scan.mjs`) |
+| `npm run check-deploy-readiness` | **exit 0** against the migrated project; **exit 1** against the same project rolled back — verified both directions |
 | `npm audit --audit-level=high` (root + browser-check) | 0 vulnerabilities |
 | `npm run check-version` | APP_VERSION = SW_VERSION = 4.4.0 |
 | `npm run check-vendor-version` | version + sha256 both match (tamper-tested) |

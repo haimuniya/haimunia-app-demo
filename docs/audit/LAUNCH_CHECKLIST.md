@@ -27,6 +27,37 @@ formal pass/fail gate, which this checklist exists to help clear.
       convention (see COMM-020's note in that file) is that this gate is
       real, not advisory.
 
+## 2b. Deploy ordering — now enforced, not just documented
+
+This app has no build step and no deploy pipeline: the client is static
+files, the database is migrated separately, and nothing structurally forces
+them to ship in order. This release changed five RPC signatures, and
+PostgREST resolves overloads by the exact set of named arguments — so a
+client shipped ahead of its migrations answers PGRST202 on every write.
+
+Two real controls now exist, so this is no longer a paragraph you have to
+remember at the wrong moment:
+
+- [ ] **Run the preflight against the project you are about to deploy to:**
+
+      npm run check-deploy-readiness
+      # or explicitly:
+      node scripts/check-deploy-readiness.mjs <url> <anon-key>
+
+  Exit 0 = every signature this build calls exists. Exit 1 = apply
+  migrations first (`supabase db push`). It is read-only: it inspects the
+  error code of a deliberately invalid payload and never writes.
+
+  Verified against a real database in both directions — rolled back to
+  before this release it reports NOT READY (exit 1); migrated, READY
+  (exit 0).
+
+- **The client degrades rather than breaking** if you ship out of order
+  anyway: `communityRpc()` retries un-keyed on PGRST202, latched per action.
+  Degraded means retries can duplicate a post, comment or challenge-progress
+  delta — the exact problem idempotency was added to prevent — so this is a
+  safety net, not permission to skip the step above.
+
 ## 3. Re-run the full test matrix
 
 - [ ] `npm ci && npm test` — expect 1108/1108 pass, 1 pre-existing skip.

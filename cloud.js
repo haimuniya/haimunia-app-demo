@@ -4315,9 +4315,36 @@
   // safely persisted in IndexedDB and will be sent on reconnect - the
   // caller should show a "will send when you're back online" state, not an
   // error.
+  // A server that has not received this release's migrations yet does not
+  // have the p_idempotency_key parameter, and PostgREST resolves functions
+  // by the EXACT set of named arguments - so an un-migrated project answers
+  // every keyed call with PGRST202 "Could not find the function". That is
+  // not a hypothetical: shipping the client ahead of the migrations would
+  // have taken out posting, commenting, reactions, RSVP and coach progress
+  // entries all at once, and the event_rsvp bug in this same release was
+  // the single-function version of exactly this failure.
+  //
+  // Rather than leave that as a deploy-order instruction in a document
+  // nobody reads at 23:00, the client detects it and degrades: it retries
+  // once WITHOUT the key. The write then behaves exactly as it did before
+  // idempotency existed - which is a real loss (a retry can duplicate) but
+  // an enormously smaller one than the feature being dead.
+  //
+  // Latched per action, so the fallback costs one wasted round trip per
+  // action per session rather than doubling every write. Once the
+  // migrations land the flag simply never gets set again.
+  const missingIdempotencyParam = Object.create(null);
+  function isMissingFunctionError(error) {
+    if (!error) return false;
+    // PGRST202 is the function-not-found code; the message check keeps this
+    // from swallowing a genuinely missing RPC (a typo'd action name), which
+    // must still surface as an error rather than silently retrying.
+    return error.code === "PGRST202" && /p_idempotency_key/.test(String(error.message || "") + String(error.details || ""));
+  }
+
   async function communityRpc(action, args, opts) {
     const options = opts || {};
-    const key = newIdempotencyKey();
+    const key = missingIdempotencyParam[action] ? null : newIdempotencyKey();
     const withKey = key ? Object.assign({}, args, { p_idempotency_key: key }) : Object.assign({}, args);
     const canQueue = !!(window.HaimuniaOutbox && OUTBOX_ACTIONS.indexOf(action) >= 0);
 
@@ -4325,7 +4352,16 @@
       await window.HaimuniaOutbox.enqueue(action, withKey, options);
       return { queued: true, data: null, error: null };
     }
-    const { data, error } = await client.rpc(action, withKey);
+    let { data, error } = await client.rpc(action, withKey);
+
+    if (isMissingFunctionError(error)) {
+      // Server predates this release. Remember it and retry un-keyed, so
+      // the member's action still lands.
+      missingIdempotencyParam[action] = true;
+      const bare = Object.assign({}, args);
+      ({ data, error } = await client.rpc(action, bare));
+    }
+
     if (error && canQueue && isOfflineError(error)) {
       await window.HaimuniaOutbox.enqueue(action, withKey, options);
       return { queued: true, data: null, error: null };
@@ -4341,7 +4377,19 @@
     OUTBOX_ACTIONS.forEach((action) => {
       window.HaimuniaOutbox.registerHandler(action, async (args) => {
         if (!client || !state.user) throw new Error("session expired");
-        const { error } = await client.rpc(action, args);
+        let { error } = await client.rpc(action, args);
+        // Same un-migrated-server fallback communityRpc() carries. It
+        // matters more here: the queue's PERMANENT_ERROR_RE matches "not
+        // found", so without this a PGRST202 would mark every queued write
+        // permanently failed and dump the member's offline posts into the
+        // failure banner - the exact "never lose a queued action" promise
+        // this queue exists to keep.
+        if (isMissingFunctionError(error)) {
+          missingIdempotencyParam[action] = true;
+          const bare = Object.assign({}, args);
+          delete bare.p_idempotency_key;
+          ({ error } = await client.rpc(action, bare));
+        }
         if (error) throw new Error(error.message || "rpc failed");
       });
     });
