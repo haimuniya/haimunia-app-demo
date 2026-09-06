@@ -169,7 +169,22 @@ time. That is now closed too.
 |---|---|
 | Correct account | First login was `haimuniya's Org` — **zero projects**, could not see this database. Caught before linking; re-authenticated as the owning account. |
 | Backups (outside the repo) | `~/haimunia-backups/pre-audit-20260906-202710.sql` (schema, 625 KB) + `-data.sql` (data, 134 KB) |
-| Real-data risk review | Read the data dump rather than guessing: **zero `invites` rows, zero `reports` rows**, and `onboarding_step_content.updated_by` all NULL — so all six FK re-adds had nothing to validate against. ~1 row per table. |
+| Real-data risk review | Read the data dump rather than guessing: **zero `invites` rows, zero `reports` rows** — the two FKs whose validation aborted the rehearsal. |
+
+**Correction to that row, made after the fact.** Two things in the pre-push
+assessment were stated more confidently than the evidence supported, both
+found by restoring the dump and querying it properly:
+
+- "`onboarding_step_content.updated_by` all NULL" was **wrong** — one row
+  has it set. The push was still safe, but for a different reason: that
+  value references a real `auth.users` row, so the constraint validated
+  (`convalidated = true`). Right conclusion, wrong reason.
+- "~1 row per table" was **counting INSERT statements, not rows**. The dump
+  uses multi-row inserts. Actual: 2 profiles, 6 workout_posts, 32
+  private_records, 2 reactions, 2 member_achievements.
+
+The zero-`invites`/zero-`reports` finding — the one the go/no-go actually
+rested on — is confirmed correct against the restored database.
 
 ### Result
 
@@ -213,3 +228,32 @@ An alert that cries wolf gets muted, which is the same failure mode that let
 `purge_due_accounts` go unnoticed — one layer up. Window now derives from
 each job's own cadence; verified it keeps catching a failed run, a
 5-day-stale daily job and a 40-day-stale monthly one.
+
+---
+
+## OPS-1 — restore drill, performed 2026-09-06
+
+The production dump was restored into a wiped local PostgreSQL to prove it
+is usable. A backup nobody has restored is not a backup.
+
+```
+drop schema public cascade; create schema public;
+psql -f post-push-schema-203458.sql        -> 0 errors
+psql -f post-push-20260906-203317-data.sql -> 0 errors
+```
+
+Restored and verified functional, not merely populated:
+
+| | |
+|---|---|
+| rows | profiles 2 · workout_posts 6 · private_records 32 · post_comments 1 · reactions 2 · member_achievements 2 · invite_redemptions 2 · clubs 1 |
+| schema | 132 RLS policies · 193 functions |
+| security | 19 policies gated on `is_community_member()` |
+
+**What this proves:** the dump in `~/haimunia-backups/` genuinely restores to
+a complete, working database, and the deployed security model comes back
+with it.
+
+**What it does NOT prove:** anything about Supabase's own dashboard
+backups / point-in-time recovery. That is a separate mechanism and still
+untested. This drill covers the backup path you actually control.
