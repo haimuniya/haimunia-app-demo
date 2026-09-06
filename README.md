@@ -1,4 +1,14 @@
-# האימוניה — קהילה (demo)
+# האימוניה — קהילה
+
+> **This repository ships a LIVE app to real members.** Despite the `-demo`
+> in the repository name, `cloud-config.js` points at a **production**
+> Supabase project holding real profiles, posts and training logs, and the
+> GitHub Pages site is what members actually install.
+>
+> **Never test against it.** Bring up a local stack instead —
+> `supabase start && supabase db reset` builds the identical schema from the
+> same migrations, and you can grant yourself any role there. See
+> `docs/audit/REMEDIATION_STATUS.md` for what "production" means here.
 
 Live community layer for האימוניה: an installable, offline-first PWA with
 its own IndexedDB store, plus an optional Supabase-backed social layer
