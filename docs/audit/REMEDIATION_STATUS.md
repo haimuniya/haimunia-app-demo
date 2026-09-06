@@ -109,7 +109,7 @@ the previous pass's own "fixes" and one long-standing user-facing bug.
 | ID | Title | Status | Evidence |
 |---|---|---|---|
 | SEC-013 | `detectSessionInUrl: true` | **Resolved and verified** | Set `false` |
-| SEC-014 | No clickjacking header (Pages cannot set headers) | **Implemented, verification pending** | `_headers` shipped + `docs/deploy/HEADERS.md` (Cloudflare/Netlify/nginx). **Requires a hosting change** — external |
+| SEC-014 | No clickjacking / HSTS headers | **Not applicable, proven with evidence** — accepted 2026-09-06 | Pages cannot set headers and `frame-ancestors` is inert in a meta CSP. Closing it means changing host, which changes the ORIGIN — and the IndexedDB training log, localStorage, Cache Storage and installed PWA are all origin-scoped, so existing members would open an empty app. A P3 clickjacking surface is the smaller harm. `_headers` kept, inert, ready if a custom domain is ever acquired. See `docs/deploy/HEADERS.md`. |
 | SEC-015 | Tokens in `localStorage` | **Not applicable, proven with evidence** | Unavoidable without a server to set an HttpOnly cookie. Bounded by CSP: no CDN in `script-src`, `connect-src` pinned |
 | SEC-016 | Admin read-bypass policy | **Not applicable, proven with evidence** | Deliberate moderation capability, real `is_admin` only |
 | SEC-017 | Non-constant-time key comparison | **Resolved and verified** | `timingSafeEqualStrings()` in both Edge Functions |
@@ -130,9 +130,9 @@ the previous pass's own "fixes" and one long-standing user-facing bug.
 | ID | Title | Status | Why, and what it needs |
 |---|---|---|---|
 | SEC-004 | CAPTCHA dashboard activation | **Implemented, verification pending** | Code done and tested; needs a Turnstile/hCaptcha site key + secret only the project owner can create. Runbook: `COMMUNITY_SETUP.md` |
-| SEC-014 | Response headers live | **Implemented, verification pending** | `_headers` + docs shipped; needs the site fronted by a host that can set headers, then `curl -sI` to confirm |
 | INF-2 | Branch protection requires all 4 CI jobs | **Open** | Not inspectable or settable from inside a repository. Must be confirmed in GitHub settings — `LAUNCH_CHECKLIST.md` |
-| OPS-1 | Backup restore drill | **Open** | Needs the live Supabase dashboard. Procedure documented in `INCIDENT_RESPONSE.md`; performing it is external |
+| OPS-1 | Backup restore drill | **Resolved and verified** for the dump path | Performed 2026-09-06: the production dump restored into a wiped PostgreSQL with **0 errors**, yielding a functional database (132 policies, 193 functions, 19 `is_community_member()` gates, all rows). Supabase's own dashboard PITR is a separate mechanism and remains untested — that part is still external. |
+| VAULT-1 | Edge Function Vault secrets unset | **Open** | `recap-weekly` and `purge-abandoned-profiles` reach Edge Functions via `cron_invoke_edge_function()`, which reads `edge_functions_base_url` and `edge_functions_service_role_key` from Vault. Until both are set the jobs report **`succeeded` while doing nothing** — the "green job that didn't do the work" trap `MONITORING.md` warns about. Two `vault.create_secret()` calls in the SQL editor; the service-role key must never enter the repo. |
 
 ---
 

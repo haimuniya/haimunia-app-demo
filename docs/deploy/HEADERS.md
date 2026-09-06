@@ -1,5 +1,28 @@
 # Response headers — the clickjacking gap and how to close it
 
+> **DECISION (2026-09-06): staying on GitHub Pages. This is not being done.**
+>
+> The gap below is real and remains open, deliberately. Two reasons:
+>
+> 1. **Option A as originally written does not apply to this project.**
+>    Cloudflare cannot be put in front of `haimuniya.github.io` — it has to
+>    be authoritative DNS for the zone, and nobody here controls `github.io`.
+>    Proxying Pages requires owning a custom domain first. That was an error
+>    in this document and is corrected below.
+> 2. **Moving hosts changes the ORIGIN, and this app is offline-first.**
+>    The IndexedDB training log (`haimunia-demo-db`), the `haimunia-demo:*`
+>    localStorage keys, the Cache Storage entries and the installed PWA are
+>    all origin-scoped. Moving to `*.pages.dev` or a new domain means every
+>    existing member opens an empty app — their data still on the device,
+>    just unreachable. For a training log that is a worse outcome than the
+>    P3 it would fix.
+>
+> `_headers` is kept in the repo. It is inert on Pages and costs nothing,
+> and it means the day a custom domain does exist this is already done.
+>
+> **Revisit if:** a custom domain is acquired (cheapest to migrate *before*
+> members accumulate local data), or the clickjacking surface grows.
+
 Launch-readiness audit, SEC-014 (and the header half of SEC-015's
 mitigation).
 
@@ -32,11 +55,11 @@ It is **inert on GitHub Pages** — an unused file, harmless — and becomes the
 fix as soon as the site is served by a host that reads it. Nothing else in
 the app needs to change.
 
-## Option A — Cloudflare in front of GitHub Pages (smallest change)
+## Option A — Cloudflare in front of a CUSTOM DOMAIN (not `*.github.io`)
 
-Keeps GitHub Pages as the origin and puts Cloudflare in front of it, which
-is the least disruptive path since the deploy flow (merge to the Pages
-branch) is unchanged.
+Keeps GitHub Pages as the origin and puts Cloudflare in front. NOTE: this
+requires a domain you control DNS for — Cloudflare cannot proxy
+`haimuniya.github.io`, because it must be authoritative for the zone.
 
 1. Add the domain to Cloudflare and point DNS at the Pages site.
 2. Rules → Transform Rules → **Modify Response Header** → add each header
