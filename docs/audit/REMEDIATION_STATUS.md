@@ -150,3 +150,57 @@ the previous pass's own "fixes" and one long-standing user-facing bug.
 | `npm run check-vendor-version` | version + sha256 both match (tamper-tested) |
 | `node scripts/check-migration-immutability.mjs` | OK |
 | Secret / debug sweep | No secrets; the one `console.log` is `isDebug()`-gated |
+
+---
+
+## Production deployment — 2026-09-06
+
+Applied to `jajmlyrjlkhclgphbfbb` ("shahafrach's Project", PostgreSQL
+17.6.1.165, ap-southeast-1).
+
+**It was 24 migrations pending, not the 7 from this audit.** Production was
+behind from `202609050001` onward — meaning it had been running WITHOUT the
+previous audit pass's P0 anonymous-read-gate fix (`202609060001`) the entire
+time. That is now closed too.
+
+### Pre-flight
+
+| Check | Result |
+|---|---|
+| Correct account | First login was `haimuniya's Org` — **zero projects**, could not see this database. Caught before linking; re-authenticated as the owning account. |
+| Backups (outside the repo) | `~/haimunia-backups/pre-audit-20260906-202710.sql` (schema, 625 KB) + `-data.sql` (data, 134 KB) |
+| Real-data risk review | Read the data dump rather than guessing: **zero `invites` rows, zero `reports` rows**, and `onboarding_step_content.updated_by` all NULL — so all six FK re-adds had nothing to validate against. ~1 row per table. |
+
+### Result
+
+```
+supabase db push --yes   -> 24 migrations applied, exit 0
+supabase db push --dry-run -> "upToDate": true
+npm run check-deploy-readiness -> READY (all 5 RPC signatures resolve)
+```
+
+### Verified against the deployed schema
+
+- 20 occurrences of `is_community_member()` in live policies; spot-checked
+  `challenge_participants_read`, `member_of_week_read`,
+  `weekly_challenges_read`, `pins_read`, `events_read` — **all gated**.
+- `request_idempotency` / `idem_begin` / `scheduled_job_health` present.
+- `event_rsvp(p_event_id, p_response, p_idempotency_key DEFAULT NULL)` — the
+  signature whose absence would have killed RSVP.
+- Data intact: profiles, workout_posts, private_records, post_comments,
+  reactions, member_achievements, invite_redemptions all unchanged
+  before/after.
+
+### NOT verified from here — one query still owed
+
+`pg_dump` excludes extension-owned tables, so `cron.job` could not be read.
+The `cron.schedule()` calls are inside migrations that exited 0, which is
+strong evidence they ran — but given this audit's headline finding was a
+function that existed and was never scheduled, that inference deserves
+confirming rather than assuming. Run in the SQL editor:
+
+```sql
+select jobname, schedule, active from cron.job order by jobname;
+-- expect 10, including 'purge-due-accounts'
+select * from public.scheduled_job_health() where not healthy;
+```
