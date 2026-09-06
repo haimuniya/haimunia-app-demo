@@ -7,7 +7,9 @@
 >
 > **Never test against it.** Bring up a local stack instead —
 > `supabase start && supabase db reset` builds the identical schema from the
-> same migrations, and you can grant yourself any role there. See
+> same migrations, and you can grant yourself any role there.
+> `scripts/seed-local-personas.sql` fills it with members, roles and feed
+> volume in one shot. See
 > `docs/audit/REMEDIATION_STATUS.md` for what "production" means here.
 
 Live community layer for האימוניה: an installable, offline-first PWA with
