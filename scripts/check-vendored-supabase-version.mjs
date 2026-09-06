@@ -8,6 +8,7 @@
 // compiled to `t.version="X.Y.Z"` in the minified bundle - distinct from
 // the others because it's the only one assigned through an
 // `exports.version` pattern rather than a bare local variable.
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,4 +33,27 @@ if (vendored !== declared) {
   console.error(`Mismatch: package.json declares @supabase/supabase-js@${declared}, but vendor/supabase.js was built from ${vendored}. Re-vendor the client or update package.json.`);
   process.exit(1);
 }
-console.log(`OK: vendor/supabase.js matches the declared @supabase/supabase-js@${declared}.`);
+// Launch-readiness audit, DEP-3. The version marker above proves the
+// bundle CLAIMS a version; it does not prove the bytes are the ones that
+// were reviewed. vendor/supabase.js is a 131 KB minified blob that ships
+// to every browser and is the only path to the backend - exactly the shape
+// of artefact a supply-chain edit hides in, and a one-character change to
+// it would pass every other check in this repo.
+//
+// Regenerating this hash is a deliberate act: re-vendor the client, run
+// `sha256sum vendor/supabase.js`, paste it here, and say in the PR why the
+// bundle changed. That is the whole control - it makes an unexplained edit
+// impossible to land quietly.
+const EXPECTED_SHA256 = "7e94b62086deecef8c0ba3b38f514e2a1944ff6c81d92fb3ff967828c406c38f";
+const actualSha = createHash("sha256").update(readFileSync(path.join(root, "vendor", "supabase.js"))).digest("hex");
+if (actualSha !== EXPECTED_SHA256) {
+  console.error(`vendor/supabase.js content does not match its pinned hash.
+  expected: ${EXPECTED_SHA256}
+  actual:   ${actualSha}
+If you re-vendored the client on purpose, update EXPECTED_SHA256 in this
+script in the same commit and explain the change. If you did not, do not
+merge this - the bundle has been modified.`);
+  process.exit(1);
+}
+
+console.log(`OK: vendor/supabase.js matches the declared @supabase/supabase-js@${declared} and its pinned sha256.`);

@@ -7,7 +7,7 @@
 // resolveLocalOnlyTarget()'s own comment.
 import { chromium } from "playwright";
 import { resolveLocalOnlyTarget } from "./lib/target.mjs";
-import { switchTab, consoleErrorCollector, dismissWelcomeModal } from "./lib/actions.mjs";
+import { switchTab, consoleErrorCollector, dismissWelcomeModal, submitForm } from "./lib/actions.mjs";
 import { installMockCloud } from "./lib/mockCloud.mjs";
 
 let failed = false;
@@ -67,7 +67,7 @@ await page.fill('#communityChallengeForm input[name="metricType"]', "session_cou
 await page.fill('#communityChallengeForm input[name="targetValue"]', "10");
 await page.fill('#communityChallengeForm input[name="startAt"]', "2026-09-01");
 await page.fill('#communityChallengeForm input[name="endAt"]', "2026-09-30");
-await page.locator("#communityChallengeForm").evaluate((form) => form.requestSubmit());
+await submitForm(page, "#communityChallengeForm");
 await page.waitForSelector('[data-challenge-status="draft"]', { timeout: 5000 });
 const createdText = await page.textContent('[data-challenge-status="draft"]');
 check("a coach's create form produces a draft challenge card in the list", createdText.includes("10 אימונים בספטמבר"), createdText);

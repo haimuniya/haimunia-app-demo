@@ -24,7 +24,7 @@
 // fresh, sign back in with a password.
 import { chromium } from "playwright";
 import { resolveLocalOnlyTarget } from "./lib/target.mjs";
-import { switchTab, consoleErrorCollector, dismissWelcomeModal } from "./lib/actions.mjs";
+import { switchTab, consoleErrorCollector, dismissWelcomeModal, submitForm } from "./lib/actions.mjs";
 import { installMockCloud } from "./lib/mockCloud.mjs";
 
 let failed = false;
@@ -154,7 +154,7 @@ check("the admin reaches the invite management section", true);
 
 await page.waitForSelector("#communityInviteCreate", { timeout: 5000 });
 await page.fill('#communityInviteCreate input[name="label"]', "דנה, יום שלישי 06:00");
-await page.locator("#communityInviteCreate").evaluate((form) => form.requestSubmit());
+await submitForm(page, "#communityInviteCreate");
 await page.waitForSelector('[data-invite-created="1"]', { timeout: 5000 });
 const code = (await page.textContent('[data-invite-created="1"] code')).trim();
 check("the admin's create form reveals a raw code exactly once", code.length > 8, code);
@@ -179,7 +179,7 @@ check("signing out drops back to the signed-out community gate", true);
 await page.click('[data-community-action="start-signup"]');
 await page.waitForSelector("#communityInviteCode", { timeout: 5000 });
 await page.fill('#communityInviteCode input[name="code"]', code);
-await page.locator("#communityInviteCode").evaluate((form) => form.requestSubmit());
+await submitForm(page, "#communityInviteCode");
 await page.waitForFunction(() => !document.getElementById("communityInviteCode"), { timeout: 5000 });
 check("the new signup's redemption succeeded and moved past the invite-code screen", true);
 
@@ -191,9 +191,9 @@ check("the new signup's redemption succeeded and moved past the invite-code scre
 // this script stuck waiting on #communityProfile.
 await page.waitForSelector("#communityCredentials", { timeout: 5000 });
 await page.fill('#communityCredentials input[name="username"]', "new_member");
-await page.fill('#communityCredentials input[name="password"]', "new-member-password");
-await page.fill('#communityCredentials input[name="passwordConfirm"]', "new-member-password");
-await page.locator("#communityCredentials").evaluate((form) => form.requestSubmit());
+await page.fill('#communityCredentials input[name="password"]', "NewMember1pass");
+await page.fill('#communityCredentials input[name="passwordConfirm"]', "NewMember1pass");
+await submitForm(page, "#communityCredentials");
 check("the new signup creates real, device-portable credentials", true);
 
 // profiles_insert_self's own RLS requires the redemption to exist first
@@ -203,7 +203,7 @@ check("the new signup creates real, device-portable credentials", true);
 await page.waitForSelector("#communityProfile", { timeout: 5000 });
 await page.fill('#communityProfile input[name="handle"]', "new_member");
 await page.fill('#communityProfile input[name="displayName"]', "חברה חדשה");
-await page.locator("#communityProfile").evaluate((form) => form.requestSubmit());
+await submitForm(page, "#communityProfile");
 // Not "wait for the 'הפרופיל נשמר' message": ensureCommunityDataLoaded()'s
 // own comment documents that loadFeed()'s success also calls setMessage(""),
 // racing saveProfile()'s own success message on the exact same state field -
@@ -227,7 +227,7 @@ await page.click('[data-community-action="sign-out"]');
 await page.waitForSelector("#communityLogin", { timeout: 5000 });
 await page.fill('#communityLogin input[name="username"]', "roi");
 await page.fill('#communityLogin input[name="password"]', ADMIN_PASSWORD);
-await page.locator("#communityLogin").evaluate((form) => form.requestSubmit());
+await submitForm(page, "#communityLogin");
 await page.waitForSelector(".subtabbar", { timeout: 5000 });
 check("the admin logs back in with their own username and password", true);
 

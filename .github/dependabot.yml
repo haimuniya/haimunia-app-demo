@@ -1,0 +1,35 @@
+# Launch-readiness audit, DEPENDENCY_AUDIT.md. There were 0 known
+# vulnerabilities at audit time and no mechanism that would have told anyone
+# about the first one. `npm audit --audit-level=high` now runs in CI (see
+# .github/workflows/test.yml), which catches an advisory against what is
+# already pinned; this catches the other half - an upgrade being available
+# at all - and opens a PR for it rather than waiting for someone to look.
+version: 2
+updates:
+  # Root: the test/dev toolchain plus the @supabase/supabase-js version that
+  # vendor/supabase.js is checked against (scripts/check-vendored-supabase-version.mjs).
+  # A bump here will FAIL that check until the vendored bundle is re-cut,
+  # which is intended: the check existing is what stops the two drifting.
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: ["dependencies"]
+
+  # The Playwright browser-check subproject, which has its own lockfile.
+  - package-ecosystem: npm
+    directory: "/scripts/browser-check"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: ["dependencies"]
+
+  # GitHub Actions themselves. Every action in test.yml is SHA-pinned, which
+  # is correct for supply-chain safety but means a pinned SHA silently ages
+  # and never picks up a security fix unless something proposes the bump.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels: ["dependencies", "ci"]

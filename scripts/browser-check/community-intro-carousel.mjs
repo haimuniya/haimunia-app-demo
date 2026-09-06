@@ -12,7 +12,7 @@
 // events, not window.eval'd handler calls.
 import { chromium } from "playwright";
 import { resolveLocalOnlyTarget } from "./lib/target.mjs";
-import { consoleErrorCollector, dismissWelcomeModal } from "./lib/actions.mjs";
+import { consoleErrorCollector, dismissWelcomeModal, submitForm } from "./lib/actions.mjs";
 import { installMockCloud } from "./lib/mockCloud.mjs";
 
 let failed = false;
@@ -34,36 +34,44 @@ const errors = await consoleErrorCollector(page);
 await installMockCloud(page, {}, { seenIntroCarousel: false });
 
 await page.goto(target.url, { waitUntil: "networkidle" });
-await page.waitForSelector("#app", { state: "visible", timeout: 10000 });
+// Timeouts here are deliberately generous rather than the 5000/10000 ms the
+// rest of this suite uses. This scenario drives the longest chain in the
+// app - invite redemption, credential creation, an auth state change, and
+// three renders - and run-all.mjs runs scenarios back-to-back on a loaded
+// machine, where a 10 s budget was observed to expire before the carousel
+// painted even though every assertion passes when the file is run alone.
+// A release gate that fails intermittently teaches people to re-run it
+// until it goes green, which is worse than a slow gate.
+await page.waitForSelector("#app", { state: "visible", timeout: 30000 });
 await dismissWelcomeModal(page);
 
 await page.click("#tabCommunityBtn");
-await page.waitForSelector('[data-community-action="start-signup"]', { timeout: 5000 });
+await page.waitForSelector('[data-community-action="start-signup"]', { timeout: 20000 });
 await page.click('[data-community-action="start-signup"]');
-await page.waitForSelector("#communityInviteCode", { timeout: 5000 });
+await page.waitForSelector("#communityInviteCode", { timeout: 20000 });
 await page.fill('#communityInviteCode input[name="code"]', "CLUBCODE");
-await page.locator("#communityInviteCode").evaluate((form) => form.requestSubmit());
+await submitForm(page, "#communityInviteCode");
 
-await page.waitForSelector("#communityCredentials", { timeout: 10000 });
+await page.waitForSelector("#communityCredentials", { timeout: 30000 });
 await page.fill('#communityCredentials input[name="username"]', "new_member");
-await page.fill('#communityCredentials input[name="password"]', "new-member-password");
-await page.fill('#communityCredentials input[name="passwordConfirm"]', "new-member-password");
-await page.locator("#communityCredentials").evaluate((form) => form.requestSubmit());
+await page.fill('#communityCredentials input[name="password"]', "NewMember1pass");
+await page.fill('#communityCredentials input[name="passwordConfirm"]', "NewMember1pass");
+await submitForm(page, "#communityCredentials");
 
-await page.waitForSelector('[data-intro-carousel="1"]', { timeout: 10000 });
+await page.waitForSelector('[data-intro-carousel="1"]', { timeout: 30000 });
 check("the intro carousel appears right after credentials, before profile completion", true);
 check("starts on the first screen", (await page.getAttribute('[data-intro-carousel="1"]', "data-intro-step")) === "welcome_intro");
 check("no back button on the first screen", (await page.$('[data-community-action="intro-carousel-back"]')) === null);
 
 await page.click('[data-community-action="intro-carousel-next"]');
-await page.waitForFunction(() => document.querySelector('[data-intro-carousel="1"]')?.dataset.introStep === "club_rules", { timeout: 5000 });
+await page.waitForFunction(() => document.querySelector('[data-intro-carousel="1"]')?.dataset.introStep === "club_rules", { timeout: 20000 });
 await page.click('[data-community-action="intro-carousel-next"]');
-await page.waitForFunction(() => document.querySelector('[data-intro-carousel="1"]')?.dataset.introStep === "getting_started", { timeout: 5000 });
+await page.waitForFunction(() => document.querySelector('[data-intro-carousel="1"]')?.dataset.introStep === "getting_started", { timeout: 20000 });
 const lastLabel = await page.textContent('[data-community-action="intro-carousel-next"]');
 check("the last screen's button names what happens next", lastLabel.includes("המשך להשלמת הפרופיל"), lastLabel.trim());
 
 await page.click('[data-community-action="intro-carousel-next"]');
-await page.waitForSelector("#communityProfile", { timeout: 5000 });
+await page.waitForSelector("#communityProfile", { timeout: 20000 });
 check("finishing the carousel lands on the existing, unmodified profile-completion gate", true);
 check("the carousel itself is gone", (await page.$('[data-intro-carousel="1"]')) === null);
 
@@ -71,8 +79,8 @@ const seenFlag = await page.evaluate(() => localStorage.getItem("haimunia-demo:s
 check("the one-time device flag is stamped", seenFlag === "1");
 
 await page.fill('#communityProfile input[name="handle"]', "new_member");
-await page.locator("#communityProfile").evaluate((form) => form.requestSubmit());
-await page.waitForSelector(".subtabbar", { timeout: 5000 });
+await submitForm(page, "#communityProfile");
+await page.waitForSelector(".subtabbar", { timeout: 20000 });
 check("profile completion lands in the normal tabbed Community UI", true);
 // Not a reload/persistence check (this script never reloads the page) -
 // just confirming the carousel stays gone, not re-inserted, now that the

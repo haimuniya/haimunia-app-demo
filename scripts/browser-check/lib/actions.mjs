@@ -6,17 +6,90 @@
 // welcome/name modal, then the onboarding walkthrough it now triggers right
 // after (added alongside the update-notifications/onboarding roadmap round —
 // every fresh-context check hits this, not just onboarding-specific ones).
+// THE FLAKINESS THIS FIXES (launch-readiness audit). This used to sample
+// `welcomeOverlay.open` ONCE and return early if it was false:
+//
+//     const open = await page.evaluate(... .contains("open"));
+//     if (!open) return;
+//
+// app.js opens that modal during boot when no local profile exists, and
+// `page.goto(..., { waitUntil: "networkidle" })` does not guarantee it has
+// opened yet. Lose that race and the helper returns having done nothing,
+// the modal opens a moment later ON TOP of the app, and every subsequent
+// click in the scenario lands on a full-page overlay instead of the control
+// it was aiming at - which surfaces much later as an unrelated
+// `waitForSelector` timeout, in whichever scenario happened to lose the
+// race. That is the intermittent failure the suite has carried (recorded
+// previously as "flaky under CPU contention"); it was a harness race, not
+// contention, and not the app.
+//
+// Now: wait for the modal to actually appear before deciding it is not
+// coming, and wait for each overlay to actually close rather than sleeping
+// a fixed 150 ms and hoping.
+const WELCOME_APPEAR_MS = 4000;
+
+async function overlayOpen(page, id) {
+  return page.evaluate((elId) => !!document.getElementById(elId)?.classList.contains("open"), id);
+}
+
 export async function dismissWelcomeModal(page, name = "בדיקה") {
-  const open = await page.evaluate(() => document.getElementById("welcomeOverlay")?.classList.contains("open"));
-  if (!open) return;
+  // Bounded wait for the modal to appear. A scenario that legitimately has
+  // no welcome modal (a profile already in IndexedDB) simply times out here
+  // and continues - that is the "not coming" answer, arrived at by waiting
+  // rather than by sampling once.
+  try {
+    await page.waitForFunction(
+      () => !!document.getElementById("welcomeOverlay")?.classList.contains("open"),
+      { timeout: WELCOME_APPEAR_MS },
+    );
+  } catch {
+    return;
+  }
+
   await page.fill("#welcomeNameInput", name);
   await page.click("[data-action='save-user-name']");
-  await page.waitForTimeout(150);
-  const onboardingOpen = await page.evaluate(() => document.getElementById("onboardingOverlay")?.classList.contains("open"));
-  if (onboardingOpen) {
+  // Wait for it to be gone rather than sleeping: a slow render must not
+  // leave the overlay swallowing the scenario's next click.
+  await page.waitForFunction(
+    () => !document.getElementById("welcomeOverlay")?.classList.contains("open"),
+    { timeout: 10000 },
+  );
+
+  if (await overlayOpen(page, "onboardingOverlay")) {
     await page.click("[data-action='close-onboarding']");
-    await page.waitForTimeout(150);
+    await page.waitForFunction(
+      () => !document.getElementById("onboardingOverlay")?.classList.contains("open"),
+      { timeout: 10000 },
+    );
   }
+}
+
+// Submit a form the way a member does - by clicking its submit button.
+//
+// THE RACE THIS REPLACES (launch-readiness audit). Several scenarios did:
+//
+//     await page.locator("#someForm").evaluate((form) => form.requestSubmit());
+//
+// Playwright resolves that locator to a node, then evaluates against it.
+// This app re-renders by replacing #content's innerHTML wholesale, so any
+// render landing between those two steps swaps the form for a fresh,
+// identical-looking node - and requestSubmit() then fires on a DETACHED
+// element, where the event bubbles to nothing and the app's delegated
+// submit handler never runs. The scenario sees the form still on screen
+// and times out somewhere later, with no error and no clue.
+//
+// Confirmed by instrumenting the mock client: on a failing run,
+// redeem_invite_code was never called at all - the submit simply vanished.
+// It reproduced on the FIRST page of a browser (the slowest render, where
+// maybeAutoStartBackup()'s message triggers an extra rerender at exactly
+// the wrong moment) and against pristine HEAD, so it is the harness racing
+// the app, not a regression.
+//
+// page.click() re-resolves the selector and waits for actionability at
+// click time, so it cannot hold a stale node. Prefer this everywhere a
+// form is submitted.
+export async function submitForm(page, formSelector, { timeout = 15000 } = {}) {
+  await page.click(`${formSelector} button[type="submit"]`, { timeout });
 }
 
 // Picking a movement by an exact-name query hits the app's own "+ add as

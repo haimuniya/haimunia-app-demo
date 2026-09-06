@@ -360,15 +360,25 @@ select results_eq(
   'both Vault secret slots exist for an operator to fill in on the live project');
 
 -- The schedule itself.
+-- REVISED by 202609060015 (FEAT-010). 'feed-weights-recompute' is
+-- deliberately NOT in this list any more: recompute_feed_weights() has an
+-- intentionally empty body (202608310006 calls itself "A DELIBERATE NO-OP
+-- STUB"), so scheduling it produced a weekly green cron row for a feature
+-- that was never built - which reads as "personalized ranking works" to
+-- anyone checking cron.job_run_details. Its absence is now the assertion.
+-- 202609060011/14/15 also added purge-due-accounts, idempotency-purge and
+-- community-health, so the set is nine.
 select set_eq(
   $$ select jobname from cron.job where jobname in (
        'notif-batch-flush', 'recap_monthly', 'feed-weights-recompute',
        'chal-notify-ending-soon', 'coach-engagement-decline',
-       'purge-abandoned-profiles', 'recap-weekly', 'telemetry-retention-purge') $$,
-  $$ values ('notif-batch-flush'), ('recap_monthly'), ('feed-weights-recompute'),
+       'purge-abandoned-profiles', 'recap-weekly', 'telemetry-retention-purge',
+       'purge-due-accounts', 'idempotency-purge', 'community-health') $$,
+  $$ values ('notif-batch-flush'), ('recap_monthly'),
             ('chal-notify-ending-soon'), ('coach-engagement-decline'),
-            ('purge-abandoned-profiles'), ('recap-weekly'), ('telemetry-retention-purge') $$,
-  'all eight jobs are scheduled - the six that were dormant plus the two new ones');
+            ('purge-abandoned-profiles'), ('recap-weekly'), ('telemetry-retention-purge'),
+            ('purge-due-accounts'), ('idempotency-purge'), ('community-health') $$,
+  'the nine live jobs are scheduled, and the no-op feed-weights stub is not among them');
 select results_eq(
   $$ select schedule from cron.job where jobname = 'notif-batch-flush' $$,
   $$ values ('*/15 * * * *') $$,
@@ -377,10 +387,14 @@ select results_eq(
   $$ select schedule from cron.job where jobname = 'recap_monthly' $$,
   $$ values ('41 4 1 * *') $$,
   'the monthly recap runs on the cadence 202609010002 wrote down');
-select results_eq(
-  $$ select schedule from cron.job where jobname = 'feed-weights-recompute' $$,
-  $$ values ('17 4 * * 1') $$,
-  'the feed-weight recompute runs on the cadence 202608310006 wrote down');
+-- REVISED by 202609060015 (FEAT-010): unscheduled, so it has no cadence.
+-- The function is deliberately KEPT (removing it was not the fix) - only
+-- its misleading schedule was removed.
+select is_empty(
+  $$ select 1 from cron.job where jobname = 'feed-weights-recompute' $$,
+  'the feed-weight recompute has no schedule at all - a green weekly row for an unbuilt feature is worse than no row');
+select has_function('public', 'recompute_feed_weights', array['integer'],
+  'while the stub function itself is retained for whoever builds the derivation');
 select is_empty(
   $$ select 1 from cron.job where jobname in (
        'notif-batch-flush', 'recap_monthly', 'feed-weights-recompute',
