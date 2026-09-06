@@ -199,20 +199,68 @@ objects through SQL because it only removes metadata.
 - Confirm posting a comment/reaction/report more than the configured
   rate limit returns `rate_limited` instead of silently queuing forever.
 
-## Recommended, not yet done: CAPTCHA on sign-up
+## CAPTCHA on sign-up — app side done, dashboard step required
 
-Flagged by an independent security review: `signInAnonymously()` and
-`client.auth.updateUser()` (the anonymous-to-permanent upgrade a new
-signup goes through) have no bot/abuse protection — creating an account
-costs an attacker nothing beyond having one leaked invite code, and rate
-limiting (this migration) only slows down what a scripted attacker can
-do with an account, not how many accounts they can make in the first
-place. Supabase supports requiring a CAPTCHA (Cloudflare Turnstile or
-hCaptcha) on `signInAnonymously()`/sign-up via Authentication → Sign In /
-Providers → Bot and Abuse Protection. This needs a Turnstile/hCaptcha
-site key from an account only the project owner can create, so it's
-listed here rather than done — the app-side call would need to pass a
-`captchaToken` through, once the site key exists.
+**Status: the repository half is implemented and tested; the dashboard
+half is a one-time step only the project owner can perform.** Until that
+step is done the feature is OFF and completely inert — `captchaSiteKey`
+ships as `""`, `captchaEnabled()` is false, and every auth call behaves
+exactly as it did before the feature existed. Nothing breaks by leaving
+it off; nothing is protected either.
+
+Why it matters (launch-readiness audit, SEC-004): `signInAnonymously()`
+is how *every* signup bootstraps, so creating an identity costs an
+attacker nothing. Rate limiting only bounds what one account can do, not
+how many accounts exist. Unlimited free identities are the raw material
+for feed scraping, telemetry/storage flooding, and invite-code guessing
+in parallel.
+
+### What is already in the repo
+
+- `cloud.js` gates all three auth entry points — `signInAnonymously()`,
+  `signInWithPassword()` and `updateUser()` — through `withCaptcha()`,
+  which obtains a single-use token and attaches it as `captchaToken`.
+- Failure is **closed, never open**: a script that will not load, a
+  provider error, an expired token or a 20-second timeout all refuse the
+  request rather than quietly proceeding without a token. A failed
+  challenge is retryable (the anonymous one-shot guard is released) and
+  at login it reports "אימות האבטחה נכשל" rather than "wrong password".
+- `index.html`'s CSP already allows exactly the two provider hosts, in
+  `script-src`/`frame-src`, plus their verification endpoints in
+  `connect-src`. Nothing else was widened.
+- `test/community-captcha.test.mjs` pins all of the above.
+
+### The dashboard step (project owner)
+
+1. Create a site at **Cloudflare Turnstile** (or hCaptcha) and copy the
+   **site key** (public) and **secret key** (private).
+2. In Supabase: **Authentication → Bot and Abuse Protection** → enable
+   CAPTCHA, choose the matching provider, paste the **secret key**.
+   The secret key goes here and **nowhere in this repository**.
+3. In `cloud-config.js`, set `captchaProvider` to `"turnstile"` or
+   `"hcaptcha"` to match, and paste the **site key** into
+   `captchaSiteKey`. A site key is public by design — same category as
+   `supabasePublishableKey` right above it.
+4. Deploy.
+
+No environment variables are needed on the app side (this is a
+build-free static site; `cloud-config.js` *is* the configuration). The
+only secret involved lives in the Supabase dashboard.
+
+### Verifying it actually works
+
+After deploying with a site key set:
+
+- Open the app in a private window and start a signup. The Turnstile /
+  hCaptcha widget runs invisibly; sign-in should complete normally.
+- In Supabase → Authentication → Logs, a signup attempt with a missing
+  or invalid token is rejected server-side. That server-side rejection —
+  not the widget appearing — is the actual control: the dashboard secret
+  is what verifies the token, so an attacker calling the REST endpoint
+  directly with no token is refused regardless of the browser.
+- To confirm fail-closed behaviour, block `challenges.cloudflare.com` in
+  devtools and try to sign in: the attempt must be refused with
+  "אימות האבטחה נכשל, נסו שוב", never succeed.
 
 ## Access tiers
 
