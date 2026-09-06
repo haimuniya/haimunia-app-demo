@@ -62,6 +62,23 @@ const PURGE_VERSION = 1;
 // change this safely.
 const RETENTION_DAYS = 30;
 
+// Launch-readiness audit, SEC-017. Same fix as recap_weekly's own copy of
+// this helper - plain `!==` short-circuits at the first differing byte,
+// a genuine (if low-practicality-over-a-real-network) timing side channel
+// on the service-role key. Not shared via an import: these two files are
+// deployed as independent Edge Functions.
+function timingSafeEqualStrings(a: string, b: string): boolean {
+  const enc = new TextEncoder();
+  const aBytes = enc.encode(a);
+  const bBytes = enc.encode(b);
+  const len = Math.max(aBytes.length, bBytes.length);
+  let diff = aBytes.length ^ bBytes.length;
+  for (let i = 0; i < len; i++) {
+    diff |= (aBytes[i] ?? 0) ^ (bBytes[i] ?? 0);
+  }
+  return diff === 0;
+}
+
 Deno.serve(async (req: Request) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -83,7 +100,7 @@ Deno.serve(async (req: Request) => {
   // (COMM-220): only a caller presenting the actual service role key (a
   // scheduler invoking this with it, or a manual ops run per the runbook)
   // gets past this line.
-  if (req.headers.get("Authorization") !== `Bearer ${serviceRoleKey}`) {
+  if (!timingSafeEqualStrings(req.headers.get("Authorization") || "", `Bearer ${serviceRoleKey}`)) {
     return new Response(JSON.stringify({ error: "unauthorized" }), {
       status: 401,
       headers: { "Content-Type": "application/json" },

@@ -53,6 +53,24 @@ import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supa
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
 
+// Launch-readiness audit, SEC-017. Plain `!==` on strings short-circuits at
+// the first differing byte, which is a genuine (if low-practicality-over-a
+// real network) timing side channel for extracting the service-role key one
+// byte at a time. Compares every byte regardless of an early mismatch, and
+// folds a length difference into the same constant-shape comparison instead
+// of returning early on it.
+function timingSafeEqualStrings(a: string, b: string): boolean {
+  const enc = new TextEncoder();
+  const aBytes = enc.encode(a);
+  const bBytes = enc.encode(b);
+  const len = Math.max(aBytes.length, bBytes.length);
+  let diff = aBytes.length ^ bBytes.length;
+  for (let i = 0; i < len; i++) {
+    diff |= (aBytes[i] ?? 0) ^ (bBytes[i] ?? 0);
+  }
+  return diff === 0;
+}
+
 function toDateStr(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
@@ -390,7 +408,7 @@ Deno.serve(async (req: Request) => {
   // resting on the platform default: only a caller presenting the actual
   // service role key (a scheduler invoking this with it, or a manual
   // admin run) gets past this line.
-  if (req.headers.get("Authorization") !== `Bearer ${serviceRoleKey}`) {
+  if (!timingSafeEqualStrings(req.headers.get("Authorization") || "", `Bearer ${serviceRoleKey}`)) {
     return new Response(JSON.stringify({ error: "unauthorized" }), {
       status: 401,
       headers: { "Content-Type": "application/json" },

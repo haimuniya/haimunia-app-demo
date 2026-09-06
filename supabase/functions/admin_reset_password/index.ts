@@ -40,7 +40,35 @@
 // check is real defense-in-depth, not just this file's say-so.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
 
-const RESET_VERSION = 1;
+const RESET_VERSION = 2;
+
+// Launch-readiness audit, SEC-011. This function is the only one of the
+// three Edge Functions in this repo ever called from a browser (the other
+// two are service-role-only, invoked by pg_cron via the Vault bridge) -
+// cloud.js:3063 invokes it with the caller's own Authorization header,
+// which forces a CORS preflight. Scoped to the app's real origins rather
+// than "*", since this endpoint resets a password.
+const ALLOWED_ORIGINS = new Set([
+  "https://haimuniya.github.io",
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+]);
+
+function corsHeaders(req: Request): HeadersInit {
+  const origin = req.headers.get("Origin") || "";
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Vary": "Origin",
+  };
+  if (ALLOWED_ORIGINS.has(origin)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+    headers["Access-Control-Allow-Headers"] = "authorization, content-type";
+    headers["Access-Control-Allow-Methods"] = "POST, OPTIONS";
+  }
+  return headers;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function generateTempPassword(): string {
   // Server-generated only - never accept a password from the client, so a
@@ -54,6 +82,13 @@ function generateTempPassword(): string {
 }
 
 Deno.serve(async (req: Request) => {
+  // Preflight: the browser sends this before the real POST because
+  // cloud.js:3063 attaches an Authorization header. Answered before any
+  // credential/env check below, same as any other CORS preflight.
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders(req) });
+  }
+
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
@@ -61,7 +96,7 @@ Deno.serve(async (req: Request) => {
     console.error(`admin_reset_password v${RESET_VERSION}: missing SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY/SUPABASE_ANON_KEY`);
     return new Response(JSON.stringify({ error: "missing service credentials" }), {
       status: 500,
-      headers: { "Content-Type": "application/json" },
+      headers: corsHeaders(req),
     });
   }
 
@@ -70,7 +105,7 @@ Deno.serve(async (req: Request) => {
   if (!callerJwt) {
     return new Response(JSON.stringify({ error: "unauthorized" }), {
       status: 401,
-      headers: { "Content-Type": "application/json" },
+      headers: corsHeaders(req),
     });
   }
 
@@ -84,7 +119,7 @@ Deno.serve(async (req: Request) => {
   if (userErr || !userData?.user) {
     return new Response(JSON.stringify({ error: "unauthorized" }), {
       status: 401,
-      headers: { "Content-Type": "application/json" },
+      headers: corsHeaders(req),
     });
   }
 
@@ -95,10 +130,10 @@ Deno.serve(async (req: Request) => {
     body = {};
   }
   const targetUserId = typeof body.target_user_id === "string" ? body.target_user_id : "";
-  if (!targetUserId) {
-    return new Response(JSON.stringify({ error: "target_user_id required" }), {
+  if (!targetUserId || !UUID_RE.test(targetUserId)) {
+    return new Response(JSON.stringify({ error: "target_user_id must be a uuid" }), {
       status: 400,
-      headers: { "Content-Type": "application/json" },
+      headers: corsHeaders(req),
     });
   }
 
@@ -114,7 +149,40 @@ Deno.serve(async (req: Request) => {
   if (profileErr || !profile?.is_admin) {
     return new Response(JSON.stringify({ error: "not authorized" }), {
       status: 403,
-      headers: { "Content-Type": "application/json" },
+      headers: corsHeaders(req),
+    });
+  }
+
+  // Launch-readiness audit, SEC-011 (rate limit). Checked with the CALLING
+  // ADMIN's own JWT, before anything is changed, so a compromised or
+  // hijacked admin session cannot loop a club-wide password-reset lockout.
+  // admin_check_password_reset_rate_limit() (202609060012) re-checks
+  // is_admin() itself server-side too - defense in depth, not just this
+  // file's say-so.
+  const { error: rateLimitErr } = await callerClient.rpc("admin_check_password_reset_rate_limit");
+  if (rateLimitErr) {
+    const limited = /rate_limited/i.test(rateLimitErr.message);
+    return new Response(JSON.stringify({ error: limited ? "rate_limited" : "not authorized" }), {
+      status: limited ? 429 : 403,
+      headers: corsHeaders(req),
+    });
+  }
+
+  // Launch-readiness audit, SEC-011 (target validation). The UUID format
+  // check above only rules out garbage; this confirms the target is an
+  // actual, non-deleted club member rather than an arbitrary auth.users row
+  // (a ghost, a backup-only session - COMMUNITY_SETUP.md SS Offline
+  // synchronization confirms these exist).
+  const { data: targetProfile, error: targetErr } = await adminClient
+    .from("profiles")
+    .select("id")
+    .eq("id", targetUserId)
+    .is("deleted_at", null)
+    .maybeSingle();
+  if (targetErr || !targetProfile) {
+    return new Response(JSON.stringify({ error: "target is not a club member" }), {
+      status: 404,
+      headers: corsHeaders(req),
     });
   }
 
@@ -124,7 +192,7 @@ Deno.serve(async (req: Request) => {
     console.error(`admin_reset_password v${RESET_VERSION}: updateUserById failed`, updateErr.message);
     return new Response(JSON.stringify({ error: "password reset failed" }), {
       status: 500,
-      headers: { "Content-Type": "application/json" },
+      headers: corsHeaders(req),
     });
   }
 
@@ -140,6 +208,6 @@ Deno.serve(async (req: Request) => {
 
   return new Response(
     JSON.stringify({ version: RESET_VERSION, temp_password: tempPassword, audited: !auditErr }),
-    { headers: { "Content-Type": "application/json" } },
+    { headers: corsHeaders(req) },
   );
 });

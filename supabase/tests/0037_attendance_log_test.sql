@@ -297,10 +297,21 @@ select is_empty(
   $$ select 1 from public.attendance_log where user_id <> tests.uid('m1') $$,
   'a plain member cannot read another member''s attendance at all');
 
+-- REVISED by 202609060013 (SEC-009 / PRIV-001), a deliberate product
+-- decision. This previously asserted that a plain coach could read any
+-- member's raw attendance rows, justified as "what COMM-304's decline
+-- detection needs". That justification was checked and is not true:
+-- coach_detect_engagement_decline(), the recaps, classmates, consistency
+-- streaks and the health score are all SECURITY DEFINER and therefore
+-- bypass this policy entirely - narrowing it cannot blind any of them
+-- (0079 asserts that property directly). Meanwhile PRIVACY.md tells
+-- members coaches see "your baseline rate and your recent rate, NOT a
+-- detailed log", and show_attendance defaults OFF. The schema now enforces
+-- what the policy document already promised.
 select tests.set_auth(tests.uid('coach'));
-select isnt_empty(
+select is_empty(
   $$ select 1 from public.attendance_log where user_id = tests.uid('m1') $$,
-  'real staff (a coach, via is_staff()) can read any member''s rows - what COMM-304''s decline detection needs');
+  'a plain coach can no longer read another member''s raw attendance rows - the aggregate signal they actually use comes from SECURITY DEFINER functions, not from this table');
 select tests.set_auth(tests.uid('admin'));
 select isnt_empty(
   $$ select 1 from public.attendance_log where user_id = tests.uid('m1') $$,

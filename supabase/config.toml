@@ -53,8 +53,17 @@ enable_signup = true
 # real signup starts as an anonymous session before becoming permanent.
 enable_anonymous_sign_ins = true
 enable_manual_linking = false
-minimum_password_length = 6
-password_requirements = ""
+# Launch-readiness audit, SEC-012. Was 6 / "" (no complexity requirement) on
+# an account whose identifier is a guessable username
+# (usernameToEmail() -> `${username}@members.haimuniya.invalid`, and handles
+# are club-public via the member directory) - credential stuffing and online
+# guessing against a known username list was the realistic attack, with only
+# Supabase's platform-level auth throttling in the way. This file is
+# local/CI-only (see the header above); the real project's dashboard
+# Authentication settings must be changed to match by hand - this migration
+# cannot reach them.
+minimum_password_length = 10
+password_requirements = "lower_upper_letters_digits"
 
 [auth.email]
 enable_signup = true

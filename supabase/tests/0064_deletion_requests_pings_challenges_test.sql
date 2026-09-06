@@ -329,18 +329,40 @@ select results_eq(
   $$ values ('Deadlift week (over)') $$,
   'including one whose window has closed - RLS does no date filtering, the leaderboard view decides what is CURRENT');
 
--- A session with no effective role at all still reads it. `norec` was
--- removed in section 4, so my_role_code() is null for them. That is the
--- honest reading of `using (true)`: the gate is being signed in, nothing
--- more. Nothing member-specific lives in this table for it to leak.
+-- REVISED by 202609060011 (SEC-001, the anonymous read gate's second pass).
+--
+-- This block previously asserted the opposite - that `norec` STILL reads the
+-- board, on the reasoning that weekly_challenges_read was `using (true)` and
+-- "the gate is being signed in, nothing more." That reading was correct about
+-- the old policy and wrong about the threat: anonymous sign-in is enabled and
+-- the publishable key ships in the browser bundle, so "signed in" costs an
+-- attacker nothing, and this table does carry a member identifier
+-- (created_by -> profiles). weekly_challenges_read is now
+-- `using (is_community_member())`.
+--
+-- `norec` is the sharpest possible case for that gate, which is why the
+-- assertion is kept here rather than moved: section 4 removed them via
+-- admin_remove_member(), so they are a soft-deleted account pending purge.
+-- A removed member must not keep reading club programming, and
+-- is_community_member() is false for them (profiles.deleted_at is set).
 select tests.set_auth(tests.uid('norec'));
 select ok(
   public.my_role_code() is null and not public.is_staff(),
   'a session with no role code and no staff rank...');
+select ok(
+  not public.is_community_member(),
+  '...is not a community member either, because admin_remove_member() soft-deleted their profile in section 4...');
+select is(
+  (select count(*)::int from public.weekly_challenges),
+  0,
+  '...and therefore reads NOTHING from the challenge board - the SEC-001 gate, which a removed-but-still-signed-in session is exactly the case for');
+-- The control: a live, fully-redeemed member still reads the whole board, so
+-- the gate above is narrowing access to non-members, not breaking the feature.
+select tests.set_auth(tests.uid('m1'));
 select is(
   (select count(*)::int from public.weekly_challenges),
   2,
-  '...still reads the challenge board, because the board is public-to-the-club by design');
+  'while a real community member still reads every challenge row, unchanged');
 select tests.clear_auth();
 select ok(
   not pg_catalog.has_table_privilege('anon', 'public.weekly_challenges', 'select'),

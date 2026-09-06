@@ -178,7 +178,13 @@ select results_eq(
   $$ values ('normal'::text, true) $$,
   'a member''s update of priority/expires_at silently matches no row - the is_staff policy was not widened');
 
-select tests.set_auth(tests.uid('coach'));
+-- 202609060013 (SEC-010) scoped announcements_update_admin to the AUTHOR
+-- or an admin, instead of any is_staff(). These fixtures are authored by
+-- `admin`, so the acting user here is the author - what this section is
+-- actually about is the priority/important mirror and the escalation
+-- fan-out trigger, not who may edit. The authorization boundary itself is
+-- covered directly in 0079_product_decisions_attendance_and_announcements_test.sql.
+select tests.set_auth(tests.uid('admin'));
 update public.announcements
    set priority = 'important', expires_at = now() + interval '1 day'
  where id = 'c0300000-0000-4000-8000-000000000001';
@@ -187,7 +193,7 @@ select results_eq(
   $$ select priority, important, expires_at > now() from public.announcements
      where id = 'c0300000-0000-4000-8000-000000000001' $$,
   $$ values ('important'::text, true, true) $$,
-  'a coach is staff, so a coach can set both new columns');
+  'the announcement''s author can set both new columns (202609060013 scoped this to author-or-admin; a coach setting them on their OWN announcement is covered in 0079)');
 
 -- =====================================================================
 -- expiry is a read-time filter: gone for members, still there for staff,
@@ -211,7 +217,13 @@ select isnt_empty(
   $$ select 1 from public.announcements where id = 'c0300000-0000-4000-8000-000000000003' $$,
   'a null expires_at is not an expiry - every announcement that predates this migration still reads');
 
-select tests.set_auth(tests.uid('coach'));
+-- 202609060013 (SEC-010) scoped announcements_update_admin to the AUTHOR
+-- or an admin, instead of any is_staff(). These fixtures are authored by
+-- `admin`, so the acting user here is the author - what this section is
+-- actually about is the priority/important mirror and the escalation
+-- fan-out trigger, not who may edit. The authorization boundary itself is
+-- covered directly in 0079_product_decisions_attendance_and_announcements_test.sql.
+select tests.set_auth(tests.uid('admin'));
 select isnt_empty(
   $$ select 1 from public.announcements where id = 'c0300000-0000-4000-8000-000000000012' $$,
   'staff still read the expired announcement - expiry hides it from members, not from the record');
@@ -219,7 +231,13 @@ select isnt_empty(
 select tests.clear_auth();
 update public.announcements set deleted_at = now()
   where id = 'c0300000-0000-4000-8000-000000000011';
-select tests.set_auth(tests.uid('coach'));
+-- 202609060013 (SEC-010) scoped announcements_update_admin to the AUTHOR
+-- or an admin, instead of any is_staff(). These fixtures are authored by
+-- `admin`, so the acting user here is the author - what this section is
+-- actually about is the priority/important mirror and the escalation
+-- fan-out trigger, not who may edit. The authorization boundary itself is
+-- covered directly in 0079_product_decisions_attendance_and_announcements_test.sql.
+select tests.set_auth(tests.uid('admin'));
 select is_empty(
   $$ select 1 from public.announcements where id = 'c0300000-0000-4000-8000-000000000011' $$,
   'the deleted_at half of the read policy is untouched: a soft-deleted announcement is hidden from staff too');
@@ -254,7 +272,13 @@ select is_empty(
        and source_id = 'c0300000-0000-4000-8000-000000000021' $$,
   'm3, who switched announcements off, is skipped on a normal announcement');
 
-select tests.set_auth(tests.uid('coach'));
+-- 202609060013 (SEC-010) scoped announcements_update_admin to the AUTHOR
+-- or an admin, instead of any is_staff(). These fixtures are authored by
+-- `admin`, so the acting user here is the author - what this section is
+-- actually about is the priority/important mirror and the escalation
+-- fan-out trigger, not who may edit. The authorization boundary itself is
+-- covered directly in 0079_product_decisions_attendance_and_announcements_test.sql.
+select tests.set_auth(tests.uid('admin'));
 update public.announcements set priority = 'urgent'
   where id = 'c0300000-0000-4000-8000-000000000021';
 select tests.clear_auth();
@@ -293,7 +317,7 @@ select results_eq(
 update public.notifications set created_at = now() - interval '2 hours'
   where type = 'announcement' and source_id = 'c0300000-0000-4000-8000-000000000022';
 
-select tests.set_auth(tests.uid('coach'));
+select tests.set_auth(tests.uid('admin'));  -- author, per 202609060013 (SEC-010)
 update public.announcements set priority = 'urgent'
   where id = 'c0300000-0000-4000-8000-000000000022';
 select tests.clear_auth();
@@ -309,7 +333,7 @@ select results_eq(
 select tests.set_auth(tests.uid('admin'));
 insert into public.announcements (id, author_id, title, body) values
   ('c0300000-0000-4000-8000-000000000023', tests.uid('admin'), 'The whole ladder', 'body');
-select tests.set_auth(tests.uid('coach'));
+select tests.set_auth(tests.uid('admin'));  -- author, per 202609060013 (SEC-010)
 update public.announcements set priority = 'important'
   where id = 'c0300000-0000-4000-8000-000000000023';
 select tests.clear_auth();
@@ -321,7 +345,7 @@ select results_eq(
   $$ values (6) $$,
   'normal (5) then important (+1, m3) is six rows, the Phase 1 behaviour unchanged');
 
-select tests.set_auth(tests.uid('coach'));
+select tests.set_auth(tests.uid('admin'));  -- author, per 202609060013 (SEC-010)
 update public.announcements set priority = 'urgent'
   where id = 'c0300000-0000-4000-8000-000000000023';
 select tests.clear_auth();
@@ -331,7 +355,7 @@ select results_eq(
   $$ values (6) $$,
   'the third step up the ladder adds nothing: one row per member per announcement, however many times priority moves');
 
-select tests.set_auth(tests.uid('coach'));
+select tests.set_auth(tests.uid('admin'));  -- author, per 202609060013 (SEC-010)
 update public.announcements set priority = 'normal'
   where id = 'c0300000-0000-4000-8000-000000000023';
 select tests.clear_auth();
@@ -357,7 +381,7 @@ select is_empty(
   $$ select 1 from public.notifications
      where type = 'announcement' and source_id = 'c0300000-0000-4000-8000-000000000024' $$,
   'an announcement inserted already expired notifies nobody - the deep link would open onto a row no member can read');
-select tests.set_auth(tests.uid('coach'));
+select tests.set_auth(tests.uid('admin'));  -- author, per 202609060013 (SEC-010)
 update public.announcements set priority = 'urgent'
   where id = 'c0300000-0000-4000-8000-000000000024';
 select tests.clear_auth();
@@ -369,7 +393,7 @@ select is_empty(
 -- =====================================================================
 -- an ordinary edit fans out nothing
 -- =====================================================================
-select tests.set_auth(tests.uid('coach'));
+select tests.set_auth(tests.uid('admin'));  -- author, per 202609060013 (SEC-010)
 update public.announcements set title = 'Normal then urgent, retitled', body = 'edited body'
   where id = 'c0300000-0000-4000-8000-000000000021';
 select tests.clear_auth();
