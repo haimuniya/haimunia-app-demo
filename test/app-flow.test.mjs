@@ -133,8 +133,19 @@ test("the PR celebration popup is suppressed mid-ladder but fires normally other
   window.toggleLadderMode(); // finish the ladder
 
   await window.addMovement("Test Celebration Deadlift", "Deadlift");
-  window.applyFieldValue("step", "weight", 120);
   window.applyFieldValue("step", "reps", 3);
+  // UX-audit recalibration (design spec 5.3.1, MIN_ENTRIES_BEFORE_PR): a
+  // celebration needs 3 prior entries for the exercise to beat, so this used
+  // to pass on the movement's FIRST set - the "with no history every set is
+  // a record" behaviour the audit flagged. The point under test here is the
+  // ladder suppression above and that a normal save still celebrates, both
+  // unchanged; only the baseline this save is measured against is new.
+  for (const kg of [100, 105, 110]) {
+    window.applyFieldValue("step", "weight", kg);
+    await window.saveSet();
+    window.closeCelebration();
+  }
+  window.applyFieldValue("step", "weight", 120);
   await window.saveSet();
   assert.equal(isCelebrationOpen(), true, "a normal (non-ladder) PR save should still celebrate");
 });

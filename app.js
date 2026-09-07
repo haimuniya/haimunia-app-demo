@@ -391,6 +391,30 @@ function bestEst1RM(id, excludeId) {
   const list = entriesFor(id, excludeId).filter((e) => e.type !== "duration");
   return list.length ? Math.max(...list.map((e) => e.est1RM)) : null;
 }
+// The heaviest set actually put on the bar, as opposed to bestEst1RM() just
+// above, which is a formula output nobody has ever lifted. The all-time
+// records list used to headline the estimate — someone whose heaviest real
+// set was 60×5 was told their Back Squat record was "70 kg", while the row
+// they could expand said 1RM — / 5RM 60 right underneath it. A UX audit had
+// three separate reviewers name that as the single thing most likely to
+// make every other number in the app untrustworthy, so the two numbers are
+// now separate functions with separate labels everywhere they appear.
+// Ties go to the higher rep count, then the later session: same load for
+// more reps is the better lift.
+function bestLiftedSetFor(id, excludeId) {
+  const list = entriesFor(id, excludeId).filter((e) => e.type !== "duration");
+  if (!list.length) return null;
+  return list.reduce((best, e) => {
+    if (e.weight !== best.weight) return e.weight > best.weight ? e : best;
+    if (e.reps !== best.reps) return e.reps > best.reps ? e : best;
+    return (e.ts || 0) > (best.ts || 0) ? e : best;
+  });
+}
+// Bodyweight movements (pull-ups, dips) are logged at 0 kg, where "0 ק"ג × 10"
+// would be a worse headline than the rep count on its own.
+function formatLiftedSet(e) {
+  return e.weight > 0 ? `${e.weight} ק"ג × ${e.reps}` : `${e.reps} חזרות`;
+}
 function repRecordFor(id, repCount, excludeId) {
   const list = entriesFor(id, excludeId).filter((e) => e.reps === repCount);
   return list.length ? Math.max(...list.map((e) => e.weight)) : null;
@@ -432,7 +456,13 @@ const ACHIEVEMENT_PR_CATEGORIES = ["Squat", "Deadlift", "Press", "Olympic", "Pul
 // an accessible first step, then a clean x5 climb - so "gold" always means
 // a comparable order of magnitude more effort than "bronze", not an
 // arbitrary per-category number.
-const PR_TIERS = [{ tier: "bronze", need: 1 }, { tier: "silver", need: 5 }, { tier: "gold", need: 25 }];
+// Bronze was `need: 1`, which made the rule literally "1 שיא אישי בקבוצת
+// Squat" — so the very first set anyone ever logged in a category minted a
+// medal, because with no history every set beats everything on file. That is
+// the mechanism behind "5 badges in the first ninety seconds". Design spec
+// 5.3.1 moves the first rung to 3, in step with the matching rule in
+// saveSet(): nothing is a personal record until there is something to beat.
+const PR_TIERS = [{ tier: "bronze", need: 3 }, { tier: "silver", need: 5 }, { tier: "gold", need: 25 }];
 // Streaks stay on a calendar ladder instead (month / quarter / half-year) -
 // weeks don't take well to a x5 climb, but a shared unit everyone recognizes
 // is its own kind of "connected."
@@ -521,9 +551,21 @@ function isWellRounded() {
 }
 
 function allGoldPRsEarned() { return ACHIEVEMENT_PR_CATEGORIES.every((cat) => (categoryPRCounts()[cat] || 0) >= 25); }
-function allTenureEarned() {
+// UX audit: the welcome dialog asks when you started at the box, and a date
+// typed there used to be sufficient, on its own, to earn every וותק badge
+// whose threshold it cleared — three full-screen celebrations inside the
+// first ninety seconds, before a single set had been logged. The date is
+// self-reported and costs nothing to type, so it can't be the whole bar.
+// The badge still measures tenure, exactly as its rule text says; it just
+// won't unlock for someone who has never trained in the app. One session is
+// deliberately a low bar — this is about "praise that costs nothing", not
+// about making seniority hard to earn.
+function tenureMilestoneEarned(m) {
   const d = daysSinceBoxStart();
-  return d !== null && TENURE_MILESTONES.every((m) => d >= m.days);
+  return d !== null && d >= m.days && totalSessions() >= 1;
+}
+function allTenureEarned() {
+  return TENURE_MILESTONES.every(tenureMilestoneEarned);
 }
 // Mirrors how a PlayStation Platinum trophy works: one capstone that unlocks
 // only once every other top-shelf badge is in, rather than its own separate
@@ -565,8 +607,13 @@ const ACHIEVEMENTS = [
     id: `tenure-${m.id}`, group: "milestone", glyph: "flame",
     name: m.label,
     rule: `${m.label} מתאריך ההתחלה בבוקס`,
-    earned: () => { const d = daysSinceBoxStart(); return d !== null && d >= m.days; },
+    earned: () => tenureMilestoneEarned(m),
     points: MILESTONE_POINTS,
+    // Design spec 5.2, tier C. Tenure is a fact about the calendar, not
+    // something the member did in a session — it still unlocks, still shows
+    // in the list and still scores points, it just never interrupts with a
+    // full-screen card. Nothing else in ACHIEVEMENTS carries this flag.
+    silent: true,
   })),
   {
     id: "well-rounded", group: "milestone", glyph: "chevrons",
@@ -727,8 +774,12 @@ function communityMilestoneCodes() {
   }
   if (isWellRounded()) codes.push("well_rounded");
   if (earnedRxWodIds().size >= 1) codes.push("first_rx");
+  // Same gate as tenureMilestoneEarned() above, for the same reason: an
+  // anniversary claimed off a self-typed signup date with nothing logged
+  // behind it is exactly the unearned praise the audit flagged, and this
+  // one leaves a permanent row in member_achievements.
   const tenure = daysSinceBoxStart();
-  if (tenure !== null) {
+  if (tenure !== null && sessions >= 1) {
     for (const y of [1, 2, 3, 5]) if (tenure >= y * 365) codes.push(`anniversary_year_${y}`);
   }
   return codes;
@@ -754,13 +805,22 @@ function syncCommunityMilestones() {
   try { window.claimCommunityAchievements(fresh); } catch (e) { /* offline or not wired */ }
 }
 
-function checkForNewAchievements() {
-  syncCommunityMilestones();
+// Marks everything newly earned as seen (so nothing pops later out of
+// context) and returns only the badges allowed to interrupt. A silent badge
+// is still earned, still listed and still scored — see the `silent` flag on
+// the tenure milestones and design spec 5.2 tier C.
+function claimNewlyEarned() {
   const newlyEarned = newlyEarnedAchievements();
-  if (!newlyEarned.length) return;
+  if (!newlyEarned.length) return [];
   for (const a of newlyEarned) seenAchievementIds.add(a.id);
   dbSetSetting(SEEN_ACHIEVEMENTS_KEY, [...seenAchievementIds]).catch(noteStorageError);
-  showCelebration(null, newlyEarned);
+  return newlyEarned.filter((a) => !a.silent);
+}
+function checkForNewAchievements() {
+  syncCommunityMilestones();
+  const loud = claimNewlyEarned();
+  if (!loud.length) return;
+  showCelebration(null, loud);
 }
 // prLabel: a short "Exercise — 92.5 kg" style string when this save itself
 // was a personal record, or null. Badges and a plain PR can land in the
@@ -768,14 +828,60 @@ function checkForNewAchievements() {
 // both instead of firing twice back to back.
 function celebrateAfterSave(prLabel) {
   syncCommunityMilestones();
-  const newBadges = newlyEarnedAchievements();
+  const newBadges = claimNewlyEarned();
   if (!prLabel && !newBadges.length) return;
-  for (const a of newBadges) seenAchievementIds.add(a.id);
-  if (newBadges.length) dbSetSetting(SEEN_ACHIEVEMENTS_KEY, [...seenAchievementIds]).catch(noteStorageError);
   showCelebration(prLabel, newBadges);
 }
 let celebrationOpenerEl = null;
+// UX audit: a celebration rendered on top of the 5-screen onboarding
+// explainer and hid it — both are .modal-overlay at the same z-index:50, so
+// two open at once stack by DOM order, not by which one is logically on top
+// (cloud.js hit the identical class of bug, see COMM-234 there). The
+// walkthrough is a flow you step through, not something to be interrupted,
+// so a celebration that lands while it is open is held and replayed on
+// close instead of being dropped: the badge is already marked seen by the
+// time we get here, so dropping it would silently swallow it.
+//
+// Generalised past the one overlay that was caught: the rule is that at most
+// one .modal-overlay carries .open at a time, so the celebration waits for
+// ANY registered app dialog, not just the explainer. The dialog registry
+// (registerAppDialog / APP_DIALOGS, further down this file) already knows
+// which ones are open, so this is a gate in front of existing infrastructure
+// rather than new bookkeeping.
+//
+// Two entries are excluded, both deliberately:
+//   - "celebration" itself, or it could never open.
+//   - "welcome", the boot-time first-run sheet. It owns focus and traps it,
+//     so no logging action is reachable while it is up; and its own exit
+//     path (saveWelcomeForm) closes it before running the achievement check,
+//     so gating on it would only ever defer popups that cannot occur through
+//     the UI. Onboarding, which that same exit path opens straight after, IS
+//     included — that is the stack the audit actually photographed.
+const CELEBRATION_NON_BLOCKING_DIALOGS = ["celebration", "welcome"];
+let deferredCelebration = null;
+function blockingDialogOpen() {
+  for (const key in APP_DIALOGS) {
+    if (CELEBRATION_NON_BLOCKING_DIALOGS.indexOf(key) >= 0) continue;
+    try { if (APP_DIALOGS[key].isOpen()) return true; } catch (e) { /* overlay not in the DOM yet */ }
+  }
+  return false;
+}
+function flushDeferredCelebration() {
+  if (!deferredCelebration || blockingDialogOpen()) return;
+  const held = deferredCelebration;
+  deferredCelebration = null;
+  showCelebration(held.prLabel, held.badges);
+}
 function showCelebration(prLabel, badges) {
+  if (blockingDialogOpen()) {
+    // Merge rather than replace: the welcome form can fire more than one of
+    // these before it closes, and one popup covering both is the same rule
+    // celebrateAfterSave() already follows for a PR that also lands a badge.
+    const held = deferredCelebration || { prLabel: null, badges: [] };
+    const ids = new Set(held.badges.map((a) => a.id));
+    deferredCelebration = { prLabel: prLabel || held.prLabel, badges: held.badges.concat(badges.filter((a) => !ids.has(a.id))) };
+    return;
+  }
   const title = document.getElementById("celebrationTitle");
   if (title) title.textContent = badges.length ? "כל הכבוד!" : "שיא אישי חדש!";
   const prLine = document.getElementById("celebrationPrLine");
@@ -961,6 +1067,7 @@ function closeOnboarding() {
   document.getElementById("onboardingOverlay").classList.remove("open");
   if (onboardingOpenerEl && typeof onboardingOpenerEl.focus === "function") onboardingOpenerEl.focus();
   onboardingOpenerEl = null;
+  flushDeferredCelebration();
 }
 
 async function addMovement(name, category) {
@@ -1035,7 +1142,41 @@ function emitCommunityPrCreated(entry, mov, detail) {
   communityPrEmitted.add(entry.id);
   try { bus.emit(events.PR_CREATED, { record }); } catch (e) { /* bus dropped it */ }
 }
-async function saveSet() {
+// How many times the athlete's own heaviest set FOR THIS EXERCISE a new set
+// has to be before saving asks "are you sure". Measured against their own
+// history, never an absolute kg number, for the same reason the badge tiers
+// are: 100 kg is a warm-up for one member and impossible for another.
+// 3x a personal best on the same lift is a jump nobody makes in one session;
+// a fat-fingered extra zero is 10x.
+//
+// Deliberately scoped to the one exercise, not to every lift on file. An
+// all-time-across-everything reference misfires in exactly the case that
+// matters most: the athlete's FIRST set of a new movement, where there is
+// nothing to compare against and any honest number can be a large multiple
+// of some unrelated lift. Design spec 5.3.3 states the rule as ">= 3x the
+// member's best-ever for that exercise, and they have >= 1 prior entry".
+const ABSURD_WEIGHT_MULTIPLE = 3;
+// How many prior entries of the same kind an exercise needs before a result
+// can be celebrated as a personal record. Design spec 5.3.1: with nothing on
+// file every set trivially beats everything, so calling the first one a
+// record is what teaches the member the word means nothing. Matches the
+// bronze rung of PR_TIERS, which moved from need 1 to need 3 for the same
+// reason.
+const MIN_ENTRIES_BEFORE_PR = 3;
+// Returns the athlete's own reference weight for one exercise, or 0 when
+// there is no history to be proportional to — a first-ever set of a movement
+// has no basis for suspicion and is never questioned.
+function heaviestLoggedWeightFor(id, excludeId) {
+  const list = entriesFor(id, excludeId).filter((e) => e.type !== "duration");
+  return list.length ? Math.max(...list.map((e) => e.weight)) : 0;
+}
+// UX audit: a 300 kg squat typo — ten times the previous set — saved with no
+// check at all and then triggered a full celebration and a bronze medal. The
+// order was exactly backwards: question it before it lands, don't applaud it
+// after. This is a confirmation, never a rejection; "כן, לשמור" always saves
+// the number as typed, because the one thing worse than an unchallenged typo
+// is an app that refuses to believe a real PR.
+async function saveSet(sanityConfirmed) {
   // COMM-360: refuse to save against the placeholder movement nobody
   // actually picked - the empty-state prompt has no save affordance of its
   // own, but defend anyway (same reasoning as saveWod()'s own guard).
@@ -1061,6 +1202,17 @@ async function saveSet() {
     celebrationLabel = `${weight ? weight + ' ק"ג × ' : ""}${formatDuration(durationSeconds)}`;
   } else {
     if (!isFinite(weight) || !isFinite(reps) || !isFinite(sets)) return;
+    const reference = heaviestLoggedWeightFor(selectedId, editId);
+    if (!sanityConfirmed && reference > 0 && weight >= reference * ABSURD_WEIGHT_MULTIPLE) {
+      const mov = movementById(selectedId);
+      askAppConfirm({
+        title: `${weight} ק"ג — לוודא?`,
+        message: `הסט הכי כבד שלך ב${mov ? "-" + mov.name : "תרגיל הזה"} עד היום הוא ${reference} ק"ג.`,
+        confirmLabel: "כן, זה נכון", cancelLabel: "תיקון",
+        action: "save-set",
+      });
+      return;
+    }
     const prevRepRecord = repRecordFor(selectedId, reps, editId) || 0;
     const prevEst1RM = bestEst1RM(selectedId, editId) || 0;
     const est = estimate1RM(weight, reps);
@@ -1074,6 +1226,42 @@ async function saveSet() {
     };
     celebrationLabel = `${weight} ק"ג × ${reps}`;
   }
+  // Three separate gates stand between "the arithmetic says record" and a
+  // full-screen card, all from the same finding: praise that costs nothing
+  // teaches the member that praise from this app means nothing.
+  //
+  // 1. Editing NEVER re-fires a celebration, in either direction. Correcting
+  //    the audit's 300 kg typo down to 30 fired "שיא אישי חדש!" a second
+  //    time, for the LOWER number, because repRecordFor/bestEst1RM exclude
+  //    the row being edited — with the inflated value out of the way, every
+  //    corrected value looks like a record against what is left. A
+  //    correction is not an achievement, whatever the arithmetic says.
+  // 2. Nothing is a personal record until there is something to beat: design
+  //    spec 5.3.1 puts that at 3 prior entries for the same exercise, in
+  //    step with PR_TIERS' bronze rung moving from need 1 to need 3. With no
+  //    history every set is trivially a record, which is exactly how a
+  //    member earns five medals before they have done anything.
+  // The stored isPR flag stays honest under all of this (against everything
+  // else on file this really is the best set, and the chart, the flame and
+  // the "שיאים החודש" count read that flag); only the praise is withheld.
+  const priorForExercise = entriesFor(selectedId, editId).filter((e) => (e.type === "duration") === (logEntryType === "duration")).length;
+  const celebratePR = isPR && !existing && priorForExercise >= MIN_ENTRIES_BEFORE_PR;
+  // The community PR event deliberately does NOT take the >= 3 gate, only
+  // the never-on-an-edit half. Two reasons, both functional rather than
+  // editorial: PR_CREATED also drives an individual_performance challenge's
+  // numeric progress (see onPrCreatedForChallenges in cloud.js), so gating
+  // it would silently make challenge scoring depend on how many prior sets
+  // happen to be on file - a different bug, not a fix; and the event only
+  // ever OFFERS a share, it never posts and never congratulates anyone on
+  // its own. The devaluation this section is about is the unearned
+  // full-screen card, which celebratePR above is what governs.
+  const emitPR = isPR && !existing;
+  // 3. And when an edit takes a row that WAS the record below the bar, say
+  //    so once, plainly, in the smallest surface available — the member is
+  //    owed the correction, not an apology and not a second party.
+  if (existing && existing.isPR && !isPR) {
+    showToast("עדכנתם את הסט — העיטור על התוצאה הקודמת הוסר.");
+  }
   entries = entries.filter((e) => e.id !== entry.id);
   entries.unshift(entry);
   entries.sort((a, b) => (b.ts || 0) - (a.ts || 0));
@@ -1083,7 +1271,7 @@ async function saveSet() {
   // otherwise this reset-to-today would silently misdate rungs 2+ of a
   // ladder logged for a past date.
   if (!ladderMode) logDate = todayISO();
-  if (isPR) flashPR();
+  if (celebratePR) flashPR();
   render();
   // The full-screen popup is disruptive mid-ladder — an ascending ladder's
   // rungs routinely all beat the previous best est1RM, which would otherwise
@@ -1092,8 +1280,8 @@ async function saveSet() {
   // off), that celebration still fires normally then.
   if (!ladderMode) {
     const mov = movementById(entry.exerciseId);
-    celebrateAfterSave(isPR && mov ? `${mov.name} — ${celebrationLabel}` : null);
-    if (isPR && prDetail) emitCommunityPrCreated(entry, mov, prDetail);
+    celebrateAfterSave(celebratePR && mov ? `${mov.name} — ${celebrationLabel}` : null);
+    if (emitPR && prDetail) emitCommunityPrCreated(entry, mov, prDetail);
   }
 }
 // A ladder (working-set session: same exercise/day, different weight+reps
@@ -1262,6 +1450,128 @@ function prefillFromLast() {
   else reps = last.reps;
   render();
 }
+// ---------- Confirm + undo for the offline log ----------
+// cloud.js already owns exactly this pattern for the community half
+// (askConfirm / closeConfirm / runConfirm + renderConfirmSheet, pinned by
+// test/community-confirm-flow.test.mjs), built precisely because three
+// different destructive-action patterns had grown side by side. It lives
+// inside that file's IIFE and never reaches window, so this side of the wall
+// cannot call it — what follows is the same pattern, the same markup, the
+// same two-button shape, deliberately NOT a third visual language and
+// deliberately not window.confirm(), which that same work removed.
+//
+// The finding that brought it here was an asymmetry, not a missing dialog:
+// blocking a club member confirms, deleting a post confirms, and deleting
+// the only data in this app that cannot be recreated — a logged set — did
+// not. A second finding was that no confirmation in the app names its
+// subject, so every message built below says which exercise and which set.
+let appConfirmDialog = null;
+// #content is rebuilt wholesale by render(), so the element that opened the
+// dialog is a stale node by the time we close it. The opener is re-found by
+// its own data-action/data-id pair instead, which survives the re-render
+// whenever the control itself still exists (i.e. after a cancel).
+let appConfirmOpener = null;
+function askAppConfirm(opts) {
+  appConfirmDialog = opts;
+  appConfirmOpener = opts.opener || null;
+  document.body.style.overflow = "hidden";
+  render();
+  setTimeout(() => focusFirstAppDialogEl("appConfirmOverlay"), 50);
+}
+function restoreAppConfirmFocus() {
+  const o = appConfirmOpener;
+  appConfirmOpener = null;
+  if (!o) return;
+  const el = document.querySelector(`[data-action="${cssSel(o.action)}"][data-id="${cssSel(o.id)}"]`);
+  if (el && typeof el.focus === "function") el.focus();
+}
+function closeAppConfirm() {
+  appConfirmDialog = null;
+  document.body.style.overflow = "";
+  render();
+  restoreAppConfirmFocus();
+}
+function runAppConfirm() {
+  const c = appConfirmDialog;
+  appConfirmDialog = null;
+  appConfirmOpener = null;
+  document.body.style.overflow = "";
+  if (!c) { render(); return; }
+  if (c.action === "delete-entry") deleteEntry(c.payload.id);
+  else if (c.action === "delete-wod-entry") deleteWodEntry(c.payload.id);
+  else if (c.action === "save-set") saveSet(true);
+  else render();
+}
+function renderAppConfirmSheet() {
+  const c = appConfirmDialog;
+  if (!c) return "";
+  // Markup mirrors cloud.js's renderConfirmSheet() field for field, so the
+  // two halves of the app can never drift into looking like two products.
+  return `<div class="modal-overlay open" id="appConfirmOverlay" data-action="close-app-confirm" role="dialog" aria-modal="true" aria-labelledby="appConfirmTitle" style="align-items:center;padding:0 20px;">
+      <div class="modal-sheet" style="border-radius:22px;border-bottom:1px solid var(--border);max-height:none;">
+        <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
+          <h2 id="appConfirmTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">${esc(c.title)}</h2>
+          <div style="color:var(--steel);font-size:13.5px;line-height:1.6;margin-bottom:20px;">${esc(c.message)}</div>
+          <div class="chip-row" style="margin-top:0;">
+            <button class="chip-btn" data-action="app-confirm-no">${esc(c.cancelLabel || "ביטול")}</button>
+            <button class="chip-btn primary${c.destructive ? " danger" : ""}" data-action="app-confirm-yes">${esc(c.confirmLabel || "אישור")}</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+// The audit asked for a confirmation AND a short undo, and it's right to
+// want both: a confirmation stops the accident, an undo repairs the one
+// that got through anyway (a confirmed delete of the wrong row). Five
+// seconds is the window every mail client settled on — long enough to read
+// the row you just removed, short enough that it never has to be dismissed.
+// Restoring is a plain re-put of the record we already hold in memory, so
+// nothing has to be reconstructed from the UI.
+// One non-blocking toast, used for two jobs that are the same shape: the
+// undo the audit asked for alongside the delete confirmation, and design
+// spec 5.2's tier B, the response level between a full-screen card and
+// silence. A confirmation stops the accident; an undo repairs the one that
+// got through anyway. Five seconds is the window every mail client settled
+// on — long enough to read the row you just removed, short enough that it
+// never has to be dismissed. `action` is optional: a toast with none is
+// pure notification (the revoked-badge message), and restoring a deleted
+// record is a plain re-put of the object we already hold in memory, so
+// nothing has to be reconstructed from the UI.
+const TOAST_WINDOW_MS = 5000;
+let pendingToast = null;
+let toastTimeout = null;
+function showToast(label, action) {
+  clearTimeout(toastTimeout);
+  pendingToast = { label, action: action || null };
+  toastTimeout = setTimeout(() => { pendingToast = null; render(); }, TOAST_WINDOW_MS);
+}
+function offerUndo(label, restore) {
+  showToast(label, { label: "בטלו", run: restore });
+}
+function runToastAction() {
+  const t = pendingToast;
+  clearTimeout(toastTimeout);
+  pendingToast = null;
+  if (t && t.action) t.action.run();
+  else render();
+}
+function renderToastBar() {
+  if (!pendingToast) return "";
+  // Sits above #bottomNavWrap (z-index:30) and below every .modal-overlay
+  // (z-index:50), so it never covers the tab bar it floats over and never
+  // paints over a dialog. pointer-events are off on the full-width rail and
+  // back on only for the toast itself, so it never eats a tap meant for the
+  // content underneath. role="status" so a screen reader hears it without
+  // focus being yanked out of the list being edited.
+  return `<div id="appToastBar" role="status" aria-live="polite" style="position:fixed; left:0; right:0; bottom:calc(env(safe-area-inset-bottom,0px) + 84px); z-index:45; display:flex; justify-content:center; padding:0 16px; pointer-events:none;">
+      <div class="flex items-center gap-10" style="pointer-events:auto; width:100%; max-width:420px; min-height:56px; background:var(--surface); border:1px solid var(--brass); border-radius:14px; padding:10px 10px 10px 14px; box-shadow:0 10px 30px rgba(0,0,0,.35);">
+        <span style="flex:1; min-width:0; color:var(--chalk); font-size:13px; font-weight:700;">${esc(pendingToast.label)}</span>
+        ${pendingToast.action ? `<button class="chip-btn" data-action="toast-action">${esc(pendingToast.action.label)}</button>` : ""}
+      </div>
+    </div>`;
+}
+
 function startEditEntry(id) {
   const entry = entries.find((e) => e.id === id);
   if (!entry) return;
@@ -1289,10 +1599,41 @@ function cancelEditEntry() {
   logDate = todayISO();
   render();
 }
+// Named for what it destroys, per the "no confirmation in this app says
+// what it is about to delete" finding — the trigger is a 23×26px unlabelled
+// bin icon sitting flush against an identically sized edit pencil, so the
+// dialog is often the first place the athlete finds out which of the two
+// they actually hit.
+function askDeleteEntry(id) {
+  const entry = entries.find((e) => e.id === id);
+  if (!entry) return;
+  const mov = movementById(entry.exerciseId);
+  askAppConfirm({
+    title: "מחיקת סט",
+    message: `${mov ? mov.name : "הסט"} — ${entrySummary(entry)}, ${fmtDate(entry.date)}. הסט יימחק מהמכשיר; אפשר יהיה לבטל למשך כמה שניות.`,
+    confirmLabel: "מחיקה", destructive: true,
+    action: "delete-entry", payload: { id },
+    opener: { action: "delete-entry", id },
+  });
+}
 async function deleteEntry(id) {
+  const removed = entries.find((e) => e.id === id);
   entries = entries.filter((e) => e.id !== id);
   if (editingEntryId === id) { editingEntryId = null; logDate = todayISO(); }
   try { await dbDelete(id); } catch (e) { noteStorageError(e); }
+  if (removed) {
+    const mov = movementById(removed.exerciseId);
+    offerUndo(`${mov ? mov.name : "הסט"} — ${entrySummary(removed)} נמחק`, () => restoreEntry(removed));
+  }
+  render();
+}
+// Same insert-and-resort shape saveSet() uses, so a restored row lands back
+// in exactly the position it was deleted from.
+async function restoreEntry(entry) {
+  entries = entries.filter((e) => e.id !== entry.id);
+  entries.unshift(entry);
+  entries.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  try { await dbPut(entry); storageOK = true; } catch (e) { noteStorageError(e); }
   render();
 }
 
@@ -1460,14 +1801,21 @@ function saveWelcomeForm(name) {
   const boxInput = document.getElementById("welcomeBoxStartInput");
   saveBoxStartDate(boxInput ? boxInput.value : "");
   saveUserName(name);
-  // After the modal has closed, in case a box-start-date typed in for the
-  // first time (member since before they ever opened this app) instantly
-  // qualifies for tenure badges.
-  checkForNewAchievements();
   // Only the very first welcome (not "edit profile" later) triggers the
   // onboarding walkthrough — openOnboarding() itself no-ops via
   // hasOnboarded for anyone who's already seen it.
+  //
+  // Deliberately BEFORE the achievement check below, which used to run
+  // first: a celebration fired from here rendered on top of the 5-screen
+  // explainer and hid it (both are .modal-overlay at the same z-index).
+  // With the walkthrough already open, showCelebration() holds the popup
+  // and closeOnboarding() replays it — see deferredCelebration.
   if (wasFirstTimeWelcome && !hasOnboarded) openOnboarding();
+  // After the modal has closed, in case a box-start-date typed in for the
+  // first time (member since before they ever opened this app) qualifies
+  // for tenure badges — which, since the audit, also needs at least one
+  // logged session behind it (tenureMilestoneEarned).
+  checkForNewAchievements();
 }
 
 const BAR_WEIGHT_KEY = "haimunia-demo:barWeight";
@@ -1519,13 +1867,29 @@ function setThemePref(pref) {
   themePref = pref;
   try { localStorage.setItem(THEME_KEY, pref); } catch (e) {}
   applyThemePref();
-  const row = document.getElementById("themeRow");
-  if (row) row.outerHTML = renderThemeRow();
+  // The whole field (visible label + segmented track) is what gets
+  // replaced, not just the track — the label lives inside renderThemeRow()
+  // now, so swapping only #themeRow would strand the old one and insert a
+  // second copy.
+  const field = document.getElementById("themeField");
+  if (field) field.outerHTML = renderThemeRow();
 }
+// Design spec 4.1/4.2. Was three .link-btn underlined links separated by
+// "·" dots — which read as three links, not as one control with one of
+// three states, and carried only an invisible aria-label. Now the shared
+// .segmented/.segmented-opt component index.html ships (its rule is grouped
+// with #themeRow/#textScaleRow precisely so this swap has no second copy of
+// the values to drift from), plus a real visible label that aria-labelledby
+// points at, so a sighted and a screen-reader user are told the same thing
+// by the same words. Selection is carried by background + weight + border,
+// never by color alone, so it survives greyscale and the light theme.
 function renderThemeRow() {
   const opts = [["dark", "כהה"], ["light", "בהיר"], ["auto", "אוטומטי"]];
-  return `<div id="themeRow" class="flex items-center justify-center gap-8" role="radiogroup" aria-label="מראה" style="margin-bottom:8px;">
-    ${opts.map(([val, label]) => `<button class="link-btn" data-action="set-theme" data-pref="${val}" role="radio" aria-checked="${themePref === val}" style="${themePref === val ? "color:var(--chalk); font-weight:700; text-decoration:none;" : ""}">${label}</button>`).join('<span style="color:var(--border); font-size:11px;" aria-hidden="true">·</span>')}
+  return `<div id="themeField" style="margin-bottom:12px;">
+    <div id="themeRowLabel" style="font-size:13px; font-weight:700; color:var(--chalk); margin-bottom:8px;">ערכת צבעים</div>
+    <div id="themeRow" class="segmented" role="radiogroup" aria-labelledby="themeRowLabel">
+      ${opts.map(([val, label]) => `<button class="segmented-opt" data-action="set-theme" data-pref="${val}" role="radio" aria-checked="${themePref === val}">${label}</button>`).join("")}
+    </div>
   </div>`;
 }
 
@@ -1791,8 +2155,8 @@ function formatWodEntry(e) {
   const base = e.scoreType === "time" ? formatClock(e.timeSeconds)
     : e.scoreType === "amrap" ? `${e.rounds}+${e.reps}`
     : e.scoreType === "emom" ? (e.emomReps || []).join(" · ")
-    : `${e.weight} kg`;
-  return (!e.rx && e.scaledWeight) ? `${base} @ ${e.scaledWeight}kg` : base;
+    : `${e.weight} ק"ג`;
+  return (!e.rx && e.scaledWeight) ? `${base} @ ${e.scaledWeight} ק"ג` : base;
 }
 function lastScaledAttempt(id) {
   const list = wodEntriesFor(id).filter((e) => !e.rx).sort((a, b) => (b.ts || 0) - (a.ts || 0));
@@ -1804,7 +2168,7 @@ function formatWodBest(id) {
   if (best === null) return "—";
   if (w.scoreType === "time") return formatClock(best);
   if (w.scoreType === "amrap") return `${Math.floor(best / 1000)}+${best % 1000}`;
-  return `${best} kg`;
+  return `${best} ק"ג`;
 }
 
 async function addCustomWod(name, scoreType, desc, extra) {
@@ -1831,7 +2195,7 @@ function strengthShareCandidate(entry) {
   if (!movement) return null;
   const duration = entry.type === "duration";
   return { type: "strength_entry", id: entry.id, title: movement.name,
-    resultText: duration ? `${formatDuration(entry.durationSeconds)}${entry.weight ? ` @ ${entry.weight} kg` : ""}` : `${entry.weight} kg × ${entry.reps} × ${entry.sets}`,
+    resultText: duration ? `${formatDuration(entry.durationSeconds)}${entry.weight ? ` @ ${entry.weight} ק"ג` : ""}` : `${entry.weight} ק"ג × ${entry.reps} × ${entry.sets}`,
     comparisonKey: `movement:${entry.exerciseId}:${duration ? "duration" : "est1rm"}`,
     scoreValue: duration ? entry.durationSeconds : entry.est1RM, scoreDirection: "higher", occurredOn: entry.date, rx: null };
 }
@@ -1880,13 +2244,28 @@ function setTextScalePref(pref) {
   textScalePref = pref;
   try { localStorage.setItem(TEXT_SCALE_KEY, pref); } catch (e) {}
   applyTextScalePref();
-  const row = document.getElementById("textScaleRow");
-  if (row) row.outerHTML = renderTextScaleRow();
+  // Same whole-field replacement as setThemePref(), same reasoning.
+  const field = document.getElementById("textScaleField");
+  if (field) field.outerHTML = renderTextScaleRow();
 }
+// Same migration as renderThemeRow() above, same reasoning.
+//
+// Two steps, not the three design spec 4.3 asks for. `xlarge` was REMOVED
+// from this control after direct member feedback that it was too big, and
+// test/text-scale.test.mjs plus scripts/browser-check/text-scale.mjs both
+// pin its absence. The spec's third step is also specified at 1.35 of a
+// type-only scale, which this control does not implement — it still drives
+// `zoom` on <html>, i.e. the whole page — so re-adding it here as a zoom
+// step would reverse a documented product decision AND ship it through the
+// wrong mechanism. Left alone deliberately, raised rather than guessed.
 function renderTextScaleRow() {
   const opts = [["normal", "רגיל"], ["large", "גדול"]];
-  return `<div id="textScaleRow" class="flex items-center justify-center gap-8" role="radiogroup" aria-label="גודל טקסט" style="margin-bottom:8px;">
-    ${opts.map(([val, label]) => `<button class="link-btn" data-action="set-text-scale" data-pref="${val}" role="radio" aria-checked="${textScalePref === val}" style="${textScalePref === val ? "color:var(--chalk); font-weight:700; text-decoration:none;" : ""}">${label}</button>`).join('<span style="color:var(--border); font-size:11px;" aria-hidden="true">·</span>')}
+  return `<div id="textScaleField" style="margin-bottom:8px;">
+    <div id="textScaleRowLabel" style="font-size:13px; font-weight:700; color:var(--chalk); margin-bottom:8px;">גודל טקסט</div>
+    <div id="textScaleRow" class="segmented" role="radiogroup" aria-labelledby="textScaleRowLabel" style="margin-top:0;">
+      ${opts.map(([val, label]) => `<button class="segmented-opt" data-action="set-text-scale" data-pref="${val}" role="radio" aria-checked="${textScalePref === val}">${label}</button>`).join("")}
+    </div>
+    <div style="color:var(--steel); font-size:13px; margin-top:8px;">כך ייראה הטקסט באפליקציה</div>
   </div>`;
 }
 
@@ -2178,10 +2557,38 @@ function cancelEditWodEntry() {
   wodPartnerTag = "";
   render();
 }
+// A logged WOD result is the same irreplaceable, hand-entered training data
+// a logged set is, deleted from the same kind of unlabelled bin icon — it
+// gets the identical confirm + undo rather than being the one destructive
+// action left asymmetric.
+function askDeleteWodEntry(id) {
+  const entry = wodEntries.find((e) => e.id === id);
+  if (!entry) return;
+  const w = wodById(entry.wodId);
+  askAppConfirm({
+    title: "מחיקת אימון",
+    message: `${w ? w.name : "האימון"} — ${formatWodEntry(entry)}, ${fmtDate(entry.date)}. הרישום יימחק מהמכשיר; אפשר יהיה לבטל למשך כמה שניות.`,
+    confirmLabel: "מחיקה", destructive: true,
+    action: "delete-wod-entry", payload: { id },
+    opener: { action: "delete-wod-entry", id },
+  });
+}
 async function deleteWodEntry(id) {
+  const removed = wodEntries.find((e) => e.id === id);
   wodEntries = wodEntries.filter((e) => e.id !== id);
   if (editingWodEntryId === id) { editingWodEntryId = null; wodLogDate = todayISO(); }
   try { await dbDeleteWodEntry(id); } catch (e) { noteStorageError(e); }
+  if (removed) {
+    const w = wodById(removed.wodId);
+    offerUndo(`${w ? w.name : "האימון"} — ${formatWodEntry(removed)} נמחק`, () => restoreWodEntry(removed));
+  }
+  render();
+}
+async function restoreWodEntry(entry) {
+  wodEntries = wodEntries.filter((e) => e.id !== entry.id);
+  wodEntries.unshift(entry);
+  wodEntries.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  try { await dbPutWodEntry(entry); storageOK = true; } catch (e) { noteStorageError(e); }
   render();
 }
 
@@ -2287,7 +2694,14 @@ function renderChart(data) {
   const naturalW = padX * 2 + Math.max(0, n - 1) * spacing;
   const wide = naturalW > 300;
   const w = wide ? naturalW : 300;
-  const xs = data.map((d, i) => padX + i * ((w - 2 * padX) / Math.max(1, n - 1)));
+  // RTL defect, found by a design review and missed by every persona: this
+  // used to be `padX + i * step`, i.e. oldest at the left edge and newest at
+  // the right, inside a page that is `dir="rtl"` end to end. A Hebrew reader
+  // starts at the RIGHT, so the line was read newest-to-oldest and a rising
+  // set of numbers appeared to descend — the chart said the opposite of what
+  // the data said. Mirroring the x axis (oldest right, newest left) is the
+  // whole fix; the y axis is unaffected, since up is up in every direction.
+  const xs = data.map((d, i) => w - padX - i * ((w - 2 * padX) / Math.max(1, n - 1)));
   const ys = data.map((d) => d.est1RM);
   const minY = Math.min(...ys), maxY = Math.max(...ys);
   const range = maxY - minY || 1;
@@ -2300,7 +2714,10 @@ function renderChart(data) {
   const polyline = pts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
   const dots = pts.map((p) => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${p.isPR ? 5 : 2.5}" fill="${p.isPR ? "var(--brass)" : "var(--chalk)"}" ${p.isPR ? 'stroke="var(--surface)" stroke-width="2"' : ""}/>`).join("");
   const labelY = padTop + plotH + 12;
-  const labels = pts.map((p) => `<text x="${p.x.toFixed(1)}" y="${labelY}" font-size="9" fill="var(--steel)" text-anchor="end" transform="rotate(-45 ${p.x.toFixed(1)} ${labelY})">${esc(p.label)}</text>`).join("");
+  // Rotation and anchor mirror with the axis above: rotate(+45)/anchor start
+  // tilts each date away from its point in the same direction the plot now
+  // runs, instead of leaning back across the line it belongs to.
+  const labels = pts.map((p) => `<text x="${p.x.toFixed(1)}" y="${labelY}" font-size="9" fill="var(--steel)" text-anchor="start" transform="rotate(45 ${p.x.toFixed(1)} ${labelY})">${esc(p.label)}</text>`).join("");
   // COMM-359. This SVG carries the same progression a sighted user reads
   // visually (range, trend, which points are PRs) with nothing exposed to
   // assistive tech before this - role="img" + a computed summary stands in
@@ -2315,7 +2732,16 @@ function renderChart(data) {
     <polyline points="${polyline}" fill="none" stroke="var(--brass)" stroke-width="2"/>
     ${dots}${labels}
   </svg>`;
-  return wide ? `<div style="overflow-x:auto; -webkit-overflow-scrolling:touch;">${svg}</div>` : svg;
+  // Which way the picture runs is not self-evident from a line alone, and
+  // the app's own best habit is telling the member what a number is built
+  // from. Only worth saying once there are two points to have a direction.
+  const axisNote = n >= 2 ? `<div style="color:var(--steel); font-size:11px; text-align:center; margin-top:4px;">מימין לשמאל: מהישן לחדש.</div>` : "";
+  // dir="ltr" on the scroll box only, never on the SVG: a wide chart in an
+  // RTL container opens scrolled to its right edge, which after the mirror
+  // above is the OLDEST data. Flipping the scroll container's own direction
+  // lands the initial scroll position on the newest end, where the member
+  // actually wants to be.
+  return (wide ? `<div dir="ltr" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">${svg}</div>` : svg) + axisNote;
 }
 
 // One-line summary for an entry regardless of its type — used anywhere a
@@ -2380,7 +2806,7 @@ function renderLogTab() {
 
     ${(est || bestHold || last) ? `
     <div class="stat-row">
-      ${est ? `<div class="stat-card stat-hero"><div class="stat-label">1RM משוער</div><div class="stat-value mono" style="color:var(--brass);">${est} kg</div></div>` : ""}
+      ${est ? `<div class="stat-card stat-hero"><div class="stat-label">1RM משוער</div><div class="stat-value mono" style="color:var(--brass);">${est} ק"ג</div></div>` : ""}
       ${bestHold ? `<div class="stat-card stat-hero"><div class="stat-label">שיא החזקה</div><div class="stat-value mono" style="color:var(--brass);">${formatDuration(bestHold)}</div></div>` : ""}
       ${last ? `<button data-action="prefill-last" class="stat-card stat-hero" style="text-align:right;" aria-label="מילוי הנתונים מהאימון האחרון — ${isDuration ? formatDuration(last.durationSeconds) : `${last.weight} על ${last.reps}`}">
         <div class="flex items-center justify-between gap-6">
@@ -2418,7 +2844,7 @@ function renderLogTab() {
 
     ${isDuration
       ? `<div class="est-line">‹ משך ההחזקה: <b id="durationLineValue">${formatDuration(durationSeconds)}</b></div>`
-      : `<div class="est-line">‹ הסט הזה מעריך 1RM של <b id="estLineValue">${estimate1RM(weight, reps)} kg</b></div>`}
+      : `<div class="est-line">‹ הסט הזה מעריך 1RM של <b id="estLineValue">${estimate1RM(weight, reps)} ק"ג</b></div>`}
 
     ${(() => {
       const rounds = ladderMode ? currentLadderRounds() : [];
@@ -2517,12 +2943,17 @@ function renderDetailCard(m) {
   });
   const prPoints = chartData.filter((d) => d.isPR);
   const trend = prPoints.length >= 2 ? +(prPoints[prPoints.length - 1].est1RM - prPoints[prPoints.length - 2].est1RM).toFixed(1) : null;
+  // Spelled out under the rep table rather than left to be inferred from the
+  // "1RM" cell, which reads "—" for anyone who has never logged a single:
+  // the headline record above and this row now say two different things
+  // because they ARE two different things, and both say which is which.
+  const est1rm = bestEst1RM(m.id);
   return `
     <div class="chart-card" style="margin-top:-4px; border-top-left-radius:0; border-top-right-radius:0; border-top:none;">
       <div class="flex items-center justify-between" style="margin-bottom:12px;">
         <span style="font-weight:800; font-size:15px;">${esc(m.name)}</span>
         <div class="flex items-center gap-8">
-          ${trend !== null ? `<span class="flex items-center gap-6" style="font-weight:700; font-size:12px;">${trend > 0 ? ICONS.up : trend < 0 ? ICONS.down : ICONS.flat}<span class="mono">${trend > 0 ? "+" : ""}${trend} kg</span> 1RM משוער</span>` : ""}
+          ${trend !== null ? `<span class="flex items-center gap-6" style="font-weight:700; font-size:12px;">${trend > 0 ? ICONS.up : trend < 0 ? ICONS.down : ICONS.flat}<span class="mono">${trend > 0 ? "+" : ""}${trend} ק"ג</span> 1RM משוער</span>` : ""}
           ${typeof window.renderShareControl === "function" ? window.renderShareControl("strength_entry", hEntries[0].id) : ""}
         </div>
       </div>
@@ -2533,6 +2964,7 @@ function renderDetailCard(m) {
           return `<div class="rep-cell"><div class="rep-cell-label">${r}RM</div><div class="rep-cell-val mono" style="color:${rec ? "var(--chalk)" : "var(--border)"};">${rec ?? "—"}</div></div>`;
         }).join("")}
       </div>
+      ${est1rm ? `<div class="footer-note" style="margin-top:10px; text-align:center;">1RM משוער: <span class="mono">${est1rm} ק"ג</span> — חישוב מהסט הטוב ביותר, לא הרמה שבוצעה</div>` : ""}
     </div>`;
 }
 
@@ -2584,7 +3016,22 @@ function renderHistoryListArea() {
           <div class="dot" style="background:${esc(catColor(m.category))}"></div>
           <span style="font-weight:700; font-size:14px;">${esc(m.name)}</span>
         </div>
-        <span class="mono" style="color:var(--brass); font-weight:700; font-size:14px;">${bestEst1RM(m.id)} kg</span>
+        ${(() => {
+          // The record is the heaviest set actually lifted; the estimate is
+          // a second, smaller, explicitly labelled line under it. Before
+          // this the estimate WAS the headline, unlabelled, which is how
+          // "Back Squat — 70 kg" ended up sitting directly above an
+          // expanded panel reading 1RM — / 5RM 60 for someone whose
+          // heaviest real set was 60×5.
+          const bestSet = bestLiftedSetFor(m.id);
+          const est = bestEst1RM(m.id);
+          const hold = bestDurationFor(m.id);
+          const headline = bestSet ? formatLiftedSet(bestSet) : hold ? formatDuration(hold) : "—";
+          return `<span style="text-align:left;">
+          <span class="mono" style="display:block; color:var(--brass); font-weight:700; font-size:14px;">${esc(headline)}</span>
+          ${bestSet && est ? `<span class="mono" style="display:block; color:var(--steel); font-weight:600; font-size:11px;">1RM משוער ${est} ק"ג</span>` : ""}
+        </span>`;
+        })()}
       </button>`;
     const detail = historyId === m.id ? renderDetailCard(m) + `<div style="height:8px;"></div>` : "";
     return row + detail;
@@ -2898,7 +3345,7 @@ function renderBodyweightArea() {
         <span style="display:inline-flex; transition:transform .2s; transform:rotate(${bodyweightExpanded ? "90deg" : "180deg"});">${ICONS.chevron}</span>
         <span style="font-weight:700; font-size:14px;">משקל גוף</span>
       </div>
-      ${last ? `<span class="mono" style="color:var(--brass); font-weight:700; font-size:14px;">${last.weight} kg</span>` : `<span style="color:var(--steel); font-size:12px;">אין עדיין מדידות</span>`}
+      ${last ? `<span class="mono" style="color:var(--brass); font-weight:700; font-size:14px;">${last.weight} ק"ג</span>` : `<span style="color:var(--steel); font-size:12px;">אין עדיין מדידות</span>`}
     </button>`;
   const detail = bodyweightExpanded ? `
     <div class="chart-card" style="margin-top:-4px; border-top-left-radius:0; border-top-right-radius:0; border-top:none;">
@@ -3043,7 +3490,7 @@ function renderSettingsBody() {
   // COMM-355: same threshold, now in the .settings-warn icon+box treatment
   // (COMM-323) instead of a plain colored line.
   const staleBackupNote = hasData && (days === null || days >= staleThreshold)
-    ? `<div class="settings-warn" role="status">⚠️<span>${esc(days === null ? "עדיין לא ביצעתם גיבוי" : `הגיבוי האחרון לפני ${days} ימים`)} — ייצוא גיבוי למטה</span></div>`
+    ? `<div class="settings-warn" role="status">⚠️<span>${esc(days === null ? "עדיין לא ביצעתם גיבוי — לא הורדתם קובץ גיבוי" : `קובץ הגיבוי האחרון שהורדתם הוא מלפני ${days} ימים`)} — ייצוא גיבוי למטה</span></div>`
     : "";
   const backupSettingsPanel = typeof window.renderBackupSettingsPanel === "function" ? window.renderBackupSettingsPanel() : "";
   const initial = userName ? userName.trim().charAt(0) : "";
@@ -3076,7 +3523,12 @@ function renderSettingsBody() {
       </div>` : ""}
 
       <div class="settings-block">
-        <div class="settings-block-title">נתונים וגיבוי</div>
+        <!-- Retitled from the bare "נתונים וגיבוי": the card above this one
+             is CLOUD backup, and both used the word גיבוי for two unrelated
+             things, which is why members read the two cards as contradicting
+             each other. This half is a file you download and keep yourself,
+             and the title now says so. The cloud half is cloud.js's to word. -->
+        <div class="settings-block-title">קובץ גיבוי להורדה</div>
         <div class="footer-note"${storageOK ? "" : ' style="color:var(--red-text);" role="alert"'}>${storageOK ? esc(typeof cloudStorageStatusText === "function" ? cloudStorageStatusText() : "נשמר במכשיר הזה בלבד, ללא שרת") : esc(storageErrMsg || "שמירה נכשלה — בדקו את מקום האחסון")}</div>
         ${staleBackupNote}
         <div class="flex items-center justify-center gap-10" style="margin-bottom:8px; flex-wrap:wrap;">
@@ -3085,7 +3537,7 @@ function renderSettingsBody() {
           <button class="link-btn" data-action="import-data">ייבוא גיבוי</button>
         </div>
         ${importMessage ? `<div class="footer-note" role="status" aria-live="polite" style="color:var(--brass); margin-bottom:8px;">${esc(importMessage)}</div>` : ""}
-        <div class="footer-note" style="margin-bottom:0;">קובץ הגיבוי הוא טקסט פשוט (JSON) וכולל שם, היסטוריית משקל גוף ויומן אימונים מלא — שמרו אותו במקום בטוח</div>
+        <div class="footer-note" style="margin-bottom:0;">קובץ הגיבוי הוא טקסט פשוט (JSON) וכולל את יומן האימונים המלא, התרגילים והאימונים שהוספתם, משקל גוף ומדידות — בלי השם שלכם ובלי הגדרות. שמרו אותו במקום בטוח</div>
       </div>
 
       <div class="settings-block">
@@ -3126,7 +3578,7 @@ function updateLogQuickUI(field) {
   }
   if (logEntryType === "reps") {
     const estEl = document.getElementById("estLineValue");
-    if (estEl) estEl.textContent = estimate1RM(weight, reps) + " kg";
+    if (estEl) estEl.textContent = estimate1RM(weight, reps) + ' ק"ג';
   } else if (field === "durationSeconds") {
     const durEl = document.getElementById("durationLineValue");
     if (durEl) durEl.textContent = formatDuration(durationSeconds);
@@ -3279,6 +3731,15 @@ function render() {
         const prefix = editingEntryId ? "עדכון סט — " : ladderMode ? `הוספת סט ${currentLadderRounds().length + 1} ל${ladderPartnerId ? "סופרסט" : "סולם"} — ` : "רישום סט — ";
         document.getElementById("bottomBarBtn").dataset.action = "save-set";
         document.getElementById("saveBtnLabel").textContent = prefix + selected.name;
+      } else {
+        // The bar is hidden in this state (see the display rule below), but
+        // #bottomBarBtn/#saveBtnLabel are long-lived DOM nodes that survive
+        // every tab switch, so whatever the last visible screen wrote stays
+        // pinned there. A UX audit caught the mirror image of this on the
+        // workouts tab, where the CTA still read "רישום סט" - keep the label
+        // truthful for the screen that's actually up, hidden or not.
+        document.getElementById("bottomBarBtn").dataset.action = "open-picker";
+        document.getElementById("saveBtnLabel").textContent = "בחירת תרגיל";
       }
     } else if (tab === "history") {
       content = renderHistoryTab();
@@ -3290,6 +3751,13 @@ function render() {
       if (w) {
         document.getElementById("bottomBarBtn").dataset.action = "save-wod";
         document.getElementById("saveBtnLabel").textContent = `${editingWodEntryId ? "עדכון" : "רישום"} אימון — ${w.name}`;
+      } else if (wodSubTab === "log") {
+        // Same stale-label problem as the Log tab's else branch above, and
+        // the one the audit actually saw: אימונים › רישום with nothing
+        // chosen showed a CTA reading "רישום סט", an action belonging to a
+        // different screen entirely.
+        document.getElementById("bottomBarBtn").dataset.action = "open-wod-picker";
+        document.getElementById("saveBtnLabel").textContent = "בחירת אימון";
       }
     } else if (tab === "manage") {
       content = typeof renderManageApp === "function" ? renderManageApp() : `<div class="empty">בטעינה</div>`;
@@ -3337,7 +3805,12 @@ function render() {
   // share triggered from Calendar/Progress can still show its confirm
   // dialog regardless of which tab is currently active.
   const cloudOverlay = typeof window.renderCloudConfirmDialog === "function" ? window.renderCloudConfirmDialog() : "";
-  document.getElementById("content").innerHTML = content + cloudOverlay;
+  // The offline confirm sheet is concatenated LAST, after the community
+  // overlays, for the same reason cloud.js concatenates its own last (see
+  // COMM-234 there): every overlay here shares .modal-overlay and the same
+  // fixed z-index:50, so two open at once stack by DOM order alone. The undo
+  // bar sits below both at z-index:45 and is not an overlay at all.
+  document.getElementById("content").innerHTML = content + cloudOverlay + renderToastBar() + renderAppConfirmSheet();
   try {
     if (tab === "add") {
       const dateInput = document.getElementById("logDateInput");
@@ -3373,7 +3846,33 @@ function render() {
 // ---------- WOD tab ----------
 function renderWodLogSection() {
   const w = wodById(selectedWodId);
-  if (!w) return `<div class="empty">בחרו אימון כדי להתחיל</div>`;
+  // UX audit: the default sub-tab of the אימונים tab used to be one grey
+  // sentence with no interactive element anywhere on it except the three
+  // sub-tab pills — two reviewers only escaped by guessing that "Benchmarks"
+  // must be where workouts live.
+  //
+  // A design review diagnosed this as "one misplaced early return", the
+  // open-wod-picker button below being unreachable behind it. Half right:
+  // the early return is indeed the cause, but that button cannot simply move
+  // above it — it dereferences the SELECTED wod (catColor(w.category),
+  // w.name, w.desc, w.timeCapSeconds) and is the "change your mind"
+  // affordance for a workout already chosen, so hoisting it would throw on
+  // the very screen it was meant to fix. The empty state needs a door of its
+  // own, which is what this is: the four-slot pattern (icon / what will be
+  // here / what fills it / a real action), with the builder offered as the
+  // secondary path since wodBuilder is otherwise reachable only from inside
+  // the picker.
+  if (!w) return `
+    <div class="flex col items-center" style="padding:32px 20px; gap:10px; text-align:center;">
+      <span style="display:inline-flex; width:28px; height:28px; color:var(--steel);">${ICONS.stopwatchIcon}</span>
+      <div style="font-size:15px; font-weight:700; color:var(--chalk);">בחרו אימון ונרשום אותו</div>
+      <div style="font-size:13px; color:var(--steel);">אימונים מוכרים מהמועדון, או אימון משלכם.</div>
+      <button class="exercise-select" data-action="open-wod-picker" style="width:100%; min-height:56px; margin-top:4px;">
+        <span style="font-weight:800; font-size:16px;">בחירת אימון</span>
+        <span class="flex items-center gap-6" style="color:var(--steel); font-size:12px; font-weight:600;">${ICONS.chevronsLeft}</span>
+      </button>
+      <button class="link-btn" data-action="open-wod-builder" data-name="" style="min-height:44px;">יצירת אימון משלי</button>
+    </div>`;
   const best = formatWodBest(selectedWodId);
   const isToday = wodLogDate === todayISO();
   const dayWods = wodEntries.filter((e) => e.date === wodLogDate);
@@ -3738,6 +4237,11 @@ document.addEventListener("keydown", (e) => {
   if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
   else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 });
+// Registered FIRST, ahead of every other dialog below: currentAppDialog()
+// returns the first open entry in insertion order, and askAppConfirm() is
+// always a modal-on-modal - it can fire while the WOD picker or Settings is
+// still up. Escape has to close the confirm, not the thing underneath it.
+registerAppDialog("appConfirm", { overlayId: "appConfirmOverlay", isOpen: () => !!appConfirmDialog, close: closeAppConfirm });
 
 // COMM-358. Every role="tablist" group in this app (the fixed bottom tab
 // bar, WOD's Rx/Scaled-style subtabbar, Community's feed-scope filter)
@@ -4154,7 +4658,14 @@ document.addEventListener("click", (e) => {
   else if (action === "set-bar-weight") { setBarWeight(+el.dataset.kg); }
   else if (action === "set-theme") { setThemePref(el.dataset.pref); }
   else if (action === "set-text-scale") { setTextScalePref(el.dataset.pref); }
-  else if (action === "delete-entry") { deleteEntry(el.dataset.id); }
+  else if (action === "delete-entry") { askDeleteEntry(el.dataset.id); }
+  else if (action === "app-confirm-yes") { runAppConfirm(); }
+  else if (action === "app-confirm-no") { closeAppConfirm(); }
+  else if (action === "close-app-confirm") {
+    if (el.id === "appConfirmOverlay" && e.target !== el) return;
+    closeAppConfirm();
+  }
+  else if (action === "toast-action") { runToastAction(); }
   else if (action === "cal-prev") { calMonth--; if (calMonth < 0) { calMonth = 11; calYear--; } renderCalendarGrid(); }
   else if (action === "cal-next") { calMonth++; if (calMonth > 11) { calMonth = 0; calYear++; } renderCalendarGrid(); }
   else if (action === "cal-select-day") { calSelectedDate = el.dataset.date; renderCalendarGrid(); }
@@ -4192,6 +4703,12 @@ document.addEventListener("click", (e) => {
     if (w) {
       document.getElementById("bottomBarBtn").dataset.action = "save-wod";
       document.getElementById("saveBtnLabel").textContent = `${editingWodEntryId ? "עדכון" : "רישום"} אימון — ${w.name}`;
+    } else if (wodSubTab === "log") {
+      // Mirrors render()'s own else branch for this state - the label is a
+      // long-lived node and must not keep advertising another screen's
+      // action just because the bar happens to be hidden right now.
+      document.getElementById("bottomBarBtn").dataset.action = "open-wod-picker";
+      document.getElementById("saveBtnLabel").textContent = "בחירת אימון";
     }
   }
   else if (action === "open-wod-picker") { openWodPicker(); }
@@ -4287,8 +4804,14 @@ document.addEventListener("click", (e) => {
     renderWodContent();
   }
   else if (action === "save-wod") { saveWod(); }
-  else if (action === "delete-wod-entry") { deleteWodEntry(el.dataset.id); }
+  else if (action === "delete-wod-entry") { askDeleteWodEntry(el.dataset.id); }
   else if (action === "select-wod-history") { wodHistoryId = wodHistoryId === el.dataset.id ? null : el.dataset.id; renderWodHistoryListArea(); }
+  // Every dialog in this app is closed by a click somewhere in this handler,
+  // so one call here drains the celebration queue after ANY of them closes,
+  // rather than repeating a flush in ten separate close* functions. The
+  // early `return`s above are all backdrop guards that leave their dialog
+  // open, so skipping the flush on those paths is the correct behaviour.
+  flushDeferredCelebration();
 });
 document.getElementById("pickerSearch").addEventListener("input", (e) => renderPickerList(cleanStr(e.target.value, LIMITS.nameLen)));
 document.getElementById("pickerSearch").addEventListener("keydown", (e) => {
@@ -4337,7 +4860,7 @@ document.addEventListener("input", (e) => {
   if (action === "step") {
     if (logEntryType === "reps") {
       const estEl = document.getElementById("estLineValue");
-      if (estEl) estEl.textContent = estimate1RM(weight, reps) + " kg";
+      if (estEl) estEl.textContent = estimate1RM(weight, reps) + ' ק"ג';
     } else if (field === "durationSeconds") {
       const durEl = document.getElementById("durationLineValue");
       if (durEl) durEl.textContent = formatDuration(durationSeconds);
