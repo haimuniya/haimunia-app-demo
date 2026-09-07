@@ -60,56 +60,23 @@ function isBarbellMovement(id) {
 }
 
 // ---------- Bidi isolation ----------
-// The training log is where mixed-script content is the NORM, not the
-// exception: a workout is made of LTR runs - rep schemes ("21-15-9"),
-// English movement names ("Thrusters"), weights ("43/30"), times - written
-// into an interface whose every paragraph is RTL Hebrew. Interpolating that
-// text bare into RTL markup lets the Unicode bidi algorithm reorder the runs
-// against the paragraph, and what gets PAINTED stops matching what was
-// typed.
+// A BINDING, not a definition. bidiText/bidiHtml live in
+// src/shared/safe-helpers.js, and its header carries the whole rationale:
+// what the two halves of the defect are, where the run boundaries fall, why
+// the run-level isolation is gated on a line resolving RTL, and the rules
+// about where these may and may not be used (never in an attribute, inside
+// <textarea>, inside <option>, or inside SVG <text> - those keep bare esc();
+// .mono runs keep bare esc() too).
 //
-// This is not cosmetic. The same bug in cloud.js (fixed in 3a85c76) rendered
-// a coach's pinned announcement
+// It was promoted there the moment the run-level half landed. Two copies of a
+// one-line <bdi> wrapper were a manageable duplication; two copies of a
+// run-detection algorithm are not, and the drift failure mode is silent - one
+// copy quietly stops isolating and nobody sees a broken string, only a
+// plausible wrong workout.
 //
-//     21-15-9 Thrusters + Pull-ups. Rx 43/30 ק"ג.
-//
-// with the rep scheme painted at the opposite end of the line and the ק"ג
-// stranded 34 characters from the 43/30 it belongs to; one persona read it
-// as 9-15-21. That is the danger - not a garbled string a member notices and
-// ignores, but a plausible, valid-looking, DIFFERENT workout they can follow
-// without ever knowing it is not what was written. Every field below is the
-// same shape: w.desc is free-form rep schemes and weights, w.name is
-// routinely "Fran" or "21-15-9 Thrusters", e.notes is member-typed.
-//
-// <bdi> rather than a CSS `unicode-bidi: isolate` (what .mono and .bar-center
-// use): those are LTR-only surfaces, but a body of free text sits in a
-// paragraph that must STAY rtl for its Hebrew. Only <bdi>'s implicit
-// dir="auto" lets each run take its base direction from its own first strong
-// character - so the line above resolves LTR and reads 21-15-9, while an
-// ordinary Hebrew-first note still resolves RTL exactly as today.
-//
-// Isolation is per LINE, not per field. A WOD description is multi-line and
-// routinely pairs a Hebrew intro line with an LTR rep-scheme line; one
-// dir="auto" over the whole field would resolve from the first line only and
-// leave every later line as broken as before. Joining back on "\n"
-// reproduces the original text exactly, so a `white-space:pre-wrap` surface
-// still breaks where it did and a collapsing one still collapses.
-//
-// ESCAPING IS UNCHANGED AND NON-NEGOTIABLE: esc() still runs over the text
-// and only its OUTPUT is wrapped. Never isolate before escaping. Never use
-// this in an HTML attribute, inside <textarea>, inside <option>, or inside
-// SVG <text> - there the tag lands as literal characters or breaks the
-// element, and those contexts keep bare esc(). .mono runs keep bare esc()
-// too: they already carry CSS isolation and are LTR by construction.
-//
-// Deliberately a LOCAL copy of cloud.js's bidiText() rather than a promotion
-// into src/shared/safe-helpers.js: that file carries a versioning contract
-// (VERSION bump + cross-repo propagation to crossfit-pwa-Noam). Promotion is
-// arguably the right end state; it is the repo owner's call, not this fix's.
-function bidiText(value) {
-  return String(value ?? "").split("\n").map((line) => `<bdi>${esc(line)}</bdi>`).join("\n");
-}
-
+// SAFE is src/constants.js's `const SAFE = window.BoxLogSafe`, and
+// src/constants.js loads immediately before this file (index.html:1592-1596).
+const bidiText = SAFE.bidiText;
 // ---------- State ----------
 let entries = [];
 const VALID_TABS = ["add", "history", "calendar", "wod", "community", "manage"];

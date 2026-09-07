@@ -889,15 +889,15 @@
   // and only its OUTPUT is wrapped. Never isolate before escaping. Never use
   // this in an attribute or inside <textarea>, where the tag would land as
   // literal characters instead of markup - those contexts keep bare esc().
-  function bidiText(value) {
-    return String(value ?? "").split("\n").map((line) => `<bdi>${esc(line)}</bdi>`).join("\n");
-  }
-  // The same isolation for a run that is ALREADY HTML - a comment body whose
-  // @mentions mentionMarkersToHtml() has turned into buttons, and which is
-  // therefore escaped already. One isolate over the whole run rather than per
-  // line: the embedded markup makes splitting on "\n" unsafe, and a comment
-  // is short enough that a single base direction is the right call.
-  function bidiHtml(html) { return `<bdi>${html}</bdi>`; }
+  // BINDINGS, not definitions: bidiText/bidiHtml live in
+  // src/shared/safe-helpers.js, reached the same way esc is at the head of
+  // this IIFE. Promoted there when the run-level half of the fix landed - see
+  // that module's header for the run rule, the RTL-line gate, and every
+  // restriction on where these may be used. bidiHtml is the already-escaped
+  // variant, for a comment body whose @mentions mentionMarkersToHtml() has
+  // turned into buttons.
+  const bidiText = window.BoxLogSafe.bidiText;
+  const bidiHtml = window.BoxLogSafe.bidiHtml;
   // Shared batch profile lookup - the shape loadCoachEngage(), loadCoachMemberOfWeek()
   // and loadFollowList() each independently hand-rolled. Consolidated after
   // finding real drift between the copies (a missing avatar_url column in
@@ -11778,6 +11778,25 @@
   // because that is the whole point of <bdi> and because a card is a fixed,
   // known-width composition where the base direction is a design decision
   // rather than a guess.
+  //
+  // OPEN, AND KNOWN TO DIVERGE — the mirror of this note lives on bidiText()
+  // in src/shared/safe-helpers.js; change both sites or neither.
+  //
+  // The paragraph above is not just a note about the card, it is a live
+  // DISAGREEMENT between the two surfaces about one shape: an LTR-first
+  // sentence with a long Hebrew tail, `Rx 43/30 ק"ג. נשבר לי הראש`. This
+  // function gives it an RTL base and keeps the unit beside its number. The
+  // DOM path resolves first-strong, so the same sentence there resolves LTR
+  // off the leading `Rx` and paints the ק"ג about eight characters away from
+  // the 43/30 — the second symptom bidiText()'s own header documents, still
+  // present on the DOM surfaces and NOT fixed by the run-level isolation
+  // added alongside this note.
+  //
+  // Whether the app should adopt this function's rule everywhere is a product
+  // decision, not a bug: doing so would flip
+  // `21-15-9 Thrusters + Pull-ups. Rx 43/30 ק"ג.` to an RTL base and break
+  // the assertion in scripts/browser-check/bidi-rtl-geometry.mjs that its rep
+  // scheme paints at the start of the line. Left for the owner on purpose.
   function bidiIsolateProse(value) {
     const s = String(value == null ? "" : value);
     if (!s) return "";
