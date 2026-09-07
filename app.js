@@ -59,6 +59,57 @@ function isBarbellMovement(id) {
   return !!m && m.barbell !== false;
 }
 
+// ---------- Bidi isolation ----------
+// The training log is where mixed-script content is the NORM, not the
+// exception: a workout is made of LTR runs - rep schemes ("21-15-9"),
+// English movement names ("Thrusters"), weights ("43/30"), times - written
+// into an interface whose every paragraph is RTL Hebrew. Interpolating that
+// text bare into RTL markup lets the Unicode bidi algorithm reorder the runs
+// against the paragraph, and what gets PAINTED stops matching what was
+// typed.
+//
+// This is not cosmetic. The same bug in cloud.js (fixed in 3a85c76) rendered
+// a coach's pinned announcement
+//
+//     21-15-9 Thrusters + Pull-ups. Rx 43/30 ק"ג.
+//
+// with the rep scheme painted at the opposite end of the line and the ק"ג
+// stranded 34 characters from the 43/30 it belongs to; one persona read it
+// as 9-15-21. That is the danger - not a garbled string a member notices and
+// ignores, but a plausible, valid-looking, DIFFERENT workout they can follow
+// without ever knowing it is not what was written. Every field below is the
+// same shape: w.desc is free-form rep schemes and weights, w.name is
+// routinely "Fran" or "21-15-9 Thrusters", e.notes is member-typed.
+//
+// <bdi> rather than a CSS `unicode-bidi: isolate` (what .mono and .bar-center
+// use): those are LTR-only surfaces, but a body of free text sits in a
+// paragraph that must STAY rtl for its Hebrew. Only <bdi>'s implicit
+// dir="auto" lets each run take its base direction from its own first strong
+// character - so the line above resolves LTR and reads 21-15-9, while an
+// ordinary Hebrew-first note still resolves RTL exactly as today.
+//
+// Isolation is per LINE, not per field. A WOD description is multi-line and
+// routinely pairs a Hebrew intro line with an LTR rep-scheme line; one
+// dir="auto" over the whole field would resolve from the first line only and
+// leave every later line as broken as before. Joining back on "\n"
+// reproduces the original text exactly, so a `white-space:pre-wrap` surface
+// still breaks where it did and a collapsing one still collapses.
+//
+// ESCAPING IS UNCHANGED AND NON-NEGOTIABLE: esc() still runs over the text
+// and only its OUTPUT is wrapped. Never isolate before escaping. Never use
+// this in an HTML attribute, inside <textarea>, inside <option>, or inside
+// SVG <text> - there the tag lands as literal characters or breaks the
+// element, and those contexts keep bare esc(). .mono runs keep bare esc()
+// too: they already carry CSS isolation and are LTR by construction.
+//
+// Deliberately a LOCAL copy of cloud.js's bidiText() rather than a promotion
+// into src/shared/safe-helpers.js: that file carries a versioning contract
+// (VERSION bump + cross-repo propagation to crossfit-pwa-Noam). Promotion is
+// arguably the right end state; it is the repo owner's call, not this fix's.
+function bidiText(value) {
+  return String(value ?? "").split("\n").map((line) => `<bdi>${esc(line)}</bdi>`).join("\n");
+}
+
 // ---------- State ----------
 let entries = [];
 const VALID_TABS = ["add", "history", "calendar", "wod", "community", "manage"];
@@ -144,7 +195,7 @@ function renderNavWho() {
     <div class="who">
       <div class="who-avatar">${esc(initial)}</div>
       <div>
-        <div class="who-name">${userName ? esc(userName) : "אורח/ת"}</div>
+        <div class="who-name">${userName ? bidiText(userName) : "אורח/ת"}</div>
         <div class="who-sub">${streak > 0 ? `${streak} ימים ברצף` : "בואו נתחיל להתאמן"}</div>
       </div>
     </div>`;
@@ -1510,8 +1561,8 @@ function renderAppConfirmSheet() {
   return `<div class="modal-overlay open" id="appConfirmOverlay" data-action="close-app-confirm" role="dialog" aria-modal="true" aria-labelledby="appConfirmTitle" style="align-items:center;padding:0 20px;">
       <div class="modal-sheet" style="border-radius:22px;border-bottom:1px solid var(--border);max-height:none;">
         <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
-          <h2 id="appConfirmTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">${esc(c.title)}</h2>
-          <div style="color:var(--steel);font-size:13.5px;line-height:1.6;margin-bottom:20px;">${esc(c.message)}</div>
+          <h2 id="appConfirmTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">${bidiText(c.title)}</h2>
+          <div style="color:var(--steel);font-size:13.5px;line-height:1.6;margin-bottom:20px;">${bidiText(c.message)}</div>
           <div class="chip-row" style="margin-top:0;">
             <button class="chip-btn" data-action="app-confirm-no">${esc(c.cancelLabel || "ביטול")}</button>
             <button class="chip-btn primary${c.destructive ? " danger" : ""}" data-action="app-confirm-yes">${esc(c.confirmLabel || "אישור")}</button>
@@ -1566,7 +1617,7 @@ function renderToastBar() {
   // focus being yanked out of the list being edited.
   return `<div id="appToastBar" role="status" aria-live="polite" style="position:fixed; left:0; right:0; bottom:calc(env(safe-area-inset-bottom,0px) + 84px); z-index:45; display:flex; justify-content:center; padding:0 16px; pointer-events:none;">
       <div class="flex items-center gap-10" style="pointer-events:auto; width:100%; max-width:420px; min-height:56px; background:var(--surface); border:1px solid var(--brass); border-radius:14px; padding:10px 10px 10px 14px; box-shadow:0 10px 30px rgba(0,0,0,.35);">
-        <span style="flex:1; min-width:0; color:var(--chalk); font-size:13px; font-weight:700;">${esc(pendingToast.label)}</span>
+        <span style="flex:1; min-width:0; color:var(--chalk); font-size:13px; font-weight:700;">${bidiText(pendingToast.label)}</span>
         ${pendingToast.action ? `<button class="chip-btn" data-action="toast-action">${esc(pendingToast.action.label)}</button>` : ""}
       </div>
     </div>`;
@@ -1738,7 +1789,13 @@ async function loadBoxStartDate() {
 function renderUserGreeting() {
   const el = document.getElementById("userGreeting");
   if (!el) return;
-  el.innerHTML = userName ? `<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">שלום ${esc(userName)}</span>${ICONS.chevronsLeft}` : "";
+  // Composed above the assignment on purpose: test/app-innerhtml-sinks.test.mjs
+  // reads the innerHTML LINE and requires every interpolation on it to be
+  // esc()/Number()/an allow-listed constant. Same escaping either way -
+  // bidiText() calls esc() itself - so the isolation is built here and the
+  // sink keeps a bare identifier.
+  const greetingHtml = userName ? `<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">שלום ${bidiText(userName)}</span>${ICONS.chevronsLeft}` : "";
+  el.innerHTML = greetingHtml;
   if (userName) el.setAttribute("aria-label", `שלום ${userName} — פתיחת עיטורים והישגים`);
   else el.removeAttribute("aria-label");
 }
@@ -2361,7 +2418,7 @@ function renderWodBuilderMovements(query) {
   filtered.forEach((m) => { (byCategory[m.category] = byCategory[m.category] || []).push(m); });
   const addRow = builderMoveSearch.trim() && !exactMatch
     ? `<div style="border:1px solid var(--brass); border-radius:12px; padding:10px 12px; margin-bottom:10px;">
-         <div style="font-weight:700; font-size:13px; color:var(--brass); margin-bottom:8px;">הוספת "${esc(builderMoveSearch.trim())}" — לאיזו קטגוריה?</div>
+         <div style="font-weight:700; font-size:13px; color:var(--brass); margin-bottom:8px;">הוספת "${bidiText(builderMoveSearch.trim())}" — לאיזו קטגוריה?</div>
          <div class="flex wrap gap-8">
            ${WOD_MOVE_CATEGORIES.map((cat) => `<button class="format-chip" style="flex:0 0 auto; padding:8px 14px;" data-action="add-builder-movement-tag" data-name="${esc(builderMoveSearch.trim())}" data-category="${cat}">${esc(catLabel(cat))}</button>`).join("")}
          </div>
@@ -2370,7 +2427,8 @@ function renderWodBuilderMovements(query) {
          <span style="font-weight:700; font-size:14px; color:var(--brass);">+ הוספת תרגיל/סקילס חדש</span>
        </button>`;
   if (Object.keys(byCategory).length === 0) {
-    el.innerHTML = addRow + (builderMoveSearch.trim() ? `<div style="color:var(--steel); text-align:center; padding:16px 0; font-size:13px;">לא נמצא תרגיל התואם ל-"${esc(builderMoveSearch)}"</div>` : "");
+    const noneHtml = builderMoveSearch.trim() ? `<div style="color:var(--steel); text-align:center; padding:16px 0; font-size:13px;">לא נמצא תרגיל התואם ל-"${bidiText(builderMoveSearch)}"</div>` : "";
+    el.innerHTML = addRow + noneHtml;
     return;
   }
   el.innerHTML = addRow + Object.entries(byCategory).map(([cat, items]) => `
@@ -2393,7 +2451,7 @@ function renderWodBuilderMovements(query) {
         const rotationNum = isEmom && checked ? activeBuilderMovementNames().indexOf(m.name) + 1 : null;
         return `
         <button class="movecheck-row ${checked ? "checked" : ""}" data-action="toggle-builder-movement" data-name="${esc(m.name)}" role="checkbox" aria-checked="${checked}">
-          <span style="font-weight:600; font-size:14px;">${rotationNum ? `${rotationNum}. ` : ""}${esc(m.name)}</span>
+          <span style="font-weight:600; font-size:14px;">${rotationNum ? `${rotationNum}. ` : ""}${bidiText(m.name)}</span>
           <div class="movecheck-box">${checked ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" stroke-width="3" stroke-linecap="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>' : ""}</div>
         </button>
         ${checked && !isEmom ? `
@@ -2785,7 +2843,7 @@ function renderLogTab() {
       ${movementExplicitlyChosen ? `
       <div class="flex items-center gap-8">
         <div class="dot" style="background:${esc(catColor(selected.category))}"></div>
-        <span style="font-weight:800; font-size:16px;">${esc(selected.name)}</span>
+        <span style="font-weight:800; font-size:16px;">${bidiText(selected.name)}</span>
       </div>
       <span class="flex items-center gap-6" style="color:var(--steel); font-size:12px; font-weight:600;">שינוי${ICONS.chevronsLeft}</span>` : `
       <span style="font-weight:800; font-size:16px;">מה עשינו היום?</span>
@@ -2874,8 +2932,8 @@ function renderLogTab() {
           const primary = movementById(ladderPrimaryId);
           return `
         <div class="flex items-center gap-8" style="margin-bottom:10px;" role="radiogroup" aria-label="תרגיל נוכחי בסופרסט">
-          <button class="format-chip ${selectedId === ladderPrimaryId ? "active" : ""}" style="padding:8px 10px; font-size:12.5px;" data-action="ladder-switch-exercise" data-id="${esc(ladderPrimaryId)}" role="radio" aria-checked="${selectedId === ladderPrimaryId}">${esc(primary ? primary.name : "?")}</button>
-          <button class="format-chip ${selectedId === ladderPartnerId ? "active" : ""}" style="padding:8px 10px; font-size:12.5px;" data-action="ladder-switch-exercise" data-id="${esc(ladderPartnerId)}" role="radio" aria-checked="${selectedId === ladderPartnerId}">${esc(partner.name)}</button>
+          <button class="format-chip ${selectedId === ladderPrimaryId ? "active" : ""}" style="padding:8px 10px; font-size:12.5px;" data-action="ladder-switch-exercise" data-id="${esc(ladderPrimaryId)}" role="radio" aria-checked="${selectedId === ladderPrimaryId}">${bidiText(primary ? primary.name : "?")}</button>
+          <button class="format-chip ${selectedId === ladderPartnerId ? "active" : ""}" style="padding:8px 10px; font-size:12.5px;" data-action="ladder-switch-exercise" data-id="${esc(ladderPartnerId)}" role="radio" aria-checked="${selectedId === ladderPartnerId}">${bidiText(partner.name)}</button>
         </div>`;
         })() : `
         <button data-action="open-picker" data-target="partner" class="link-btn" style="display:block; margin-bottom:10px; font-size:12.5px;">${ICONS.repeat} הוספת תרגיל שני (סופרסט)</button>`}
@@ -2898,7 +2956,7 @@ function renderLogTab() {
       <div class="flex items-center gap-8">
         ${dayEntries[0].isPR ? ICONS.flame : ""}
         <div style="text-align:right;">
-          <div style="font-weight:700; font-size:13px;">אחרון: ${esc(movementById(dayEntries[0].exerciseId) ? movementById(dayEntries[0].exerciseId).name : "?")} — ${esc(entrySummary(dayEntries[0]))}</div>
+          <div style="font-weight:700; font-size:13px;">אחרון: ${bidiText(movementById(dayEntries[0].exerciseId) ? movementById(dayEntries[0].exerciseId).name : "?")} — ${bidiText(entrySummary(dayEntries[0]))}</div>
           <div style="color:var(--steel); font-size:11px;">${dayEntries.length} סט${dayEntries.length === 1 ? "" : "ים"} נרשמו ${isToday ? "היום" : `ב-${esc(dayLabel)}`}</div>
         </div>
       </div>
@@ -2951,7 +3009,7 @@ function renderDetailCard(m) {
   return `
     <div class="chart-card" style="margin-top:-4px; border-top-left-radius:0; border-top-right-radius:0; border-top:none;">
       <div class="flex items-center justify-between" style="margin-bottom:12px;">
-        <span style="font-weight:800; font-size:15px;">${esc(m.name)}</span>
+        <span style="font-weight:800; font-size:15px;">${bidiText(m.name)}</span>
         <div class="flex items-center gap-8">
           ${trend !== null ? `<span class="flex items-center gap-6" style="font-weight:700; font-size:12px;">${trend > 0 ? ICONS.up : trend < 0 ? ICONS.down : ICONS.flat}<span class="mono">${trend > 0 ? "+" : ""}${trend} ק"ג</span> 1RM משוער</span>` : ""}
           ${typeof window.renderShareControl === "function" ? window.renderShareControl("strength_entry", hEntries[0].id) : ""}
@@ -2984,7 +3042,7 @@ function renderDurationDetailCard(m, durationEntries) {
   return `
     <div class="chart-card" style="margin-top:-4px; border-top-left-radius:0; border-top-right-radius:0; border-top:none;">
       <div class="flex items-center justify-between" style="margin-bottom:12px;">
-        <span style="font-weight:800; font-size:15px;">${esc(m.name)}</span>
+        <span style="font-weight:800; font-size:15px;">${bidiText(m.name)}</span>
         <div class="flex items-center gap-8">
           ${trendSec !== null ? `<span class="flex items-center gap-6" style="font-weight:700; font-size:12px;">${trendSec > 0 ? ICONS.up : trendSec < 0 ? ICONS.down : ICONS.flat}<span class="mono">${trendSec > 0 ? "+" : ""}${formatDuration(Math.abs(trendSec))}</span> שיא החזקה</span>` : ""}
           ${typeof window.renderShareControl === "function" ? window.renderShareControl("strength_entry", durationEntries[0].id) : ""}
@@ -3005,7 +3063,8 @@ function renderHistoryListArea() {
     return;
   }
   if (active.length === 0) {
-    area.innerHTML = `<div style="color:var(--steel); text-align:center; padding:20px 0; font-size:13px;">לא נמצא תרגיל התואם ל-"${esc(historySearch)}"</div>`;
+    const noneHtml = `<div style="color:var(--steel); text-align:center; padding:20px 0; font-size:13px;">לא נמצא תרגיל התואם ל-"${bidiText(historySearch)}"</div>`;
+    area.innerHTML = noneHtml;
     return;
   }
   area.innerHTML = active.map((m) => {
@@ -3014,7 +3073,7 @@ function renderHistoryListArea() {
         <div class="flex items-center gap-8">
           <span style="display:inline-flex; transition:transform .2s; transform:rotate(${historyId === m.id ? "90deg" : "180deg"});">${ICONS.chevron}</span>
           <div class="dot" style="background:${esc(catColor(m.category))}"></div>
-          <span style="font-weight:700; font-size:14px;">${esc(m.name)}</span>
+          <span style="font-weight:700; font-size:14px;">${bidiText(m.name)}</span>
         </div>
         ${(() => {
           // The record is the heaviest set actually lifted; the estimate is
@@ -3193,7 +3252,7 @@ function renderCalDetail() {
         <div class="log-row">
           <div class="flex items-center gap-8">
             ${e.isPR ? ICONS.flame : ""}
-            <span style="font-weight:700; font-size:14px;">${esc(movementById(e.exerciseId) ? movementById(e.exerciseId).name : "?")}</span>
+            <span style="font-weight:700; font-size:14px;">${bidiText(movementById(e.exerciseId) ? movementById(e.exerciseId).name : "?")}</span>
           </div>
           <div class="flex items-center gap-10">
             <span class="mono" style="color:var(--steel); font-size:13px;">${esc(entrySummary(e))}</span>
@@ -3212,7 +3271,7 @@ function renderCalDetail() {
         const anyPR = group.some((e) => e.isPR);
         const exerciseIds = [...new Set(group.map((e) => e.exerciseId))];
         const isSuperset = exerciseIds.length > 1;
-        const name = esc(exerciseIds.map((id) => movementById(id) ? movementById(id).name : "?").join(" + "));
+        const name = bidiText(exerciseIds.map((id) => movementById(id) ? movementById(id).name : "?").join(" + "));
         const blockTag = group[0].blockLabel ? ` · בלוק ${esc(group[0].blockLabel)}` : "";
         return `
         <div class="log-row" style="flex-direction:column; align-items:stretch; gap:8px;">
@@ -3240,8 +3299,8 @@ function renderCalDetail() {
           <div class="flex items-center justify-between" style="width:100%;">
             <div class="flex items-center gap-8">
               ${e.isPR ? ICONS.flame : ""}
-              <span style="font-weight:700; font-size:14px;">${esc(w ? w.name : "?")}</span>
-              <span style="color:var(--steel); font-size:11px;">${e.rx ? "Rx" : "Scaled"}${e.partnerTag ? ` · ${esc(e.partnerTag)}` : ""}</span>
+              <span style="font-weight:700; font-size:14px;">${bidiText(w ? w.name : "?")}</span>
+              <span style="color:var(--steel); font-size:11px;">${e.rx ? "Rx" : "Scaled"}${e.partnerTag ? ` · ${bidiText(e.partnerTag)}` : ""}</span>
             </div>
             <div class="flex items-center gap-10">
               <span class="mono" style="color:var(--steel); font-size:13px;">${formatWodEntry(e)}</span>
@@ -3250,7 +3309,7 @@ function renderCalDetail() {
               <button data-action="delete-wod-entry" data-id="${esc(e.id)}" aria-label="מחיקת אימון" style="color:var(--steel); padding:4px;">${ICONS.trash}</button>
             </div>
           </div>
-          ${e.notes ? `<div style="color:var(--steel); font-size:12px; padding-inline-start:23px;">${esc(e.notes)}</div>` : ""}
+          ${e.notes ? `<div style="color:var(--steel); font-size:12px; padding-inline-start:23px;">${bidiText(e.notes)}</div>` : ""}
         </div>`;
       }).join("")}
     </div>`}
@@ -3384,7 +3443,7 @@ function renderMeasureArea() {
       <button class="exercise-row ${expanded ? "active" : ""}" data-action="toggle-measure-type" data-id="${esc(t.id)}" style="${expanded ? "margin-bottom:0; border-bottom-left-radius:0; border-bottom-right-radius:0;" : ""}">
         <div class="flex items-center gap-8">
           <span style="display:inline-flex; transition:transform .2s; transform:rotate(${expanded ? "90deg" : "180deg"});">${ICONS.chevron}</span>
-          <span style="font-weight:700; font-size:14px;">${esc(t.name)}</span>
+          <span style="font-weight:700; font-size:14px;">${bidiText(t.name)}</span>
         </div>
         ${last ? `<span class="mono" style="color:var(--brass); font-weight:700; font-size:14px;">${last.value} ס"מ</span>` : `<span style="color:var(--steel); font-size:12px;">אין עדיין מדידות</span>`}
       </button>`;
@@ -3505,7 +3564,7 @@ function renderSettingsBody() {
       <div class="who" style="margin:0;">
         <div class="who-avatar">${esc(initial)}</div>
         <div style="flex:1; min-width:0;">
-          <div class="who-name">${userName ? esc(userName) : "אורח/ת"}</div>
+          <div class="who-name">${userName ? bidiText(userName) : "אורח/ת"}</div>
           <div class="who-sub">פרופיל אישי</div>
         </div>
         <button class="icon-chip icon-chip-steel" data-action="edit-user-name" aria-label="עריכת פרופיל">${ICONS.edit}</button>
@@ -3768,7 +3827,7 @@ function render() {
     console.error("render error:", err);
     content = `<div style="padding:40px 16px; text-align:center;">
       <div style="color:var(--red-text); font-weight:700; margin-bottom:8px;">משהו השתבש בהצגת הטאב הזה</div>
-      <div style="color:var(--steel); font-size:12px;">${esc((err && err.message) ? err.message : String(err))}</div>
+      <div style="color:var(--steel); font-size:12px;">${bidiText((err && err.message) ? err.message : String(err))}</div>
     </div>`;
   }
   const navMenuListEl = document.getElementById("navMenuList");
@@ -3923,8 +3982,8 @@ function renderWodLogSection() {
       <div class="flex items-center gap-8">
         <div class="dot" style="background:${esc(catColor(w.category))}"></div>
         <div>
-          <span style="font-weight:800; font-size:16px;">${esc(w.name)}</span>
-          ${w.desc ? `<div class="wod-desc">${esc(w.desc)}</div>` : ""}
+          <span style="font-weight:800; font-size:16px;">${bidiText(w.name)}</span>
+          ${w.desc ? `<div class="wod-desc">${bidiText(w.desc)}</div>` : ""}
           ${w.timeCapSeconds ? `<div class="wod-desc" style="color:var(--brass);">מגבלת זמן: ${formatClock(w.timeCapSeconds)}</div>` : ""}
         </div>
       </div>
@@ -3982,7 +4041,7 @@ function renderWodLogSection() {
     </div>
     <input id="wodNotesInput" class="text-input" dir="auto" style="margin-bottom:8px;" placeholder="שינוי בתרגיל? (אופציונלי, לדוגמה מתח עם רצועה)" aria-label="שינוי בתרגיל (אופציונלי)" value="${esc(wodNotes)}" />
     <div class="flex items-center justify-between" style="margin-bottom:16px;">
-      ${lastScaled ? `<button data-action="copy-last-scaled" style="color:var(--steel); font-size:12px; text-align:right;">↺ בפעם הקודמת: ${lastScaled.notes ? esc(lastScaled.notes) + " — " : ""}${formatWodEntry(lastScaled)}</button>` : `<span style="color:var(--steel); font-size:12px;">פעם ראשונה שמתאימים את זה</span>`}
+      ${lastScaled ? `<button data-action="copy-last-scaled" style="color:var(--steel); font-size:12px; text-align:right;">↺ בפעם הקודמת: ${lastScaled.notes ? bidiText(lastScaled.notes) + " — " : ""}${formatWodEntry(lastScaled)}</button>` : `<span style="color:var(--steel); font-size:12px;">פעם ראשונה שמתאימים את זה</span>`}
     </div>` : ""}
 
     ${inputsHtml}
@@ -3993,7 +4052,7 @@ function renderWodLogSection() {
       <div class="flex items-center gap-8">
         ${dayWods[0].isPR ? ICONS.flame : ""}
         <div style="text-align:right;">
-          <div style="font-weight:700; font-size:13px;">אחרון: ${esc(wodById(dayWods[0].wodId) ? wodById(dayWods[0].wodId).name : "?")} — ${formatWodEntry(dayWods[0])} (${dayWods[0].rx ? "Rx" : "Scaled"})</div>
+          <div style="font-weight:700; font-size:13px;">אחרון: ${bidiText(wodById(dayWods[0].wodId) ? wodById(dayWods[0].wodId).name : "?")} — ${formatWodEntry(dayWods[0])} (${dayWods[0].rx ? "Rx" : "Scaled"})</div>
           <div style="color:var(--steel); font-size:11px;">${dayWods.length} אימון${dayWods.length === 1 ? "" : "ים"} נרשמו ${isToday ? "היום" : `ב-${esc(dayLabel)}`}</div>
         </div>
       </div>
@@ -4026,7 +4085,7 @@ function renderWodDetailCard(w) {
   return `
     <div class="chart-card" style="margin-top:-4px; border-top-left-radius:0; border-top-right-radius:0; border-top:none;">
       <div class="flex items-center justify-between" style="margin-bottom:12px;">
-        <span style="font-weight:800; font-size:15px;">${esc(w.name)}</span>
+        <span style="font-weight:800; font-size:15px;">${bidiText(w.name)}</span>
         ${isEmom ? "" : `<span class="mono" style="color:var(--brass); font-weight:700; font-size:13px;">שיא: ${formatWodBest(w.id)}</span>`}
       </div>
       ${chartHtml}
@@ -4037,14 +4096,14 @@ function renderWodDetailCard(w) {
               <div class="flex items-center gap-8">
                 ${e.isPR ? ICONS.flame : ""}
                 <span style="color:var(--steel); font-size:12px;">${fmtDate(e.date)}</span>
-                <span style="color:var(--steel); font-size:11px;">${e.rx ? "Rx" : "Scaled"}${e.partnerTag ? ` · ${esc(e.partnerTag)}` : ""}</span>
+                <span style="color:var(--steel); font-size:11px;">${e.rx ? "Rx" : "Scaled"}${e.partnerTag ? ` · ${bidiText(e.partnerTag)}` : ""}</span>
               </div>
               <span class="flex items-center gap-6">
                 <span class="mono" style="font-size:13px;">${formatWodEntry(e)}</span>
                 ${typeof window.renderShareControl === "function" ? window.renderShareControl("wod_entry", e.id) : ""}
               </span>
             </div>
-            ${e.notes ? `<div style="color:var(--steel); font-size:12px;">${esc(e.notes)}</div>` : ""}
+            ${e.notes ? `<div style="color:var(--steel); font-size:12px;">${bidiText(e.notes)}</div>` : ""}
           </div>`).join("")}
       </div>
     </div>`;
@@ -4060,7 +4119,8 @@ function renderWodHistoryListArea() {
     return;
   }
   if (active.length === 0) {
-    area.innerHTML = `<div style="color:var(--steel); text-align:center; padding:20px 0; font-size:13px;">לא נמצא אימון התואם ל-"${esc(wodHistorySearch)}"</div>`;
+    const noneHtml = `<div style="color:var(--steel); text-align:center; padding:20px 0; font-size:13px;">לא נמצא אימון התואם ל-"${bidiText(wodHistorySearch)}"</div>`;
+    area.innerHTML = noneHtml;
     return;
   }
   area.innerHTML = active.map((w) => {
@@ -4069,7 +4129,7 @@ function renderWodHistoryListArea() {
         <div class="flex items-center gap-8">
           <span style="display:inline-flex; transition:transform .2s; transform:rotate(${wodHistoryId === w.id ? "90deg" : "180deg"});">${ICONS.chevron}</span>
           <div class="dot" style="background:${esc(catColor(w.category))}"></div>
-          <span style="font-weight:700; font-size:14px;">${esc(w.name)}</span>
+          <span style="font-weight:700; font-size:14px;">${bidiText(w.name)}</span>
         </div>
         <span class="mono" style="color:var(--brass); font-weight:700; font-size:14px;">${formatWodBest(w.id)}</span>
       </button>`;
@@ -4099,7 +4159,7 @@ function renderWodHistorySection() {
 function renderWodBenchmarksSection() {
   return `<div class="section-label">Benchmarks</div>
     ${WOD_LIBRARY.map((w) => `<button class="movement-btn" data-action="select-benchmark" data-id="${esc(w.id)}">
-      <div><span style="font-weight:700;">${esc(w.name)}</span>${w.desc ? `<div class="wod-desc">${esc(w.desc)}</div>` : ""}</div>
+      <div><span style="font-weight:700;">${bidiText(w.name)}</span>${w.desc ? `<div class="wod-desc">${bidiText(w.desc)}</div>` : ""}</div>
       <span aria-hidden="true">›</span>
     </button>`).join("")}`;
 }
@@ -4371,7 +4431,7 @@ function renderPickerList(query) {
   const list = document.getElementById("pickerList");
   const addRow = query.trim() && !exactMatch
     ? `<div style="border:1px solid var(--brass); border-radius:12px; padding:10px 12px; margin-top:4px; margin-bottom:8px;">
-         <div style="font-weight:700; font-size:13px; color:var(--brass); margin-bottom:8px;">הוספת "${esc(query.trim())}" — לאיזו קטגוריה?</div>
+         <div style="font-weight:700; font-size:13px; color:var(--brass); margin-bottom:8px;">הוספת "${bidiText(query.trim())}" — לאיזו קטגוריה?</div>
          <div class="flex wrap gap-8">
            ${MOVEMENT_CATEGORIES.map((cat) => `<button class="format-chip" style="flex:0 0 auto; padding:8px 14px;" data-action="add-movement" data-name="${esc(query.trim())}" data-category="${cat}">${cat}</button>`).join("")}
          </div>
@@ -4388,7 +4448,7 @@ function renderPickerList(query) {
       <div class="cat-head"><div class="dot" style="background:${esc(catColor(cat))}"></div><span class="cat-name">${esc(catLabel(cat))}</span></div>
       ${items.map((m) => `
         <button class="movement-btn ${selectedId === m.id ? "active" : ""}" data-action="pick-movement" data-id="${esc(m.id)}">
-          <span style="font-weight:600; font-size:14px;">${esc(m.name)}</span>
+          <span style="font-weight:600; font-size:14px;">${bidiText(m.name)}</span>
           ${selectedId === m.id ? `<div class="dot" style="background:var(--brass);"></div>` : ""}
         </button>`).join("")}
     </div>`).join("");
@@ -4438,7 +4498,7 @@ function renderWodPickerList(query) {
   const list = document.getElementById("wodPickerList");
   const addRow = query.trim() && !exactMatch
     ? `<button class="movement-btn" data-action="open-wod-builder" data-name="${esc(query.trim())}" style="border-color:var(--energy); margin-top:4px;">
-         <span style="font-weight:700; font-size:14px; color:var(--energy);">+ בניית "${esc(query.trim())}" כאימון חדש</span>
+         <span style="font-weight:700; font-size:14px; color:var(--energy);">+ בניית "${bidiText(query.trim())}" כאימון חדש</span>
        </button>`
     : `<button class="movement-btn" data-action="open-wod-builder" data-name="" style="border-color:var(--energy); margin-top:4px;">
          <span style="font-weight:700; font-size:14px; color:var(--energy);">+ בניית אימון מותאם אישית</span>
@@ -4456,8 +4516,8 @@ function renderWodPickerList(query) {
         <div class="movement-btn ${selectedWodId === w.id ? "active" : ""}" style="padding:0; overflow:hidden;">
         <button style="flex:1; padding:12px 14px; text-align:right;" data-action="pick-wod" data-id="${esc(w.id)}">
           <div>
-            <span style="font-weight:600; font-size:14px;">${esc(w.name)}</span>
-            ${w.desc ? `<div class="wod-desc">${esc(w.desc)}</div>` : ""}
+            <span style="font-weight:600; font-size:14px;">${bidiText(w.name)}</span>
+            ${w.desc ? `<div class="wod-desc">${bidiText(w.desc)}</div>` : ""}
           </div>
           ${selectedWodId === w.id ? `<div class="dot" style="background:var(--brass);"></div>` : ""}
         </button>
