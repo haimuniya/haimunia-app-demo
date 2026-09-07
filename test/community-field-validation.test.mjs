@@ -47,6 +47,10 @@ test("the announcement and weekly-challenge composers validate every required fi
   // The comparison key is a picker now, and its label says what a coach is
   // choosing rather than naming the database column it lands in.
   assert.match(src, /field\("communityWeeklyChallenge", "comparisonKey", "על מה מתחרים"/);
-  assert.match(src, /field\("communityWeeklyChallenge", "startsOn", "תאריך התחלה"/);
-  assert.match(src, /field\("communityWeeklyChallenge", "endsOn", "תאריך סיום"/);
+  // dateField(), not field(): the five-persona audit's date-locale defect
+  // moved every <input type="date"> onto a wrapper that adds the Hebrew
+  // month echo. dateField() delegates to field(), so the per-field error
+  // behaviour this test is actually about is unchanged - only the call name.
+  assert.match(src, /dateField\("communityWeeklyChallenge", "startsOn", "תאריך התחלה"/);
+  assert.match(src, /dateField\("communityWeeklyChallenge", "endsOn", "תאריך סיום"/);
 });

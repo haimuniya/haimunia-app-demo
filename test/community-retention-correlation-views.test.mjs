@@ -215,7 +215,7 @@ test("a cohort_month with zero rows at all (folded whole into 'other', or nobody
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openAccountTab(window);
   await waitFor(() => window.document.body.textContent.includes("מתאמי שימור"), 3000);
-  await waitFor(() => window.document.body.textContent.includes("אין עדיין נתוני שימור לתצוגה."), 3000);
+  await waitFor(() => !!window.document.querySelector('[data-empty-state="retention-cohorts"]'), 3000);
 });
 
 // --- the two correlation overlays -------------------------------------------

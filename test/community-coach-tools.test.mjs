@@ -105,7 +105,7 @@ test("Celebrate shows the empty state when the feed is genuinely empty, and the 
   mock.onRpc("coach_celebrate_feed", () => ({ data: [], error: null }));
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openCoachTab(window);
-  await waitFor(() => window.document.body.textContent.includes("אין דבר לחגוג השבוע."), 3000);
+  await waitFor(() => !!window.document.querySelector('[data-empty-state="coach-celebrate"]'), 3000);
 
   const mock2 = seeded({}, true);
   let calls = 0;
@@ -114,7 +114,7 @@ test("Celebrate shows the empty state when the feed is genuinely empty, and the 
   await openCoachTab(window2);
   await waitFor(() => window2.document.body.textContent.includes("לא ניתן היה לטעון את לוח המאמנים. נסו שוב."), 3000);
   window2.document.querySelector('[data-community-action="coach-celebrate-retry"]').click();
-  await waitFor(() => window2.document.body.textContent.includes("אין דבר לחגוג השבוע."), 3000);
+  await waitFor(() => !!window2.document.querySelector('[data-empty-state="coach-celebrate"]'), 3000);
 });
 
 // --- COMM-224: Welcome -----------------------------------------------------
@@ -158,7 +158,7 @@ test("Welcome shows the empty state with no new members in the last 30 days", as
   ];
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openCoachTab(window);
-  await waitFor(() => window.document.body.textContent.includes("אין חברים חדשים בחודש האחרון."), 3000);
+  await waitFor(() => !!window.document.querySelector('[data-empty-state="coach-welcome"]'), 3000);
 });
 
 test("a member already logged in member_contact_log shows as contacted", async () => {
@@ -342,7 +342,7 @@ test("COMM-304: the feature flag now defaults ON with no localStorage override, 
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openCoachTab(window);
   await waitFor(() => window.document.body.textContent.includes("מעקב מעורבות"), 3000);
-  await waitFor(() => window.document.body.textContent.includes("אין חברים שדורשים תשומת לב"), 3000);
+  await waitFor(() => !!window.document.querySelector('[data-empty-state="coach-engage"]'), 3000);
 });
 
 test("a real open flag renders the member's name, a translated level badge (never the raw enum text) and no session-count figures, with review, dismiss and reach-out controls", async () => {
@@ -371,7 +371,7 @@ test("marking a flag reviewed sends a direct update with status/reviewed_by/revi
   assert.equal(row.reviewed_by, "u1");
   assert.ok(row.reviewed_at, "reviewed_at is stamped");
   await waitFor(() => window.document.querySelector('[data-community-action="coach-engage-review"]') == null, 3000);
-  await waitFor(() => window.document.body.textContent.includes("אין חברים שדורשים תשומת לב"), 3000);
+  await waitFor(() => !!window.document.querySelector('[data-empty-state="coach-engage"]'), 3000);
 });
 
 test("dismissing a flag sends status 'dismissed' and the row disappears from the open list the same way review does", async () => {
@@ -381,7 +381,7 @@ test("dismissing a flag sends status 'dismissed' and the row disappears from the
   await waitFor(() => !!window.document.querySelector('[data-community-action="coach-engage-dismiss"]'), 3000);
   window.document.querySelector('[data-community-action="coach-engage-dismiss"]').click();
   await waitFor(() => mock.db.coach_engagement_flags.find((f) => f.id === "f1").status === "dismissed", 3000);
-  await waitFor(() => window.document.body.textContent.includes("אין חברים שדורשים תשומת לב"), 3000);
+  await waitFor(() => !!window.document.querySelector('[data-empty-state="coach-engage"]'), 3000);
 });
 
 test("reach-out sends a generic post_create + POST_COACH update naming the member, never the level or a session figure, then disables to 'פנייה נשלחה'", async () => {
