@@ -196,7 +196,22 @@ function renderNavWho() {
       <div class="who-avatar">${esc(initial)}</div>
       <div>
         <div class="who-name">${userName ? bidiText(userName) : "אורח/ת"}</div>
-        <div class="who-sub">${streak > 0 ? `${streak} ימים ברצף` : "בואו נתחיל להתאמן"}</div>
+        <!-- Design spec Appendix A.9: the zero-streak branch here used to
+             read "בואו נתחיל להתאמן" - the THIRD instance of "בואו נתחיל" in
+             the app, after the welcome sheet's primary button and the
+             onboarding explainer's (both index.html, both genuine calls to
+             action). This one is not a button. It is the sub-line of the
+             .who card, i.e. a STATUS line about the member, sitting directly
+             under their name - so a member with no current streak had their
+             state reported to them as an imperative, and the same words meant
+             three different things in three places.
+             The replacement is a fact, in the same shape as the streak > 0
+             branch it alternates with: that branch says what the streak IS,
+             so this one says where it starts. It is also true for both people
+             who land here - someone who has never trained and someone whose
+             streak lapsed - which "בואו נתחיל להתאמן" was not, and it leaves
+             "בואו נתחיל" to the two buttons that actually ask for a tap. -->
+        <div class="who-sub">${streak > 0 ? `${streak} ימים ברצף` : "הרצף מתחיל באימון הבא"}</div>
       </div>
     </div>`;
 }
@@ -2076,14 +2091,21 @@ async function importDataFromFile(file) {
     .reduce((n, k) => n + (Array.isArray(data[k]) ? data[k].length : 0), 0);
   const rejected = Math.max(0, rawCount - incoming);
 
-  if (incoming === 0) return bad("הייבוא נכשל — לא נמצאו רשומות תקינות בקובץ");
+  // Design spec §3.7 / §4.4, same class as the "אזור מסוכן" rename below:
+  // these four member-facing counts used to be measured in "רשומות", which
+  // is the DATABASE word for a row. The member never wrote a רשומה - they
+  // wrote a רישום, which is what this app calls it absolutely everywhere
+  // else (the tab is literally named רישום, and so are רישום סט / יומן
+  // האימונים / הרישום הראשון). Reached straight from the settings backup
+  // card's "ייבוא גיבוי", so it is the same screen as the rename.
+  if (incoming === 0) return bad("הייבוא נכשל — לא נמצאו רישומים תקינים בקובץ");
 
   // The import merges into existing data and cannot be undone from inside the
   // app, so confirm first and drop a rollback backup on the way in.
   const hasExisting = entries.length || wodEntries.length || bodyweightEntries.length || customMovements.length || customWods.length || measureTypes.length;
   const question = hasExisting
-    ? `הייבוא יוסיף ${incoming} רשומות לנתונים הקיימים ולא ניתן לבטל אותו.\nלפני כן יורד גיבוי של המצב הנוכחי.\n\nלהמשיך?`
-    : `לייבא ${incoming} רשומות?`;
+    ? `הייבוא יוסיף ${incoming} רישומים לנתונים הקיימים ולא ניתן לבטל אותו.\nלפני כן יורד גיבוי של המצב הנוכחי.\n\nלהמשיך?`
+    : `לייבא ${incoming} רישומים?`;
   if (!window.confirm(question)) { setImportMessage("הייבוא בוטל"); render(); return; }
 
   if (hasExisting) {
@@ -2106,7 +2128,7 @@ async function importDataFromFile(file) {
 
   await reloadFromDb();
 
-  const parts = [`יובאו ${ok} רשומות`];
+  const parts = [`יובאו ${ok} רישומים`];
   if (rejected) parts.push(`${rejected} נפסלו`);
   if (failed) parts.push(`${failed} נכשלו בשמירה`);
   setImportMessage(parts.join(", "));
@@ -3673,12 +3695,30 @@ function renderSettingsBody() {
       </div>
 
       <div class="settings-block">
-        <div class="settings-block-title" style="color:var(--red-text);">אזור מסוכן</div>
+        <!-- Design spec §4.4. The title here was "אזור מסוכן", a calque of
+             the developer idiom "danger zone", printed in var(--red-text).
+             The beginner persona read it as the app reporting a fault with
+             her PHONE, not as a heading over a control to approach slowly:
+             a red warning that fires before she has touched anything is
+             indistinguishable from an error message. The heading now names
+             what the section DOES, and the red moves off it and stays where
+             it belongs - on the .chip-btn.danger control itself, which
+             test/audit-ux-fixes.test.mjs pins - so the colour warns about an
+             action rather than about the app.
+             The rest of the block moved to the same register. It now says
+             what actually gets deleted and that clearAllData() downloads a
+             backup file first (it has done that since the audit and never
+             told anyone, which is the single most reassuring fact on this
+             screen), and the confirm names its subject instead of asking a
+             bare "למחוק הכל?" - the rule the askAppConfirm comment above
+             already sets for every other destructive action in this file. -->
+        <div class="settings-block-title">מחיקת נתונים</div>
+        <div class="footer-note">מוחק מהמכשיר הזה את יומן האימונים, התרגילים והאימונים שהוספתם, משקל הגוף והמדידות. לפני המחיקה יורד אוטומטית קובץ גיבוי, כדי שתמיד תהיה דרך חזרה</div>
         ${!confirmClear
           ? `<div style="text-align:center;"><button class="chip-btn danger" data-action="ask-clear">מחיקת כל הנתונים</button></div>`
           : `
           <div class="flex items-center justify-center gap-10">
-            <span style="color:var(--steel); font-size:11px;">למחוק הכל?</span>
+            <span style="color:var(--steel); font-size:11px;">למחוק את הכל מהמכשיר הזה?</span>
             <button class="chip-btn primary danger" data-action="do-clear">כן, מחיקה</button>
             <button class="chip-btn" data-action="cancel-clear">ביטול</button>
           </div>`}
