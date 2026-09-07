@@ -188,7 +188,10 @@ function seededStaff(extra, role) {
 async function openManageOnboarding(window) {
   window.document.getElementById("tabManageBtn").click();
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
-  click(window, '[data-community-action="set-manage-tab"][data-tab="onboarding"]');
+  // See community-onboarding-content-editor.test.mjs: "onboarding" stopped
+  // being a sub-tab id when Manage collapsed to three tabs. The carousel
+  // editor is an area inside the "ניהול" tab now, same content, same gate.
+  click(window, '.subtabbtn[data-community-action="set-manage-tab"][data-tab="moderation"]');
 }
 
 test("a plain member never sees the intro-carousel editor entry point", async () => {

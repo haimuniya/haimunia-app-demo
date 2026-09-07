@@ -1099,6 +1099,50 @@
     .celebration-sheet{ animation:celebrationPop .35s cubic-bezier(.34,1.56,.64,1); }
   }
   @keyframes celebrationPop{ 0%{ transform:scale(.85); opacity:0; } 100%{ transform:scale(1); opacity:1; } }
+
+  /* ---- The printable joining sheet -----------------------------------
+     The box owner's objection to the invite flow was that a 48-character
+     hex code "cannot be printed on a flyer". cloud.js's renderInviteQrPanel()
+     renders [data-invite-print] - a QR, three instructions and the code as a
+     fallback - and window.print() is the whole delivery mechanism. No popup
+     (a blocker eats it), no generated PDF, no download.
+
+     The card is in the normal document flow but visually hidden on screen,
+     because a print stylesheet cannot reveal markup that was never
+     rendered. clip-path rather than display:none: a printer must be able to
+     lay it out, and display:none in the base state is not reliably undone
+     by a print media block in every engine. */
+  .invite-print-card{ position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+  @media print{
+    /* Hide the whole app, then re-show the sheet. visibility (not display)
+       is what makes this reliable: it inherits, so one rule on <body> hides
+       every screen surface at once - the nav, the overlays, the rest of the
+       Manage screen - and a descendant can turn it back on without any of
+       its ancestors having to be individually exempted. The card is then
+       lifted to the top-left of the page so it does not print in whatever
+       gap the hidden layout left behind. */
+    body{ visibility:hidden; background:#FFFFFF; }
+    .invite-print-card, .invite-print-card *{ visibility:visible; }
+    .invite-print-card{
+      position:absolute; inset-block-start:0; inset-inline-start:0;
+      width:100%; height:auto; overflow:visible;
+      clip-path:none; white-space:normal;
+      display:flex; flex-direction:column; align-items:center;
+      gap:14px; padding:24px; text-align:center;
+      /* Printed on white paper with black ink regardless of the app's own
+         dark theme, and stated explicitly: a dark-themed card would come out
+         of the printer as a solid black page, and a QR needs dark modules on
+         a light ground to scan at all. */
+      background:#FFFFFF; color:#000000;
+      font-family:Rubik, system-ui, sans-serif;
+    }
+    .invite-print-club{ font-size:26pt; font-weight:800; }
+    .invite-print-title{ font-size:15pt; }
+    .invite-print-qr{ width:78mm; height:78mm; }
+    .invite-print-steps{ font-size:12pt; line-height:1.9; text-align:right; direction:rtl; padding-inline-start:20px; margin:0; }
+    .invite-print-code-label{ font-size:10pt; }
+    .invite-print-code{ font-family:'JetBrains Mono', monospace; font-size:9pt; word-break:break-all; max-width:120mm; }
+  }
 </style>
 </head>
 <body>

@@ -102,7 +102,12 @@
     // manageTab is the active sub-tab of the separate "ניהול" (Manage) top-
     // level tab - its own field, not reusing `tab`, since a staff member can
     // leave Manage and come back without losing their place in either.
-    ui: { tab: "feed", manageTab: "dashboard", loading: false, message: "", fieldErrors: {}, confirmDialog: null,
+    // manageTab defaults to "invites" - the "הוספת חבר/ה" tab - because that
+    // is the thing a gym manager opens ניהול to do most weeks. It was
+    // "dashboard" until the operator-depth rework, which retired that tab
+    // (see MANAGE_TAB_ALIASES). manageScrollTo is a one-shot section id
+    // consumed by afterRenderManage() - see setManageTab().
+    ui: { tab: "feed", manageTab: "invites", manageScrollTo: "", loading: false, message: "", fieldErrors: {}, confirmDialog: null,
       // Launch-readiness audit, RELIABILITY. The invite code the member
       // is typing, kept in state for the same reason reportNote and the
       // comment drafts are: this app re-renders by replacing #content's
@@ -266,6 +271,15 @@
       // kind of one-time reveal for a freshly minted shared code, busy is the
       // id of a code whose admin_invite_code_set_active() call is in flight.
       inviteCodes: { items: [], loading: false, loaded: false, error: false, created: null, busy: null },
+      // The joining QR for whichever code was just created, and the only
+      // place the plaintext of a live code is held after the reveal card
+      // above. code/kind identify it, link is the deep link the QR encodes,
+      // blob/previewUrl are the rendered PNG and its object URL (revoked on
+      // close - see revokeInviteQrPreview), status is idle/rendering/ready/
+      // failed, error names which of INVITE_QR_ERROR_TEXT's cases failed,
+      // and sharing/result mirror the outward-share sheet's own in-flight
+      // flag and its OUTWARD_SHARE_RESULTS outcome.
+      inviteQr: { code: "", kind: "", link: "", status: "idle", previewUrl: "", blob: null, sharing: false, result: "", error: "" },
 
       // ---- COMM-377. Member roster ------------------------------------
       // items is admin_member_roster()'s accumulated pages, newest-joined
@@ -3006,6 +3020,10 @@
     if (error) return setMessage(inviteCodeCreateErrorText(error));
     form.reset();
     state.admin.inviteCodes.created = data;
+    // The one moment the plaintext code exists in the client. Build the QR
+    // now or never - admin_invite_code_list() below returns everything about
+    // this row EXCEPT the code itself.
+    openInviteQr(data && data.code, "shared");
     setMessage("קוד ההצטרפות נוצר");
     await loadInviteCodes();
   }
@@ -3017,7 +3035,11 @@
     if (error) { setMessage("עדכון הסטטוס נכשל"); rerender(); return; }
     await loadInviteCodes();
   }
-  function dismissInviteCodeCreated() { state.admin.inviteCodes.created = null; rerender(); }
+  // Dismissing the reveal card and dismissing the QR are the same act - "the
+  // plaintext code is off my screen now" - so either control performs both.
+  // Leaving one of the two behind would have been a control that claims to
+  // hide a credential and only hides half of it.
+  function dismissInviteCodeCreated() { state.admin.inviteCodes.created = null; closeInviteQr(); }
   function copyInviteCode(code) {
     if (!code) return;
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -3096,10 +3118,13 @@
     if (error) return setFieldErrors("communityInviteCreate", { label: inviteCreateErrorText(error) });
     form.reset();
     state.admin.invites.created = data;
+    // Same one-shot reveal as the shared code above, same reason.
+    openInviteQr(data && data.code, "person");
     setMessage("ההזמנה נוצרה");
     await loadInvites(true);
   }
-  function dismissInviteCreated() { state.admin.invites.created = null; rerender(); }
+  // Same pairing as dismissInviteCodeCreated() above.
+  function dismissInviteCreated() { state.admin.invites.created = null; closeInviteQr(); }
   async function revokeInvite(inviteId) {
     if (!state.user || !(hasPerm(PERM.MEMBER_INVITE) || isAdmin()) || state.admin.invites.revoking) return;
     state.admin.invites.revoking = inviteId; rerender();
@@ -3202,6 +3227,721 @@
       ${createdHtml}${form}${filters}${list}
     </div>`;
   }
+  // ==========================================================================
+  // THE JOINING QR
+  //
+  // The box owner's objection, in his words: the invite code is a 48-character
+  // hex string that "cannot be printed on a flyer". His front desk was reading
+  // it aloud, or typing it into WhatsApp, once per member. At 150 members that
+  // is the support load he refused to take on.
+  //
+  // A SHORT HUMAN CODE IS NOT AVAILABLE. redeem_invite_code's own signature
+  // constrains p_code to ^[a-f0-9]{40,128}$, so "make the code sayable" is a
+  // schema change, not a client change, and is deliberately not attempted
+  // here. What IS available is removing the need to say it at all: a QR of a
+  // deep link that opens the app with the code already in the field.
+  //
+  // WHY THIS ENCODER RATHER THAN A VENDORED LIBRARY. vendor/supabase.js is the
+  // precedent for vendoring, and it was weighed. The smallest maintained
+  // general-purpose QR library (qrcode-generator, MIT) ships 56KB of
+  // unminified JS covering all 40 versions, 4 error-correction levels, 4
+  // encoding modes, Shift-JIS tables and its own GIF/HTML renderers. This app
+  // has no build step, so none of that is tree-shaken away - all 56KB would
+  // ship, be precached by the service worker, and sit unreviewed in a
+  // codebase whose whole security posture (strict CSP, zero innerHTML sinks,
+  // one shared escape) rests on the code being readable. What this feature
+  // actually needs is one mode (byte), one error-correction level (M, the
+  // 15% print default) and one payload shape (a short ASCII URL). That is the
+  // ~200 lines below, all of it reviewable, and it is proved correct rather
+  // than assumed: test/community-invite-qr.test.mjs decodes the finished
+  // matrix back with an independent reader that shares no code with this
+  // encoder, and the encoder was diffed module-for-module against
+  // qrcode-generator's output over 588 payloads before it landed.
+  //
+  // Structure per ISO/IEC 18004: encode to codewords, add Reed-Solomon parity
+  // per block, interleave, lay out on the matrix, then pick the mask that
+  // scores best under the four penalty rules.
+  // ==========================================================================
+
+  // Per version, at error-correction level M:
+  // [total codewords, EC codewords per block, group-1 blocks, group-1 data
+  //  codewords, group-2 blocks, group-2 data codewords].
+  // Versions 1-12 only: version 12 holds 290 data codewords, which is far
+  // more than any origin + 128-character code can reach, and every row costs
+  // six numbers. qrEncode() returns null rather than guessing past the table.
+  const QR_M_BLOCKS = {
+    1: [26, 10, 1, 16, 0, 0],
+    2: [44, 16, 1, 28, 0, 0],
+    3: [70, 26, 1, 44, 0, 0],
+    4: [100, 18, 2, 32, 0, 0],
+    5: [134, 24, 2, 43, 0, 0],
+    6: [172, 16, 4, 27, 0, 0],
+    7: [196, 18, 4, 31, 0, 0],
+    8: [242, 22, 2, 38, 2, 39],
+    9: [292, 22, 3, 36, 2, 37],
+    10: [346, 26, 4, 43, 1, 44],
+    11: [404, 30, 1, 50, 4, 51],
+    12: [466, 22, 6, 36, 2, 37],
+  };
+  // Alignment-pattern centre coordinates per version (row and column alike).
+  const QR_ALIGN = {
+    1: [], 2: [6, 18], 3: [6, 22], 4: [6, 26], 5: [6, 30], 6: [6, 34],
+    7: [6, 22, 38], 8: [6, 24, 42], 9: [6, 26, 46], 10: [6, 28, 50],
+    11: [6, 30, 54], 12: [6, 32, 58],
+  };
+  const QR_MAX_VERSION = 12;
+
+  // GF(256) with the QR primitive polynomial 0x11D. Computed once rather than
+  // written out as two 256-entry literals.
+  const QR_EXP = new Uint8Array(512);
+  const QR_LOG = new Uint8Array(256);
+  (function () {
+    let x = 1;
+    for (let i = 0; i < 255; i++) { QR_EXP[i] = x; QR_LOG[x] = i; x <<= 1; if (x & 0x100) x ^= 0x11d; }
+    for (let i = 255; i < 512; i++) QR_EXP[i] = QR_EXP[i - 255];
+  })();
+  function qrMul(a, b) { return (a && b) ? QR_EXP[QR_LOG[a] + QR_LOG[b]] : 0; }
+  // The Reed-Solomon generator polynomial of the given degree, highest power
+  // first: the product of (x - alpha^i) for i in 0..deg-1.
+  function qrGenPoly(deg) {
+    let poly = [1];
+    for (let i = 0; i < deg; i++) {
+      const next = new Array(poly.length + 1).fill(0);
+      for (let j = 0; j < poly.length; j++) {
+        next[j] ^= poly[j];
+        next[j + 1] ^= qrMul(poly[j], QR_EXP[i]);
+      }
+      poly = next;
+    }
+    return poly;
+  }
+  function qrEcBytes(data, ecLen) {
+    const gen = qrGenPoly(ecLen);
+    const res = new Array(data.length + ecLen).fill(0);
+    for (let i = 0; i < data.length; i++) res[i] = data[i];
+    for (let i = 0; i < data.length; i++) {
+      const factor = res[i];
+      if (!factor) continue;
+      for (let j = 0; j < gen.length; j++) res[i + j] ^= qrMul(gen[j], factor);
+    }
+    return res.slice(data.length);
+  }
+  function qrDataCodewordCount(version) {
+    const b = QR_M_BLOCKS[version];
+    return b[2] * b[3] + b[4] * b[5];
+  }
+  function qrPickVersion(byteLen) {
+    for (let v = 1; v <= QR_MAX_VERSION; v++) {
+      // 4 mode bits + the character count (8 bits below version 10, 16 from
+      // version 10 up) + the payload itself.
+      if (4 + (v < 10 ? 8 : 16) + byteLen * 8 <= qrDataCodewordCount(v) * 8) return v;
+    }
+    return 0;
+  }
+  function qrCodewords(bytes, version) {
+    const bits = [];
+    const push = (value, len) => { for (let i = len - 1; i >= 0; i--) bits.push((value >> i) & 1); };
+    push(4, 4); // byte mode
+    push(bytes.length, version < 10 ? 8 : 16);
+    for (let i = 0; i < bytes.length; i++) push(bytes[i], 8);
+    const totalBits = qrDataCodewordCount(version) * 8;
+    for (let i = 0; i < 4 && bits.length < totalBits; i++) bits.push(0); // terminator
+    while (bits.length % 8) bits.push(0);
+    const words = [];
+    for (let i = 0; i < bits.length; i += 8) {
+      let b = 0;
+      for (let j = 0; j < 8; j++) b = (b << 1) | bits[i + j];
+      words.push(b);
+    }
+    // The two alternating pad codewords the spec names, 0b11101100 / 0b00010001.
+    const pads = [0xec, 0x11];
+    for (let i = 0; words.length < totalBits / 8; i++) words.push(pads[i % 2]);
+    return words;
+  }
+  // Split into blocks, parity each block, then interleave: one codeword from
+  // every block in turn, data first and then parity. Interleaving is what
+  // makes a QR survive a coffee ring - a physical smudge lands across many
+  // blocks a little rather than one block fatally.
+  function qrInterleave(words, version) {
+    const spec = QR_M_BLOCKS[version];
+    const ecLen = spec[1];
+    const blocks = [];
+    let at = 0;
+    for (let i = 0; i < spec[2]; i++) { blocks.push(words.slice(at, at + spec[3])); at += spec[3]; }
+    for (let i = 0; i < spec[4]; i++) { blocks.push(words.slice(at, at + spec[5])); at += spec[5]; }
+    const parity = blocks.map((b) => qrEcBytes(b, ecLen));
+    const out = [];
+    const maxData = Math.max(spec[3], spec[5]);
+    for (let i = 0; i < maxData; i++) for (const b of blocks) if (i < b.length) out.push(b[i]);
+    for (let i = 0; i < ecLen; i++) for (const b of parity) out.push(b[i]);
+    return out;
+  }
+  // Format information: 2 bits of EC level (M is 0b00) + 3 mask bits, through
+  // BCH(15,5) with generator 0x537, XORed with the spec's 0x5412 so an
+  // all-zero format is never all-zero on the symbol.
+  function qrFormatBits(mask) {
+    const data = mask; // (0b00 << 3) | mask
+    let d = data << 10;
+    for (let i = 14; i >= 10; i--) if (d & (1 << i)) d ^= 0x537 << (i - 10);
+    return ((data << 10) | d) ^ 0x5412;
+  }
+  // Version information, carried only from version 7 up: 6 bits through
+  // BCH(18,6) with generator 0x1F25, no mask.
+  function qrVersionBits(version) {
+    let d = version << 12;
+    for (let i = 17; i >= 12; i--) if (d & (1 << i)) d ^= 0x1f25 << (i - 12);
+    return (version << 12) | d;
+  }
+  // Everything that is not data: the three finders and their separators, the
+  // two timing lines, the alignment patterns, the dark module, and the
+  // reserved (not yet written) format and version areas. `fixed` marks every
+  // module the data zigzag must skip.
+  function qrSkeleton(version) {
+    const size = version * 4 + 17;
+    const mod = [];
+    const fixed = [];
+    for (let r = 0; r < size; r++) { mod.push(new Uint8Array(size)); fixed.push(new Uint8Array(size)); }
+    const set = (r, c, v) => { if (r >= 0 && c >= 0 && r < size && c < size) { mod[r][c] = v; fixed[r][c] = 1; } };
+    for (const corner of [[0, 0], [0, size - 7], [size - 7, 0]]) {
+      for (let r = -1; r <= 7; r++) {
+        for (let c = -1; c <= 7; c++) {
+          const dark = r >= 0 && r <= 6 && c >= 0 && c <= 6
+            && (r === 0 || r === 6 || c === 0 || c === 6 || (r >= 2 && r <= 4 && c >= 2 && c <= 4));
+          set(corner[0] + r, corner[1] + c, dark ? 1 : 0);
+        }
+      }
+    }
+    for (let i = 8; i < size - 8; i++) { set(6, i, i % 2 === 0 ? 1 : 0); set(i, 6, i % 2 === 0 ? 1 : 0); }
+    const centres = QR_ALIGN[version];
+    for (const r of centres) {
+      for (const c of centres) {
+        // The three corners already carry finder patterns.
+        if ((r <= 8 && c <= 8) || (r <= 8 && c >= size - 9) || (r >= size - 9 && c <= 8)) continue;
+        for (let dr = -2; dr <= 2; dr++) {
+          for (let dc = -2; dc <= 2; dc++) {
+            set(r + dr, c + dc, Math.max(Math.abs(dr), Math.abs(dc)) === 1 ? 0 : 1);
+          }
+        }
+      }
+    }
+    set(size - 8, 8, 1); // the always-dark module
+    // Reserve the format areas. Index 6 is skipped in both arms: that is the
+    // timing pattern passing through, not a format module.
+    for (let i = 0; i <= 8; i++) { if (i !== 6) { set(8, i, 0); set(i, 8, 0); } }
+    for (let i = 0; i < 8; i++) { set(8, size - 1 - i, 0); set(size - 1 - i, 8, 0); }
+    set(size - 8, 8, 1);
+    if (version >= 7) {
+      for (let i = 0; i < 18; i++) {
+        set(Math.floor(i / 3), size - 11 + (i % 3), 0);
+        set(size - 11 + (i % 3), Math.floor(i / 3), 0);
+      }
+    }
+    return { size: size, mod: mod, fixed: fixed };
+  }
+  // The zigzag: two-module-wide columns walked right to left, alternating
+  // upward and downward, skipping the vertical timing column entirely.
+  function qrPlaceData(sk, codewords) {
+    let bitIndex = 0;
+    const nextBit = () => {
+      const byte = codewords[bitIndex >> 3];
+      const bit = byte === undefined ? 0 : (byte >> (7 - (bitIndex & 7))) & 1;
+      bitIndex++;
+      return bit;
+    };
+    let up = true;
+    for (let col = sk.size - 1; col > 0; col -= 2) {
+      if (col === 6) col--;
+      for (let i = 0; i < sk.size; i++) {
+        const row = up ? sk.size - 1 - i : i;
+        for (const c of [col, col - 1]) {
+          if (sk.fixed[row][c]) continue;
+          sk.mod[row][c] = nextBit();
+        }
+      }
+      up = !up;
+    }
+  }
+  const QR_MASKS = [
+    (r, c) => (r + c) % 2 === 0,
+    (r) => r % 2 === 0,
+    (r, c) => c % 3 === 0,
+    (r, c) => (r + c) % 3 === 0,
+    (r, c) => (Math.floor(r / 2) + Math.floor(c / 3)) % 2 === 0,
+    (r, c) => ((r * c) % 2) + ((r * c) % 3) === 0,
+    (r, c) => (((r * c) % 2) + ((r * c) % 3)) % 2 === 0,
+    (r, c) => (((r + c) % 2) + ((r * c) % 3)) % 2 === 0,
+  ];
+  function qrApplyFormat(sk, mask) {
+    const bits = qrFormatBits(mask);
+    for (let i = 0; i < 15; i++) {
+      const b = (bits >> i) & 1;
+      // Copy 1: down column 8, then along row 8, around the top-left finder.
+      if (i < 6) sk.mod[i][8] = b;
+      else if (i < 8) sk.mod[i + 1][8] = b;
+      else sk.mod[sk.size - 15 + i][8] = b;
+      // Copy 2: the mirrored halves beside the other two finders, so a symbol
+      // with one damaged corner still reports its own mask.
+      if (i < 8) sk.mod[8][sk.size - 1 - i] = b;
+      else if (i === 8) sk.mod[8][7] = b;
+      else sk.mod[8][14 - i] = b;
+    }
+    sk.mod[sk.size - 8][8] = 1;
+  }
+  function qrApplyVersion(sk, version) {
+    if (version < 7) return;
+    const bits = qrVersionBits(version);
+    for (let i = 0; i < 18; i++) {
+      const b = (bits >> i) & 1;
+      sk.mod[Math.floor(i / 3)][sk.size - 11 + (i % 3)] = b;
+      sk.mod[sk.size - 11 + (i % 3)][Math.floor(i / 3)] = b;
+    }
+  }
+  // The four penalty rules, lower is better. This is what decides which of
+  // the eight masks ships: all eight are valid symbols, but the winner is the
+  // one a phone camera locks onto fastest in bad light on a noticeboard.
+  function qrPenalty(mod, size) {
+    let score = 0;
+    // Rule 1: runs of five or more same-coloured modules in a line.
+    for (let i = 0; i < size; i++) {
+      const readers = [(k) => mod[i][k], (k) => mod[k][i]];
+      for (const read of readers) {
+        let run = 1;
+        for (let k = 1; k < size; k++) {
+          if (read(k) === read(k - 1)) { run++; if (run === 5) score += 3; else if (run > 5) score += 1; }
+          else run = 1;
+        }
+      }
+    }
+    // Rule 2: every 2x2 block of a single colour.
+    for (let r = 0; r < size - 1; r++) {
+      for (let c = 0; c < size - 1; c++) {
+        const v = mod[r][c];
+        if (v === mod[r][c + 1] && v === mod[r + 1][c] && v === mod[r + 1][c + 1]) score += 3;
+      }
+    }
+    // Rule 3: the 1:1:3:1:1 finder look-alike with four light modules beside
+    // it - the pattern that makes a scanner mistake noise for a corner.
+    const p1 = [1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0];
+    const p2 = [0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1];
+    for (let i = 0; i < size; i++) {
+      for (let k = 0; k + 11 <= size; k++) {
+        let h1 = true, h2 = true, v1 = true, v2 = true;
+        for (let j = 0; j < 11; j++) {
+          if (mod[i][k + j] !== p1[j]) h1 = false;
+          if (mod[i][k + j] !== p2[j]) h2 = false;
+          if (mod[k + j][i] !== p1[j]) v1 = false;
+          if (mod[k + j][i] !== p2[j]) v2 = false;
+        }
+        if (h1) score += 40;
+        if (h2) score += 40;
+        if (v1) score += 40;
+        if (v2) score += 40;
+      }
+    }
+    // Rule 4: how far the dark/light balance strays from 50/50.
+    let dark = 0;
+    for (let r = 0; r < size; r++) for (let c = 0; c < size; c++) dark += mod[r][c];
+    score += Math.floor(Math.abs((dark * 100) / (size * size) - 50) / 5) * 10;
+    return score;
+  }
+  // The only entry point. Returns { size, version, mask, modules } where
+  // modules[row][col] is 1 for a dark module, or null when the text is longer
+  // than version 12 at level M can carry.
+  function qrEncode(text) {
+    const bytes = [];
+    for (const ch of String(text)) {
+      const cp = ch.codePointAt(0);
+      if (cp < 0x80) bytes.push(cp);
+      else if (cp < 0x800) bytes.push(0xc0 | (cp >> 6), 0x80 | (cp & 63));
+      else if (cp < 0x10000) bytes.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63));
+      else bytes.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 63), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63));
+    }
+    const version = qrPickVersion(bytes.length);
+    if (!version) return null;
+    const codewords = qrInterleave(qrCodewords(bytes, version), version);
+    const base = qrSkeleton(version);
+    qrPlaceData(base, codewords);
+    let best = null;
+    for (let mask = 0; mask < 8; mask++) {
+      const mod = base.mod.map((row) => Uint8Array.from(row));
+      for (let r = 0; r < base.size; r++) {
+        for (let c = 0; c < base.size; c++) {
+          if (!base.fixed[r][c] && QR_MASKS[mask](r, c)) mod[r][c] ^= 1;
+        }
+      }
+      const sk = { size: base.size, mod: mod, fixed: base.fixed };
+      qrApplyFormat(sk, mask);
+      qrApplyVersion(sk, version);
+      const score = qrPenalty(mod, base.size);
+      if (!best || score < best.score) best = { score: score, mod: mod, mask: mask };
+    }
+    return { size: base.size, version: version, mask: best.mask, modules: best.mod };
+  }
+
+  // ---- The deep link ------------------------------------------------------
+  //
+  // SHAPE: <origin><path>?tab=community&invite=<code>
+  //
+  // Both halves are existing conventions, not new ones. `?tab=` is app.js's
+  // own boot parameter (VALID_TABS, app.js:83) and "community" is already a
+  // valid value - so the link lands on the right top-level tab with no
+  // cross-file change at all. `?invite=` is the second query parameter this
+  // app has ever had, and it follows `?notif=`'s rules exactly (app.js:287):
+  // read once at boot, stripped from the URL immediately, consumed by
+  // cloud.js. It is NOT a /community/... path deep link like the
+  // notification targets resolveNotifTarget() parses - those are internal
+  // route strings the server writes into notifications.deep_link and never
+  // appear in the address bar. This one has to survive being typed, printed,
+  // and opened cold on a device that has never run the app, which on a
+  // static host (GitHub Pages, no rewrites) means a query on a real file
+  // path and nothing else.
+  //
+  // Same client-side shape redeem_invite_code enforces server-side. A code
+  // that does not match is dropped rather than pre-filled, so a mistyped or
+  // tampered link never reaches the RPC and never shows the member an error
+  // about something they did not type.
+  const INVITE_CODE_PATTERN = /^[a-f0-9]{40,128}$/;
+  function inviteDeepLink(code) {
+    if (!INVITE_CODE_PATTERN.test(String(code || ""))) return "";
+    const loc = window.location || {};
+    const origin = String(loc.origin || "");
+    if (!origin || origin === "null") return "";
+    return origin + String(loc.pathname || "/") + "?tab=community&invite=" + code;
+  }
+  // Read at boot, exactly once, and stripped from the address bar before
+  // anything renders.
+  //
+  // AN INVITE CODE IS A LIVE CREDENTIAL, and a URL is the leakiest place a
+  // credential can sit: it lands in browser history, in the back-stack, in
+  // whatever the member screenshots, and in the Referer of any later
+  // navigation. history.replaceState() below removes it from all of those
+  // the moment it has been read into memory - the same treatment, for the
+  // same reason, that ?notif= gets in app.js. Nothing here logs the code,
+  // and no analytics event carries it: track() is never called on this path.
+  function captureInviteDeepLink() {
+    let code = "";
+    try {
+      const search = String((window.location && window.location.search) || "");
+      if (!search || search.indexOf("invite=") === -1) return;
+      code = String(new URLSearchParams(search).get("invite") || "").trim().toLowerCase();
+      const url = new URL(window.location.href);
+      url.searchParams.delete("invite");
+      // Strip first, validate second: a malformed code must leave the URL too.
+      window.history.replaceState(null, "", url.pathname + (url.search || "") + url.hash);
+    } catch (e) { return; /* an exotic URL is not worth breaking boot over */ }
+    if (!INVITE_CODE_PATTERN.test(code)) return;
+    state.ui.inviteCodeDraft = code;
+    // Land on the invite step itself rather than the neutral
+    // log-in-or-start-fresh screen. Someone who scanned a joining QR has
+    // already answered that question. renderCommunityApp()'s own gates still
+    // decide everything else: an existing member with a redemption never sees
+    // the invite screen at all, and the "כבר יש לכם חשבון?" link on it puts
+    // the login form back for a returning member who scanned by mistake.
+    state.signupStarted = true;
+  }
+  captureInviteDeepLink();
+
+  // ---- Rendering, sharing and printing the QR ------------------------------
+  const INVITE_QR = Object.freeze({
+    // 720px square: eight times the largest symbol this can produce
+    // (version 12 is 73 modules plus an 8-module quiet zone), so every module
+    // is a whole number of pixels with no resampling blur, and big enough to
+    // print at 6cm without a scanner hunting.
+    PIXELS: 720,
+    // Four modules of light margin on every side. The spec's minimum, and the
+    // single most common reason a QR that "looks fine" will not scan.
+    QUIET: 4,
+    FILE_NAME: "haimunia-invite-qr.png",
+  });
+  // Pure black on pure white, deliberately NOT the app's dark palette. A
+  // scanner needs dark modules on a light ground; the brand-coloured card
+  // buildOutwardShareSpec() paints is the right answer for a result someone
+  // posts to Instagram and the wrong one for something a camera has to read.
+  function paintInviteQr(ctx, matrix, pixels) {
+    const modules = matrix.size + INVITE_QR.QUIET * 2;
+    const scale = Math.floor(pixels / modules);
+    const offset = Math.floor((pixels - scale * modules) / 2);
+    ctx.fillStyle = "#FFFFFF";
+    ctx.fillRect(0, 0, pixels, pixels);
+    ctx.fillStyle = "#000000";
+    for (let r = 0; r < matrix.size; r++) {
+      for (let c = 0; c < matrix.size; c++) {
+        if (!matrix.modules[r][c]) continue;
+        ctx.fillRect(
+          offset + (c + INVITE_QR.QUIET) * scale,
+          offset + (r + INVITE_QR.QUIET) * scale,
+          scale, scale,
+        );
+      }
+    }
+  }
+  // outwardCreateCanvas()/outwardCanvasToBlob() are the outward-share work's
+  // own OffscreenCanvas-or-<canvas> and convertToBlob-or-toBlob shims
+  // (5c08110), reused rather than re-derived; OUTWARD_CARD.MIME is already
+  // image/png. Canvas drawing and toBlob are not CSP-governed, and the object
+  // URL is only ever an <img src>, never a fetch() - connect-src 'self' does
+  // not cover blob:, so fetching our own object URL would be blocked.
+  async function renderInviteQrBlob(link) {
+    const matrix = qrEncode(link);
+    if (!matrix) throw new Error("qr_too_long");
+    const canvas = outwardCreateCanvas(INVITE_QR.PIXELS, INVITE_QR.PIXELS);
+    const ctx = canvas.getContext ? canvas.getContext("2d") : null;
+    if (!ctx) throw new Error("no_canvas");
+    paintInviteQr(ctx, matrix, INVITE_QR.PIXELS);
+    const blob = await outwardCanvasToBlob(canvas);
+    if (!blob) throw new Error("no_canvas");
+    return blob;
+  }
+  function revokeInviteQrPreview() {
+    const q = state.admin.inviteQr;
+    if (q && q.previewUrl && typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
+      try { URL.revokeObjectURL(q.previewUrl); } catch (e) { /* already revoked */ }
+    }
+  }
+  const INVITE_QR_ERROR_TEXT = Object.freeze({
+    qr_too_long: "הכתובת של האפליקציה ארוכה מדי לקוד QR. אפשר לשתף את הקישור או את הקוד עצמו.",
+    no_canvas: "הדפדפן הזה לא הצליח לצייר את הקוד. אפשר לשתף את הקישור או את הקוד עצמו.",
+    bad_code: "הקוד שהתקבל אינו בפורמט תקין. יש ליצור קוד חדש.",
+  });
+  function inviteQrErrorText(key) { return INVITE_QR_ERROR_TEXT[key] || INVITE_QR_ERROR_TEXT.no_canvas; }
+  // Opened by the two create paths only. admin_invite_code_list() never
+  // returns the code itself - the plaintext exists in the client for exactly
+  // one render, right after creation - so this is not a "pick a code and show
+  // its QR" panel and cannot be. That constraint is the right one anyway: the
+  // QR is generated at the moment a code is made, printed, and then the
+  // plaintext is gone from the client for good.
+  function openInviteQr(code, kind) {
+    const link = inviteDeepLink(code);
+    revokeInviteQrPreview();
+    state.admin.inviteQr = {
+      code: String(code || ""), kind: kind || "shared", link: link,
+      status: link ? "rendering" : "failed", previewUrl: "", blob: null,
+      sharing: false, result: "", error: link ? "" : "bad_code",
+    };
+    if (link) refreshInviteQr();
+  }
+  function closeInviteQr() {
+    revokeInviteQrPreview();
+    state.admin.inviteQr = {
+      code: "", kind: "", link: "", status: "idle", previewUrl: "",
+      blob: null, sharing: false, result: "", error: "",
+    };
+    // The other half of the pairing described on dismissInviteCodeCreated():
+    // the two reveal cards hold the same plaintext, so hiding the QR hides
+    // them too.
+    state.admin.inviteCodes.created = null;
+    state.admin.invites.created = null;
+    rerender();
+  }
+  async function refreshInviteQr() {
+    const q = state.admin.inviteQr;
+    if (!q || !q.link) return;
+    q.status = "rendering";
+    q.error = "";
+    rerender();
+    let blob = null;
+    try {
+      blob = await renderInviteQrBlob(q.link);
+    } catch (err) {
+      if (state.admin.inviteQr !== q) return; // closed or replaced mid-render
+      q.status = "failed";
+      q.blob = null;
+      q.error = (err && err.message) || "no_canvas";
+      return rerender();
+    }
+    if (state.admin.inviteQr !== q) return;
+    revokeInviteQrPreview();
+    q.blob = blob;
+    q.previewUrl = (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") ? URL.createObjectURL(blob) : "";
+    q.status = "ready";
+    rerender();
+  }
+  // The text that rides along with the image. It carries the link, which
+  // carries the code - that is the whole point of "send it to their phone",
+  // and it only ever happens from this button's own click.
+  function inviteShareText(link) {
+    const club = (state.club.row && state.club.row.name) || "המועדון";
+    return `הצטרפות ל${club} באפליקציית האימוניה:\n${link}`;
+  }
+  // Same three tiers, same order and the same feature detection as
+  // performOutwardShare(): image first, text second, clipboard last, with
+  // AbortError read as "the member changed their mind" rather than a failure.
+  // outwardShareFile/outwardCanShareFile/outwardCanShareText/outwardCanCopy
+  // and the OUTWARD_SHARE_RESULTS vocabulary are reused as-is; only the
+  // payload differs, which is why this is a sibling of that function rather
+  // than a spec contorted to fit it.
+  async function performInviteShare(link, file) {
+    const text = inviteShareText(link);
+    const title = "הצטרפות למועדון";
+    if (outwardCanShareFile(file)) {
+      try {
+        await navigator.share({ files: [file], text: text, title: title });
+        return OUTWARD_SHARE_RESULTS.SHARED_IMAGE;
+      } catch (err) {
+        if (err && err.name === "AbortError") return OUTWARD_SHARE_RESULTS.CANCELLED;
+      }
+    }
+    if (outwardCanShareText()) {
+      try {
+        await navigator.share({ text: text, title: title });
+        return OUTWARD_SHARE_RESULTS.SHARED_TEXT;
+      } catch (err) {
+        if (err && err.name === "AbortError") return OUTWARD_SHARE_RESULTS.CANCELLED;
+      }
+    }
+    if (outwardCanCopy()) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return OUTWARD_SHARE_RESULTS.COPIED;
+      } catch (err) { /* fall through to the honest failure */ }
+    }
+    return OUTWARD_SHARE_RESULTS.FAILED;
+  }
+  async function shareInviteQr() {
+    const q = state.admin.inviteQr;
+    if (!q || !q.link || q.sharing) return;
+    q.sharing = true;
+    q.result = "";
+    rerender();
+    const result = await performInviteShare(q.link, outwardShareFile(q.blob));
+    if (state.admin.inviteQr !== q) return;
+    q.sharing = false;
+    q.result = result;
+    setMessage(outwardShareResultText(result));
+    if (typeof window.showToast === "function") window.showToast(outwardShareResultText(result));
+    rerender();
+  }
+  function copyInviteLink(link) {
+    if (!link) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(link).then(() => setMessage("הקישור הועתק")).catch(() => setMessage("ההעתקה נכשלה, אפשר להעתיק ידנית"));
+    } else {
+      setMessage("ההעתקה נכשלה, אפשר להעתיק ידנית");
+    }
+  }
+  // The noticeboard path. window.print() rather than a generated PDF or a
+  // popup: index.html's own @media print rules hide the whole app except
+  // [data-invite-print], so what comes out of the printer is the card below
+  // and nothing else. No new window (which a popup blocker would eat), no
+  // download (the artifact sandbox and some in-app browsers refuse
+  // script-started saves), and nothing that needs a CSP change.
+  function printInviteQr() {
+    const q = state.admin.inviteQr;
+    if (!q || q.status !== "ready") return;
+    if (typeof window.print === "function") window.print();
+  }
+  // Last resort, and the one path that works wherever a canvas does: save the
+  // PNG. Same <a download> shape and same reasoning as outwardDownloadImage().
+  function downloadInviteQr() {
+    const q = state.admin.inviteQr;
+    if (!q || !q.previewUrl) return;
+    const a = document.createElement("a");
+    a.href = q.previewUrl;
+    a.download = INVITE_QR.FILE_NAME;
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setMessage("קוד ה-QR נשמר במכשיר.");
+  }
+
+  // What a member is walked through, in the order the front desk says it out
+  // loud. Kept as data so the printed card and the on-screen card cannot
+  // drift into two different sets of instructions.
+  const INVITE_QR_STEPS = Object.freeze([
+    "פותחים את המצלמה בטלפון ומכוונים לקוד.",
+    "האפליקציה נפתחת עם קוד ההצטרפות כבר במקום.",
+    "בוחרים שם כניסה וסיסמה, וזהו.",
+  ]);
+  // Said plainly, next to the thing it is about. A joining code is a live
+  // credential: anyone who photographs this sheet can join the club as a
+  // member, and a manager deciding where to pin it deserves to know that
+  // before they pin it rather than after.
+  const INVITE_QR_WARNING = "כל מי שסורק את הקוד יכול להצטרף למועדון. אין לפרסם אותו מחוץ למועדון, ורצוי לכבות את הקוד כשמסיימים לגייס.";
+
+  function renderInviteQrPanel() {
+    // Exactly the union of the two panels that can create a code. A coach who
+    // holds neither never sees this, and never could have created a code to
+    // put in it.
+    if (!(hasPerm(PERM.INVITE_MANAGE_CODES) || hasPerm(PERM.MEMBER_INVITE) || isAdmin())) return "";
+    const q = state.admin.inviteQr;
+    const head = sectionHead("var(--energy)", "קוד QR להצטרפות", true);
+    if (!q.code) {
+      return `<div class="ach-section" style="margin-top:18px;" data-invite-qr-section="1">${head}${emptyStateHtml({
+        key: "invite-qr", icon: "people",
+        headline: "כאן ייווצר קוד QR להדפסה ולשיתוף",
+        body: "כל קוד הצטרפות שתיצרו למטה מקבל כאן קוד QR שנסרק ישר מהמצלמה, פותח את האפליקציה וממלא את הקוד לבד.",
+        when: "הקוד מוצג פעם אחת בלבד, מיד אחרי היצירה — אז כדאי להדפיס או לשתף אותו אז.",
+      })}</div>`;
+    }
+    const kindLabel = q.kind === "person" ? "הזמנה אישית" : "קוד הצטרפות משותף";
+    let figure;
+    if (q.status === "ready" && q.previewUrl) {
+      figure = `<img src="${esc(q.previewUrl)}" width="240" height="240" alt="קוד QR להצטרפות למועדון" data-invite-qr-image="1" style="width:240px;height:240px;max-width:100%;border-radius:12px;background:#FFFFFF;"/>`;
+    } else if (q.status === "failed") {
+      figure = `<div class="empty" style="margin:0;" data-invite-qr-error="1">${bidiText(inviteQrErrorText(q.error))}<div class="chip-row" style="justify-content:center;"><button class="chip-btn" data-community-action="invite-qr-retry">ניסיון חוזר</button></div></div>`;
+    } else {
+      figure = `<div aria-busy="true" data-invite-qr-skeleton="1" style="width:240px;height:240px;max-width:100%;border-radius:12px;background:var(--border);opacity:.35;"></div>`;
+    }
+    // Every exit the device might actually have, and never a control that
+    // cannot work: share is only offered where navigator.share exists at all,
+    // and the download sits underneath as the path that always does.
+    const shareBtn = outwardCanShareText()
+      ? `<button class="chip-btn primary"${q.sharing ? " disabled" : ""} data-community-action="invite-qr-share" style="min-height:44px;">${q.sharing ? "משתפים…" : "שליחה לטלפון"}</button>`
+      : "";
+    const controls = `<div class="chip-row" style="margin-top:10px;">
+      ${shareBtn}
+      <button class="chip-btn"${q.status === "ready" ? "" : " disabled"} data-community-action="invite-qr-print" style="min-height:44px;">הדפסה</button>
+      <button class="chip-btn"${q.status === "ready" ? "" : " disabled"} data-community-action="invite-qr-download" style="min-height:44px;">שמירת תמונה</button>
+    </div>`;
+    // Rule 4 of the invite work: the QR is useless over the phone. The raw
+    // code and the raw link both stay visible and copyable beside it, in
+    // dir="ltr" mono so a hex string is never reordered by the Hebrew around
+    // it, and with the same "shown once" warning the creation card carries.
+    const credentials = `<div class="chart-card" style="margin-top:10px;">
+      <div class="field-label" style="margin-bottom:4px;">${bidiText(`${kindLabel} — הקוד עצמו`)}</div>
+      <div class="flex gap-10" style="align-items:center;flex-wrap:wrap;">
+        <code class="mono" dir="ltr" style="font-size:13px;word-break:break-all;" data-invite-qr-code="1">${esc(q.code)}</code>
+        <button class="chip-btn" data-community-action="copy-invite-code" data-code="${esc(q.code)}">העתקת הקוד</button>
+      </div>
+      <div class="field-label" style="margin:10px 0 4px;">הקישור המלא</div>
+      <div class="flex gap-10" style="align-items:center;flex-wrap:wrap;">
+        <code class="mono" dir="ltr" style="font-size:12px;word-break:break-all;" data-invite-qr-link="1">${esc(q.link)}</code>
+        <button class="chip-btn"${q.link ? "" : " disabled"} data-community-action="copy-invite-link" data-link="${esc(q.link)}">העתקת הקישור</button>
+      </div>
+    </div>`;
+    const steps = `<ol style="margin:10px 0 0;padding-inline-start:20px;color:var(--steel);font-size:12.5px;line-height:1.8;">${INVITE_QR_STEPS.map((s) => `<li>${bidiText(s)}</li>`).join("")}</ol>`;
+    // The printed sheet. Always in the DOM when a QR is ready (a print
+    // stylesheet cannot reveal markup that was never rendered), visually
+    // hidden on screen, and the only thing @media print leaves visible.
+    const printCard = q.status === "ready" && q.previewUrl ? `<div data-invite-print="1" aria-hidden="true" class="invite-print-card">
+      <div class="invite-print-club">${bidiText((state.club.row && state.club.row.name) || "המועדון")}</div>
+      <div class="invite-print-title">הצטרפות לקהילת המועדון</div>
+      <img src="${esc(q.previewUrl)}" alt="" class="invite-print-qr"/>
+      <ol class="invite-print-steps">${INVITE_QR_STEPS.map((s) => `<li>${bidiText(s)}</li>`).join("")}</ol>
+      <div class="invite-print-code-label">אם המצלמה לא קוראת, אפשר להקליד את הקוד ידנית:</div>
+      <code class="invite-print-code" dir="ltr">${esc(q.code)}</code>
+    </div>` : "";
+    const resultLine = q.result ? `<div class="footer-note" role="status" style="margin-top:8px;">${bidiText(outwardShareResultText(q.result))}</div>` : "";
+    return `<div class="ach-section" style="margin-top:18px;" data-invite-qr-section="1">${head}
+      <div class="chart-card" style="border-color:var(--brass);">
+        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start;">
+          <div style="flex:0 0 auto;">${figure}</div>
+          <div style="flex:1 1 220px;min-width:200px;">
+            <div style="font-weight:800;font-size:14px;">${bidiText(kindLabel)}</div>
+            ${steps}
+          </div>
+        </div>
+        ${controls}
+        ${resultLine}
+        <div class="footer-note" style="margin-top:10px;color:var(--brass);">${bidiText(INVITE_QR_WARNING)}</div>
+        <div class="chip-row" style="margin-top:8px;"><button class="link-btn" data-community-action="invite-qr-close">כיבוי הקוד מהמסך</button></div>
+      </div>
+      ${credentials}
+      ${printCard}
+    </div>`;
+  }
+
   function renderInviteManagement() {
     const shared = renderSharedCodesPanel();
     const person = renderPersonInvitesPanel();
@@ -5531,12 +6271,33 @@
     state.ui.tab = tab;
     rerender();
   }
+  // Where the four retired sub-tab ids land now. The operator-depth rework
+  // collapsed Manage's seven sub-tabs into three (see renderManageApp), and
+  // these are the four whose id no longer names a tab. They are kept as
+  // aliases rather than deleted because setManageTab() is reachable from
+  // outside this file's own markup - a cross-tab jump, a stale render, or a
+  // caller written against the old ids - and silently landing on the first
+  // tab because the lookup missed is worse than landing where the content
+  // actually went.
+  const MANAGE_TAB_ALIASES = Object.freeze({
+    dashboard: "members",   // the health score and the club's own numbers
+    onboarding: "moderation",
+    settings: "moderation",
+    analytics: "moderation",
+  });
   // The Manage tab's own sub-tab switch. No realtime teardown and no feed-
-  // impression flush like setCommunityTab above - none of Manage's 7
-  // sub-tabs open a realtime channel or a feed session, so there is nothing
-  // to tear down when moving between them.
-  function setManageTab(tab) {
-    state.ui.manageTab = tab;
+  // impression flush like setCommunityTab above - none of Manage's sub-tabs
+  // opens a realtime channel or a feed session, so there is nothing to tear
+  // down when moving between them.
+  //
+  // scrollTo is the second half of the collapse: with five former sub-tabs
+  // now stacked inside one "ניהול" tab, a control that only switched the tab
+  // would drop a manager at the top of a long page and leave them to hunt.
+  // Every caller that knows which SECTION it means names it, and
+  // afterRenderManage() scrolls there once the new markup exists.
+  function setManageTab(tab, scrollTo) {
+    state.ui.manageTab = MANAGE_TAB_ALIASES[tab] || tab;
+    state.ui.manageScrollTo = String(scrollTo || "");
     rerender();
   }
 
@@ -14042,7 +14803,19 @@
     if ((state.profileLoadError && !state.profile) || (state.redemptionLoadError && !state.redemption)) {
       return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">בעיה בטעינת הקהילה</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">לא הצלחנו לטעון את פרטי החשבון. ייתכן שזו בעיית רשת זמנית.</div><button class="save-btn" data-community-action="retry-join-load">ניסיון חוזר</button></div>`;
     }
-    if (!state.redemption) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">קוד הזמנה למועדון</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">הקהילה פתוחה רק למי שקיבל/ה קוד הזמנה מהמאמן/ת. הקוד לא נוגע לרישום האימונים עצמו — הוא רק פותח את לשונית הקהילה.</div><form id="communityInviteCode">${field("communityInviteCode", "code", "קוד הזמנה", `<input class="text-input" name="code" dir="ltr" placeholder="קוד הזמנה" value="${esc(state.ui.inviteCodeDraft)}" data-invite-code required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">אישור קוד</button></form>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
+    // The invite step. Two things landed here with the joining QR:
+    //
+    // 1. A prefilled note. captureInviteDeepLink() fills state.ui.inviteCodeDraft
+    //    from ?invite=, so someone who scanned a flyer arrives with the field
+    //    already full - and a form that fills itself, unexplained, reads as a
+    //    bug rather than a convenience. The line says where it came from and
+    //    is only rendered when there is genuinely a prefilled draft.
+    // 2. A way back to the login form (see the back-to-login handler). The
+    //    deep link sets signupStarted, which skips the neutral
+    //    log-in-or-start-fresh screen - correct for a genuine new member,
+    //    wrong for a returning one who scanned the same flyer, and this is
+    //    their way out.
+    if (!state.redemption) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">קוד הזמנה למועדון</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">הקהילה פתוחה רק למי שקיבל/ה קוד הזמנה מהמאמן/ת. הקוד לא נוגע לרישום האימונים עצמו — הוא רק פותח את לשונית הקהילה.</div>${state.ui.inviteCodeDraft ? `<div class="footer-note" data-invite-prefilled="1" style="margin-bottom:10px;color:var(--brass);">${bidiText("הקוד מולא אוטומטית מהקישור שנסרק. אפשר להמשיך.")}</div>` : ""}<form id="communityInviteCode">${field("communityInviteCode", "code", "קוד הזמנה", `<input class="text-input" name="code" dir="ltr" placeholder="קוד הזמנה" value="${esc(state.ui.inviteCodeDraft)}" data-invite-code required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">אישור קוד</button></form><button class="link-btn" data-community-action="back-to-login" style="display:block;margin:16px auto 0;">כבר יש לכם חשבון? התחברות</button>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     // Right after the code, before anything else — this is what turns the
     // bootstrap anonymous session into a real, log-in-from-any-device
     // account. state.user.is_anonymous flips to false the moment
@@ -14513,12 +15286,79 @@
   // visible to any coach-and-up (isStaff()), same access Account already
   // gave these sections; nothing here narrows or widens who can do what.
   //
-  // renderRegistrationFunnel() moved here (from inside
-  // renderAdminAnalyticsDashboard()) to sit next to the onboarding content
-  // it measures. Its own data loader (loadRegistrationFunnel, ~line 2594)
-  // already gates on the same permission, so this is a second, matching
-  // gate for a tidy empty state rather than the only one.
-  function renderManageDashboard() {
+  // renderRegistrationFunnel() renders from INSIDE
+  // renderAdminAnalyticsDashboard(), not as a sibling call - it sits next to
+  // the numbers it explains. Its own data loader (loadRegistrationFunnel)
+  // gates on the same permission the dashboard does, so it carries a second,
+  // matching gate for a tidy empty state rather than the only one.
+  //
+  // ---- The three-tab Manage screen ----------------------------------------
+  //
+  // WHAT CHANGED AND WHY. Manage opened onto seven sub-tabs - דשבורד, חברים,
+  // קליטה, מודרציה, הגדרות, אנליטיקס, הזמנות - with 38 sections spread across
+  // them, and the single most common thing a gym manager does (add a member)
+  // was behind the last pill. The box owner scored member experience 8/10 and
+  // operator depth 3/10, and this screen is most of that 3.
+  //
+  // Now three, ordered by how often a manager actually does the thing:
+  //
+  //   1. הוספת חבר/ה - the joining QR, the code, share and print, and the
+  //      signups that stalled halfway. Done weekly.
+  //   2. המועדון     - the roster, who is new, who is drifting. Read weekly.
+  //   3. ניהול       - moderation, club settings, analytics, the audit log,
+  //      onboarding content. Rare, and administrative.
+  //
+  // NOTHING WAS DELETED. Every section that rendered before still renders,
+  // behind the same permission it always had; the five sections whose sub-tab
+  // id disappeared are stacked inside tab 3 with a jump row above them
+  // labelled with their OLD names, so a manager who knows where something was
+  // can still get to it in one tap. MANAGE_TAB_ALIASES (see setManageTab)
+  // covers the same ground for anything navigating by the retired ids.
+  //
+  // The ids of the three surviving tabs are deliberately the old
+  // invites/members/moderation, not fresh names matching the new labels. Those
+  // three strings are load-bearing outside this file - two browser-check
+  // scripts and a dozen test files select on
+  // [data-community-action="set-manage-tab"][data-tab="..."], and
+  // index.html's own desktop-width rule keys off #manageTab-moderation.
+  // Keeping them is what makes this a re-home rather than a rename with a
+  // trail of collateral edits.
+
+  // The five areas stacked inside tab 3, in render order. `label` is the name
+  // each one had when it was its own sub-tab - that is the whole point of the
+  // jump row, so it must stay the old wording, not the new heading.
+  const MANAGE_ADMIN_AREAS = [
+    { id: "manageArea-moderation", label: "מודרציה" },
+    { id: "manageArea-audit", label: "יומן פעולות" },
+    { id: "manageArea-settings", label: "הגדרות" },
+    { id: "manageArea-analytics", label: "אנליטיקס" },
+    { id: "manageArea-onboarding", label: "קליטה" },
+  ];
+  // One plain Hebrew line per tab, saying what the tab is FOR. A manager has
+  // to be able to understand the screen before using it, and three unlabelled
+  // pills do not do that on their own - the same register d540a34's empty
+  // states set.
+  const MANAGE_TAB_INTRO = Object.freeze({
+    invites: "יצירת קוד הצטרפות למועדון, שליחה או הדפסה שלו, ומעקב אחרי מי שהתחיל להירשם ולא סיים.",
+    // Deliberately describes what is ON this tab and no more. An earlier
+    // draft promised "ומי לא נכנס כבר הרבה זמן" - the drifting list, which
+    // lives on the Community coach tab, not here. What is here is the
+    // roster (newest-joined first), the club's own health number and the
+    // role controls; the drifting SIGNAL is the attention strip above the
+    // tab bar, which is a count and a shortcut, not a list.
+    members: "רשימת חברי המועדון לפי סדר ההצטרפות, ותמונת המצב הכללית של הקהילה.",
+    moderation: "כלים שמשתמשים בהם לעיתים רחוקות: דיווחים, הגדרות המועדון, נתונים, יומן פעולות ותוכן הקליטה.",
+  });
+  function manageTabIntro(id) {
+    const text = MANAGE_TAB_INTRO[id];
+    return text ? `<div class="footer-note" data-manage-intro="${esc(id)}" style="margin:0 0 12px;line-height:1.7;">${bidiText(text)}</div>` : "";
+  }
+  // A titled wrapper so each stacked area inside tab 3 is a real scroll
+  // target for the jump row above it.
+  function manageArea(id, html) {
+    return `<div id="${esc(id)}" data-manage-area="${esc(id)}">${html}</div>`;
+  }
+  function renderManageAttention() {
     // Redesign, Phase 3 fix: this row used to be gated on canModerate alone
     // (truthy for any moderator regardless of the actual count), so a
     // moderator with a genuinely empty queue permanently saw a red
@@ -14533,18 +15373,29 @@
     // on its own landing screen that every one of its members was inactive.
     // A 'no_data' member is not an alert; they are the absence of one.
     const inactiveCount = state.club.inactiveMembers.filter((m) => m.state === "lapsed").length;
+    // Both shortcuts now carry a data-scroll as well as a data-tab. They used
+    // to live on a "dashboard" sub-tab of their own and only had to switch
+    // tabs; this strip sits ABOVE the tab bar and is visible from all three
+    // tabs, so "go to Members" tapped while already on Members would have
+    // been a control that does nothing. Naming the section makes it land
+    // somewhere either way - see setManageTab()'s scrollTo.
     const attentionRows = [
-      pendingReports ? `<button class="log-row" data-community-action="set-manage-tab" data-tab="moderation" style="width:100%;text-align:right;border:1px solid var(--red);border-radius:10px;padding:10px 12px;background:transparent;cursor:pointer;">
+      pendingReports ? `<button class="log-row" data-community-action="set-manage-tab" data-tab="moderation" data-scroll="manageArea-moderation" style="width:100%;text-align:right;border:1px solid var(--red);border-radius:10px;padding:10px 12px;background:transparent;cursor:pointer;">
           <span>${pendingReports} דיווחים ממתינים למודרציה</span><span aria-hidden="true">‹</span>
         </button>` : "",
-      inactiveCount ? `<button class="log-row" data-community-action="set-manage-tab" data-tab="members" style="width:100%;text-align:right;border:1px solid var(--yellow);border-radius:10px;padding:10px 12px;background:transparent;cursor:pointer;">
+      inactiveCount ? `<button class="log-row" data-community-action="set-manage-tab" data-tab="members" data-scroll="manageArea-roster" style="width:100%;text-align:right;border:1px solid var(--yellow);border-radius:10px;padding:10px 12px;background:transparent;cursor:pointer;">
           <span>${bidiText(`${inactiveCount} חברים לא נכנסו לאפליקציה לאחרונה`)}</span><span aria-hidden="true">‹</span>
         </button>` : "",
     ].filter(Boolean);
-    const attentionHtml = attentionRows.length
-      ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "דורש תשומת לב")}<div class="log-list">${attentionRows.join("")}</div></div>`
-      : `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "דורש תשומת לב")}<div class="empty">אין דבר שדורש תשומת לב כרגע ✓</div></div>`;
-    return renderCommunityHealthScore() + attentionHtml;
+    // Moved out of the retired "דשבורד" sub-tab to sit above the tab bar,
+    // where it is on screen whichever of the three tabs is open. An alert
+    // that only exists on the tab nobody opens is not an alert; the pending-
+    // reports count is the one thing on this screen that is genuinely
+    // time-sensitive, and it now shares the drawing-attention job with the
+    // moderation badge on tab 3 rather than being hidden behind it.
+    return attentionRows.length
+      ? `<div class="ach-section" style="margin-top:0;">${sectionHead("var(--red)", "דורש תשומת לב")}<div class="log-list">${attentionRows.join("")}</div></div>`
+      : `<div class="ach-section" style="margin-top:0;">${sectionHead("var(--green)", "דורש תשומת לב")}<div class="empty">אין דבר שדורש תשומת לב כרגע ✓</div></div>`;
   }
   window.renderManageApp = function () {
     // Redesign, Phase 3 fix: renderTabHeader("manage") resolves through
@@ -14555,30 +15406,59 @@
     // through a registry that deliberately doesn't know this page exists
     // for them.
     if (!isStaff()) return `<h1 class="page-title">ניהול</h1><div class="empty">אין הרשאה לצפות בעמוד זה.</div>`;
+    // Tab 3's five areas, each still self-gated exactly as it was. The two
+    // permission fallbacks below are the same strings the retired "הגדרות"
+    // and "אנליטיקס" sub-tabs carried: a coach who is staff enough to be
+    // here but holds neither community.club.manage_modules nor
+    // community.analytics.view still gets told why the space is empty
+    // instead of finding nothing at all. Kept per-area rather than merged
+    // into one notice so that what a given coach sees is byte-identical to
+    // what they saw on the old sub-tabs.
+    //
+    // renderAdminAnalyticsDashboard() still includes renderRegistrationFunnel()
+    // nested inside itself (see that function's own comment).
+    const adminAreas = [
+      manageArea("manageArea-moderation", renderModeration()),
+      manageArea("manageArea-audit", renderAuditLog()),
+      manageArea("manageArea-settings", renderClubModulesPanel() || `<div class="empty">אין לך הרשאה לצפות בהגדרות המודולים.</div>`),
+      manageArea("manageArea-analytics", (renderAdminAnalyticsDashboard() + renderRetentionCorrelations()) || `<div class="empty">אין לך הרשאה לצפות באנליטיקס.</div>`),
+      manageArea("manageArea-onboarding", renderOnboardingContentEditor() + renderIntroCarouselContentEditor()),
+    ].join("");
+    // The "I know where this used to be" row. Old sub-tab names, one tap,
+    // scrolls to the section. Every button here is a real destination - the
+    // areas are unconditionally in the DOM above, including the two
+    // permission notices, so none of these can scroll to nothing.
+    const adminJumpRow = `<div class="chip-row" data-manage-jump-row="1" style="margin:0 0 12px;">${MANAGE_ADMIN_AREAS.map((a) =>
+      `<button class="chip-btn" data-community-action="set-manage-tab" data-tab="moderation" data-scroll="${esc(a.id)}">${esc(a.label)}</button>`).join("")}</div>`;
+
     const manageTabs = [
-      { id: "dashboard", label: "דשבורד", html: renderManageDashboard() },
-      // Five-persona UX audit, defect 3: the unfinished signups sit directly
-      // under the roster, because "who is in the club" and "who tried to join
-      // and did not finish" are the same question asked twice, and the second
-      // one is only findable from where the first is already being read.
-      { id: "members", label: "חברים", html: renderMemberManagement() + renderMemberRoster() + renderIncompleteSignups() },
-      { id: "onboarding", label: "קליטה", html: renderOnboardingContentEditor() + renderIntroCarouselContentEditor() },
-      { id: "moderation", label: "מודרציה", html: renderModeration() + renderAuditLog(), badge: pendingModerationCount() },
-      // Redesign, Phase 3 fix: a coach who is staff-enough to see this whole
-      // tab often holds neither community.club.manage_modules nor
-      // community.analytics.view - both renderClubModulesPanel() and
-      // renderAdminAnalyticsDashboard() correctly self-gate to "" for them,
-      // which used to leave these two sub-tabs rendering nothing at all,
-      // not even an explanation. A real empty state now covers that case
-      // without changing who can do what.
-      { id: "settings", label: "הגדרות", html: renderClubModulesPanel() || `<div class="empty">אין לך הרשאה לצפות בהגדרות המודולים.</div>` },
-      // renderAdminAnalyticsDashboard() still includes renderRegistrationFunnel()
-      // nested inside itself (see that function's own comment) - not a
-      // separate call here.
-      { id: "analytics", label: "אנליטיקס", html: (renderAdminAnalyticsDashboard() + renderRetentionCorrelations()) || `<div class="empty">אין לך הרשאה לצפות באנליטיקס.</div>` },
-      { id: "invites", label: "הזמנות", html: renderInviteManagement() },
+      // 1. The weekly job. The QR panel comes first because creating a code
+      // is what a manager came here to do; the code/invite lists are the
+      // record of what they have created; and the unfinished signups sit
+      // last because "who tried to join and did not finish" is the same
+      // question as "who did I invite", asked from the other end. That
+      // pairing is why the incomplete signups moved off the roster tab
+      // (five-persona UX audit, defect 3, which put them under the roster
+      // for the same reasoning applied to the tabs as they were then).
+      { id: "invites", label: "הוספת חבר/ה", html: renderInviteQrPanel() + renderInviteManagement() + renderIncompleteSignups() },
+      // 2. The weekly read. renderCommunityHealthScore() came off the
+      // retired dashboard sub-tab to sit at the top of it: the club's own
+      // health number is the headline for "how is the club doing", which is
+      // this tab's question, not an analytics card.
+      { id: "members", label: "המועדון", html: renderCommunityHealthScore() + renderMemberManagement() + manageArea("manageArea-roster", renderMemberRoster()) },
+      // 3. The rare and the administrative. Keeps the moderation badge: it
+      // is the one number on this screen that means "someone is waiting",
+      // and burying it inside a tab without it would have been the
+      // regression this rework is supposed to fix.
+      { id: "moderation", label: "ניהול", html: adminJumpRow + adminAreas, badge: pendingModerationCount() },
     ];
+    // Same reconciliation renderCommunityApp() does for state.ui.tab, and
+    // for the same reason: afterRenderManage() reads state.ui.manageTab to
+    // decide which lazy loads to fire, so a stale value (a retired id from a
+    // previous build's persisted state, say) that only the DISPLAY corrects
+    // would render one tab while loading another's data.
     const activeManageTab = manageTabs.find((t) => t.id === state.ui.manageTab) || manageTabs[0];
+    state.ui.manageTab = activeManageTab.id;
     // Same role="tablist"/"tab" convention as the Community sub-tab bar
     // above - see that bar's own comment (COMM-358).
     const manageTabBar = `<div class="subtabbar" role="tablist" aria-label="ניווט בניהול">${manageTabs.map((t) => `<button class="subtabbtn${t.id === activeManageTab.id ? " active" : ""}" id="manageTab-${t.id}" aria-controls="content" data-community-action="set-manage-tab" data-tab="${t.id}" role="tab" aria-selected="${t.id === activeManageTab.id}" tabindex="${t.id === activeManageTab.id ? "0" : "-1"}">${t.label}${t.badge ? `<span class="tab-badge" aria-label="${t.badge} דיווחים ממתינים">${t.badge}</span>` : ""}</button>`).join("")}</div>`;
@@ -14588,7 +15468,9 @@
     // all while there, even though the underlying realtime count kept
     // updating correctly the whole time.
     return `<h1 class="page-title" style="display:flex;align-items:center;justify-content:space-between;gap:10px;"><span>ניהול</span>${renderNotificationBell()}</h1>`
+      + renderManageAttention()
       + manageTabBar
+      + manageTabIntro(activeManageTab.id)
       + (state.ui.message ? `<div class="footer-note" role="status" style="color:var(--brass);margin-bottom:14px;">${esc(state.ui.message)}</div>` : "")
       + activeManageTab.html;
   };
@@ -15039,24 +15921,24 @@
       el.addEventListener("change", () => toggleClubFeature(el.dataset.clubFeature, el.checked));
     });
     // COMM-154. The audit view is lazy: fetched the first time an analytics
-    // holder lands on the Moderation sub-tab (renderAuditLog's new home).
+    // holder lands on the tab renderAuditLog() lives on. Every one of the
+    // four gates below moved with its section in the three-tab rework - the
+    // sub-tab NAMES changed, the permissions and the RPCs did not.
     if (mt === "moderation" && hasPerm(PERM.ANALYTICS_VIEW) && !state.admin.auditLoaded && !state.admin.auditLoading) loadAuditLog(true);
     // COMM-310. Same lazy pattern: the dashboard's default period (this ISO
     // week) is fetched the first time an analytics holder or real admin
-    // lands on the Analytics sub-tab.
-    if (mt === "analytics" && (hasPerm(PERM.ANALYTICS_VIEW) || isAdmin()) && !state.analytics.dashboard.loaded && !state.analytics.dashboard.loading) loadAdminAnalyticsDashboard();
+    // lands on the tab the analytics area now sits in.
+    if (mt === "moderation" && (hasPerm(PERM.ANALYTICS_VIEW) || isAdmin()) && !state.analytics.dashboard.loaded && !state.analytics.dashboard.loading) loadAdminAnalyticsDashboard();
     // COMM-313. Same lazy pattern, its OWN gate: real is_admin() alone, not
     // the ANALYTICS_VIEW-or-admin pair the load just above uses - so a
     // community.analytics.view holder who is not an admin never even
     // triggers the three retention RPCs, matching that this section must
     // not render for them at all.
-    if (mt === "analytics" && isAdmin() && !state.analytics.retention.loaded && !state.analytics.retention.loading) loadRetentionCorrelations();
+    if (mt === "moderation" && isAdmin() && !state.analytics.retention.loaded && !state.analytics.retention.loading) loadRetentionCorrelations();
     // COMM-312. Same lazy pattern and same is_admin()-only gate as COMM-313's
-    // load just above, its own independent trigger. Gated on "dashboard" now
-    // (not "analytics"): the health score moved to the Manage Dashboard
-    // sub-tab, matching the mockup's own layout - the score is the
-    // dashboard's headline number, not one more analytics card.
-    if (mt === "dashboard" && isAdmin() && !state.analytics.health.loaded && !state.analytics.health.loading) loadCommunityHealth();
+    // load just above, its own independent trigger. Fires on "members" now:
+    // the health score is the headline of the club-overview tab.
+    if (mt === "members" && isAdmin() && !state.analytics.health.loaded && !state.analytics.health.loading) loadCommunityHealth();
     // COMM-376. Same lazy pattern, each panel gated on the exact permission
     // its own RPC needs - a coach who only holds community.member.invite
     // triggers the per-person load and never the shared-code one.
@@ -15068,7 +15950,21 @@
     // gate as the roster above - admin_incomplete_signups shares that AUTH
     // exactly, so a coach triggers this load and simply gets no reclaim
     // controls in the rows it renders.
-    if (mt === "members" && isStaff() && !state.admin.incompleteSignups.loaded && !state.admin.incompleteSignups.loading) loadIncompleteSignups(true);
+    // Follows renderIncompleteSignups() onto the "הוספת חבר/ה" tab; same
+    // is_staff() gate as the roster above, which admin_incomplete_signups
+    // shares exactly, so a coach triggers this load and simply gets no
+    // reclaim controls in the rows it renders.
+    if (mt === "invites" && isStaff() && !state.admin.incompleteSignups.loaded && !state.admin.incompleteSignups.loading) loadIncompleteSignups(true);
+    // The one-shot scroll set by setManageTab(tab, scrollTo). Consumed here,
+    // after the new markup exists, and cleared whether or not the target was
+    // found so a section that failed to render cannot leave a scroll pending
+    // for the next unrelated re-render. scrollIntoView is feature-detected:
+    // jsdom does not implement it.
+    if (state.ui.manageScrollTo) {
+      const target = document.getElementById(state.ui.manageScrollTo);
+      state.ui.manageScrollTo = "";
+      if (target && typeof target.scrollIntoView === "function") target.scrollIntoView({ block: "start" });
+    }
   };
   window.handleCommunityClick = function (el) {
     const action = el.dataset.communityAction;
@@ -15170,7 +16066,7 @@
     else if (action === "report-profile") reportProfile(el.dataset.id);
     else if (action === "mention-pick") mentionPick(el.dataset.key, el.dataset.id, el.dataset.name);
     else if (action === "set-tab") setCommunityTab(el.dataset.tab);
-    else if (action === "set-manage-tab") setManageTab(el.dataset.tab);
+    else if (action === "set-manage-tab") setManageTab(el.dataset.tab, el.dataset.scroll);
     else if (action === "verify-recovery") verifyRecovery({ force: true });
     else if (action === "hide-my-leaderboard-result") savePrivacyField("in_leaderboards", false);
     // COMM-210/211/212 leaderboards. Note the deliberate split from the line
@@ -15190,6 +16086,11 @@
     else if (action === "confirm-yes") runConfirm();
     else if (action === "confirm-no") closeConfirm();
     else if (action === "start-signup") startSignup();
+    // The way back out of the invite step. It matters most for the QR deep
+    // link: captureInviteDeepLink() puts a scanner straight onto the code
+    // screen, so a returning member who scanned a flyer out of curiosity
+    // needs the login form to still be one tap away.
+    else if (action === "back-to-login") { state.signupStarted = false; rerender(); }
     else if (action === "retry-join-load") retryJoinFunnelLoad();
     else if (action === "outbox-retry") retryOutboxItem(el.dataset.id);
     else if (action === "outbox-discard") discardOutboxItem(el.dataset.id);
@@ -15238,6 +16139,15 @@
     // COMM-376 invite and code management.
     else if (action === "invite-code-toggle-active") setInviteCodeActive(el.dataset.id, el.dataset.active === "1");
     else if (action === "copy-invite-code") copyInviteCode(el.dataset.code);
+    // The joining QR. Every one of these reads the code/link off state rather
+    // than off the element, except the two copy actions, which need the
+    // exact string the button is sitting next to.
+    else if (action === "copy-invite-link") copyInviteLink(el.dataset.link);
+    else if (action === "invite-qr-share") shareInviteQr();
+    else if (action === "invite-qr-print") printInviteQr();
+    else if (action === "invite-qr-download") downloadInviteQr();
+    else if (action === "invite-qr-retry") refreshInviteQr();
+    else if (action === "invite-qr-close") closeInviteQr();
     else if (action === "dismiss-invite-code-created") dismissInviteCodeCreated();
     else if (action === "dismiss-invite-created") dismissInviteCreated();
     else if (action === "invite-status-filter") setInviteStatusFilter(el.dataset.status);

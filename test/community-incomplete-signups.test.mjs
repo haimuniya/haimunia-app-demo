@@ -60,7 +60,12 @@ function ghost(extra) {
 async function openMembersTab(window) {
   window.document.getElementById("tabManageBtn").click();
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
-  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="members"]').click();
+  // The unfinished signups moved from the roster sub-tab to "הוספת חבר/ה"
+  // (id "invites") in the operator-depth rework. Defect 3's reasoning is
+  // unchanged and is why they moved: "who tried to join and did not finish"
+  // belongs beside "who am I inviting", and the invite tab is now where that
+  // question is asked. Same RPC, same is_staff() gate, same rows.
+  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="invites"]').click();
 }
 
 async function bootWith(role, rows) {

@@ -42,7 +42,12 @@ function seeded(extra, role) {
 async function openAccountTab(window) {
   window.document.getElementById("tabManageBtn").click();
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
-  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="onboarding"]').click();
+  // "onboarding" is no longer a sub-tab id. The operator-depth rework
+  // collapsed Manage's seven sub-tabs into three, and the onboarding content
+  // editors are now an area stacked inside the "ניהול" tab (id "moderation"),
+  // which also carries a jump row labelled with the old sub-tab names. The
+  // editors themselves, and their permission gate, are unchanged.
+  window.document.querySelector('.subtabbtn[data-community-action="set-manage-tab"][data-tab="moderation"]').click();
 }
 async function openFeed(window) {
   window.document.getElementById("tabCommunityBtn").click();
