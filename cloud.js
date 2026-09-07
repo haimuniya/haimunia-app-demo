@@ -567,6 +567,24 @@
       monthly: { loading: false, loaded: false, error: false, row: null },
     },
 
+    // The member's own live posting restriction, for the Account-tab panel
+    // (renderMyRestrictionPanel). `row` is the single ACTIVE restriction or
+    // null - loadMyRestriction() collapses the candidate rows down to one
+    // before it lands here, so nothing downstream has to re-derive "is this
+    // one still in force".
+    //
+    // NO `error` LEAF, unlike every sibling namespace here, and that is the
+    // whole design rather than an omission: a failed load and "you are not
+    // restricted" render identically (nothing at all), so an error flag would
+    // be state nobody reads. A member who is not restricted must never see a
+    // card about restrictions, and a load that failed must not invent one -
+    // the write path still refuses with the mapped error, so a restricted
+    // member is never left with no channel. Named `myRestriction` rather than
+    // `restriction` on purpose: this is the member's OWN row under the
+    // `user_id = auth.uid()` select branch, and the name is what stops a
+    // later ticket parking the moderation queue's restriction rows here.
+    myRestriction: { loading: false, loaded: false, row: null },
+
     // ---- coach: the Coach Dashboard sub-tab (COMM-223..226, 309, 315) ----
     // Only ever added to the tab bar for isStaff(), see the render function -
     // Celebrate, Welcome, Engage, Member of the Week, Monthly recap preview.
@@ -2867,6 +2885,82 @@
     state.recaps.monthly.row = (Array.isArray(data) && data.length) ? data[0] : null;
     rerender();
   }
+  // ==========================================================================
+  // COMM-153, the member's own side of it.
+  //
+  // A posting restriction was enforced in the database and announced nowhere.
+  // The only channel that ever told a restricted member anything was
+  // serverErrorText's 'posting_restricted' entry, and that fires on a FAILED
+  // WRITE - so a member learned they had been sanctioned by being refused,
+  // and learned neither the reason nor the end date, because an error string
+  // carries no row.
+  //
+  // The row was readable by them the whole time. posting_restrictions_read
+  // (202608280015) grants SELECT on `user_id = auth.uid()`, and that
+  // migration states the intent outright: "A member always sees their own
+  // restrictions, because 'you cannot post until 3 March, reason X' is
+  // information they are owed." The data was one query away and nothing ran
+  // it.
+  //
+  // WHY EXPIRY IS FILTERED HERE AND NOT IN THE QUERY. The server's own
+  // predicate is `lifted_at is null and (expires_at is null or expires_at >
+  // now())`. That OR needs PostgREST's .or(), and the now() side would have to
+  // be a device clock regardless. The migration's index comment already
+  // describes this exact split - it indexes `lifted_at is null` alone because
+  // "a now() comparison is not immutable and cannot go in the index
+  // predicate, so expiry is filtered at read time against a much smaller
+  // candidate set." This is that same split moved one tier out: the server
+  // returns the unlifted candidates, the expiry comparison happens here.
+  //
+  // WHAT THIS DELIBERATELY IS NOT. It is not an enforcement path and nothing
+  // branches on it except the panel's own markup. post_create and
+  // add_post_comment go on raising 'posting_restricted' whatever this client
+  // believes, so a device with a skewed clock can render a stale panel for a
+  // few minutes and can never talk itself out of a restriction. Five
+  // candidates because overlapping unlifted rows are possible (a permanent
+  // one added over a temporary one that was never lifted) and the newest is
+  // not automatically the one still in force.
+  const MY_RESTRICTION_CANDIDATES = 5;
+  function activeRestrictionRow(rows) {
+    const now = Date.now();
+    return (Array.isArray(rows) ? rows : []).find((r) => {
+      if (!r || r.lifted_at) return false;
+      // The schema constrains the pair together (a permanent row never has an
+      // expiry, a temporary one always does), so either half answering
+      // "permanent" is enough and neither has to trust the other.
+      if (r.restriction_type === "permanent" || !r.expires_at) return true;
+      const t = new Date(r.expires_at).getTime();
+      return !Number.isNaN(t) && t > now;
+    }) || null;
+  }
+  async function loadMyRestriction() {
+    if (!state.user) return;
+    const s = state.myRestriction;
+    s.loading = true;
+    rerender();
+    // No club filter and no is_posting_restricted() RPC: the select policy is
+    // already `user_id = auth.uid()`, so this cannot return another member's
+    // row, and the RPC answers a bare boolean - which is precisely the shape
+    // that left the member uninformed in the first place.
+    const { data, error } = await client.from("posting_restrictions")
+      .select("id,restriction_type,expires_at,reason,created_at,lifted_at")
+      .eq("user_id", state.user.id)
+      .is("lifted_at", null)
+      .order("created_at", { ascending: false })
+      .limit(MY_RESTRICTION_CANDIDATES);
+    s.loading = false;
+    // `loaded` is set even on failure, deliberately. The lazy gate in
+    // afterRenderCommunity fires on `!loaded && !loading`, and this function
+    // ends in a rerender() - so leaving loaded false to "retry next render"
+    // would be an unbroken load/render loop, not a retry. Same choice
+    // loadMonthlyRecap makes, for the same mechanical reason.
+    s.loaded = true;
+    // A failed load clears the row rather than stranding a stale one: the
+    // panel is a statement about the member's current standing, and a card
+    // left over from a previous session is worse than no card.
+    s.row = error ? null : activeRestrictionRow(data);
+    rerender();
+  }
   // The two real Postgres errors recap_monthly_publish() raises (the schema
   // half's own comment on that function, verbatim), mapped to short Hebrew -
   // the same setMessage()-surfaced, error.message === "..." pattern
@@ -5165,7 +5259,11 @@
   function commentErrorMessage(error) {
     const msg = (error && error.message) || "";
     if (msg === "rate_limited") return "יותר מדי תגובות, נסו שוב בעוד כמה דקות";
-    if (msg === "posting_restricted") return "החשבון שלכם מוגבל כרגע משליחת תגובות";
+    // Same handoff as SERVER_ERROR_TEXT.posting_restricted, in the one line
+    // this inline field-error has room for: the reason and the end date live
+    // on one surface now, so every channel that mentions the restriction
+    // names it rather than each carrying its own partial account.
+    if (msg === "posting_restricted") return "החשבון שלכם מוגבל כרגע משליחת תגובות. הסיבה ומועד הסיום מופיעים בטאב \"חשבון\"";
     if (/depth is capped|already has replies/.test(msg)) return "אי אפשר להשיב לתשובה. אפשר להגיב על התגובה המקורית";
     if (/another post/.test(msg)) return "התגובה שאליה ניסיתם להשיב שייכת לפוסט אחר";
     if (/no longer available|not found/.test(msg)) return "התגובה שאליה ניסיתם להשיב כבר אינה זמינה";
@@ -5306,7 +5404,7 @@
       if (target && prev) { target.body = prev.body; target.edited_at = prev.edited_at; }
       e.saving = false;
       e.error = error.message === "rate_limited" ? "יותר מדי עריכות, נסו שוב בעוד כמה דקות"
-        : error.message === "posting_restricted" ? "החשבון שלכם מוגבל כרגע מעריכת תגובות"
+        : error.message === "posting_restricted" ? "החשבון שלכם מוגבל כרגע מעריכת תגובות. הסיבה ומועד הסיום מופיעים בטאב \"חשבון\""
         : "לא ניתן היה לשמור את העריכה";
       rerender();
       return;
@@ -5955,7 +6053,19 @@
     // as the first news that they have been moderated at all, so it names
     // the sanction plainly, states exactly what still works, and points at
     // the only people who can lift it. No retry: only a moderator clears it.
-    posting_restricted: "צוות המועדון הגביל את הפרסום מהחשבון הזה, ולכן פוסטים ותגובות חדשים לא נשלחים. אפשר להמשיך לקרוא את הפיד ולעודד אחרים כרגיל, וההגבלה נפתחת רק על ידי הצוות — כדאי לפנות למאמן/ת.",
+    //
+    // REVISITED once the Account tab actually had a restriction panel
+    // (renderMyRestrictionPanel). This sentence was written to carry a route
+    // to a human BECAUSE it was the member's only channel - it was doing the
+    // job of a surface that did not exist. It no longer is that, so it now
+    // names where the reason and the end date live, which is the one thing it
+    // structurally cannot say itself: an error string has no row behind it
+    // and can never state a date. The route to a coach STAYS rather than
+    // being handed off wholesale, because this message is still very often
+    // the first news, and "go and read a tab" is a colder thing to say to
+    // somebody who has just been refused than "go and read a tab, and there
+    // are people you can ask".
+    posting_restricted: "צוות המועדון הגביל את הפרסום מהחשבון הזה, ולכן פוסטים ותגובות חדשים לא נשלחים. אפשר להמשיך לקרוא את הפיד ולעודד אחרים כרגיל. הסיבה שנרשמה ומועד סיום ההגבלה מופיעים בטאב \"חשבון\", וההגבלה נפתחת רק על ידי הצוות — כדאי לפנות למאמן/ת.",
     "not authorized": "לחשבון הזה אין הרשאה לפעולה הזו. הרשאות של צוות המועדון ניתנות על ידי מנהל/ת, וניסיון נוסף לא ישנה את התוצאה.",
     // The only server refusal that clears on its own, so the only one that
     // earns a "try again". Matches the wording react() and the comment
@@ -6757,6 +6867,80 @@
     if (!(month >= 1 && month <= 12) || !(day >= 1 && day <= 31)) return DATE_ECHO_PENDING_TEXT;
     return `התאריך שנבחר: ${day} ב${HEB_MONTHS[month - 1]} ${Number(m[1])}`;
   }
+  // ==========================================================================
+  // The same defect, in <input type="datetime-local">. Four of them: the
+  // announcement expiry and the event form's start/end/registration-deadline.
+  //
+  // They were deliberately left out of the type="date" pass, and the reason
+  // given was a good one: "a datetime echo raises timezone questions the
+  // date-only echo doesn't, and getting that wrong would be a new correctness
+  // bug." That was right to pause on. It is answered here rather than
+  // inherited, because the pause was about a question, and the question has
+  // an answer.
+  //
+  // FIRST, THE DEFECT IS STRICTLY WORSE HERE, NOT MERELY EQUAL. A
+  // datetime-local control paints BOTH halves in the browser/OS locale. An
+  // en-US profile renders `06/01/2026, 06:00 PM`, which carries the original
+  // dd/mm ambiguity AND a second one the date fields never had: a 12-hour
+  // clock with an AM/PM segment, in an app whose members read and write 24h.
+  // A coach who means 18:00 and types 6 into an hour segment she reads as
+  // 24-hour schedules the event for six in the morning. So the case for an
+  // echo is stronger here, not weaker.
+  //
+  // NOW THE TIMEZONE QUESTION, WHICH IS THE WHOLE OF WHY THIS WAS DEFERRED.
+  //
+  // The worry is real: an event at 18:00 means 18:00 at the box, and
+  // datetime-local's value is deliberately zone-less, so an echo that names
+  // the wrong zone would be a new false statement rather than a fix. What
+  // saves this is that the echo does NOT have to know where the box is. It
+  // only has to state which clock the app itself reads the number against,
+  // and that is a fact about this file, verified at both ends:
+  //
+  //   WRITE. submitEventForm does `new Date(startAt).toISOString()` and
+  //   submitAnnouncement does `new Date(expiresAtRaw)`. A date-time string
+  //   with no offset is specified to parse in the runtime's LOCAL zone, so
+  //   the instant that reaches the server is the typed wall-clock read
+  //   against the composing device's clock.
+  //
+  //   READ. eventLocalParts() rebuilds the control's value with
+  //   getFullYear/getHours/getMinutes - local getters - so what is painted
+  //   back is the stored instant on the VIEWING device's clock.
+  //
+  // Both ends agree, so "לפי שעון המכשיר" is true of this code, not a guess
+  // about geography. For the overwhelming case - a device set to Israel time
+  // - the device clock IS the box clock, and the clause costs that member
+  // nothing. For the coach scheduling from abroad, whose device clock is NOT
+  // the box's, it is exactly the sentence that stops her storing the wrong
+  // instant, which is the correctness bug the deferral was worried about and
+  // which shipping nothing left in place.
+  //
+  // What the echo therefore refuses to say is "שעון ישראל". That would be
+  // the same class of error the date pass refused when it declined to print
+  // "dd/mm/yyyy": an assertion about something we cannot read back, wrong for
+  // precisely the member the finding is about.
+  //
+  // MECHANISM UNCHANGED, and this matters as much as the wording. Parsed by
+  // regex off the ISO-shaped value, never `new Date()`. The echo restates the
+  // member's own digits and derives no instant, so it cannot itself shift
+  // under a device timezone - which is what lets it be the stable reference
+  // the member checks the control against. Seconds are optional in the
+  // grammar (a `step` under 60 makes Chromium emit them) and are dropped from
+  // the echo: nothing in this app schedules to the second.
+  const DATETIME_ECHO_PENDING_TEXT = "אחרי הבחירה יופיעו כאן התאריך והשעה במילים, לבדיקה.";
+  function hebrewDateTimeEchoText(value) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::\d{2})?$/.exec(String(value || ""));
+    if (!m) return DATETIME_ECHO_PENDING_TEXT;
+    const month = Number(m[2]);
+    const day = Number(m[3]);
+    const hour = Number(m[4]);
+    const minute = Number(m[5]);
+    if (!(month >= 1 && month <= 12) || !(day >= 1 && day <= 31)) return DATETIME_ECHO_PENDING_TEXT;
+    if (!(hour >= 0 && hour <= 23) || !(minute >= 0 && minute <= 59)) return DATETIME_ECHO_PENDING_TEXT;
+    // m[4]/m[5] rather than the Numbers: the zero-padded 24-hour pair is the
+    // half that disambiguates 06:00 from 6:00 PM, so it is printed exactly as
+    // the value holds it.
+    return `המועד שנבחר: ${day} ב${HEB_MONTHS[month - 1]} ${Number(m[1])}, בשעה ${m[4]}:${m[5]} לפי שעון המכשיר`;
+  }
   // field() plus the echo line, for the six type="date" inputs in this file.
   // Not folded into field() itself: every other control it renders is a
   // text, number, select or textarea with no locale ambiguity to resolve.
@@ -6776,16 +6960,32 @@
   // never around it, so the isolation survives every update and no markup is
   // ever built from a value at patch time.
   function dateField(formId, name, labelText, inputHtml) {
+    return echoField(formId, name, labelText, inputHtml, false);
+  }
+  // The datetime-local sibling. Same element, same attributes, same live
+  // patch - only the formatter differs, which is why this is one shared
+  // builder rather than a second near-copy that could drift the way the
+  // eleven empty states did.
+  function dateTimeField(formId, name, labelText, inputHtml) {
+    return echoField(formId, name, labelText, inputHtml, true);
+  }
+  function echoField(formId, name, labelText, inputHtml, withTime) {
     const echoId = `date-echo-${formId}-${name}`;
     const value = /\svalue="([^"]*)"/.exec(inputHtml);
-    const tagged = inputHtml.replace(/^<input/, `<input data-date-echo="${esc(echoId)}"`);
+    // data-date-echo-time is what updateDateEcho() branches on. Deliberately
+    // a dataset flag rather than a read of `input.type`: jsdom does not
+    // reflect an unsupported input type, so a type-sniffing branch would
+    // silently take the date-only path under the very harness these fields
+    // are verified in.
+    const tagged = inputHtml.replace(/^<input/, `<input data-date-echo="${esc(echoId)}"${withTime ? ` data-date-echo-time="1"` : ""}`);
     // aria-live rather than aria-describedby: field() rewrites the input's
     // aria-describedby to point at the error span whenever there is a field
     // error, so a describedby set here would either be duplicated or lost
     // depending on validation state. The line is inside the label, so it is
     // part of the control's accessible name and is read on focus; aria-live
     // covers the case where it changes while focus is already in the field.
-    const echo = `<span class="footer-note" data-date-echo-line="${esc(name)}" style="display:block;margin:5px 0 0;font-size:11.5px;line-height:1.5;" aria-live="polite"><bdi id="${esc(echoId)}">${esc(hebrewDateEchoText(value ? value[1] : ""))}</bdi></span>`;
+    const echoText = withTime ? hebrewDateTimeEchoText(value ? value[1] : "") : hebrewDateEchoText(value ? value[1] : "");
+    const echo = `<span class="footer-note" data-date-echo-line="${esc(name)}" style="display:block;margin:5px 0 0;font-size:11.5px;line-height:1.5;" aria-live="polite"><bdi id="${esc(echoId)}">${esc(echoText)}</bdi></span>`;
     return field(formId, name, labelText, tagged + echo);
   }
   // Patched straight into the DOM, never through rerender(): re-rendering a
@@ -6799,7 +6999,7 @@
     if (!input || !input.dataset) return;
     const el = document.getElementById(input.dataset.dateEcho);
     if (!el) return;
-    el.textContent = hebrewDateEchoText(input.value);
+    el.textContent = ("dateEchoTime" in input.dataset) ? hebrewDateTimeEchoText(input.value) : hebrewDateEchoText(input.value);
   }
   function renderConfirmSheet() {
     const c = state.ui.confirmDialog;
@@ -10135,7 +10335,32 @@
       ? `<div aria-busy="true">${`<div class="chart-card" style="height:64px;background:var(--border);opacity:.35;margin-bottom:10px;"></div>`.repeat(2)}</div>`
       : state.challenges.error
       ? `<div class="empty">לא ניתן היה לטעון את האתגר. נסו שוב.<div class="chip-row" style="justify-content:center;"><button class="chip-btn" data-community-action="challenges-retry">ניסיון חוזר</button></div></div>`
-      : active.length ? active.map(renderChallengeCard).join("") : `<div class="empty">אין אתגרים פעילים כרגע.</div>`;
+      : active.length ? active.map(renderChallengeCard).join("") : emptyStateHtml({
+        key: "challenges-active",
+        icon: "trophy",
+        // AUDIENCE, which is the whole reason this one was left out of the
+        // original eleven. renderChallengesListSection is NOT a coach-only
+        // surface: it renders on the Boards sub-tab, which every member has,
+        // and is then re-surfaced unchanged inside the coach dashboard. The
+        // hesitation was sound - copy written at a coach ("open one") is
+        // simply wrong for the member reading it, who cannot. The resolution
+        // is that the headline and the explanation are written for the
+        // MEMBER, who is both the larger audience and the one with no way to
+        // act, and only slot 4 forks.
+        headline: "אתגרי המועדון יופיעו כאן",
+        body: "אתגר הוא יעד משותף לזמן קצוב — מספר אימונים בחודש, מרחק ריצה מצטבר, שיא בתרגיל — ומי שמצטרף רואה את ההתקדמות שלו לצד זו של כל המשתתפים.",
+        // A when-line for BOTH audiences rather than an action, for two
+        // different reasons. A member has no button that fills this space:
+        // only staff can open a challenge, so a button here would be the
+        // "door that goes nowhere" the pattern forbids. Staff DOES have one -
+        // but "אתגר חדש" is already rendered immediately above this block
+        // (createBtn), and the Member-of-the-Week state set the precedent
+        // that an empty state points at a control already on screen instead
+        // of opening a second door onto it.
+        when: staff
+          ? "הכפתור \"אתגר חדש\" שלמעלה פותח אתגר למועדון, ומרגע הפרסום הוא מופיע כאן לכל החברים."
+          : "כשצוות המועדון יפתח אתגר חדש הוא יופיע כאן, ואפשר יהיה להצטרף אליו בלחיצה.",
+      });
     const pastHtml = past.length ? `<div style="margin-top:16px;"><div class="field-label" style="margin-bottom:6px;">אתגרים שהסתיימו</div>${past.map(renderChallengeCard).join("")}</div>` : "";
     return `<div class="ach-section">${sectionHead("var(--energy)", "אתגרי המועדון")}${createBtn}${state.challenges.form ? renderChallengeForm() : ""}${list}${pastHtml}</div>`;
   }
@@ -10448,7 +10673,22 @@
       // its own without that reason: the very first month of a new club has
       // no completed prior month to summarise, so the newest-row query
       // honestly answers nothing until the job's first run.
-      return `<div class="ach-section" style="margin-top:18px;">${head}<div class="empty">עדיין לא נוצר תקציר חודשי.</div></div>`;
+      // Slot 4 is a when-line rather than an action, and here that is forced
+      // rather than chosen: nothing a coach can press generates this row.
+      // recap_monthly_generate() is a scheduled job, so the only honest
+      // fourth slot is the schedule itself. The date is stated because
+      // "בקרוב" would leave a coach checking back daily.
+      return `<div class="ach-section" style="margin-top:18px;">${head}${emptyStateHtml({
+        key: "coach-monthly-recap",
+        icon: "chart",
+        headline: "התקציר החודשי של המועדון ייבנה מעצמו",
+        body: "התקציר מסכם חודש שהסתיים — כמה אימונים נרשמו, מי הצטרף, אילו שיאים נשברו — ונבנה מהנתונים שכבר קיימים במועדון, בלי שצריך למלא בו משהו.",
+        // Deliberately does not name who may press "פרסום": that button is
+        // gated on analytics-view-or-admin, narrower than the coaches who can
+        // reach this preview (see this function's own header), so a promise
+        // here would be false for exactly the coach reading it.
+        when: "משימה מתוזמנת מייצרת אותו ב-1 בכל חודש, עבור החודש שהסתיים. הוא יופיע כאן קודם כטיוטה לתצוגה מקדימה, ורק אחר כך מתפרסם לחברי המועדון.",
+      })}</div>`;
     }
     const r = s.row;
     const canPublish = hasPerm(PERM.ANALYTICS_VIEW) || isAdmin();
@@ -10485,6 +10725,87 @@
     // distinguish which month by id - landing on this one section IS
     // landing on the exact item the notification pointed at.
     return `<div class="ach-section" data-monthly-recap-section style="margin-top:18px;">${sectionHead("var(--purple)", "סיכום החודש של הקהילה")}<div class="chart-card"><div class="field-label" style="margin-bottom:6px;">${esc(r.month_start)}</div>${renderMonthlyRecapFigures(r)}</div></div>`;
+  }
+  // A full, unambiguous moment for the restriction panel - "3 במרץ 2027,
+  // בשעה 14:30". Note the contrast with the input echoes above, which is
+  // deliberate and not an inconsistency: THOSE restate a zone-less string the
+  // member typed and must therefore never construct a Date, while expires_at
+  // and created_at are real UTC instants that have to be resolved against
+  // some clock to be read at all. This uses eventLocalParts(), the same
+  // local-clock conversion every other stored timestamp in this file displays
+  // through, so a restriction end time reads on the same clock as the event
+  // times beside it.
+  function restrictionMomentText(iso) {
+    const p = eventLocalParts(iso);
+    if (!p) return "";
+    return `${Number(p.da)} ב${HEB_MONTHS[Number(p.mo) - 1]} ${p.y}, בשעה ${p.h}:${p.mi}`;
+  }
+  // ==========================================================================
+  // The surface COMM-153 never built: what a restricted member is told, and
+  // where.
+  //
+  // PLACEMENT. The Account tab, as a card among the member's own settings,
+  // rather than a banner over the feed or a dialog on load. A sanction is
+  // standing information about this person's account - the same category as
+  // their privacy toggles and their deletion request, both of which live here
+  // - not an interruption to re-deliver on every visit. It sits FIRST on the
+  // tab, above the profile form: it is the one thing on this screen a member
+  // may have come specifically to read, and burying it under the avatar
+  // picker would repeat, more quietly, the original defect of making them
+  // hunt for it.
+  //
+  // REGISTER. Modelled on 05e1ee5's incomplete-signups copy and a42f9d1's
+  // error mapping, which is to say: name the thing plainly, say exactly what
+  // it does and does not cover, and end at a person who can change it. This
+  // is somebody being told they are in trouble, so the two failure modes to
+  // avoid are opposite ones - cold ("your posting privileges have been
+  // revoked") and evasive ("there may be a temporary limitation on some
+  // activity"). Every line below is a fact the row actually holds.
+  //
+  // WHAT IT REFUSES TO INVENT. There is no appeal button, because there is no
+  // appeal endpoint - mod_lift_restriction() is moderator-only and takes no
+  // member-initiated request, so a button here would be the dead door the
+  // empty-state pattern forbids. The route to a human is a sentence, which is
+  // what the app can honestly offer.
+  function renderMyRestrictionPanel() {
+    const r = state.myRestriction.row;
+    // Error and "not restricted" are the same render. A member who is not
+    // restricted must never see a card about restrictions, and a load that
+    // failed must not invent one - the write path still refuses with the
+    // mapped error, so nobody is left with no channel at all.
+    if (!r) return "";
+    const permanent = r.restriction_type === "permanent" || !r.expires_at;
+    // reason is `not null default ''`, so "no reason recorded" arrives as an
+    // empty string rather than null. It is a real state and gets a real
+    // sentence: staying silent about a missing reason is the evasive failure
+    // mode, and the member is owed the knowledge that nothing was written
+    // down as much as they are owed the reason itself.
+    const reason = String(r.reason || "").trim();
+    const until = permanent ? "" : restrictionMomentText(r.expires_at);
+    const since = restrictionMomentText(r.created_at);
+    const line = (text) => `<div style="color:var(--steel);font-size:13px;line-height:1.7;margin-top:8px;">${bidiText(text)}</div>`;
+    // The duration line. The temporary case says the restriction lapses on
+    // its own, which is true of the server predicate (`expires_at > now()`,
+    // with no lifting step) and is the single most useful thing a member in
+    // this position can be told. The permanent case says the opposite just as
+    // plainly rather than softening it into "for now".
+    const durationText = permanent
+      ? "להגבלה הזו לא נקבע מועד סיום, והיא לא תיפתח מעצמה. רק צוות המועדון יכול להסיר אותה."
+      : `ההגבלה מסתיימת ב-${until}. היא נפתחת מעצמה במועד הזה — אין מה לעשות ואין למי לפנות כדי שזה יקרה.`;
+    const reasonText = reason
+      ? `הסיבה שנרשמה: ${reason}`
+      : "לא נרשמה סיבה יחד עם ההגבלה. אפשר לבקש אותה מצוות המועדון.";
+    return `<div class="ach-section" data-my-restriction-panel="1" style="margin-top:0;margin-bottom:18px;">
+      ${sectionHead("var(--yellow)", "הגבלת פרסום על החשבון")}
+      <div class="chart-card">
+        ${line("צוות המועדון הגביל את הפרסום מהחשבון הזה, ולכן פוסטים ותגובות חדשים לא נשלחים.")}
+        ${since ? line(`ההגבלה נכנסה לתוקף ב-${since}.`) : ""}
+        ${line(durationText)}
+        ${line(reasonText)}
+        ${line("מה שלא מושפע: אפשר להמשיך לקרוא את הפיד, להגיב בלייק, להירשם לאירועים ולהצטרף לאתגרים כרגיל, ורישום האימונים הפרטי לא נוגע בזה בכלל.")}
+        ${line("לשאלות על ההגבלה או על הסרתה אפשר לפנות למאמן/ת.")}
+      </div>
+    </div>`;
   }
   // COMM-226 built this absent entirely (not merely styled hidden) unless
   // the flag is on; COMM-304 flips that flag default-on and gives it real
@@ -11461,12 +11782,12 @@
       ${field("communityEventForm", "location", "מיקום", `<input class="text-input" name="location" value="${esc(f.location)}" maxlength="240"/>`)}
       ${field("communityEventForm", "mapLink", "קישור למפה", `<input class="text-input" name="mapLink" value="${esc(f.mapLink)}" maxlength="500" placeholder="https://..."/>`)}
       <div class="flex gap-16 field">
-        ${field("communityEventForm", "startAt", "התחלה", `<input class="text-input" name="startAt" type="datetime-local" value="${esc(f.startAt)}" required/>`)}
-        ${field("communityEventForm", "endAt", "סיום", `<input class="text-input" name="endAt" type="datetime-local" value="${esc(f.endAt)}"/>`)}
+        ${dateTimeField("communityEventForm", "startAt", "התחלה", `<input class="text-input" name="startAt" type="datetime-local" value="${esc(f.startAt)}" required/>`)}
+        ${dateTimeField("communityEventForm", "endAt", "סיום", `<input class="text-input" name="endAt" type="datetime-local" value="${esc(f.endAt)}"/>`)}
       </div>
       <div class="flex gap-16 field">
         ${field("communityEventForm", "capacity", "מקומות (ריק = ללא הגבלה)", `<input class="text-input" name="capacity" type="number" min="1" value="${esc(f.capacity)}"/>`)}
-        ${field("communityEventForm", "registrationDeadline", "מועד אחרון להרשמה", `<input class="text-input" name="registrationDeadline" type="datetime-local" value="${esc(f.registrationDeadline)}"/>`)}
+        ${dateTimeField("communityEventForm", "registrationDeadline", "מועד אחרון להרשמה", `<input class="text-input" name="registrationDeadline" type="datetime-local" value="${esc(f.registrationDeadline)}"/>`)}
       </div>
       ${f.mode === "create" ? `<label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="publishNow"/><span style="font-size:12.5px;color:var(--steel);">פרסום מיידי (אחרת יישמר כטיוטה)</span></label>` : ""}
       ${f.error ? `<div class="field-error" role="alert">${esc(f.error)}</div>` : ""}
@@ -15308,7 +15629,7 @@
     // COMM-321. announcements_read already empties liveAnnouncements above
     // once the module is off; the composer form has no data of its own to
     // fall silent through, so it needs its own explicit gate.
-    const announceComposer = staff ? (!isModuleEnabled("announcements") ? "" : `<form id="communityAnnouncement" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">הודעה חדשה למועדון<span class="admin-tag">ניהול</span></div>${field("communityAnnouncement", "title", "כותרת", `<input class="text-input" name="title" placeholder="כותרת" required/>`)}${field("communityAnnouncement", "body", "תוכן", `<textarea class="text-input" name="body" maxlength="2000" placeholder="תוכן ההודעה" required></textarea>`)}<label class="field"><span class="field-label">רמת חשיבות</span><select class="text-input" name="priority">${ANNOUNCEMENT_PRIORITY_OPTIONS.map((o) => `<option value="${o.value}"${o.value === "normal" ? " selected" : ""}>${o.label}</option>`).join("")}</select></label>${field("communityAnnouncement", "expiresAt", "תפוגה (אופציונלי)", `<input class="text-input" name="expiresAt" type="datetime-local" placeholder="ללא תפוגה"/>`)}<label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="pinToday"/><span style="font-size:12.5px;color:var(--steel);">סמן כהערת האימון להיום</span></label><button class="chip-btn primary" type="submit"${state.club.announcementSaving ? " disabled" : ""} style="margin-top:10px;">${state.club.announcementSaving ? "מפרסם…" : "פרסום הודעה"}</button></form>`) : "";
+    const announceComposer = staff ? (!isModuleEnabled("announcements") ? "" : `<form id="communityAnnouncement" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">הודעה חדשה למועדון<span class="admin-tag">ניהול</span></div>${field("communityAnnouncement", "title", "כותרת", `<input class="text-input" name="title" placeholder="כותרת" required/>`)}${field("communityAnnouncement", "body", "תוכן", `<textarea class="text-input" name="body" maxlength="2000" placeholder="תוכן ההודעה" required></textarea>`)}<label class="field"><span class="field-label">רמת חשיבות</span><select class="text-input" name="priority">${ANNOUNCEMENT_PRIORITY_OPTIONS.map((o) => `<option value="${o.value}"${o.value === "normal" ? " selected" : ""}>${o.label}</option>`).join("")}</select></label>${dateTimeField("communityAnnouncement", "expiresAt", "תפוגה (אופציונלי)", `<input class="text-input" name="expiresAt" type="datetime-local" placeholder="ללא תפוגה"/>`)}<label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="pinToday"/><span style="font-size:12.5px;color:var(--steel);">סמן כהערת האימון להיום</span></label><button class="chip-btn primary" type="submit"${state.club.announcementSaving ? " disabled" : ""} style="margin-top:10px;">${state.club.announcementSaving ? "מפרסם…" : "פרסום הודעה"}</button></form>`) : "";
     const otherAnnouncements = liveAnnouncements.filter((a) => a !== pinnedToday);
     // COMM-155. A staff holder of community.content.pin gets a pin toggle on
     // each announcement. Post, challenge and event pin affordances live on
@@ -15575,7 +15896,14 @@
     // renderCoachAppActivitySection() above, which are defined outside this
     // function so its staff-gate count stays at the asserted 5.
     const movedToManageNote = staff ? `<div class="footer-note" style="color:var(--steel);text-align:center;margin:16px 0 4px;">כלי ניהול עברו ל"ניהול" בתפריט התחתון</div>` : "";
-    const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + termMarkPanel + people + newMembersHtml + inactiveHtml + renderMyAchievements() + renderNotifPrefsPanel() + movedToManageNote
+    // COMM-153's member-facing surface, deliberately FIRST - see
+    // renderMyRestrictionPanel() for why it outranks the profile form. It is
+    // not staff-gated and adds no sixth staff-conditional slice to this
+    // function (community-coach-tier.test.mjs counts those, and counts the
+    // literal in prose too): a restriction is the member's own business, and
+    // staff read restrictions in Manage › מודרציה, not here.
+    const restrictionPanel = renderMyRestrictionPanel();
+    const accountTab = restrictionPanel + account + recapEntry + monthlyRecapEntry + privacyPanel + termMarkPanel + people + newMembersHtml + inactiveHtml + renderMyAchievements() + renderNotifPrefsPanel() + movedToManageNote
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red-text);">בקשת מחיקת חשבון</button>`;
 
@@ -16203,6 +16531,14 @@
     // months this answers "nothing published yet", so it is not worth a
     // boot round-trip for every session.
     if (state.ui.tab === "account" && state.user && !state.recaps.monthly.loaded && !state.recaps.monthly.loading) loadMonthlyRecap();
+    // COMM-153. The member's own restriction row, on the same lazy Account-tab
+    // pattern as the recap card above. Not in refreshSession()'s boot batch on
+    // purpose: for all but a handful of members this query answers "no rows",
+    // and the surface it feeds is not first-paint content. The member who IS
+    // restricted is routed here by the 'posting_restricted' error text, which
+    // now names this tab (see SERVER_ERROR_TEXT), so the lazy load always
+    // fires before the person who needs it arrives to read it.
+    if (state.ui.tab === "account" && state.user && !state.myRestriction.loaded && !state.myRestriction.loading) loadMyRestriction();
     // COMM-229. Same lazy pattern: this device's push subscription status
     // is only worth checking once the flag is on and a member actually
     // lands on the Account tab where the preferences panel lives - never

@@ -90,7 +90,14 @@ test("no active challenges renders the documented empty state", async () => {
   const window = await bootCommunity(seeded(), { syncEnabled: false });
   await openBoards(window);
   await waitFor(() => window.document.querySelector(".ach-section").textContent.includes("אתגרי המועדון"), 3000);
-  assert.match(window.document.body.textContent, /אין אתגרים פעילים כרגע/);
+  // Was a bare one-liner ("אין אתגרים פעילים כרגע."), left out of the
+  // eleven-state empty-state pass because this surface is member-facing
+  // rather than coach-only. It is now on the same four-slot pattern as its
+  // siblings - see audit-followup-cloud-restriction-datetime.test.mjs for the
+  // slot-by-slot and per-audience assertions.
+  const el = window.document.querySelector('[data-empty-state="challenges-active"]');
+  assert.ok(el, "the empty challenges list renders the shared four-slot empty state");
+  assert.match(el.textContent, /אתגרי המועדון יופיעו כאן/, "a forward-looking headline, not a statement of absence");
 });
 
 test("a draft challenge is hidden from a plain member's list and offers no Join button, but a staff holder sees and can publish it", async () => {

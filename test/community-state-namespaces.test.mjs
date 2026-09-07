@@ -60,6 +60,13 @@ test("the state root is the session core plus per-domain namespaces, nothing els
     "ui", "feed", "posts", "engagement", "members", "club", "leaderboard",
     "admin", "analytics", "challenges", "events", "search", "achievements",
     "notif", "onboarding", "intro", "recaps",
+    // COMM-153's member-facing half: the caller's OWN active posting
+    // restriction, feeding the Account-tab panel. A namespace rather than a
+    // root scalar because it groups the lazy-load pair with the row they
+    // gate. Deliberately has no `error` leaf - a failed load and "not
+    // restricted" render identically, so an error flag would be unread state
+    // and the third assertion in this file would (correctly) reject it.
+    "myRestriction",
     // The community write queue's view-model (launch-readiness audit,
     // RELIABILITY): { pending, failed }. A real namespace rather than two
     // root scalars, because it groups two related leaves that are always
