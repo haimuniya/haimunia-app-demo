@@ -189,6 +189,14 @@
       announcements: [], announcementSaving: false, streaks: [],
       inactiveMembers: [], newMembers: [], activitySignal: null,
       weeklyChallenge: null, weeklyLeaderboard: [],
+      // The active weekly_challenges ROW (with its comparison_key and a
+      // computed `valid`), as distinct from weeklyChallenge above, which is
+      // the leaderboard VIEW and is null whenever nobody has posted a matching
+      // result yet. See loadWeeklyChallenge().
+      weeklyChallengeRow: null,
+      // The coach's picked comparison key, kept in state so a rejected submit
+      // (a missing title, a missing date) does not silently reset the picker.
+      challengeKeyDraft: "",
     },
 
     // ---- leaderboard (COMM-210/211/212) ----
@@ -1741,12 +1749,121 @@
     if (error) return setMessage("לא ניתן היה לשמור את ההודעה. נסו שוב.");
     form.reset(); await loadAnnouncements(); setMessage("ההודעה פורסמה"); rerender();
   }
+  // The comparison key a challenge is built on is a DATABASE key
+  // ("movement:back-squat:est1rm"), and until now a coach had to type it into
+  // a free-text box from memory. The audit typed six malformed keys and all
+  // six were accepted and stored: Hebrew free text, a missing prefix, a
+  // misspelled movement id, a bare "movement:". A key that matches nothing
+  // produces a challenge no member can ever appear on - and, worse, one that
+  // still advertises itself as a hero button on every member's club home.
+  //
+  // The field is a <select> now, built from the same catalogs app.js builds a
+  // key from when someone shares a real result (communityShareCandidateFor:
+  // `movement:${entry.exerciseId}:${duration ? "duration" : "est1rm"}` and
+  // `wod:${entry.wodId}:${entry.scoreType}:${entry.rx ? "rx" : "scaled"}`), so
+  // an invalid key cannot be produced by typing at all, and the two sides
+  // cannot drift. The box owner's own words were that being asked to type a
+  // database key by hand is why he would not use the feature.
+  //
+  // CUSTOM movements and WODs are deliberately excluded even though
+  // allMovements()/allWods() include them. A custom id is generated per device
+  // (uid()), so the coach's own "custom" back squat variant carries a
+  // different id from every member's, and a challenge on it could never match
+  // anybody's post - exactly the dead leaderboard this is fixing, just
+  // reached by a different route.
+  //
+  // Reached through window.*, not as bare identifiers: allMovements/allWods
+  // are function declarations in app.js and so are real properties of the
+  // global object, while MOVEMENTS/WOD_LIBRARY are top-level `const`s, which
+  // live in a lexical environment cloud.js's own script does not share under
+  // the jsdom test harness (see test/helpers/boot.mjs).
+  function challengeKeyChoices() {
+    const out = [];
+    const movements = typeof window.allMovements === "function" ? window.allMovements() : [];
+    for (const m of movements) {
+      if (!m || !m.id || m.category === "Custom") continue;
+      out.push({ group: "תרגילים", key: `movement:${m.id}:est1rm`, label: `${m.name} · 1RM` });
+      out.push({ group: "תרגילים", key: `movement:${m.id}:duration`, label: `${m.name} · Time` });
+    }
+    const wods = typeof window.allWods === "function" ? window.allWods() : [];
+    for (const w of wods) {
+      // EMOM is the one score type communityShareCandidateFor() refuses to
+      // build a key for (it returns null), so there is nothing for an EMOM
+      // challenge to ever compare against.
+      if (!w || !w.id || w.category === "Custom" || !w.scoreType || w.scoreType === "emom") continue;
+      out.push({ group: "אימונים", key: `wod:${w.id}:${w.scoreType}:rx`, label: `${w.name} · Rx` });
+      out.push({ group: "אימונים", key: `wod:${w.id}:${w.scoreType}:scaled`, label: `${w.name} · Scaled` });
+    }
+    return out;
+  }
+  function challengeKeyExists(comparisonKey) {
+    return challengeKeyChoices().some((c) => c.key === comparisonKey);
+  }
+  // Option labels are deliberately pure LTR ("Back Squat · 1RM", "Fran · Rx"):
+  // the movement and WOD names are English, and <option> text cannot carry a
+  // <bdi>, so a Hebrew metric word appended to an English name would be at the
+  // mercy of the bidi algorithm with no way to isolate it. Rx/Scaled/1RM are
+  // already this app's own vocabulary - app.js prints them untranslated on
+  // every WOD entry. The Hebrew that explains the field lives in the label and
+  // the hint underneath, where it can be written properly.
+  function renderChallengeKeyPicker() {
+    const choices = challengeKeyChoices();
+    // app.js publishes its catalogs at load; if they are somehow not there
+    // yet, a disabled control that says so is honest, and - unlike the free
+    // text box this replaces - cannot be used to store a key that means
+    // nothing.
+    if (!choices.length) return `<select class="text-input" name="comparisonKey" disabled><option value="">רשימת התרגילים והאימונים עדיין נטענת…</option></select>`;
+    const selected = state.club.challengeKeyDraft || "";
+    const groups = [];
+    for (const c of choices) {
+      let group = groups.find((g) => g.label === c.group);
+      if (!group) groups.push(group = { label: c.group, items: [] });
+      group.items.push(c);
+    }
+    const optgroups = groups.map((g) => `<optgroup label="${esc(g.label)}">${g.items.map((c) => `<option value="${esc(c.key)}"${c.key === selected ? " selected" : ""}>${esc(c.label)}</option>`).join("")}</optgroup>`).join("");
+    return `<select class="text-input" name="comparisonKey" data-challenge-key required><option value=""${selected ? "" : " selected"}>בחרו תרגיל או אימון…</option>${optgroups}</select>`;
+  }
+  // The shape the inline hint under the field has always described. Kept as a
+  // separate check from the existence check above so the two failures can say
+  // different things: "that is not a key" and "that key names something this
+  // app has never heard of" are different mistakes with different fixes.
+  const COMPARISON_KEY_SHAPE_RE = /^(movement:[a-z0-9-]+:(est1rm|duration)|wod:[a-z0-9-]+:[a-z]+:(rx|scaled))$/;
   async function loadWeeklyChallenge() {
     if (!state.user) return;
+    // TWO reads, because they answer two different questions and conflating
+    // them is what let the club home and the Boards tab contradict each other.
+    //
+    // weekly_challenge_leaderboard only returns rows where a real post ALREADY
+    // matches the challenge key, so a challenge with no entries yet - whether
+    // it is brand new or permanently unmatchable because its key is malformed
+    // - comes back empty, and the Boards tab reported that as "אין אתגר פעיל
+    // כרגע" while the club home was simultaneously showing a bright hero
+    // button for that very challenge. The weekly_challenges row is what says
+    // whether a challenge EXISTS; the view says who is on it.
+    const today = todayIso();
+    const { data: rows } = await client.from("weekly_challenges")
+      .select("id,title,comparison_key,starts_on,ends_on")
+      .lte("starts_on", today).gte("ends_on", today)
+      .order("ends_on", { ascending: true }).limit(1);
+    const row = rows && rows.length ? rows[0] : null;
+    state.club.weeklyChallengeRow = row
+      ? { id: row.id, title: row.title, comparisonKey: row.comparison_key, startsOn: row.starts_on, endsOn: row.ends_on,
+          // Computed once, here, so every surface asks the same question of
+          // the same answer instead of each re-deriving "is this real".
+          valid: COMPARISON_KEY_SHAPE_RE.test(String(row.comparison_key || "")) && challengeKeyExists(row.comparison_key) }
+      : null;
     const { data, error } = await client.from("weekly_challenge_leaderboard").select("*").limit(50);
     if (error || !data || !data.length) { state.club.weeklyChallenge = null; state.club.weeklyLeaderboard = []; return; }
     state.club.weeklyChallenge = { title: data[0].title, comparisonKey: data[0].comparison_key, startsOn: data[0].starts_on, endsOn: data[0].ends_on };
     state.club.weeklyLeaderboard = data.sort((a, b) => a.score_direction === "lower" ? Number(a.score_value) - Number(b.score_value) : Number(b.score_value) - Number(a.score_value));
+  }
+  // The one answer to "is there a weekly challenge a member can actually join
+  // right now" - an active row whose key names something real. Anything that
+  // advertises a challenge has to go through this, not through the mere
+  // existence of a row.
+  function activeWeeklyChallenge() {
+    const row = state.club.weeklyChallengeRow;
+    return row && row.valid ? row : null;
   }
   async function setWeeklyChallenge(form) {
     if (!state.user || !isStaff()) return;
@@ -1755,19 +1872,22 @@
     const startsOn = form.elements.startsOn.value, endsOn = form.elements.endsOn.value;
     const errors = {};
     if (!title) errors.title = "יש למלא שם לאתגר";
-    if (!comparisonKey) errors.comparisonKey = "יש למלא מפתח השוואה";
-    // A key in the wrong shape (e.g. the bare movement name a coach might
-    // reasonably guess) silently creates a challenge that can never match
-    // a real post - the empty leaderboard then looks identical to a
-    // legitimately fresh challenge with no entries yet, so the mistake
-    // was invisible. Catch the shape here instead.
-    else if (!/^(movement:[a-z0-9-]+:(est1rm|duration)|wod:[a-z0-9-]+:[a-z]+:(rx|scaled))$/.test(comparisonKey)) errors.comparisonKey = "פורמט לא תקין — movement:שם-תרגיל:est1rm או wod:שם-אימון:סוג-תוצאה:rx";
+    // The <select> above cannot produce an invalid key, but a <select> is a UI
+    // affordance and not a guarantee - this is the check that actually keeps a
+    // dead challenge out of the database.
+    if (!comparisonKey) errors.comparisonKey = "יש לבחור תרגיל או אימון לאתגר";
+    else if (!COMPARISON_KEY_SHAPE_RE.test(comparisonKey)) errors.comparisonKey = "פורמט לא תקין — movement:שם-תרגיל:est1rm או wod:שם-אימון:סוג-תוצאה:rx";
+    // An empty catalog means app.js has not finished loading its data, not
+    // that nothing is valid - refusing everything then would be its own lie.
+    // The shape check above still stands in that window.
+    else if (challengeKeyChoices().length && !challengeKeyExists(comparisonKey)) errors.comparisonKey = "התרגיל או האימון הזה לא קיים באפליקציה, אז אף תוצאה לא תוכל להיספר לאתגר. בחרו מהרשימה.";
     if (!startsOn) errors.startsOn = "יש לבחור תאריך התחלה";
     if (!endsOn) errors.endsOn = "יש לבחור תאריך סיום";
     if (Object.keys(errors).length) return setFieldErrors("communityWeeklyChallenge", errors);
     setFieldErrors("communityWeeklyChallenge", {});
     const { error } = await client.from("weekly_challenges").insert({ title, comparison_key: comparisonKey, starts_on: startsOn, ends_on: endsOn, created_by: state.user.id });
     if (error) return setMessage("קביעת האתגר נכשלה");
+    state.club.challengeKeyDraft = "";
     form.reset(); await loadWeeklyChallenge(); setMessage("האתגר השבועי עודכן"); rerender();
   }
   async function loadInactiveMembers() {
@@ -4098,6 +4218,139 @@
   function usernameToEmail(username) { return `${username}@members.haimuniya.invalid`; }
   const USERNAME_RE = /^[a-z0-9_]{3,24}$/;
 
+  // ONE source of truth for the two credential rules, because the screen and
+  // the validator had drifted into stating different ones. The password
+  // placeholder promised "לפחות 8 תווים" while the check below demanded ten
+  // characters plus three character classes, so eight characters - exactly
+  // what the app asked for - came back rejected. Three separate audit
+  // personas hit that on their first attempt, which is every member's first
+  // attempt. The username field had the same defect in milder form: the
+  // placeholder said "אותיות אנגליות" and the error added a case and a length
+  // the member had never been shown.
+  //
+  // These constants are what the placeholders render AND what the messages
+  // below quote, so the promise and the rule cannot come apart again.
+  //
+  // Phrasing note: the length is deliberately spelled "3 עד 24" rather than as
+  // a "3–24" range. A numeric range joined by a neutral dash inside an RTL
+  // sentence is reordered by the bidi algorithm and can paint as "24–3" - the
+  // same class of defect bidiText() exists for, and one <bdi> around the whole
+  // message cannot fix because the message's own base direction is still RTL.
+  // Separating the two numbers with a Hebrew word removes the ambiguity at the
+  // source instead of trying to mark it up afterwards.
+  const USERNAME_RULE_TEXT = "3 עד 24 אותיות אנגליות קטנות, ספרות או קו תחתון";
+  const PASSWORD_RULE_TEXT = "לפחות 10 תווים, עם אות גדולה, אות קטנה וספרה";
+
+  // Signup asks for a name TWICE, three screens apart, and both fields used to
+  // be labelled "שם משתמש" with contradictory rules behind them: stage one
+  // accepts English only, stage two accepts Hebrew and even suggested it
+  // ("למשל דנה_כהן"). Nothing on either screen said they were different
+  // things, so a member could not tell which name the club would see, and the
+  // login name and the roster handle drifted apart silently - which an admin
+  // separately reported as making "find this member" harder.
+  //
+  // The fix is to stop calling them the same thing. Each label now says what
+  // its field is FOR, in the same plain register the invite-code screen uses
+  // ("הקוד לא נוגע לרישום האימונים עצמו — הוא רק פותח את לשונית הקהילה"), and
+  // each screen names the other name so neither reads as a duplicate.
+  const LOGIN_NAME_LABEL = "שם לכניסה";
+  const CLUB_NAME_LABEL = "השם שרואים במועדון";
+  const CREDENTIALS_INTRO_TEXT = "שם וסיסמה לכניסה — כדי שתוכלו להיכנס לחשבון שוב מכל מכשיר. שם הכניסה הוא רק בשבילכם ואף אחד במועדון לא רואה אותו; את השם שחברי המועדון כן יראו בוחרים בשלב הבא, והוא יכול להיות אחר לגמרי.";
+  const CLUB_NAME_HINT_TEXT = "זה השם שחברי המועדון יראו לידכם בפיד ובלוחות. הוא לא שם הכניסה לחשבון, ואפשר לכתוב אותו בעברית.";
+  // The value setCredentials() will actually save, not the raw keystrokes: it
+  // trims and lower-cases before validating, so "Dana_K" is accepted and
+  // stored as "dana_k". The live check normalises identically, otherwise it
+  // would flag a capital letter the submit goes on to accept - a validator
+  // disagreeing with its own form is the defect being fixed here, not a
+  // stricter version of it.
+  function normalizeUsername(value) { return String(value || "").trim().toLowerCase(); }
+  // Same shape as serverErrorText()/ghostReclaimErrorText(): a flat set of
+  // answers, each saying what is wrong and what to do about it, and "" when
+  // there is nothing to say. No "try again" anywhere - retyping the same
+  // thing cannot succeed; the member has to change it.
+  function usernameRuleError(value) {
+    const username = normalizeUsername(value);
+    if (!username) return "יש להזין שם לכניסה";
+    if (username.length < 3) return `שם הכניסה קצר מדי. צריך ${USERNAME_RULE_TEXT}.`;
+    if (username.length > 24) return `שם הכניסה ארוך מדי. צריך ${USERNAME_RULE_TEXT}.`;
+    if (!USERNAME_RE.test(username)) return "בשם הכניסה אפשר להשתמש באותיות אנגליות, בספרות ובקו תחתון בלבד — בלי עברית, רווחים או סימנים.";
+    return "";
+  }
+  function passwordRuleError(value) {
+    const password = String(value || "");
+    if (!password) return "יש להזין סיסמה";
+    if (password.length < 10) return `הסיסמה קצרה מדי. צריך ${PASSWORD_RULE_TEXT}.`;
+    if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) return "הסיסמה צריכה לכלול אות גדולה, אות קטנה וספרה באנגלית.";
+    return "";
+  }
+  // Live, as-you-type validation for the two credential-creation forms.
+  //
+  // Patched into the DOM IN PLACE rather than through setFieldErrors(), which
+  // calls rerender(): this runs on every keystroke, and a full rerender
+  // rebuilds the <input> and throws away focus and caret position mid-word.
+  // The markup written here is byte-for-byte what field() writes on the next
+  // full render, and state.ui.fieldErrors is updated alongside it, so a
+  // rerender triggered from anywhere else paints exactly the same thing.
+  //
+  // textContent/setAttribute/createElement only. cloud.js has no innerHTML
+  // sinks and this does not add one (test/app-innerhtml-sinks.test.mjs).
+  function liveValidateCredentialField(input) {
+    const rule = input.dataset.liveValidate;
+    const formId = input.dataset.liveValidateForm || (input.form && input.form.id) || "";
+    if (!formId || !input.name) return;
+    // An empty field says nothing: an error that appears before the member has
+    // typed a character is noise, and one that appears the moment they clear a
+    // field to start over is worse. The submit check still catches empty.
+    let message = "";
+    if (input.value !== "") {
+      if (rule === "username") message = usernameRuleError(input.value);
+      else if (rule === "password") message = passwordRuleError(input.value);
+      else if (rule === "passwordConfirm") message = passwordConfirmError(input.form, input.value);
+    }
+    setFieldErrorInPlace(input, formId, input.name, message);
+    // Typing in the password field is also the moment a "passwords do not
+    // match" error on the OTHER field can stop being true, so it is
+    // re-evaluated here rather than waiting for the member to go back and
+    // touch a field that is already correct.
+    if (rule === "password" && input.form && input.form.elements.passwordConfirm) {
+      const confirmEl = input.form.elements.passwordConfirm;
+      if (confirmEl.value !== "") setFieldErrorInPlace(confirmEl, formId, "passwordConfirm", passwordConfirmError(input.form, confirmEl.value));
+    }
+  }
+  function passwordConfirmError(form, value) {
+    if (!form || !form.elements.password) return "";
+    return form.elements.password.value === value ? "" : "הסיסמאות לא תואמות";
+  }
+  function setFieldErrorInPlace(input, formId, name, message) {
+    const errors = state.ui.fieldErrors[formId] || (state.ui.fieldErrors[formId] = {});
+    if (message) errors[name] = message;
+    else delete errors[name];
+    if (!Object.keys(errors).length) delete state.ui.fieldErrors[formId];
+    // field() wraps every input in <label class="field"> and appends the error
+    // span as that label's last child, so the label is the unit to patch and
+    // ".field-error" inside it is unambiguous - one field per label.
+    const label = input.closest ? input.closest("label.field") : null;
+    if (!label) return;
+    let errEl = label.querySelector(".field-error");
+    if (!message) {
+      if (errEl) errEl.remove();
+      input.removeAttribute("aria-invalid");
+      input.removeAttribute("aria-describedby");
+      return;
+    }
+    const errId = `err-${formId}-${name}`;
+    if (!errEl) {
+      errEl = document.createElement("span");
+      errEl.className = "field-error";
+      errEl.setAttribute("role", "alert");
+      label.appendChild(errEl);
+    }
+    errEl.id = errId;
+    errEl.textContent = message;
+    input.setAttribute("aria-invalid", "true");
+    input.setAttribute("aria-describedby", errId);
+  }
+
   // A brand-new member starts anonymous (zero typing) purely so
   // redeem_invite_code has a session to attach the redemption to - this
   // identity is upgraded to a real username+password account (same
@@ -4298,7 +4551,7 @@
     const username = String(form.elements.username.value || "").trim().toLowerCase();
     const password = String(form.elements.password.value || "");
     const errors = {};
-    if (!USERNAME_RE.test(username)) errors.username = "שם משתמש לא תקין";
+    if (!USERNAME_RE.test(username)) errors.username = "שם הכניסה לא תקין";
     if (!password) errors.password = "יש להזין סיסמה";
     if (Object.keys(errors).length) return setFieldErrors("communityLogin", errors);
     const { error } = await withCaptcha((captchaToken) =>
@@ -4310,7 +4563,7 @@
       // A failed challenge is not a wrong password, and saying so avoids
       // sending a member off to reset a password that was fine.
       if (error.message === "captcha_failed") return setFieldErrors("communityLogin", { password: "אימות האבטחה נכשל, נסו שוב" });
-      return setFieldErrors("communityLogin", { password: "שם משתמש או סיסמה שגויים" });
+      return setFieldErrors("communityLogin", { password: "שם הכניסה או הסיסמה שגויים" });
     }
     setFieldErrors("communityLogin", {});
     // onAuthStateChange picks up the session and loads the existing account.
@@ -4331,13 +4584,16 @@
     const password = String(form.elements.password.value || "");
     const passwordConfirm = String(form.elements.passwordConfirm.value || "");
     const errors = {};
-    if (!USERNAME_RE.test(username)) errors.username = "שם משתמש: 3–24 תווים, אותיות אנגליות קטנות, ספרות או קו תחתון";
-    // Matches supabase/config.toml's minimum_password_length/password_requirements
-    // (launch-readiness audit, SEC-012) - checked client-side too so a member
-    // gets this message instead of a raw Supabase rejection after submitting.
-    if (password.length < 10 || !/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
-      errors.password = "הסיסמה חייבת להכיל לפחות 10 תווים, כולל אות גדולה, אות קטנה וספרה";
-    }
+    // Same two validators the placeholders quote and the as-you-type check
+    // runs, so submitting can no longer be the first time a member is told a
+    // rule. The password rule still mirrors supabase/config.toml's
+    // minimum_password_length/password_requirements (launch-readiness audit,
+    // SEC-012) - checked client-side so a member gets this message rather than
+    // a raw Supabase rejection.
+    const usernameError = usernameRuleError(username);
+    if (usernameError) errors.username = usernameError;
+    const passwordError = passwordRuleError(password);
+    if (passwordError) errors.password = passwordError;
     if (password !== passwordConfirm) errors.passwordConfirm = "הסיסמאות לא תואמות";
     if (Object.keys(errors).length) return setFieldErrors(formId, errors);
     // updateUser() is the account-creation step (it turns the bootstrap
@@ -4348,7 +4604,7 @@
         { email: usernameToEmail(username), password },
         captchaToken ? { captchaToken } : undefined,
       ));
-    if (error) return setFieldErrors(formId, { username: /registered|exists|taken/i.test(error.message || "") ? "שם המשתמש כבר תפוס" : "השמירה נכשלה, נסו שוב" });
+    if (error) return setFieldErrors(formId, { username: /registered|exists|taken/i.test(error.message || "") ? "שם הכניסה הזה כבר תפוס. בחרו שם אחר." : "השמירה נכשלה, נסו שוב" });
     state.user = data.user;
     setFieldErrors(formId, {});
     setMessage("החשבון נוצר, אפשר להתחבר איתו מכל מכשיר");
@@ -4364,7 +4620,11 @@
     if (!state.user) return;
     const formId = form.id;
     const handle = String(form.elements.handle.value || "").trim().toLowerCase();
-    if (!/^[a-zא-ת0-9_]{3,24}$/.test(handle)) return setFieldErrors(formId, { handle: "שם המשתמש חייב להכיל 3–24 תווים (עברית או אנגלית), מספרים או קו תחתון, בלי רווחים" });
+    // Deliberately a DIFFERENT rule from the login name (USERNAME_RE): this is
+    // the name the club sees, Hebrew is welcome here, and the message says so
+    // rather than leaving a member to infer it from a rejection. The lengths
+    // are spelled "3 עד 24" for the same bidi reason USERNAME_RULE_TEXT is.
+    if (!/^[a-zא-ת0-9_]{3,24}$/.test(handle)) return setFieldErrors(formId, { handle: "השם שרואים במועדון צריך להיות 3 עד 24 תווים — עברית או אנגלית, ספרות או קו תחתון, בלי רווחים." });
     // is_admin is deliberately never sent from here — a coach-code
     // redemption is a label only (invite_redemptions.role), not automatic
     // full admin access. Full admin stays a manual dashboard-only flip;
@@ -4373,7 +4633,7 @@
     const payload = { id: state.user.id, handle, display_name: String(form.elements.displayName.value || "").trim().slice(0, 80), bio: String(form.elements.bio.value || "").trim().slice(0, 160) };
     const { error } = await client.from("profiles").upsert(payload);
     if (error) {
-      if (error.code === "23505") setFieldErrors(formId, { handle: "שם המשתמש כבר תפוס" });
+      if (error.code === "23505") setFieldErrors(formId, { handle: "השם הזה כבר תפוס במועדון. בחרו שם אחר." });
       else setMessage("שמירת הפרופיל נכשלה");
       return;
     }
@@ -5148,7 +5408,10 @@
   function field(formId, name, labelText, inputHtml) {
     const err = (state.ui.fieldErrors[formId] || {})[name];
     const errId = `err-${formId}-${name}`;
-    const tagged = err ? inputHtml.replace(/^<(input|textarea)/, `<$1 aria-invalid="true" aria-describedby="${errId}"`) : inputHtml;
+    // <select> joined the list when the weekly-challenge comparison key became
+    // a picker instead of a text box - without it that field would have shown
+    // a visible error with nothing tying it to the control for a screen reader.
+    const tagged = err ? inputHtml.replace(/^<(input|textarea|select)/, `<$1 aria-invalid="true" aria-describedby="${errId}"`) : inputHtml;
     return `<label class="field"><span class="field-label">${labelText}</span>${tagged}${err ? `<span class="field-error" id="${errId}" role="alert">${esc(err)}</span>` : ""}</label>`;
   }
   function renderConfirmSheet() {
@@ -12188,7 +12451,7 @@
       // skipping straight to "enter your invite code" as if they had
       // clicked start-signup — ensureAnonymousSession() below still
       // no-ops for them since a session already exists.
-      if (!state.signupStarted) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">כניסה לקהילה</div><div style="color:var(--steel);font-size:12.5px;line-height:1.7;margin-bottom:14px;">התחברות עם שם המשתמש והסיסמה משחזרת את הפרופיל, העוקבים, הסנכרון הפרטי והרשאות הצוות — גם ממכשיר חדש או אחרי מחיקת נתונים.</div><form id="communityLogin">${field("communityLogin", "username", "שם משתמש", `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="שם משתמש" required/>`)}${field("communityLogin", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="current-password" placeholder="סיסמה" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">התחברות ושחזור החשבון</button></form><button class="link-btn" data-community-action="start-signup" style="display:block;margin:18px auto 0;">חבר/ה חדש/ה? התחלת הרשמה עם קוד הזמנה</button>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
+      if (!state.signupStarted) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">כניסה לקהילה</div><div style="color:var(--steel);font-size:12.5px;line-height:1.7;margin-bottom:14px;">התחברות עם שם הכניסה והסיסמה משחזרת את הפרופיל, העוקבים, הסנכרון הפרטי והרשאות הצוות — גם ממכשיר חדש או אחרי מחיקת נתונים.</div><form id="communityLogin">${field("communityLogin", "username", LOGIN_NAME_LABEL, `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="${esc(LOGIN_NAME_LABEL)}" required/>`)}${field("communityLogin", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="current-password" placeholder="סיסמה" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">התחברות ושחזור החשבון</button></form><button class="link-btn" data-community-action="start-signup" style="display:block;margin:18px auto 0;">חבר/ה חדש/ה? התחלת הרשמה עם קוד הזמנה</button>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
       ensureAnonymousSession();
       return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">מתחברים לקהילה…</div><div style="color:var(--steel);font-size:13px;">שנייה אחת.</div>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     }
@@ -12206,7 +12469,7 @@
     // account. state.user.is_anonymous flips to false the moment
     // setCredentials() succeeds, so a returning user (who logged in with
     // real credentials to begin with) never sees this screen at all.
-    if (state.user.is_anonymous) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">יצירת חשבון</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">שם משתמש וסיסמה — כדי שתוכלו להתחבר שוב מכל מכשיר.</div><form id="communityCredentials">${field("communityCredentials", "username", "שם משתמש", `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="אותיות אנגליות, ספרות או קו תחתון" required/>`)}${field("communityCredentials", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="new-password" placeholder="לפחות 8 תווים" required/>`)}${field("communityCredentials", "passwordConfirm", "אימות סיסמה", `<input class="text-input" name="passwordConfirm" type="password" dir="ltr" autocomplete="new-password" placeholder="הקלידו שוב" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">יצירת חשבון</button></form>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
+    if (state.user.is_anonymous) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">יצירת חשבון</div><div style="color:var(--steel);font-size:13px;line-height:1.7;margin-bottom:14px;">${CREDENTIALS_INTRO_TEXT}</div><form id="communityCredentials">${field("communityCredentials", "username", LOGIN_NAME_LABEL, `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="${esc(USERNAME_RULE_TEXT)}" data-live-validate="username" data-live-validate-form="communityCredentials" required/>`)}${field("communityCredentials", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="new-password" placeholder="${esc(PASSWORD_RULE_TEXT)}" data-live-validate="password" data-live-validate-form="communityCredentials" required/>`)}${field("communityCredentials", "passwordConfirm", "אימות סיסמה", `<input class="text-input" name="passwordConfirm" type="password" dir="ltr" autocomplete="new-password" placeholder="הקלידו שוב" data-live-validate="passwordConfirm" data-live-validate-form="communityCredentials" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">יצירת חשבון</button></form>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     // Redesign, Phase 3. Three purely informational screens, shown once per
     // device, right where the mockup's own new-member flow put them: after
     // credentials exist (so is_anonymous is already false and this gate is
@@ -12237,7 +12500,7 @@
     // gates above it: this screen is all there is until a profile exists,
     // and the whole screen changing to the real tabbed UI afterward is the
     // confirmation, not just a toast that's easy to miss.
-    if (!state.profile) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">השלמת פרופיל</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">כמעט סיימתם — עוד רגע אחד ותהיו בפנים.</div><form id="communityProfile">${field("communityProfile", "handle", "שם משתמש (handle)", `<input class="text-input" name="handle" dir="auto" placeholder="למשל דנה_כהן" required/>`)}<label class="field"><span class="field-label">שם תצוגה</span><input class="text-input" name="displayName" placeholder="שם תצוגה"/></label><label class="field"><span class="field-label">קצת עליי</span><textarea class="text-input" name="bio" maxlength="160" placeholder="כמה מילים עליי"></textarea></label><button class="save-btn" type="submit" style="margin-top:12px;">שמירת פרופיל</button></form>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
+    if (!state.profile) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">השלמת פרופיל</div><div style="color:var(--steel);font-size:13px;line-height:1.7;margin-bottom:14px;">כמעט סיימתם — עוד רגע אחד ותהיו בפנים. ${CLUB_NAME_HINT_TEXT}</div><form id="communityProfile">${field("communityProfile", "handle", CLUB_NAME_LABEL, `<input class="text-input" name="handle" dir="auto" placeholder="למשל דנה_כהן" required/>`)}<label class="field"><span class="field-label">שם תצוגה</span><input class="text-input" name="displayName" placeholder="שם תצוגה"/></label><label class="field"><span class="field-label">קצת עליי</span><textarea class="text-input" name="bio" maxlength="160" placeholder="כמה מילים עליי"></textarea></label><button class="save-btn" type="submit" style="margin-top:12px;">שמירת פרופיל</button></form>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     // COMM-016. Credentials are set and the profile row exists, but the
     // account has not been stamped recoverable yet, so is_community_member()
     // still blocks every write. Try once automatically (guarded inside
@@ -12314,7 +12577,29 @@
     const clubMark = club && club.image_url
       ? `<img src="${esc(club.image_url)}" alt="" style="width:44px;height:44px;border-radius:14px;object-fit:cover;"/>`
       : avatarHtml((club && club.name) || "המועדון", 44);
-    const activeChallenge = club && club.active_challenge ? club.active_challenge : null;
+    // club_summary() returns whichever challenge is active, from either of two
+    // sources: a real Phase 2 `challenges` row (source "challenge") or, as the
+    // fallback that actually fires today, a weekly_challenges row (source
+    // "weekly"). Both used to render the same bright orange hero button, and
+    // both were wrong in their own way:
+    //
+    //  - A weekly one is not a `challenges` row, so tapping it sent
+    //    openChallenge() after an id that table does not have. It 400'd and
+    //    showed the member nothing at all.
+    //  - A weekly one whose comparison key is malformed can never match a
+    //    single post, so the club home advertised a challenge as its
+    //    front-page call to action while the Boards tab - the place you would
+    //    go to join it - said "אין אתגר פעיל כרגע". A coach's typo became the
+    //    club's headline.
+    //
+    // So the hero renders only for something a member can actually open and
+    // actually join: a real challenge row, or a weekly one that passed
+    // activeWeeklyChallenge()'s validity check.
+    const summaryChallenge = club && club.active_challenge ? club.active_challenge : null;
+    const weeklyHero = summaryChallenge && summaryChallenge.source === "weekly";
+    const activeChallenge = !summaryChallenge ? null
+      : weeklyHero ? (activeWeeklyChallenge() ? summaryChallenge : null)
+      : summaryChallenge;
     const clubTopHtml = club ? `<div class="chart-card" id="communityClubTop" style="margin-bottom:12px;">
       <div class="flex" style="justify-content:space-between;align-items:center;gap:10px;">
         <div class="flex gap-10" style="align-items:center;min-width:0;">
@@ -12326,7 +12611,7 @@
         </div>
         ${renderNotificationBell()}
       </div>
-      ${activeChallenge ? `<div class="chip-row" style="margin-top:10px;"><button class="chip-btn primary" data-community-action="open-active-challenge" data-id="${esc(activeChallenge.id || "")}">🏆 ${bidiText(activeChallenge.title || "אתגר פעיל")}</button></div>` : ""}
+      ${activeChallenge ? `<div class="chip-row" style="margin-top:10px;"><button class="chip-btn primary" data-community-action="open-active-challenge"${weeklyHero ? "" : ` data-id="${esc(activeChallenge.id || "")}"`}>🏆 ${bidiText(activeChallenge.title || "אתגר פעיל")}</button></div>` : ""}
     </div>` : "";
     // COMM-217: the soonest published, non-cancelled upcoming event, or
     // nothing at all - never an empty placeholder.
@@ -12388,8 +12673,20 @@
     const feedTab = renderPinnedStrip() + renderOnboardingStep() + clubTopHtml + announcementsHtml + feedHtml;
 
     // ---- Boards tab: weekly challenge + streaks, top-3-plus-your-rank ----
-    const challengeSetter = staff ? `<form id="communityWeeklyChallenge" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">קביעת אתגר שבועי<span class="admin-tag">ניהול</span></div>${field("communityWeeklyChallenge", "title", "שם האתגר", `<input class="text-input" name="title" placeholder="שם האתגר" required/>`)}${field("communityWeeklyChallenge", "comparisonKey", "מפתח השוואה", `<input class="text-input" name="comparisonKey" dir="ltr" placeholder="movement:back-squat:est1rm" required/>`)}<div style="color:var(--steel);font-size:11px;margin:-6px 0 10px;">חייב להתחיל ב-movement: (תרגיל) או wod: (אימון) — בדיוק כמו שהוא נשמר בשיתופים, למשל movement:back-squat:est1rm או wod:fran:time:rx</div><div class="flex gap-16 field">${field("communityWeeklyChallenge", "startsOn", "תאריך התחלה", `<input class="text-input" name="startsOn" type="date" required/>`)}${field("communityWeeklyChallenge", "endsOn", "תאריך סיום", `<input class="text-input" name="endsOn" type="date" required/>`)}</div><button class="chip-btn primary" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
-    const weeklyLeaderboardList = state.club.weeklyChallenge ? renderRankedList(state.club.weeklyLeaderboard, (it) => it.author_id, (it) => esc(it.result_text)) : `<div class="empty">אין אתגר פעיל כרגע</div>`;
+    const challengeSetter = staff ? `<form id="communityWeeklyChallenge" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">קביעת אתגר שבועי<span class="admin-tag">ניהול</span></div>${field("communityWeeklyChallenge", "title", "שם האתגר", `<input class="text-input" name="title" placeholder="שם האתגר" required/>`)}${field("communityWeeklyChallenge", "comparisonKey", "על מה מתחרים", renderChallengeKeyPicker())}<div style="color:var(--steel);font-size:11px;margin:-6px 0 10px;">רק תרגילים ואימונים שקיימים באפליקציה — כך התוצאות שחברי המועדון משתפים נספרות לאתגר מעצמן.</div><div class="flex gap-16 field">${field("communityWeeklyChallenge", "startsOn", "תאריך התחלה", `<input class="text-input" name="startsOn" type="date" required/>`)}${field("communityWeeklyChallenge", "endsOn", "תאריך סיום", `<input class="text-input" name="endsOn" type="date" required/>`)}</div><button class="chip-btn primary" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
+    // Three states, not two. state.club.weeklyChallenge comes from the
+    // leaderboard VIEW, which is empty until someone posts a matching result,
+    // so treating "no rows" as "no challenge" told every member there was
+    // nothing on while the club home was advertising a hero button for it.
+    // activeWeeklyChallenge() answers the question the heading is actually
+    // asking - is a challenge running - and the ranked list answers the
+    // separate one, who is on it yet.
+    const runningChallenge = activeWeeklyChallenge();
+    const weeklyLeaderboardList = state.club.weeklyChallenge
+      ? renderRankedList(state.club.weeklyLeaderboard, (it) => it.author_id, (it) => esc(it.result_text))
+      : runningChallenge
+        ? `<div class="empty">האתגר פתוח ועדיין אין תוצאות. תוצאה שתשתפו מהאימון תיכנס לטבלה מעצמה.</div>`
+        : `<div class="empty">אין אתגר פעיל כרגע</div>`;
     // COMM-018. A quick "hide my result" affordance right on the board.
     // It flips in_leaderboards, the same column the Privacy panel toggles;
     // full removal from the ranked views is enforced server-side once the
@@ -12397,7 +12694,15 @@
     const hideMyResult = state.profile && state.profile.in_leaderboards
       ? `<button class="link-btn" data-community-action="hide-my-leaderboard-result" style="display:block;margin:8px auto 0;">הסתרת התוצאה שלי מהטבלאות</button>`
       : (state.profile ? `<div class="footer-note" style="margin:8px 0 0;">התוצאה שלך מוסתרת מהטבלאות. אפשר להחזיר אותה בהגדרות הפרטיות.</div>` : "");
-    const weeklyChallengeHtml = `<div class="ach-section">${sectionHead("var(--teal)", state.club.weeklyChallenge ? `אתגר השבוע: ${bidiText(state.club.weeklyChallenge.title)}` : "אתגר השבוע")}${weeklyLeaderboardList}${hideMyResult}${challengeSetter}</div>`;
+    // A coach who typo'd a key before this shipped still has that challenge
+    // sitting active in the table, invisible to everyone. Staff - and only
+    // staff - get told why their challenge is not on any screen, since they
+    // are the only ones who can fix it by setting a new one.
+    const brokenChallenge = staff && state.club.weeklyChallengeRow && !state.club.weeklyChallengeRow.valid ? state.club.weeklyChallengeRow : null;
+    const brokenChallengeNote = brokenChallenge
+      ? `<div class="footer-note" style="margin:0 0 10px;color:var(--brass);">האתגר „${bidiText(brokenChallenge.title || "")}" לא מוצג לחברי המועדון: הוא מצביע על ${bidiText(brokenChallenge.comparisonKey || "")}, שלא קיים באפליקציה, ולכן אף תוצאה לא יכולה להיספר אליו. קבעו אתגר חדש מהרשימה למטה.</div>`
+      : "";
+    const weeklyChallengeHtml = `<div class="ach-section">${sectionHead("var(--teal)", state.club.weeklyChallenge ? `אתגר השבוע: ${bidiText(state.club.weeklyChallenge.title)}` : "אתגר השבוע")}${brokenChallengeNote}${weeklyLeaderboardList}${hideMyResult}${challengeSetter}</div>`;
 
     // COMM-210/212. The consistency board, server-ranked through
     // feed_leaderboard, replaces the old community_streaks strip that used to
@@ -12435,7 +12740,8 @@
     ${au.error ? `<div class="field-error" role="alert" style="margin-bottom:10px;">${esc(au.error)}</div>` : ""}`;
     const account = `<form id="communityProfile" class="chart-card"><div style="font-weight:800;font-size:16px;margin-bottom:12px;">הפרופיל שלי</div>
       ${avatarControl}
-      ${field("communityProfile", "handle", "שם משתמש (handle)", `<input class="text-input" name="handle" dir="auto" value="${esc(p.handle || "")}" placeholder="למשל דנה_כהן" required/>`)}
+      ${field("communityProfile", "handle", CLUB_NAME_LABEL, `<input class="text-input" name="handle" dir="auto" value="${esc(p.handle || "")}" placeholder="למשל דנה_כהן" required/>`)}
+      <div class="footer-note" style="margin:-6px 0 12px;">${CLUB_NAME_HINT_TEXT}</div>
       <label class="field"><span class="field-label">שם תצוגה</span><input class="text-input" name="displayName" value="${esc(p.display_name || "")}" placeholder="שם תצוגה"/></label>
       <label class="field"><span class="field-label">קצת עליי</span><textarea class="text-input" name="bio" maxlength="160" placeholder="כמה מילים עליי">${esc(p.bio || "")}</textarea></label>
       <div class="chip-row"><button class="chip-btn primary" type="submit">שמירת פרופיל</button><button class="chip-btn" type="button" data-community-action="migrate">סנכרון היסטוריה פרטית</button></div>
@@ -12772,7 +13078,7 @@
       return `${BACKUP_PANEL_TITLE}<div class="footer-note" style="margin-bottom:8px;">מהשמירה הראשונה האימונים שלכם מתחילים להיות מגובים לענן ברקע, אוטומטית ופרטית — רק אתם רואים אותם. הסנכרון קורה מעצמו ואין כאן קובץ להוריד; „קובץ גיבוי להורדה" הוא דבר נפרד במסך הזה. אפשר לכבות בכל שלב.</div><button class="link-btn" data-community-action="backup-optout">כיבוי גיבוי אוטומטי</button>`;
     }
     const credentialsCta = state.user.is_anonymous
-      ? `<div style="margin-top:12px;"><div class="footer-note" style="margin-bottom:6px;">גישה לאותם נתונים ממכשיר אחר דורשת שם משתמש וסיסמה.</div><form id="backupCredentials">${field("backupCredentials", "username", "שם משתמש", `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="אותיות אנגליות, ספרות או קו תחתון" required/>`)}${field("backupCredentials", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="new-password" placeholder="לפחות 8 תווים" required/>`)}${field("backupCredentials", "passwordConfirm", "אימות סיסמה", `<input class="text-input" name="passwordConfirm" type="password" dir="ltr" autocomplete="new-password" placeholder="הקלידו שוב" required/>`)}<button class="chip-btn primary" type="submit" style="margin-top:6px;">שמירת גישה ממכשיר אחר</button></form></div>`
+      ? `<div style="margin-top:12px;"><div class="footer-note" style="margin-bottom:6px;">גישה לאותם נתונים ממכשיר אחר דורשת שם לכניסה וסיסמה.</div><form id="backupCredentials">${field("backupCredentials", "username", LOGIN_NAME_LABEL, `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="${esc(USERNAME_RULE_TEXT)}" data-live-validate="username" data-live-validate-form="backupCredentials" required/>`)}${field("backupCredentials", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="new-password" placeholder="${esc(PASSWORD_RULE_TEXT)}" data-live-validate="password" data-live-validate-form="backupCredentials" required/>`)}${field("backupCredentials", "passwordConfirm", "אימות סיסמה", `<input class="text-input" name="passwordConfirm" type="password" dir="ltr" autocomplete="new-password" placeholder="הקלידו שוב" data-live-validate="passwordConfirm" data-live-validate-form="backupCredentials" required/>`)}<button class="chip-btn primary" type="submit" style="margin-top:6px;">שמירת גישה ממכשיר אחר</button></form></div>`
       : "";
     return `${BACKUP_PANEL_TITLE}<div class="footer-note" style="margin-bottom:8px;">${esc(state.syncEnabled ? "פעיל. האימונים שלכם מגובים לענן ברקע, אוטומטית ופרטית — רק אתם רואים אותם. הסנכרון קורה מעצמו ואין כאן קובץ להוריד; „קובץ גיבוי להורדה\" הוא דבר נפרד במסך הזה." : "מוגדר אך טרם הופעל.")}</div><button class="link-btn" data-community-action="backup-optout">כיבוי גיבוי אוטומטי</button>${credentialsCta}${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}`;
   };
@@ -13230,21 +13536,13 @@
       // be re-readable. A toast is the wrong place to disclose something
       // someone may want to act on.
       //
-      // BLOCKED ON AN app.js FIX, and worth knowing before reading the rest:
-      // a real click on this button never gets here. index.html:1045 puts
-      // data-action="close-settings" on #settingsOverlay, and app.js's
-      // delegation only dispatches [data-community-action] when
-      // e.target.closest("[data-action]") finds NOTHING - so for any
-      // community control inside the settings overlay the community branch
-      // is skipped, and the close-settings branch then returns early on
-      // `e.target !== el`. Both paths drop it. That, not a missing
-      // confirmation, is the deeper reason the opt-out "didn't appear to
-      // take effect": it is inert, and #settingsOverlay is currently the
-      // only overlay holding a community action. The fix is one line in
-      // app.js's delegation, which this pass does not own; the handler and
-      // toast below are correct and go live the moment it lands. See the
-      // "KNOWN DEFECT, app.js" tripwire in
-      // test/community-error-copy.test.mjs.
+      // This button was inert from 8ab7ca6 until ffb786e: app.js's delegation
+      // only dispatched [data-community-action] when the click had no
+      // [data-action] ancestor, and #settingsOverlay carries
+      // data-action="close-settings", so every community control inside
+      // Settings was dropped before reaching this handler. It now dispatches
+      // unconditionally. test/community-error-copy.test.mjs covers it with a
+      // real DOM click.
       //
       // Set BEFORE rerender(), not after: showToast() only stores the
       // pending toast and schedules its expiry - it never paints on its own,
@@ -13437,6 +13735,10 @@
     // when club_summary handed back an id; a missing id (an older/failed
     // club_summary read) still lands the member on the Boards sub-tab
     // rather than a broken dialog.
+    // No data-id means a WEEKLY challenge, which lives on the Boards tab and
+    // has no `challenges` row for openChallenge() to fetch - sending one there
+    // is what produced the 400 with nothing on screen. See the club-strip
+    // comment in renderCommunityFeed for why the attribute is omitted.
     else if (action === "open-active-challenge") { if (el.dataset.id) openChallenge(el.dataset.id, "club_top"); else setCommunityTab("boards"); }
     // COMM-201/207. openChallenge() itself records CHALLENGE_VIEWED, so the
     // POST_CHALLENGE link card's own tap passes "post_card" through.
@@ -13770,6 +14072,11 @@
     const t = e.target;
     if (!t || !t.dataset) return;
     if ("inviteCode" in t.dataset) { state.ui.inviteCodeDraft = t.value; return; }
+    // Credential fields check themselves as the member types, so the rule is
+    // learned while there is still something to fix rather than announced
+    // after a rejected submit. liveValidateCredentialField() patches the field
+    // in place and never rerenders - see its header for why.
+    if ("liveValidate" in t.dataset) { liveValidateCredentialField(t); return; }
     if ("composerBody" in t.dataset) composerSetBody(t.value);
     else if ("commentInput" in t.dataset) onCommentInput(t);
     else if ("commentEditInput" in t.dataset && state.engagement.commentEdit) state.engagement.commentEdit.body = t.value;
@@ -13833,6 +14140,9 @@
     else if ("avatarFile" in t.dataset) { const f = t.files && t.files[0]; if (f) avatarPhotoSelected(f); try { t.value = ""; } catch (err) {} }
     else if ("composerDecorative" in t.dataset) composerToggleDecorative(t.dataset.composerDecorative, t.checked);
     else if ("composerVisibility" in t.dataset) composerSetVisibility(t.value);
+    // The weekly-challenge picker, kept in state so a rejected submit (missing
+    // title or dates) re-renders the form with the coach's choice still made.
+    else if ("challengeKey" in t.dataset) state.club.challengeKeyDraft = t.value;
     else if ("prFile" in t.dataset) { const f = t.files && t.files[0]; if (f) prPromptAddPhoto(f); }
     // COMM-151. The report reason radio.
     else if ("reportReason" in t.dataset && t.checked) setReportReason(t.dataset.reportReason);

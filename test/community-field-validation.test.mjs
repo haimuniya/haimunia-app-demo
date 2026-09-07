@@ -32,16 +32,21 @@ test("the invite code field uses field() instead of a bare labelless input", () 
 });
 
 test("both handle inputs (profile gate and account tab) route through field() under the same form id, so a duplicate-handle error lands on the right one", () => {
-  const matches = src.match(/field\("communityProfile", "handle", "שם משתמש \(handle\)"/g) || [];
+  // The label is CLUB_NAME_LABEL now, not the literal "שם משתמש (handle)":
+  // signup asked for a name twice under that same label and the two fields
+  // enforced contradictory rules. See the label constants in cloud.js.
+  const matches = src.match(/field\("communityProfile", "handle", CLUB_NAME_LABEL/g) || [];
   assert.equal(matches.length, 2);
-  assert.match(src, /error\.code === "23505"\) setFieldErrors\(formId, \{ handle: "שם המשתמש כבר תפוס" \}\)/);
+  assert.match(src, /error\.code === "23505"\) setFieldErrors\(formId, \{ handle: "השם הזה כבר תפוס במועדון\. בחרו שם אחר\." \}\)/);
 });
 
 test("the announcement and weekly-challenge composers validate every required field individually, not just as one generic message", () => {
   assert.match(src, /field\("communityAnnouncement", "title", "כותרת"/);
   assert.match(src, /field\("communityAnnouncement", "body", "תוכן"/);
   assert.match(src, /field\("communityWeeklyChallenge", "title", "שם האתגר"/);
-  assert.match(src, /field\("communityWeeklyChallenge", "comparisonKey", "מפתח השוואה"/);
+  // The comparison key is a picker now, and its label says what a coach is
+  // choosing rather than naming the database column it lands in.
+  assert.match(src, /field\("communityWeeklyChallenge", "comparisonKey", "על מה מתחרים"/);
   assert.match(src, /field\("communityWeeklyChallenge", "startsOn", "תאריך התחלה"/);
   assert.match(src, /field\("communityWeeklyChallenge", "endsOn", "תאריך סיום"/);
 });
