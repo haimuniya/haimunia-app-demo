@@ -46,8 +46,16 @@ insert into public.member_achievements (user_id, achievement_id, visibility) val
 insert into public.member_of_week (week_start, user_id, category) values
   (date_trunc('week', current_date)::date, tests.uid('m1'), 'consistency_streak');
 
+-- The key was 'movement:fran:time' until 202609060026, which is malformed
+-- twice over: Fran is a WOD, not a movement, and `time` is not one of the two
+-- movement metrics the client writes. Nothing here ever asserted on it - this
+-- row exists only so the ghost/member read assertions below have something to
+-- read - and it was quietly one more instance of the defect 202609060026
+-- fixes: nothing in the schema or the fixtures had ever checked the shape.
+-- Corrected to the WOD form the client would actually produce for Fran. The
+-- assertions are untouched.
 insert into public.weekly_challenges (id, comparison_key, title, starts_on, ends_on, created_by)
-values ('40770000-0000-4000-8000-000000000004', 'movement:fran:time', 'Fran week', current_date, current_date + 6, tests.uid('coach'));
+values ('40770000-0000-4000-8000-000000000004', 'wod:fran:time:rx', 'Fran week', current_date, current_date + 6, tests.uid('coach'));
 
 -- enforce_pin_target() requires the pinned row to actually exist and be
 -- pinnable, so this needs a real announcement rather than a random uuid.

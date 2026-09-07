@@ -6821,6 +6821,24 @@ viewer hasn't blocked" a client-side count through
 is the only path that actually renders today, since `challenges` starts
 empty — and the caller's own unread notification count.
 
+**Return shape, as shipped after 202609060027** (signature unchanged, the
+addition is additive and an existing reader is unaffected):
+
+```
+{ name, image_url, member_count, unread_notifications,
+  active_challenge: { id, title, source, starts_at, ends_at, comparison_key } | null }
+```
+
+`comparison_key` and `starts_at` were added by 202609060027 so the caller no
+longer has to re-read `weekly_challenges` to find out whether the advertised
+challenge is one a member can actually join. `comparison_key` is **null when
+`source` is `'challenge'`** — `public.challenges` has no such column — and
+that null means "this challenge kind needs no key", not "invalid"; branch on
+`source`. The key it carries is shape-checked only
+(`weekly_challenges_comparison_key_shape`, 202609060026); whether it names a
+real movement or WOD is a client-catalog question and stays the client's.
+See "Weekly-challenge key integrity" at the end of this document.
+
 ### admin_member_roster(p_cursor timestamptz default null, p_limit int default 25) (COMM-374)
 
 - **DEVIATION:** `returns table(id uuid, handle text, display_name text,
@@ -7821,3 +7839,130 @@ produced two real defects.
   server-side from the member's own private training log rather than proxied
   through an optional public post-share. It is **not** a physical check-in,
   not staff-confirmed, and "class" never belonged in the phrase at all.
+
+## Weekly-challenge key integrity (202609060026–202609060027)
+
+Two follow-ups to `fbf5a43`, which replaced the free-text
+`comparison_key` field with a `<select>` and added two client-side checks:
+the key's **shape**, and whether the key **names something the app's catalog
+actually has**. Both are client-side, and `weekly_challenges` is INSERT-able
+and UPDATE-able over PostgREST by any holder of `community.challenge.create`
+(202609060005) — so the picker was an affordance, not a boundary.
+
+### `weekly_challenges_comparison_key_shape` (202609060026)
+
+- A **validated** `CHECK` on `public.weekly_challenges.comparison_key`,
+  byte-for-byte `cloud.js`'s `COMPARISON_KEY_SHAPE_RE`:
+
+```
+^(movement:[a-z0-9-]+:(est1rm|duration)|wod:[a-z0-9-]+:[a-z]+:(rx|scaled))$
+```
+
+- **Deliberately not one character stricter than the client**, so the
+  database can never refuse a key the shipped picker offers — including
+  custom-WOD ids, which are `uid("customwod")` output
+  (`customwod-<lower-case uuid>`).
+- **It enforces SHAPE ONLY, and cannot enforce more.** The movement and WOD
+  catalog lives in `src/constants.js` and in each device's own custom WODs;
+  Postgres has never seen it and has no table to join against.
+  `movement:not-a-real-lift:est1rm` passes this constraint and is exactly as
+  dead as a Hebrew movement name was. **`challengeKeyExists()` in `cloud.js`
+  remains the only check for that half and must not be removed on the
+  grounds that "the database validates it now."** pgTAP 0088 pins this limit
+  with a passing insert of a well-shaped ghost key, precisely so the
+  constraint is not later read as more than it is.
+- Applies on **UPDATE** as well, which is where the client has no say at all:
+  `setWeeklyChallenge()` only ever INSERTs, while 202609060005 granted
+  UPDATE so a coach could fix a typo. A `PATCH` to a malformed key is
+  refused with `23514`.
+- No notion of role. A coach and an admin are refused identically; this is a
+  data-integrity rule, not a permission.
+- `workout_posts.comparison_key` is **left unconstrained** on purpose:
+  nullable, written by `publishWorkout()` across years of existing rows, and
+  a malformed value there is inert (it simply never joins). A validated
+  `CHECK` on it would risk aborting `supabase db push` against production
+  rows for no security gain.
+
+### `public.weekly_challenges_archive` (202609060026)
+
+The rows that had to move before the constraint could be **validated** —
+the six the five-persona UX audit found plus one seeded while verifying
+`fbf5a43`, and on any other database whatever fails the same predicate.
+
+- `(id, comparison_key, title, starts_on, ends_on, created_by, created_at,
+  archived_at, archived_by_migration, archived_reason)`. Rows are copied
+  **whole** and then deleted from `weekly_challenges`, in one transaction, so
+  the removal is reversible in principle: restoring one is an INSERT with a
+  corrected key, and the coach's title, dates and original `created_at`
+  survive verbatim. `created_by` carries **no FK** — same reason
+  `admin_actions.admin_id` has none (202609060022): the record must outlive
+  the account, and a cascade would erase the evidence of the cleanup.
+- RLS on. `grant select ... to authenticated` plus
+  `weekly_challenges_archive_read` `using (has_perm('community.challenge
+  .create'))` — the same permission that may create or delete a weekly
+  challenge. **No INSERT/UPDATE/DELETE grant and no policy for them**: this
+  table is written by migrations only, so a client can neither forge nor
+  erase a removal. `anon` reaches nothing.
+- **Why remove the rows rather than add the constraint `NOT VALID`.** A dead
+  row is not passive here: `club_summary()` picks the active weekly challenge
+  with `order by ends_on asc limit 1`, so a malformed row that ends sooner
+  **shadows** a good one set alongside it — the club home advertises the
+  broken challenge and the working one is invisible. The client's `valid`
+  flag hides the hero but cannot un-shadow the good challenge.
+- **What removing them costs, stated plainly.** A coach with a broken
+  challenge currently sees the staff-only banner `cloud.js` renders from
+  `weeklyChallengeRow.valid`; once the row is gone that banner stops
+  appearing and the coach simply sees no active challenge. Judged worth it —
+  the banner's job is to get a real challenge set, the Boards tab already
+  reported these rows as "no active challenge", and no member ever saw them.
+- **Nothing referenced the removed rows**, checked before deciding: no
+  foreign key anywhere points at `weekly_challenges` (`chal_progress` and the
+  whole `challenge_*` family belong to the separate Phase-2
+  `public.challenges` table); `weekly_challenge_leaderboard` joins
+  `workout_posts` on `comparison_key` text equality, which a malformed key
+  matches zero of by construction; `club_summary()` and
+  `loadWeeklyChallenge()` read by date window only.
+
+### `club_summary()` returns the key (202609060027)
+
+Signature unchanged; see the full return shape under **`club_summary()`**
+above. `comparison_key` and `starts_at` are added inside `active_challenge`.
+
+- **Why the key rather than a validity boolean.** A boolean computed in the
+  database can only mean "the shape is valid", because shape is the only half
+  Postgres can check — so the caller would still have had to fetch the key to
+  finish the job and the round-trip would have survived. And after
+  202609060026 that boolean is a **constant**: shape validity is now a table
+  invariant, and a field that can only ever say `true` is decoration a later
+  reader will mistake for a guarantee.
+- **The key exposes nothing new.** `movement:back-squat:est1rm` is a content
+  identifier, not member data, and every community member can already read it
+  two ways — `weekly_challenges_read` (202609060011) is
+  `using (is_community_member())` over the whole row, and
+  `weekly_challenge_leaderboard` selects `comparison_key` by name. Making it
+  staff-only here would have been theatre.
+- The weekly branch selects the **same row and ordering** as
+  `loadWeeklyChallenge()` (`current_date` inside the window,
+  `order by ends_on asc limit 1`). The two must not drift, or the client
+  would validate one row and render another.
+
+### Client change this enables (not made here — `cloud.js` is owned elsewhere)
+
+`loadWeeklyChallenge()` can drop its first query entirely and build
+`state.club.weeklyChallengeRow` from `club_summary()`'s `active_challenge`
+when `source === 'weekly'`, keeping `COMPARISON_KEY_SHAPE_RE &&
+challengeKeyExists()` exactly as they are. **Both migrations are safe to land
+without it** — the added keys are ignored by the shipped reader.
+
+While reading that call site, two things worth a separate ticket, neither
+fixable in the schema:
+
+1. `renderClubHome()` gates the `club_summary`-sourced hero on
+   `activeWeeklyChallenge()`, which only ever inspects the `weekly` row. A
+   Phase-2 `challenges` hero (`source === 'challenge'`) would therefore be
+   suppressed by an unrelated broken weekly row. Latent today because
+   `challenges` is empty; `source` is in the payload and is the fix.
+2. `challengeKeyExists()` is **device-relative** for custom WODs, which are
+   local per-member data. A challenge set on coach A's custom WOD looks
+   broken to coach B and invalid to every member. The database cannot help
+   with this — a shared challenge needs a shared catalog.
