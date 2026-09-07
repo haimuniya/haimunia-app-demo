@@ -2554,14 +2554,26 @@
     { id: "other", label: "אחר" },
   ];
   function reportReasonLabel(code) { const r = REPORT_REASONS.find((x) => x.id === code); return r ? r.label : (code || ""); }
+  // mod_queue() returns a null author name for content whose author is gone.
+  // One constant for the three surfaces that render it (queue row, context
+  // overlay, action sheet) so a report and the dialog acting on it cannot
+  // describe the same missing member differently.
+  const MOD_UNKNOWN_AUTHOR_TEXT = "חבר/ה שהוסר/ה";
   // The five queue decisions. restrict_temp carries a duration; the rest
   // do not. Every one is passed straight to mod_review().
+  //
+  // Five-persona UX audit, defect 2. `effect` is the sentence the sheet shows
+  // under the title, and it NAMES THE MEMBER: "הגבלת פרסום קבועה" on its own
+  // told an admin what button they pressed and nothing about who it lands on,
+  // in a queue where every row looks alike. {subject} is the placeholder
+  // subjectSentenceHtml() fills with a bidi-isolated name - see
+  // CONFIRM_SUBJECT_TOKEN. The label stays the button/title text.
   const MOD_DECISIONS = [
-    { id: "remove", label: "הסרת התוכן", destructive: true },
-    { id: "warn", label: "אזהרה לחבר/ה" },
-    { id: "restrict_temp", label: "הגבלת פרסום זמנית" },
-    { id: "restrict_permanent", label: "הגבלת פרסום קבועה", destructive: true },
-    { id: "dismiss", label: "דחיית הדיווח" },
+    { id: "remove", label: "הסרת התוכן", destructive: true, effect: "התוכן שפרסמ/ה {subject} יוסר מהפיד." },
+    { id: "warn", label: "אזהרה לחבר/ה", effect: "אזהרה תירשם ל{subject}." },
+    { id: "restrict_temp", label: "הגבלת פרסום זמנית", effect: "{subject} לא יוכל/תוכל לפרסם בקהילה עד תום התקופה שנבחרה." },
+    { id: "restrict_permanent", label: "הגבלת פרסום קבועה", destructive: true, effect: "{subject} לא יוכל/תוכל לפרסם בקהילה יותר. ההגבלה נשארת עד שמנהל/ת מסיר/ה אותה." },
+    { id: "dismiss", label: "דחיית הדיווח", effect: "הדיווח על {subject} ייסגר ללא פעולה." },
   ];
   const RESTRICT_TEMP_DAYS = [3, 7, 14, 30];
 
@@ -2593,7 +2605,10 @@
   function openModAction(reportId, decision) {
     const item = (state.admin.modQueue || []).find((r) => r.report_id === reportId);
     if (!item || !MOD_DECISIONS.some((d) => d.id === decision)) return;
-    state.admin.modAction = { reportId, decision, note: "", days: 7, saving: false, error: "", targetType: item.target_type };
+    // subjectName is carried on the action rather than re-read from the queue
+    // at render time: the queue reloads underneath an open sheet, and the
+    // name in the confirmation must stay the one the admin clicked.
+    state.admin.modAction = { reportId, decision, note: "", days: 7, saving: false, error: "", targetType: item.target_type, subjectName: item.content_author_name || "" };
     rerender();
   }
   function closeModAction() { state.admin.modAction = null; rerender(); }
@@ -2749,6 +2764,24 @@
     setMessage("ההרשאה עודכנה ל" + roleCodeLabel(roleCode));
     await searchMembers(state.members.search);
   }
+  // Five-persona UX audit, defect 1. Granting coach asked "are you sure?";
+  // revoking the same permission fired on a single click, from a list, with
+  // no dialog at all - the destructive direction was the UNGUARDED one. This
+  // is the one dialog definition for it, shared by the dedicated revoke
+  // control and by admin-set-role's "member" branch (the other route into
+  // the same RPC), so the two cannot diverge again. It is also marked
+  // destructive: true, which grant deliberately is not.
+  function askRevokeCoachConfirm(userId) {
+    askConfirm({
+      title: "ביטול הרשאת מאמן/ת",
+      message: "להסיר הרשאת מאמן/ת מ{subject}? הגישה לכלי המאמנים ולניהול הקהילה תיפסק מיד.",
+      subject: subjectNameFor(userId),
+      confirmLabel: "ביטול ההרשאה",
+      destructive: true,
+      action: "admin-revoke-coach",
+      payload: { userId },
+    });
+  }
   async function adminRevokeCoach(userId) {
     if (!state.user || !isAdmin()) return;
     const { error } = await client.rpc("admin_revoke_coach", { p_user_id: userId });
@@ -2836,6 +2869,16 @@
     { id: "revoked", label: "בוטל" }, { id: "expired", label: "פג תוקף" },
   ];
   function inviteStatusLabel(s) { return { pending: "ממתין", redeemed: "מומש", revoked: "בוטל", expired: "פג תוקף" }[s] || s; }
+  // A personal invite has no member behind it yet, so the only thing that can
+  // identify it in a confirmation is the label the admin typed when creating
+  // it ("שם המוזמן/ת" is literally what the field asks for). Single source,
+  // shared with the row renderer, so the list and the dialog cannot describe
+  // the same unlabelled invite two different ways.
+  const INVITE_UNLABELLED_TEXT = "(ללא תווית)";
+  function inviteSubjectName(inviteId) {
+    const inv = (state.admin.invites.items || []).find((i) => i && i.id === inviteId);
+    return (inv && inv.label) || INVITE_UNLABELLED_TEXT;
+  }
   async function loadInvites(reset) {
     if (!state.user || !(hasPerm(PERM.MEMBER_INVITE) || isAdmin())) { state.admin.invites.items = []; return; }
     const iv = state.admin.invites;
@@ -2974,7 +3017,7 @@
     const filters = `<div class="chip-row" style="margin:0 0 10px;">${INVITE_STATUS_FILTERS.map((s) => `<button class="chip-btn${iv.status === s.id ? " selected" : ""}" data-community-action="invite-status-filter" data-status="${s.id}">${s.label}</button>`).join("")}</div>`;
     const rowHtml = (inv) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:4px;" data-invite-id="${esc(inv.id)}">
       <div class="flex" style="justify-content:space-between;width:100%;">
-        <span>${esc(inv.label || "(ללא תווית)")} · ${roleCodeLabel(inv.role)}</span>
+        <span>${bidiText(inv.label || INVITE_UNLABELLED_TEXT)} · ${roleCodeLabel(inv.role)}</span>
         <span class="admin-tag">${inviteStatusLabel(inv.status)}</span>
       </div>
       <div style="color:var(--steel);font-size:12px;">נוצר ${esc(String(inv.created_at || "").slice(0, 10))}${inv.expires_at ? " · תפוגה " + esc(String(inv.expires_at).slice(0, 10)) : ""}</div>
@@ -5374,6 +5417,79 @@
   // (publishing to the community feed, which — unlike blocking someone —
   // used to fire immediately). Every destructive or broadcast-to-others
   // action now goes through this same path.
+  //
+  // ---- WHO the action is about (five-persona UX audit, defect 2) ---------
+  //
+  // "הגבלת פרסום קבועה" / "לחסום את המשתמש?" named no one. Every one of these
+  // dialogs is opened from a LIST, which is exactly how the wrong row gets
+  // actioned - the admin reads a name in the roster, taps, and then confirms
+  // a sentence that could be about anybody.
+  //
+  // The earlier pass (commit 05e1ee5) concluded askConfirm() "structurally
+  // cannot carry a name that mixes Latin and Hebrew" and built a dedicated
+  // sheet instead. That conclusion was about the MESSAGE field only: it is
+  // rendered with esc() as one flat run, so a name spliced into the string
+  // before it reaches here would indeed be reordered against the Hebrew
+  // sentence around it (and could not be <bdi>-isolated, since esc() would
+  // turn the tag into literal text). The fix is to stop splicing: the
+  // message carries a TOKEN, the name travels beside it as `subject`, and
+  // the sheet joins the escaped sentence fragments around a bidiText()-
+  // isolated name. esc() still runs over both halves - nothing is bypassed -
+  // and every existing call site is fixed at once instead of growing a
+  // fourth dialog. CLOUD_DIALOGS stays at 13.
+  const CONFIRM_SUBJECT_TOKEN = "{subject}";
+  // Single source, so the degraded wording cannot drift between call sites:
+  // used only when a subject could not be resolved at all (a stale list, an
+  // id the client has never seen a profile for). "לחסום את החבר/ה?" is a
+  // worse dialog than "לחסום את יעל בר?" but it is still a grammatical one.
+  const CONFIRM_SUBJECT_UNKNOWN = "החבר/ה";
+  function personDisplayName(p) {
+    if (!p) return "";
+    return p.display_name || (p.handle ? "@" + p.handle : "");
+  }
+  // One lookup for every surface that can open a confirmation about a person,
+  // keyed by id so it cannot return a different member than the row clicked.
+  // Ordered admin-first: the member-management search and the roster are the
+  // lists these dialogs are actually opened from, and they carry the freshest
+  // role column too (subjectRecordFor is what tells "downgrade" from "grant").
+  function subjectRecordFor(userId) {
+    if (!userId) return null;
+    const lists = [
+      state.members.results,
+      state.admin.roster.items,
+      state.members.people,
+      state.members.directory.items,
+      state.members.suggestions.items,
+    ];
+    for (const list of lists) {
+      if (!Array.isArray(list)) continue;
+      const hit = list.find((p) => p && (p.id === userId || p.user_id === userId));
+      if (hit) return hit;
+    }
+    const pv = state.members.profileView;
+    if (pv && pv.userId === userId && pv.data) return pv.data;
+    return null;
+  }
+  // Feed authors are the other entry point (the post menu's "block"), and
+  // there the name lives on the post rather than on a profile row.
+  function subjectNameFor(userId) {
+    const name = personDisplayName(subjectRecordFor(userId));
+    if (name) return name;
+    if (userId && Array.isArray(state.feed.items)) {
+      const post = state.feed.items.find((p) => p && p.author_id === userId);
+      if (post) { const n = postAuthorName(post); if (n) return n; }
+    }
+    return "";
+  }
+  // Shared by renderConfirmSheet() and renderModActionSheet(): the same
+  // sentence-with-a-name rendering, so the two dialogs cannot drift into
+  // naming their subject two different ways.
+  function subjectSentenceHtml(message, subject) {
+    const parts = String(message == null ? "" : message).split(CONFIRM_SUBJECT_TOKEN);
+    if (parts.length === 1) return esc(parts[0]);
+    const name = String(subject == null ? "" : subject).trim() || CONFIRM_SUBJECT_UNKNOWN;
+    return parts.map(esc).join(bidiText(name));
+  }
   function askConfirm(opts) { state.ui.confirmDialog = opts; rerender(); }
   function closeConfirm() { state.ui.confirmDialog = null; rerender(); }
   function runConfirm() {
@@ -5386,6 +5502,10 @@
     else if (c.action === "delete-post") deletePost(c.payload.postId);
     else if (c.action === "publish") publishWorkout(c.payload.type, c.payload.id, c.payload.visibility, c.payload.file);
     else if (c.action === "admin-grant-coach") adminGrantCoach(c.payload.userId);
+    // Defect 1: revoking used to fire straight off the click handler, with no
+    // dialog at all, while GRANTING the same permission asked first. The
+    // destructive direction now runs from here like every other one.
+    else if (c.action === "admin-revoke-coach") adminRevokeCoach(c.payload.userId);
     else if (c.action === "admin-set-role") adminSetRole(c.payload.userId, c.payload.role);
     else if (c.action === "admin-remove-member") adminRemoveMember(c.payload.userId);
     else if (c.action === "admin-reset-password") adminResetPassword(c.payload.userId);
@@ -5421,7 +5541,7 @@
       <div class="modal-sheet" style="border-radius:22px;border-bottom:1px solid var(--border);max-height:none;">
         <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
           <h2 id="communityConfirmTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">${esc(c.title || "אישור פעולה")}</h2>
-          <div style="color:var(--steel);font-size:13.5px;line-height:1.6;margin-bottom:20px;">${esc(c.message)}</div>
+          <div style="color:var(--steel);font-size:13.5px;line-height:1.6;margin-bottom:20px;"${c.subject !== undefined ? ' data-confirm-subject="1"' : ""}>${subjectSentenceHtml(c.message, c.subject)}</div>
           <div class="chip-row" style="margin-top:0;">
             <button class="chip-btn" data-community-action="confirm-no">ביטול</button>
             <button class="chip-btn primary${c.destructive ? " danger" : ""}" data-community-action="confirm-yes">${esc(c.confirmLabel || "אישור")}</button>
@@ -6123,7 +6243,7 @@
         return `<div class="chart-card" style="margin-bottom:10px;" data-mod-report-id="${esc(r.report_id)}">
           <div class="flex" style="justify-content:space-between;align-items:flex-start;gap:10px;">
             <div style="min-width:0;">
-              <div style="font-weight:800;">${esc(MOD_TARGET_LABEL[r.target_type] || "פוסט")} · ${bidiText(r.content_author_name || "חבר/ה שהוסר/ה")}</div>
+              <div style="font-weight:800;">${esc(MOD_TARGET_LABEL[r.target_type] || "פוסט")} · ${bidiText(r.content_author_name || MOD_UNKNOWN_AUTHOR_TEXT)}</div>
               <div style="color:var(--steel);font-size:12.5px;margin-top:4px;white-space:pre-wrap;">${bidiText(String(r.content_excerpt || "התוכן הוסר").slice(0, 240))}</div>
             </div>
             <span class="admin-tag" style="${r.status === "open" ? "background:rgba(194,57,44,.12);border-color:var(--red);color:var(--red-text);" : ""}">${esc(MOD_STATUS_LABEL[r.status] || r.status)}</span>
@@ -12237,6 +12357,7 @@
       <div class="modal-sheet" style="border-radius:22px;max-height:none;">
         <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
           <h2 id="modActionTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">${esc(def.label)}</h2>
+          ${def.effect ? `<div style="color:var(--steel);font-size:12.5px;line-height:1.6;margin-bottom:10px;" data-mod-action-subject="1">${subjectSentenceHtml(def.effect, a.subjectName || MOD_UNKNOWN_AUTHOR_TEXT)}</div>` : ""}
           ${days}
           <label class="field" style="margin-top:10px;"><span class="field-label">הערה (רשות)</span>
             <textarea class="text-input" data-mod-note maxlength="500" placeholder="נרשמת ביומן">${esc(a.note || "")}</textarea></label>
@@ -12296,7 +12417,7 @@
       <div class="modal-sheet" style="border-radius:22px;max-height:none;">
         <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
           <h2 id="modContextTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">הקשר הדיווח</h2>
-          <div style="color:var(--steel);font-size:12.5px;">${esc(MOD_TARGET_LABEL[c.target_type] || "פוסט")} מאת ${bidiText(c.content_author_name || "חבר/ה שהוסר/ה")}</div>
+          <div style="color:var(--steel);font-size:12.5px;">${esc(MOD_TARGET_LABEL[c.target_type] || "פוסט")} מאת ${bidiText(c.content_author_name || MOD_UNKNOWN_AUTHOR_TEXT)}</div>
           <div class="chart-card" style="margin-top:8px;white-space:pre-wrap;">${bidiText(String(c.content_excerpt || "התוכן הוסר"))}</div>
           ${Array.isArray(c.reporters) && c.reporters.length ? `<div style="color:var(--steel);font-size:12px;margin-top:8px;">דווח ע״י: ${c.reporters.map((r) => esc(r.name || r.id)).join(", ")}</div>` : ""}
           <div class="chip-row" style="margin-top:12px;">
@@ -13568,7 +13689,7 @@
     // COMM-231 members directory.
     else if (action === "directory-retry") loadDirectory(true);
     else if (action === "directory-more") loadDirectory(false);
-    else if (action === "block") askConfirm({ title: "חסימת משתמש", message: "לחסום את המשתמש? לא תראו זה את זה בקהילה.", confirmLabel: "חסימה", destructive: true, action: "block", payload: { userId: el.dataset.id } });
+    else if (action === "block") askConfirm({ title: "חסימת משתמש", message: "לחסום את {subject}? לא תראו זה את זה בקהילה.", subject: subjectNameFor(el.dataset.id), confirmLabel: "חסימה", destructive: true, action: "block", payload: { userId: el.dataset.id } });
     else if (action === "delete-post") askConfirm({ title: "הסרת שיתוף", message: "להסיר את השיתוף מהפיד? הפעולה לא ניתנת לביטול.", confirmLabel: "הסרה", destructive: true, action: "delete-post", payload: { postId: el.dataset.id } });
     else if (action === "compare") compare(el.dataset.key, el.dataset.id);
     else if (action === "delete-account") askConfirm({ title: "מחיקת חשבון", message: "הפרופיל והשיתופים יוסרו מיד. המחיקה הסופית תתבצע לאחר 30 יום. להמשיך?", confirmLabel: "מחיקה", destructive: true, action: "delete-account" });
@@ -13658,7 +13779,7 @@
     else if (action === "invite-status-filter") setInviteStatusFilter(el.dataset.status);
     else if (action === "invite-list-retry") loadInvites(true);
     else if (action === "invite-list-more") loadInvites(false);
-    else if (action === "invite-revoke") askConfirm({ title: "ביטול הזמנה", message: "ההזמנה תבוטל ולא תהיה ניתנת עוד למימוש. להמשיך?", confirmLabel: "ביטול ההזמנה", destructive: true, action: "admin-invite-revoke", payload: { inviteId: el.dataset.id } });
+    else if (action === "invite-revoke") askConfirm({ title: "ביטול הזמנה", message: "לבטל את ההזמנה של {subject}? היא לא תהיה ניתנת עוד למימוש.", subject: inviteSubjectName(el.dataset.id), confirmLabel: "ביטול ההזמנה", destructive: true, action: "admin-invite-revoke", payload: { inviteId: el.dataset.id } });
     // COMM-377 member roster.
     else if (action === "roster-retry") loadRoster(true);
     else if (action === "roster-more") loadRoster(false);
@@ -13678,13 +13799,20 @@
     else if (action === "admin-set-role") {
       const role = el.dataset.role;
       const label = { member: "חבר/ה", coach: "מאמן/ת", head_coach: "מאמן/ת ראשי/ת" }[role] || role;
-      if (role === "member") adminRevokeCoach(el.dataset.id);
-      else askConfirm({ title: "שינוי הרשאה", message: `להעניק הרשאת ${label} למשתמש/ת זה/ו?`, confirmLabel: "הענקה", action: "admin-set-role", payload: { userId: el.dataset.id, role } });
+      // Defect 1, second asymmetry in the same control set: head_coach ->
+      // coach is a DOWNGRADE, and it used to open the same "להעניק הרשאת…"
+      // ("grant") dialog as a promotion, non-destructive styling included.
+      // The current role decides which sentence and which styling is shown.
+      const current = (subjectRecordFor(el.dataset.id) || {}).role || memberRole(el.dataset.id) || "member";
+      const isDowngrade = role === "coach" && current === "head_coach";
+      if (role === "member") askRevokeCoachConfirm(el.dataset.id);
+      else if (isDowngrade) askConfirm({ title: "הורדת הרשאה", message: "להוריד את {subject} ממאמן/ת ראשי/ת למאמן/ת?", subject: subjectNameFor(el.dataset.id), confirmLabel: "הורדה", destructive: true, action: "admin-set-role", payload: { userId: el.dataset.id, role } });
+      else askConfirm({ title: "שינוי הרשאה", message: `להעניק ל{subject} הרשאת ${label}?`, subject: subjectNameFor(el.dataset.id), confirmLabel: "הענקה", action: "admin-set-role", payload: { userId: el.dataset.id, role } });
     }
-    else if (action === "admin-grant-coach") askConfirm({ title: "הענקת הרשאת מאמן/ת", message: "להעניק הרשאת מאמן/ת למשתמש/ת זה/ו?", confirmLabel: "הענקה", action: "admin-grant-coach", payload: { userId: el.dataset.id } });
-    else if (action === "admin-revoke-coach") adminRevokeCoach(el.dataset.id);
-    else if (action === "admin-remove-member") askConfirm({ title: "הסרת חבר/ה", message: "הפרופיל והשיתופים של המשתמש/ת יוסרו מיד. המחיקה הסופית תתבצע לאחר 30 יום. להמשיך?", confirmLabel: "הסרה", destructive: true, action: "admin-remove-member", payload: { userId: el.dataset.id } });
-    else if (action === "admin-reset-password") askConfirm({ title: "איפוס סיסמה", message: "ייווצרו סיסמה זמנית חדשה שתוצג פעם אחת בלבד. יש למסור אותה לחבר/ה ישירות (לא דרך האפליקציה).", confirmLabel: "איפוס", action: "admin-reset-password", payload: { userId: el.dataset.id } });
+    else if (action === "admin-grant-coach") askConfirm({ title: "הענקת הרשאת מאמן/ת", message: "להעניק ל{subject} הרשאת מאמן/ת?", subject: subjectNameFor(el.dataset.id), confirmLabel: "הענקה", action: "admin-grant-coach", payload: { userId: el.dataset.id } });
+    else if (action === "admin-revoke-coach") askRevokeCoachConfirm(el.dataset.id);
+    else if (action === "admin-remove-member") askConfirm({ title: "הסרת חבר/ה", message: "להסיר את {subject} מהמועדון? הפרופיל והשיתופים יוסרו מיד, והמחיקה הסופית תתבצע לאחר 30 יום.", subject: subjectNameFor(el.dataset.id), confirmLabel: "הסרה", destructive: true, action: "admin-remove-member", payload: { userId: el.dataset.id } });
+    else if (action === "admin-reset-password") askConfirm({ title: "איפוס סיסמה", message: "לאפס את הסיסמה של {subject}? הסיסמה הנוכחית תפסיק לעבוד מיד, ותיווצר סיסמה זמנית שתוצג פעם אחת בלבד - יש למסור אותה לחבר/ה ישירות (לא דרך האפליקציה).", subject: subjectNameFor(el.dataset.id), confirmLabel: "איפוס", destructive: true, action: "admin-reset-password", payload: { userId: el.dataset.id } });
     else if (action === "close-password-reset-result") { state.admin.passwordResetResult = null; rerender(); }
     else if (action === "toggle-share") toggleShare(el.dataset.type, el.dataset.id);
     else if (action === "open-composer") openComposer(el);

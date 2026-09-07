@@ -55,12 +55,51 @@ test("cloud.js wires search, grant/revoke coach, and remove-member through the R
   assert.match(cloudJs, /client\.rpc\("admin_grant_coach", \{ p_user_id: userId \}\)/);
   assert.match(cloudJs, /client\.rpc\("admin_revoke_coach", \{ p_user_id: userId \}\)/);
   assert.match(cloudJs, /client\.rpc\("admin_remove_member", \{ p_user_id: userId \}\)/);
-  // Granting coach (elevates privilege) and removing a member
-  // (destructive) both go through askConfirm; revoking (only ever
-  // lowers privilege) doesn't need to.
+  // REVERSED by the five-persona UX audit, defect 1. This test used to
+  // assert the OPPOSITE of the line below - "revoking coach only ever lowers
+  // privilege - it shouldn't need a confirm dialog" - and that reasoning is
+  // what the defect was. Granting asked "are you sure?"; revoking fired on a
+  // single click, off a list of near-identical rows, with no dialog and no
+  // undo. Lowering privilege is the direction that locks a coach out of
+  // their own tools mid-session, and "only lowers privilege" is precisely
+  // the argument for guarding it at least as well as the grant, not less.
   assert.match(cloudJs, /askConfirm\(\{ title: "הענקת הרשאת מאמן\/ת".*action: "admin-grant-coach"/);
   assert.match(cloudJs, /askConfirm\(\{ title: "הסרת חבר\/ה".*action: "admin-remove-member"/);
-  assert.doesNotMatch(cloudJs, /action === "admin-revoke-coach"\) askConfirm/, "revoking coach only ever lowers privilege - it shouldn't need a confirm dialog");
+  assert.match(cloudJs, /action === "admin-revoke-coach"\) askRevokeCoachConfirm\(el\.dataset\.id\)/,
+    "revoking coach must open a confirmation, not fire on the click");
+  // Scoped to the click handler: runConfirm()'s own dispatch line reads
+  // `c.action === "admin-revoke-coach") adminRevokeCoach(...)` and is
+  // exactly where that call is now supposed to live.
+  const clickHandler = cloudJs.slice(cloudJs.indexOf("window.handleCommunityClick = function (el) {"));
+  assert.doesNotMatch(clickHandler, /[^.]action === "admin-revoke-coach"\) adminRevokeCoach\(/,
+    "the click handler must never call the revoke RPC path directly - only runConfirm() may");
+});
+
+test("the revoke confirmation is destructive, names its subject, and is the single definition both routes into the RPC use", () => {
+  const start = cloudJs.indexOf("function askRevokeCoachConfirm(userId)");
+  assert.ok(start > -1, "askRevokeCoachConfirm must exist");
+  const body = cloudJs.slice(start, cloudJs.indexOf("\n  async function adminRevokeCoach", start));
+  assert.match(body, /destructive: true/, "revoking is the destructive direction and must be styled as such");
+  assert.match(body, /\{subject\}/, "the revoke confirmation must name the member it is about");
+  assert.match(body, /subject: subjectNameFor\(userId\)/);
+  assert.match(body, /action: "admin-revoke-coach",\s*payload: \{ userId \},/);
+  // admin-set-role's "member" branch is the other way to reach
+  // admin_revoke_coach; it must reuse this dialog rather than grow a second
+  // (that branch used to call adminRevokeCoach() directly too).
+  assert.match(cloudJs, /if \(role === "member"\) askRevokeCoachConfirm\(el\.dataset\.id\);/);
+  assert.match(cloudJs, /else if \(c\.action === "admin-revoke-coach"\) adminRevokeCoach\(c\.payload\.userId\);/,
+    "runConfirm() is the only caller of the revoke path");
+});
+
+test("head_coach -> coach is worded and styled as a downgrade, not as a grant", () => {
+  // Same asymmetry class as defect 1: the demotion button opened the
+  // promotion dialog ("להעניק הרשאת מאמן/ת"), non-destructive styling and
+  // all, so the two directions of one control read identically.
+  const start = cloudJs.indexOf('else if (action === "admin-set-role") {');
+  const block = cloudJs.slice(start, cloudJs.indexOf('else if (action === "admin-grant-coach")', start));
+  assert.match(block, /const isDowngrade = role === "coach" && current === "head_coach";/);
+  assert.match(block, /isDowngrade\) askConfirm\(\{ title: "הורדת הרשאה".*destructive: true/);
+  assert.match(block, /להוריד את \{subject\} ממאמן\/ת ראשי\/ת למאמן\/ת\?/);
 });
 
 test("removing a member is marked destructive in its confirm dialog", () => {
