@@ -56,12 +56,21 @@ begin
   for i in 1..array_length(v_handles,1) loop
     v_id := gen_random_uuid();
 
+    -- GoTrue reads confirmation_token and its siblings as NOT NULL strings and
+    -- fails sign-in with "converting NULL to string is unsupported" if they are
+    -- left unset, so every seeded account was unauthenticatable. Empty strings,
+    -- not NULL. See the note at the top of this file.
     insert into auth.users (id, instance_id, aud, role, email, encrypted_password,
                             email_confirmed_at, created_at, updated_at,
-                            raw_app_meta_data, raw_user_meta_data)
+                            raw_app_meta_data, raw_user_meta_data,
+                            confirmation_token, recovery_token,
+                            email_change_token_new, email_change_token_current,
+                            email_change, phone_change, phone_change_token,
+                            reauthentication_token)
     values (v_id, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
             v_handles[i] || '@seed.local', crypt('seed-password-123', gen_salt('bf')),
-            now(), now(), now(), '{"provider":"email","providers":["email"]}'::jsonb, '{}'::jsonb);
+            now(), now(), now(), '{"provider":"email","providers":["email"]}'::jsonb, '{}'::jsonb,
+            '', '', '', '', '', '', '', '');
 
     -- recovery_verified_at is REQUIRED: is_community_member() gates every
     -- write on it, and post_create() reports that failure as
@@ -161,12 +170,21 @@ begin
 
   for i in 1..array_length(v_handles,1) loop
     v_id := gen_random_uuid();
+    -- GoTrue reads confirmation_token and its siblings as NOT NULL strings and
+    -- fails sign-in with "converting NULL to string is unsupported" if they are
+    -- left unset, so every seeded account was unauthenticatable. Empty strings,
+    -- not NULL. See the note at the top of this file.
     insert into auth.users (id, instance_id, aud, role, email, encrypted_password,
                             email_confirmed_at, created_at, updated_at,
-                            raw_app_meta_data, raw_user_meta_data)
+                            raw_app_meta_data, raw_user_meta_data,
+                            confirmation_token, recovery_token,
+                            email_change_token_new, email_change_token_current,
+                            email_change, phone_change, phone_change_token,
+                            reauthentication_token)
     values (v_id, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
             v_handles[i] || '@seed.local', crypt('seed-password-123', gen_salt('bf')),
-            now(), now(), now(), '{"provider":"email","providers":["email"]}'::jsonb, '{}'::jsonb);
+            now(), now(), now(), '{"provider":"email","providers":["email"]}'::jsonb, '{}'::jsonb,
+            '', '', '', '', '', '', '', '');
     insert into public.profiles (id, handle, display_name, bio, recovery_verified_at)
     values (v_id, v_handles[i], v_names[i], '', now());
     perform set_config('request.jwt.claims',
