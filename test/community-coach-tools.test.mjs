@@ -33,9 +33,17 @@ function seeded(extra, asStaff) {
   // key silently replace the whole base roster instead of adding to it.
   const merged = Object.assign({
     profiles: [],
+    // redeemed_at MATCHES each profile's created_at, which it did not
+    // before: dana and yael carried created_at 400 days ago and
+    // redeemed_at of "just now", describing two different clubs. Nothing
+    // read redeemed_at then, so the contradiction was invisible. It is the
+    // canonical join date as of 202609060020 (read across users inside the
+    // SECURITY DEFINER coach_new_members(), which is what made it usable),
+    // so a fixture that disagrees with itself now reports two 400-day
+    // members as having joined today.
     invite_redemptions: [
-      { user_id: "u1", invite_id: "inv-1", role: asStaff ? "coach" : "member", redeemed_at: VERIFIED },
-      { user_id: "coach2", invite_id: "inv-1", role: "coach", redeemed_at: VERIFIED },
+      { user_id: "u1", invite_id: "inv-1", role: asStaff ? "coach" : "member", redeemed_at: daysAgoIso(400) },
+      { user_id: "coach2", invite_id: "inv-1", role: "coach", redeemed_at: daysAgoIso(400) },
       { user_id: "u9", invite_id: "inv-1", role: "member", redeemed_at: daysAgoIso(3) },
     ],
     clubs: [{ id: "club-1", name: "חיימוניה" }],
@@ -111,10 +119,18 @@ test("Celebrate shows the empty state when the feed is genuinely empty, and the 
 
 // --- COMM-224: Welcome -----------------------------------------------------
 
-test("Welcome lists a member who joined 3 days ago, with days-since-joining, the reused community_streaks figure, and not-contacted status, and drops a member who joined 40 days ago", async () => {
+test("Welcome lists a member who joined 3 days ago, with days-since-joining, their logged-session count and not-contacted status, and drops a member who joined 40 days ago", async () => {
   const mock = seeded({
     profiles: [{ id: "u10", handle: "old", display_name: "ותיק", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true, created_at: daysAgoIso(40) }],
-    community_streaks: [{ user_id: "u9", handle: "noa", display_name: "נועה", current_streak: 3, last_activity_on: null }],
+    // Two real logged training days. This used to be a community_streaks
+    // row of current_streak 3, rendered as "רצף נוכחי" - CONSECUTIVE DAYS
+    // THE MEMBER OPENED THE APP, shown beside a new member's name where a
+    // coach reads it as training. 202609060020 replaced it with a genuine
+    // count of attendance_log days.
+    attendance_log: [
+      { user_id: "u9", occurred_on: "2026-09-04" },
+      { user_id: "u9", occurred_on: "2026-09-05" },
+    ],
   }, true);
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openCoachTab(window);
@@ -125,13 +141,18 @@ test("Welcome lists a member who joined 3 days ago, with days-since-joining, the
   const rowText = rows[0].closest(".log-row").textContent;
   assert.match(rowText, /נועה/);
   assert.match(rowText, /לפני 3 ימים/);
-  assert.match(rowText, /רצף נוכחי: 3/);
+  assert.match(rowText, /2 אימונים באפליקציה/, "the real count of logged training days, labelled as what it measures");
   assert.match(rowText, /טרם נוצר קשר/);
 });
 
 test("Welcome shows the empty state with no new members in the last 30 days", async () => {
   const mock = seeded({ profiles: [] }, true);
-  // Replace the seed profiles with only long-time members.
+  // Replace the seed profiles with only long-time members. The redemptions
+  // have to be narrowed to match, or dana keeps a "joined today" join date
+  // from a redemption row whose profile no longer exists in this fixture.
+  mock.db.invite_redemptions = [
+    { user_id: "u1", invite_id: "inv-1", role: "coach", redeemed_at: daysAgoIso(400) },
+  ];
   mock.db.profiles = [
     { id: "u1", handle: "dana", display_name: "דנה", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true, created_at: daysAgoIso(400) },
   ];

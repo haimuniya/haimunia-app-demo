@@ -187,7 +187,7 @@
     club: {
       row: null, features: {}, featuresLoaded: false, moduleBusy: null,
       announcements: [], announcementSaving: false, streaks: [],
-      inactiveMembers: [], newMembers: [],
+      inactiveMembers: [], newMembers: [], activitySignal: null,
       weeklyChallenge: null, weeklyLeaderboard: [],
     },
 
@@ -939,7 +939,7 @@
     state.communityDataLoading = true;
     try {
       await Promise.all([loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadEvents(), loadOnboardingProgress(), loadOnboardingStepContent()]);
-      if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers()]);
+      if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers(), loadActivitySignal()]);
       if (hasPerm(PERM.COMMENT_MODERATE) || isAdmin()) await loadModQueue();
       // COMM-141. Arm the own-row notification channel for this session.
       ensureNotifRealtime();
@@ -1765,6 +1765,20 @@
     const { data, error } = await client.rpc("coach_new_members");
     state.club.newMembers = error ? [] : (data || []);
   }
+  // Whether the two lists above have any data behind them AT ALL.
+  //
+  // An empty inactive list means one of two completely different things -
+  // "everyone is active" or "we have never received a single data point" -
+  // and the list itself cannot tell them apart. This section used to assert
+  // the first in both cases ("כולם פעילים"), which on a brand-new club is a
+  // confident all-clear over an empty table. Distinguishing them needs a
+  // fact, not a heuristic, which is what coach_activity_signal_status()
+  // (202609060020) returns: aggregate counts, no member identities.
+  async function loadActivitySignal() {
+    if (!state.user || !isStaff()) return;
+    const { data, error } = await client.rpc("coach_activity_signal_status");
+    state.club.activitySignal = error ? null : ((data || [])[0] || null);
+  }
 
   // ==========================================================================
   // COMM-223..226 coach-tools cluster. Coach Dashboard: Celebrate, Welcome,
@@ -1774,29 +1788,30 @@
   // three "###" subsections under "Needs from schema, coach-tools" in
   // contracts.md for the exact shapes read below.
   //
-  // Read-path note (COMM-224 "new members"): the ticket text says to join
-  // profiles with invite_redemptions.redeemed_at directly. That table has
-  // exactly one SELECT policy on this schema, invite_redemptions_self_select
-  // (202608270003, `user_id = auth.uid()`), and 202608290013 did not widen
-  // it for staff - so a coach's cross-user select of it would silently
-  // return nothing for every row but their own, the exact "looks like it
-  // works, does nothing" failure mode 202608290013's own comments call out
-  // for the Assign-coach column. profiles.created_at is used instead: it is
-  // already club-wide readable (profiles_read_authenticated, 202608280003)
-  // and profiles_insert_self requires a redeemed invite to already exist, so
-  // it lands within the same session as redeemed_at for every real member.
-  // Follow-up: either invite_redemptions gets a staff-readable SELECT
-  // policy, or created_at is accepted as the canonical join date for good.
+  // Read-path note (COMM-224 "new members"), RESOLVED by 202609060020 - both
+  // halves of what used to be recorded here as open follow-ups.
   //
-  // "Sessions logged" (COMM-224): there is no readable-by-a-coach raw
-  // lifetime session count anywhere in this schema (community_streaks
-  // exposes a consecutive-day run, not a total; community_profile's
-  // training_frequency/current_streak are the same shape, gated to the
-  // subject's own toggle). current_streak from community_streaks - the
-  // exact figure and the exact label ("רצף נוכחי") the profile overlay
-  // already uses at community_profile's current_streak field - is reused
-  // here rather than inventing a new count query, per COMM-224's own
-  // instruction to reuse what already exists.
+  // JOIN DATE. The ticket asked for invite_redemptions.redeemed_at. That
+  // table has exactly one SELECT policy, invite_redemptions_self_select
+  // (202608270003, `user_id = auth.uid()`), so a coach's cross-user select of
+  // it returns nothing but their own row - the "looks like it works, does
+  // nothing" failure mode 202608290013's own comments flag for the
+  // Assign-coach column. This section used profiles.created_at instead and
+  // logged a follow-up. The follow-up is closed the third way: the read moved
+  // INTO a SECURITY DEFINER function (coach_new_members), which reads
+  // redeemed_at across users without widening any policy - the same thing
+  // coach_celebrate_feed() already does for anniversaries. redeemed_at is now
+  // the canonical join date, with created_at as the fallback.
+  //
+  // SESSIONS LOGGED. There genuinely was no coach-readable lifetime session
+  // count when this section shipped, and community_streaks.current_streak was
+  // reused as a stand-in. That was wrong in a way worth naming: it counts
+  // CONSECUTIVE DAYS THE MEMBER OPENED THE APP, and it sat beside a new
+  // member's name under the label "רצף נוכחי" where a coach reads it as
+  // training. coach_new_members().sessions_logged replaces it - a real count
+  // of attendance_log days, delivered as an AGGREGATE by the definer function
+  // precisely so that 202609060013's rule (raw attendance rows are admin
+  // rank, not coach rank) keeps holding.
   function celebrateItemKey(item) { return `${item.kind}|${item.user_id}|${item.occurred_at}`; }
   async function loadCoachCelebrate() {
     if (!state.user || !isStaff()) return;
@@ -1879,26 +1894,42 @@
     state.coach.welcome.loading = true;
     state.coach.welcome.error = false;
     rerender();
-    const cutoffIso = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    const { data, error } = await client.from("profiles").select("id,handle,display_name,avatar_url,created_at,assigned_coach_id").gte("created_at", cutoffIso).order("created_at", { ascending: false });
+    // ONE call where there used to be two (a profiles range-scan plus a
+    // batched member_contact_log read). Not consolidation for its own sake:
+    // `sessions_logged` cannot be obtained client-side at all, because
+    // 202609060013 deliberately narrowed attendance_log's staff read to
+    // has_perm('community.analytics.view') - admin rank - so a coach's own
+    // select of it returns zero rows. The count has to come from a definer
+    // function, and coach_new_members() is the one that already answers every
+    // other question this section asks.
+    const { data, error } = await client.rpc("coach_new_members", { p_within_days: 30 });
     if (error) {
       state.coach.welcome.loading = false; state.coach.welcome.loaded = true; state.coach.welcome.error = true; state.coach.welcome.members = [];
       rerender();
       return;
     }
-    // deleted_at isn't selected above - profiles_read_authenticated already
-    // excludes a soft-deleted row server-side, so there is nothing left for
-    // a client-side filter to add here.
-    const members = data || [];
-    state.coach.welcome.members = members;
-    const ids = members.map((m) => m.id);
-    // Staff can read any user's member_contact_log rows (COMM-224's own
-    // shipped RLS), so this is one batched read, not one per member.
+    // The RPC excludes soft-deleted profiles server-side, so there is nothing
+    // left for a client-side filter to add here.
+    const rows = data || [];
+    // Mapped onto the shape renderCoachWelcomeRow() and the assign/contact
+    // handlers already use (id, created_at), so this is a change of data
+    // SOURCE and not a rewrite of the section.
+    state.coach.welcome.members = rows.map((r) => ({
+      id: r.user_id,
+      handle: r.handle,
+      display_name: r.display_name,
+      avatar_url: r.avatar_url,
+      created_at: r.joined_on,
+      assigned_coach_id: r.assigned_coach_id,
+      days_since_join: r.days_since_join,
+      sessions_logged: r.sessions_logged,
+      has_opened_app: r.has_opened_app,
+    }));
+    // Contact status rides along on the same row now. coachMarkContacted()
+    // still writes into this map directly, so an optimistic update after a
+    // "Mark contacted" tap behaves exactly as before.
     const contactedIds = {};
-    if (ids.length) {
-      const { data: contacts } = await client.from("member_contact_log").select("user_id").in("user_id", ids);
-      for (const row of contacts || []) contactedIds[row.user_id] = true;
-    }
+    for (const r of rows) if (r.contacted) contactedIds[r.user_id] = true;
     state.coach.welcome.contactedIds = contactedIds;
     state.coach.welcome.loading = false;
     state.coach.welcome.loaded = true;
@@ -5728,13 +5759,20 @@
   // (default true) hides the destructive remove-member control on the
   // roster row, which this ticket's own acceptance criteria never asks for
   // there - only the dedicated search-based panel below offers it.
+  // `last_activity_on` here comes from admin_member_roster /
+  // admin_search_members, both of which read activity_pings - days the member
+  // OPENED THE APP, not days they trained. This row used to render a null as
+  // "מעולם לא" ("never"), the same false assertion 202609060020 removed from
+  // the coach lists: a member with no ping row is a member we have no data
+  // about, which is a fact about our records and not about them. The label
+  // now names the app, and the empty case says so.
   function memberManagementRowHtml(m, opts) {
     opts = opts || {};
     const readOnly = !!opts.readOnly;
     const showRemove = opts.showRemove !== false;
     return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:6px;">
       <div class="flex gap-10" style="align-items:center;">${avatarHtml(m.display_name || m.handle, 32, m.avatar_url)}<div><div style="font-weight:700;">${nameHtml(m.display_name, m.handle)}${isCoachRole(m.role) ? " " + coachBadgeHtml(m.role) : ""}</div><div style="color:var(--steel);font-size:11px;"><bdi>@${esc(m.handle)}</bdi> · ${memberRoleLabel(m)}</div></div></div>
-      <div style="color:var(--steel);font-size:11px;">הצטרפ/ה: ${m.redeemed_at ? esc(String(m.redeemed_at).slice(0, 10)) : "—"} · פעילות אחרונה: ${m.last_activity_on ? esc(m.last_activity_on) : "מעולם לא"}</div>
+      <div style="color:var(--steel);font-size:11px;">הצטרפ/ה: ${m.redeemed_at ? esc(String(m.redeemed_at).slice(0, 10)) : "—"} · פעילות אחרונה באפליקציה: ${m.last_activity_on ? esc(m.last_activity_on) : "אין נתונים"}</div>
       <div class="footer-note" style="margin:0;font-size:10.5px;">${esc(m.id)}</div>
       ${m.is_admin ? "" : `<div class="chip-row" style="margin-top:0;">
         ${memberRoleButtonsHtml(m, readOnly)}
@@ -7907,9 +7945,22 @@
     return `<div class="ach-section">${sectionHead("var(--energy)", "לחגוג")}${body}</div>`;
   }
   function renderCoachWelcomeRow(m) {
-    const days = Math.max(0, Math.floor((Date.now() - new Date(m.created_at).getTime()) / 86400000));
-    const streakRow = state.club.streaks.find((s) => s.user_id === m.id);
-    const streakCount = streakRow ? Number(streakRow.current_streak) : 0;
+    // days_since_join is computed server-side against the real join date now,
+    // so this no longer parses a timestamp in the browser's timezone to
+    // answer a question about a calendar day.
+    const days = Number.isFinite(Number(m.days_since_join))
+      ? Number(m.days_since_join)
+      : Math.max(0, Math.floor((Date.now() - new Date(m.created_at).getTime()) / 86400000));
+    // WAS: `רצף נוכחי` read off state.club.streaks, i.e.
+    // community_streaks.current_streak - which counts CONSECUTIVE DAYS THE
+    // MEMBER OPENED THE APP. Shown beside a brand-new member's name, a coach
+    // reads that as training. It never was. COMM-224 asked for "sessions
+    // attended" and the read-path note above this file's loader recorded that
+    // no coach-readable session count existed; 202609060020 added one, as an
+    // aggregate count on coach_new_members() (a coach still cannot read the
+    // attendance rows themselves - 202609060013 keeps those at admin rank).
+    const sessions = Number(m.sessions_logged) || 0;
+    const trained = sessions ? `${sessions} אימונים באפליקציה` : "לא רשמו אימון באפליקציה";
     const contacted = !!state.coach.welcome.contactedIds[m.id];
     const busy = state.coach.welcome.busy === m.id;
     const assignDraft = (state.coach.welcome.assignDrafts || {})[m.id] || "";
@@ -7919,7 +7970,8 @@
         ${avatarHtml(m.display_name || m.handle, 32, m.avatar_url)}
         <div>
           <div style="font-weight:700;">${nameHtml(m.display_name, m.handle)}</div>
-          <div style="color:var(--steel);font-size:12px;">${days === 0 ? "הצטרפ/ה היום" : `לפני ${days} ימים`} · רצף נוכחי: ${streakCount} · ${contacted ? "נוצר קשר" : "טרם נוצר קשר"}</div>
+          <div style="color:var(--steel);font-size:12px;">${bidiText(`${days === 0 ? "הצטרפ/ה היום" : `לפני ${days} ימים`} · ${trained} · ${contacted ? "נוצר קשר" : "טרם נוצר קשר"}`)}</div>
+          ${m.has_opened_app === false ? `<div style="color:var(--brass);font-size:12px;">${bidiText("עדיין לא נכנס/ה לאפליקציה")}</div>` : ""}
         </div>
       </div>
       <div class="chip-row">
@@ -11545,6 +11597,134 @@
     </div>`;
   }
 
+  // ==========================================================================
+  // The two Account-tab coach lists (202609060020).
+  //
+  // WHAT WAS WRONG, because it is not visible from the code that replaced it.
+  // Both lists were one-liners built on `activity_pings`, whose only writer
+  // anywhere in this app is pingActivity() above - today only, from a live
+  // browser session. There is no trigger, no backfill and no server-side
+  // producer, and 202609060002 states what a row in it means: one row per day
+  // the member OPENED THE APP.
+  //
+  // Measured against a seeded, visibly active club - 41 posts, reactions,
+  // comments, several members posting - the inactive list returned 8 of 8
+  // members as never active, INCLUDING THE COACH WHO HAD POSTED MOMENTS
+  // EARLIER, each rendered with the literal string "מעולם לא" ("never"). That
+  // string was an assertion about a person manufactured out of an absence of
+  // data, and it is the single reason this section could not be shown to a
+  // club: software that is confidently wrong in front of staff is worse than
+  // software that does nothing.
+  //
+  // Three rules the two functions below exist to hold, none of them optional:
+  //
+  //   1. NEVER present missing data as a finding. A member we have recorded
+  //      nothing about ('no_data') and a member who was active and stopped
+  //      ('lapsed') are different facts and must not render identically.
+  //   2. NEVER claim the club is fine when the signal is empty. "No lapsed
+  //      members" and "no data at all" are different answers.
+  //   3. NEVER describe app activity as training. The label says what is
+  //      actually measured, and names Arbox as where class attendance lives.
+  //
+  // Kept as separate functions rather than inline template literals so the
+  // branching above is readable, and defined OUTSIDE renderCommunityApp() so
+  // its staff-gate count (asserted at exactly 5 in community-coach-tier
+  // .test.mjs) is unchanged - the two `staff ?` ternaries still live there
+  // and now call these.
+
+  // The permanent sub-note under the section head. Not conditional on
+  // anything: a coach reading a list of names needs to know what the list
+  // measures every single time they read it, not only when it is empty.
+  // Arbox is named explicitly because a coach's default assumption for any
+  // list like this is class attendance, and this product cannot see it -
+  // scheduling and rosters are deliberately out of scope.
+  function coachAppSignalNote() {
+    return `<div style="color:var(--steel);font-size:12px;line-height:1.6;margin:-2px 0 10px;">${bidiText("מבוסס על כניסות לאפליקציה בלבד, לא על נוכחות בשיעורים. נוכחות בשיעורים מנוהלת ב-Arbox.")}</div>`;
+  }
+
+  function renderCoachNewMembersSection() {
+    // "חברים חדשים" - the exact phrase COMM-107's welcome post and the
+    // coach-tools Welcome section already use for the same concept.
+    const rows = state.club.newMembers || [];
+    const body = rows.length
+      ? `<div class="log-list">${rows.map((m) => {
+          const days = Number(m.days_since_join);
+          const joined = !Number.isFinite(days) ? "" : days === 0 ? "הצטרפ/ה היום" : `לפני ${days} ימים`;
+          const sessions = Number(m.sessions_logged) || 0;
+          // Says what the number IS. A count of workouts logged in the app is
+          // not a count of classes attended, and a coach must not read it as
+          // one.
+          const trained = sessions ? `${sessions} אימונים באפליקציה` : "לא רשמו אימון באפליקציה";
+          const contacted = m.contacted ? "נוצר קשר" : "טרם נוצר קשר";
+          // THE MEMBER THIS WHOLE FIX EXISTS FOR. Before 202609060020
+          // coach_new_members() INNER JOINed activity_pings, so someone who
+          // registered and never opened the app again had no row to join to
+          // and could not appear in this list at all - the one person day-0
+          // retention outreach is actually for.
+          const never = m.has_opened_app === false
+            ? `<div style="color:var(--brass);font-size:12px;margin-top:2px;">${bidiText("עדיין לא נכנס/ה לאפליקציה")}</div>`
+            : "";
+          return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:2px;">
+            <span style="font-weight:700;">${nameHtml(m.display_name, m.handle)}</span>
+            <span style="color:var(--steel);font-size:12px;">${bidiText([joined, trained, contacted].filter(Boolean).join(" · "))}</span>
+            ${never}
+          </div>`;
+        }).join("")}</div>`
+      : `<div class="empty">אין חברים חדשים לאחרונה</div>`;
+    return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "חברים חדשים", true)}${body}</div>`;
+  }
+
+  function renderCoachAppActivitySection() {
+    const all = state.club.inactiveMembers || [];
+    const lapsed = all.filter((m) => m.state === "lapsed");
+    const unknown = all.filter((m) => m.state === "no_data");
+    const sig = state.club.activitySignal;
+
+    // Rule 2. The honest empty state, and the highest-priority branch: if no
+    // member in the club has ever produced a single ping, this section knows
+    // nothing and says so. It does NOT say everyone is fine, and it does not
+    // list anybody - on an empty signal every member would qualify as
+    // "no recent activity", which is exactly the 8-of-8 failure.
+    if (sig && Number(sig.members_with_app_activity) === 0) {
+      return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--steel)", "לא נכנסו לאפליקציה לאחרונה", true)}${coachAppSignalNote()}<div class="empty">${bidiText("אין עדיין נתוני פעילות")}<div style="color:var(--steel);font-size:12px;line-height:1.6;margin-top:6px;">${bidiText("הנתונים מתחילים להצטבר כשחברים נכנסים לאפליקציה. עד אז אין כאן מה להציג.")}</div></div></div>`;
+    }
+
+    // Rule 1, first half: the actionable list. Only members we have real
+    // evidence about, each with the date that evidence ran out.
+    const lapsedHtml = lapsed.length
+      ? `<div class="log-list">${lapsed.map((m) => {
+          const days = Number(m.days_since_activity);
+          const gap = Number.isFinite(days) ? `כניסה אחרונה: לפני ${days} ימים` : "כניסה אחרונה";
+          return `<div class="log-row">
+            <span>${nameHtml(m.display_name, m.handle)}</span>
+            <span style="color:var(--steel);font-size:12px;">${bidiText(`${gap} · ${m.last_activity_on || ""}`)}</span>
+          </div>`;
+        }).join("")}</div>`
+      // Now a true statement rather than a guess: we reach here only when the
+      // club HAS activity data and nobody in it has gone quiet.
+      : `<div class="empty">${bidiText("כולם נכנסו לאפליקציה לאחרונה ✓")}</div>`;
+
+    // Rule 1, second half. A separate group, a neutral colour and no date.
+    // "אין נתונים" is a statement about our records; "מעולם לא" was a
+    // statement about the member, and it was frequently false.
+    const unknownHtml = unknown.length
+      ? `<div style="margin-top:14px;">
+          <div style="font-weight:700;font-size:13px;color:var(--steel);margin-bottom:4px;">${bidiText("אין לנו מספיק מידע")}</div>
+          <div style="color:var(--steel);font-size:12px;line-height:1.6;margin-bottom:8px;">${bidiText("לא רשומות אצלנו כניסות לאפליקציה עבור החברים האלה. זה לא אומר שהם לא מתאמנים.")}</div>
+          <div class="log-list">${unknown.map((m) => `<div class="log-row">
+            <span>${nameHtml(m.display_name, m.handle)}</span>
+            <span style="color:var(--steel);font-size:12px;">${bidiText("אין נתונים")}</span>
+          </div>`).join("")}</div>
+        </div>`
+      : "";
+
+    // Red only when there is something to act on. A club whose only entries
+    // are members we know nothing about is not a club in trouble, and
+    // colouring it as one is the same overclaim in a different medium.
+    const accent = lapsed.length ? "var(--red)" : "var(--steel)";
+    return `<div class="ach-section" style="margin-top:18px;">${sectionHead(accent, "לא נכנסו לאפליקציה לאחרונה", true)}${coachAppSignalNote()}${lapsedHtml}${unknownHtml}</div>`;
+  }
+
   window.renderCommunityApp = function () {
     if (!configured) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:8px;">הקהילה מוכנה לחיבור</div><div style="color:var(--steel);font-size:13px;line-height:1.7;">יש ליצור פרויקט Supabase, להריץ את קובץ המיגרציה ולהכניס URL ומפתח publishable בקובץ cloud-config.js. אין להכניס מפתח secret.</div></div>`;
     if (!state.user || (state.user.is_anonymous && !state.signupStarted)) {
@@ -11826,8 +12006,8 @@
     // Post-Phase-3 Hebrew copy fix: "חברים חדשים" - the exact phrase COMM-107's
     // welcome post and the coach-tools "Welcome" section already use for the
     // same concept (מתאמנים was this list's own one-off).
-    const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "חברים חדשים", true)}${state.club.newMembers.length ? `<div class="log-list">${state.club.newMembers.map((m) => `<div class="log-row"><span>${nameHtml(m.display_name, m.handle)}</span><span style="color:var(--steel);font-size:12px;">${esc(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין חברים חדשים לאחרונה</div>`}</div>` : "";
-    const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.club.inactiveMembers.length ? `<div class="log-list">${state.club.inactiveMembers.map((m) => `<div class="log-row"><span>${nameHtml(m.display_name, m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? esc(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
+    const newMembersHtml = staff ? renderCoachNewMembersSection() : "";
+    const inactiveHtml = staff ? renderCoachAppActivitySection() : "";
 
     // Redesign (Manage tab): moderation, member/role management, invites,
     // onboarding-content editing, the feature-flag panel, and every
@@ -11835,8 +12015,11 @@
     // another on this one scrolling tab. They now live in their own "ניהול"
     // bottom-tab (renderManageApp, staff-only) instead - moved verbatim,
     // same functions, same permission gates, just a different mount point.
-    // newMembersHtml/inactiveHtml stay here on purpose (out of this phase's
-    // scope) and staff still sees a pointer to where the rest went.
+    // newMembersHtml/inactiveHtml stay here on purpose (out of that phase's
+    // scope) and staff still sees a pointer to where the rest went. Both are
+    // now one call each - see renderCoachNewMembersSection() and
+    // renderCoachAppActivitySection() above, which are defined outside this
+    // function so its staff-gate count stays at the asserted 5.
     const movedToManageNote = staff ? `<div class="footer-note" style="color:var(--steel);text-align:center;margin:16px 0 4px;">כלי ניהול עברו ל"ניהול" בתפריט התחתון</div>` : "";
     const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderMyAchievements() + renderNotifPrefsPanel() + movedToManageNote
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
@@ -11989,13 +12172,18 @@
     // on the real count now, same shape as the inactiveCount row right
     // after it.
     const pendingReports = pendingModerationCount();
-    const inactiveCount = state.club.inactiveMembers.length;
+    // Only the members we have real evidence about. This row used to count
+    // the whole result set, which included every member the club had never
+    // recorded anything for - so a club with no activity data at all was told
+    // on its own landing screen that every one of its members was inactive.
+    // A 'no_data' member is not an alert; they are the absence of one.
+    const inactiveCount = state.club.inactiveMembers.filter((m) => m.state === "lapsed").length;
     const attentionRows = [
       pendingReports ? `<button class="log-row" data-community-action="set-manage-tab" data-tab="moderation" style="width:100%;text-align:right;border:1px solid var(--red);border-radius:10px;padding:10px 12px;background:transparent;cursor:pointer;">
           <span>${pendingReports} דיווחים ממתינים למודרציה</span><span aria-hidden="true">‹</span>
         </button>` : "",
       inactiveCount ? `<button class="log-row" data-community-action="set-manage-tab" data-tab="members" style="width:100%;text-align:right;border:1px solid var(--yellow);border-radius:10px;padding:10px 12px;background:transparent;cursor:pointer;">
-          <span>${inactiveCount} חברים לא פעילים</span><span aria-hidden="true">‹</span>
+          <span>${bidiText(`${inactiveCount} חברים לא נכנסו לאפליקציה לאחרונה`)}</span><span aria-hidden="true">‹</span>
         </button>` : "",
     ].filter(Boolean);
     const attentionHtml = attentionRows.length
@@ -12931,7 +13119,7 @@
         state.members.classmatesToday = { items: [], loading: false, loaded: false, error: false };
         state.club.streaks = []; state.club.announcements = []; state.club.announcementSaving = false;
         state.club.weeklyChallenge = null; state.club.weeklyLeaderboard = []; state.club.inactiveMembers = [];
-        state.club.newMembers = []; state.club.moduleBusy = null; state.club.features = {}; state.club.featuresLoaded = false;
+        state.club.newMembers = []; state.club.activitySignal = null; state.club.moduleBusy = null; state.club.features = {}; state.club.featuresLoaded = false;
         state.admin.reports = []; state.admin.modQueue = []; state.admin.modQueueLoaded = false;
         state.admin.modQueueStatus = "open"; state.admin.modQueueLoading = false; state.admin.modQueueError = false;
         state.admin.modAction = null; state.admin.modContext = null; state.admin.reportSheet = null; state.admin.pins = [];

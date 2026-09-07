@@ -23,6 +23,8 @@ import { test } from "node:test";
 import assert from "node:assert";
 import fs from "node:fs";
 import path from "node:path";
+import { bootCommunity, waitFor } from "./helpers/boot.mjs";
+import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
 const migrationsDir = new URL("../supabase/migrations/", import.meta.url);
 const MIGRATION = "202609060020_coach_signal_honesty.sql";
@@ -312,4 +314,132 @@ test("the seed runs the engagement-decline job rather than planting flags by han
   assert.match(seed, /select public\.coach_detect_engagement_decline\(\)/);
   assert.doesNotMatch(seed, /insert into public\.coach_engagement_flags/,
     "planted flags would not prove the detector works, and COMM-304's no-baseline-no-flag rule is the part most worth exercising");
+});
+
+// =====================================================================
+// The rendered client half, executed for real (jsdom + mock Supabase).
+// =====================================================================
+// The assertions above pin the migration's contract; these pin what a coach
+// actually reads on screen, which is where this defect did its damage. The
+// two are deliberately separate: a correct RPC rendered through the old
+// template still said "מעולם לא".
+
+const VERIFIED = new Date().toISOString();
+
+function seededCoach(extra) {
+  const mock = createMockSupabase(Object.assign({
+    profiles: [{ id: "u1", handle: "dana", display_name: "דנה", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true }],
+    invite_redemptions: [{ user_id: "u1", invite_id: "inv-1", role: "coach", redeemed_at: VERIFIED }],
+    clubs: [{ id: "club-1", name: "חיימוניה" }],
+    community_streaks: [], workout_posts: [], feed_page_rows: [], member_contact_log: [],
+    coach_engagement_flags: [], analytics_events: [], notifications: [],
+    notification_preferences: [], monthly_club_recaps: [], reports: [], club_features: [],
+  }, extra || {}));
+  mock.setUser({ id: "u1", is_anonymous: false, email: "dana@members.haimuniya.invalid" });
+  return mock;
+}
+
+async function openAccountTab(mock) {
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();
+  await waitFor(() => mock.callsTo("coach_inactive_members").length > 0, 3000);
+  await waitFor(() => window.document.body.textContent.includes("לא נכנסו לאפליקציה לאחרונה"), 3000);
+  return window;
+}
+
+const LAPSED = { user_id: "u-a", display_name: "אלף", handle: "alef", last_activity_on: "2026-08-01", state: "lapsed", days_since_activity: 37, joined_on: "2026-01-01" };
+const NO_DATA = { user_id: "u-b", display_name: "בית", handle: "bet", last_activity_on: null, state: "no_data", days_since_activity: null, joined_on: "2026-01-02" };
+
+test('render: a no_data member reads "אין נתונים", and "מעולם לא" appears nowhere on the page', async () => {
+  // THE defect, in one assertion. A member we have recorded nothing about
+  // was rendered with the literal word "never" - a claim about a person made
+  // out of an absence of data, and false for every member who trains but
+  // does not open the app.
+  const mock = seededCoach();
+  mock.onRpc("coach_inactive_members", () => ({ data: [NO_DATA], error: null }));
+  mock.onRpc("coach_activity_signal_status", () => ({ data: [{ members_total: 10, members_with_app_activity: 4, members_with_logged_sessions: 3 }], error: null }));
+  const window = await openAccountTab(mock);
+  const text = window.document.body.textContent;
+  assert.ok(!text.includes("מעולם לא"), 'the string "מעולם לא" must never reach a coach about a member we have no data on');
+  assert.ok(text.includes("אין נתונים"), "a no_data member reads as unknown");
+  assert.ok(text.includes("אין לנו מספיק מידע"), "and sits under its own non-alarming heading, separate from the lapsed list");
+});
+
+test("render: lapsed and no_data members are never presented as the same thing", async () => {
+  const mock = seededCoach();
+  mock.onRpc("coach_inactive_members", () => ({ data: [LAPSED, NO_DATA], error: null }));
+  mock.onRpc("coach_activity_signal_status", () => ({ data: [{ members_total: 10, members_with_app_activity: 4, members_with_logged_sessions: 3 }], error: null }));
+  const window = await openAccountTab(mock);
+  const text = window.document.body.textContent;
+  assert.match(text, /כניסה אחרונה: לפני 37 ימים/, "the lapsed member carries the real gap");
+  assert.ok(text.includes("אין לנו מספיק מידע"), "the no_data member is in a separate group");
+  // Order matters: the actionable list first, the unknowns after it.
+  assert.ok(
+    text.indexOf("כניסה אחרונה") < text.indexOf("אין לנו מספיק מידע"),
+    "the actionable list comes first; members we know nothing about are context, not a queue",
+  );
+});
+
+test('render: with no activity data at all the section says so, and lists nobody', async () => {
+  // The non-negotiable bar. An empty signal must not produce an all-clear
+  // and must not produce a roster of every member in the club.
+  const mock = seededCoach();
+  mock.onRpc("coach_inactive_members", () => ({ data: [NO_DATA], error: null }));
+  mock.onRpc("coach_activity_signal_status", () => ({ data: [{ members_total: 8, members_with_app_activity: 0, members_with_logged_sessions: 0 }], error: null }));
+  const window = await openAccountTab(mock);
+  const text = window.document.body.textContent;
+  assert.ok(text.includes("אין עדיין נתוני פעילות"), "the honest empty state");
+  assert.ok(text.includes("הנתונים מתחילים להצטבר כשחברים נכנסים לאפליקציה"), "and it explains when the signal starts");
+  assert.ok(!text.includes("כולם"), "it must NOT claim everyone is fine - that is an all-clear over an empty table");
+  // Asserted on the group heading and the row label rather than on the
+  // member's display name: short Hebrew names collide as substrings with
+  // ordinary UI copy elsewhere on the tab, which makes a name-based
+  // assertion pass or fail for reasons unrelated to this section.
+  assert.ok(!text.includes("אין לנו מספיק מידע"), "the unknown-members group must not render either");
+  assert.ok(!text.includes("אין נתונים"), "and no member row of any kind is listed");
+});
+
+test("render: the section says what it measures and names Arbox as where class attendance lives", async () => {
+  const mock = seededCoach();
+  mock.onRpc("coach_inactive_members", () => ({ data: [LAPSED], error: null }));
+  mock.onRpc("coach_activity_signal_status", () => ({ data: [{ members_total: 10, members_with_app_activity: 4, members_with_logged_sessions: 3 }], error: null }));
+  const window = await openAccountTab(mock);
+  const text = window.document.body.textContent;
+  assert.ok(!text.includes("מי לא התאמן לאחרונה"), "the old head claimed this was a training signal; it never was");
+  assert.ok(text.includes("לא נכנסו לאפליקציה לאחרונה"), "the head says what is actually measured");
+  assert.ok(text.includes("Arbox"), "and the boundary is explicit: class attendance is not something this product can see");
+});
+
+test("render: a new member who has never opened the app is listed and flagged", async () => {
+  // The member the old INNER JOIN could not surface at all.
+  const mock = seededCoach();
+  mock.onRpc("coach_inactive_members", () => ({ data: [], error: null }));
+  mock.onRpc("coach_activity_signal_status", () => ({ data: [{ members_total: 10, members_with_app_activity: 4, members_with_logged_sessions: 3 }], error: null }));
+  mock.onRpc("coach_new_members", () => ({ data: [
+    { user_id: "u-n", handle: "rina", display_name: "רינה", avatar_url: null, joined_on: "2026-09-05", days_since_join: 2, sessions_logged: 0, has_opened_app: false, last_seen_on: null, contacted: false, contacted_at: null, assigned_coach_id: null },
+  ], error: null }));
+  const window = await openAccountTab(mock);
+  const text = window.document.body.textContent;
+  assert.ok(text.includes("רינה"), "the member is listed");
+  assert.ok(text.includes("עדיין לא נכנס/ה לאפליקציה"), "and flagged as never having opened the app - the day-0 outreach target");
+  assert.ok(text.includes("לא רשמו אימון באפליקציה"), "zero sessions says what it measures rather than implying they have not trained");
+  assert.ok(text.includes("טרם נוצר קשר"), "with contact status, so two coaches do not welcome the same member");
+});
+
+test("render: the coach never sees a bare consecutive-app-open streak labelled as training", async () => {
+  // renderCoachWelcomeRow() used to print community_streaks.current_streak -
+  // consecutive days the member OPENED THE APP - as "רצף נוכחי" beside a new
+  // member's name, where a coach reads it as sessions trained.
+  const src = fs.readFileSync(new URL("../cloud.js", import.meta.url), "utf8");
+  // Comment lines are stripped first: the replacement is documented in place
+  // (it has to be - the old label looked deliberate), and a naive substring
+  // search matches the note explaining the removal rather than the code.
+  const row = src
+    .slice(src.indexOf("function renderCoachWelcomeRow"), src.indexOf("function renderCoachWelcomeSection"))
+    .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  assert.ok(!row.includes("רצף נוכחי"), "the app-open streak label is gone from the Welcome row");
+  assert.ok(!/state\.club\.streaks/.test(row), "and so is the read behind it");
+  assert.match(row, /m\.sessions_logged/, "replaced by the real logged-session count from coach_new_members()");
 });
