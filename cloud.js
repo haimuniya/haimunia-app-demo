@@ -818,6 +818,48 @@
   function nameHtml(displayName, handle) {
     return displayName ? esc(displayName) : `<bdi>@${esc(handle || "")}</bdi>`;
   }
+  // The isolation nameHtml() applies to "@handle" is needed by EVERY string a
+  // human typed, and there the failure is far worse than a misplaced "@". A
+  // coach's pinned announcement reading
+  //
+  //     21-15-9 Thrusters + Pull-ups. Rx 43/30 ק"ג.
+  //
+  // rendered its rep scheme as 9-15-21, and in a second observed paint
+  // stranded the ק"ג at the opposite end of the line from the 43/30 it
+  // belongs to. Two personas hit this independently. The cause is the LTR
+  // runs a workout is made of - rep schemes, English movement names,
+  // weights, times - being reordered against the RTL Hebrew paragraph they
+  // sit in. This is not a garbled string a member notices and ignores: it is
+  // a plausible, valid-looking, DIFFERENT workout that a member can follow
+  // without ever knowing it was not what the coach wrote.
+  //
+  // <bdi> rather than a CSS `unicode-bidi: isolate` (what .est-line and .mono
+  // use): those two are LTR-only surfaces, but a body of free text sits in a
+  // paragraph that must stay RTL for its Hebrew. Only <bdi>'s implicit
+  // dir="auto" lets each run take its base direction from its own first
+  // strong character - so the line above resolves LTR and reads 21-15-9,
+  // while an ordinary Hebrew-first line still resolves RTL exactly as today.
+  //
+  // Isolation is per LINE, not per field. Bodies are multi-line and a workout
+  // note routinely pairs a Hebrew intro line with an LTR rep-scheme line; one
+  // dir="auto" over the whole field would resolve from the first line only
+  // and leave every later line as broken as before. Joining the pieces back
+  // on "\n" reproduces the original text exactly, so a `white-space:pre-wrap`
+  // surface still breaks where it did and a collapsing one still collapses.
+  //
+  // ESCAPING IS UNCHANGED AND NON-NEGOTIABLE: esc() still runs over the text
+  // and only its OUTPUT is wrapped. Never isolate before escaping. Never use
+  // this in an attribute or inside <textarea>, where the tag would land as
+  // literal characters instead of markup - those contexts keep bare esc().
+  function bidiText(value) {
+    return String(value ?? "").split("\n").map((line) => `<bdi>${esc(line)}</bdi>`).join("\n");
+  }
+  // The same isolation for a run that is ALREADY HTML - a comment body whose
+  // @mentions mentionMarkersToHtml() has turned into buttons, and which is
+  // therefore escaped already. One isolate over the whole run rather than per
+  // line: the embedded markup makes splitting on "\n" unsafe, and a comment
+  // is short enough that a single base direction is the right call.
+  function bidiHtml(html) { return `<bdi>${html}</bdi>`; }
   // Shared batch profile lookup - the shape loadCoachEngage(), loadCoachMemberOfWeek()
   // and loadFollowList() each independently hand-rolled. Consolidated after
   // finding real drift between the copies (a missing avatar_url column in
@@ -1370,7 +1412,7 @@
   }
   function renderOnboardingCard(title, bodyHtml, step, extraActionHtml) {
     return `<div class="chart-card admin-card" style="margin-bottom:12px;" data-onboarding-step="${step}">
-      <div style="font-weight:800;margin-bottom:6px;">${esc(title)}</div>
+      <div style="font-weight:800;margin-bottom:6px;">${bidiText(title)}</div>
       <div style="font-size:13px;line-height:1.6;color:var(--steel);margin-bottom:10px;">${bodyHtml}</div>
       <div class="chip-row">${extraActionHtml || ""}<button class="chip-btn primary" data-community-action="onboarding-dismiss" data-step="${step}">הבנתי</button></div>
     </div>`;
@@ -1404,17 +1446,17 @@
   }
   function renderOnboardingWelcomeStep() {
     const bodyRaw = onboardingStepBodyRaw("welcome") || `כאן רואים מה קורה במועדון, ואפשר לשתף אימונים ושיאים ולהגיב לחברים אחרים. לחיצה על "כתיבת פוסט" למעלה פותחת את השיתוף הראשון שלכם.`;
-    return renderOnboardingCard(onboardingStepTitle("welcome", "ברוכים הבאים לקהילה!"), esc(bodyRaw), "welcome");
+    return renderOnboardingCard(onboardingStepTitle("welcome", "ברוכים הבאים לקהילה!"), bidiText(bodyRaw), "welcome");
   }
   function renderOnboardingFirstWeekStep() {
     // COMM-207's own list, sorted the same soonest-end-first order the
     // Boards tab already uses - just the first entry.
     const active = state.challenges.items.filter((c) => c.status === "active").slice().sort((a, b) => new Date(a.end_at) - new Date(b.end_at))[0];
     const computed = active
-      ? `יש אתגר פעיל במועדון עכשיו: <strong>${esc(active.title)}</strong>.`
+      ? `יש אתגר פעיל במועדון עכשיו: <strong>${bidiText(active.title)}</strong>.`
       : `אין כרגע אתגר פעיל במועדון, אבל שווה להציץ בלוח האתגרים מדי פעם.`;
     const leadRaw = onboardingStepBodyRaw("first_week");
-    const lead = leadRaw ? esc(leadRaw) + " " : "";
+    const lead = leadRaw ? bidiText(leadRaw) + " " : "";
     const openBtn = active ? `<button class="chip-btn" data-community-action="open-challenge" data-id="${esc(active.id)}" data-source="onboarding">פתיחת האתגר</button>` : "";
     return renderOnboardingCard(onboardingStepTitle("first_week", "השבוע הראשון שלכם מאחוריכם"), lead + computed, "first_week", openBtn);
   }
@@ -1426,7 +1468,7 @@
       ? `החודש הראשון שלכם הסתיים - לא הצלחנו לטעון את הסיכום כרגע.`
       : `החודש הראשון שלכם: ${summary.sessions} אימונים, ${summary.prs} שיאים ו-${summary.achievements} הישגים חדשים. כל הכבוד!`;
     const leadRaw = onboardingStepBodyRaw("first_month");
-    const lead = leadRaw ? esc(leadRaw) + " " : "";
+    const lead = leadRaw ? bidiText(leadRaw) + " " : "";
     return renderOnboardingCard(onboardingStepTitle("first_month", "החודש הראשון שלכם במועדון"), lead + computed, "first_month");
   }
   // COMM-316. Static copy, same shape as welcome above - no dependent data
@@ -1435,11 +1477,11 @@
   // the way first_month's summary needs one.
   function renderOnboardingFirstClassStep() {
     const bodyRaw = onboardingStepBodyRaw("first_class") || `האימון הראשון שלכם כבר נרשם במערכת. ממשיכים באותו הקצב?`;
-    return renderOnboardingCard(onboardingStepTitle("first_class", "הגעתם לאימון הראשון!"), esc(bodyRaw), "first_class");
+    return renderOnboardingCard(onboardingStepTitle("first_class", "הגעתם לאימון הראשון!"), bidiText(bodyRaw), "first_class");
   }
   function renderOnboardingThirdClassStep() {
     const bodyRaw = onboardingStepBodyRaw("third_class") || `שלושה אימונים כבר מאחוריכם. ככה בונים הרגל אימונים.`;
-    return renderOnboardingCard(onboardingStepTitle("third_class", "אימון שלישי — אתם כבר בקצב!"), esc(bodyRaw), "third_class");
+    return renderOnboardingCard(onboardingStepTitle("third_class", "אימון שלישי — אתם כבר בקצב!"), bidiText(bodyRaw), "third_class");
   }
   function renderOnboardingStep() {
     const step = currentOnboardingStep();
@@ -5385,7 +5427,7 @@
     return { members: "חברים", events: "אירועים", challenges: "אתגרים" }[key] || key;
   }
   function searchMemberRowHtml(person) {
-    return `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32, person.avatar_url)}<div><div style="font-weight:700;">${nameHtml(person.display_name, person.handle)}${isCoachRole(memberRole(person.id)) ? " " + coachBadgeHtml(memberRole(person.id)) : ""}</div><div style="color:var(--steel);font-size:12px;"><bdi>@${esc(person.handle)}</bdi> ${esc(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="view-profile" data-id="${esc(person.id)}">פרופיל</button>${person.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${esc(person.id)}">מעקב</button>`}<button class="chip-btn" data-community-action="block" data-id="${esc(person.id)}">חסימה</button></div></div>`;
+    return `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32, person.avatar_url)}<div><div style="font-weight:700;">${nameHtml(person.display_name, person.handle)}${isCoachRole(memberRole(person.id)) ? " " + coachBadgeHtml(memberRole(person.id)) : ""}</div><div style="color:var(--steel);font-size:12px;"><bdi>@${esc(person.handle)}</bdi> ${bidiText(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="view-profile" data-id="${esc(person.id)}">פרופיל</button>${person.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${esc(person.id)}">מעקב</button>`}<button class="chip-btn" data-community-action="block" data-id="${esc(person.id)}">חסימה</button></div></div>`;
   }
   function searchEventRowHtml(ev) {
     // No event detail surface exists yet (COMM-213 builds it), so the row
@@ -5393,11 +5435,11 @@
     // navigate somewhere that is not built.
     const when = ev.start_at ? String(ev.start_at).slice(0, 16).replace("T", " ") : "";
     const meta = [when, ev.status === "draft" ? "טיוטה" : ev.status === "cancelled" ? "בוטל" : ""].filter(Boolean);
-    return `<div class="log-row" data-search-event-id="${esc(ev.id)}"><div><div style="font-weight:700;">📅 ${esc(ev.title || "אירוע")}</div>${meta.length ? `<div style="color:var(--steel);font-size:12px;">${meta.map(esc).join(" · ")}</div>` : ""}</div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="open-event" data-id="${esc(ev.id)}" data-source="search">פרטים</button></div></div>`;
+    return `<div class="log-row" data-search-event-id="${esc(ev.id)}"><div><div style="font-weight:700;">📅 ${bidiText(ev.title || "אירוע")}</div>${meta.length ? `<div style="color:var(--steel);font-size:12px;">${meta.map(bidiText).join(" · ")}</div>` : ""}</div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="open-event" data-id="${esc(ev.id)}" data-source="search">פרטים</button></div></div>`;
   }
   function searchChallengeRowHtml(c) {
     const meta = [challengeTypeDef(c.challenge_type).label, challengeStatusLabel(c), c.end_at ? `עד ${formatChallengeDate(c.end_at)}` : ""].filter(Boolean);
-    return `<div class="log-row" data-search-challenge-id="${esc(c.id)}"><div><div style="font-weight:700;">${esc(challengeTypeDef(c.challenge_type).icon)} ${esc(c.title || "אתגר")}</div><div style="color:var(--steel);font-size:12px;">${meta.map(esc).join(" · ")}</div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="open-challenge" data-id="${esc(c.id)}" data-source="search">פרטים</button></div></div>`;
+    return `<div class="log-row" data-search-challenge-id="${esc(c.id)}"><div><div style="font-weight:700;">${esc(challengeTypeDef(c.challenge_type).icon)} ${bidiText(c.title || "אתגר")}</div><div style="color:var(--steel);font-size:12px;">${meta.map(bidiText).join(" · ")}</div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="open-challenge" data-id="${esc(c.id)}" data-source="search">פרטים</button></div></div>`;
   }
   function renderCommunitySearch() {
     const box = `<div class="search-box"><input id="communityPeopleSearch" placeholder="חיפוש חברים, אירועים ואתגרים" aria-label="חיפוש בקהילה" value="${esc(state.search.query || "")}"/></div>`;
@@ -5465,7 +5507,7 @@
         <div class="chip-row" style="margin-top:6px;"><button class="chip-btn" data-community-action="comment-edit-cancel">ביטול</button><button class="chip-btn primary" data-community-action="comment-edit-save"${e.saving ? " disabled" : ""}>${e.saving ? "שומר…" : "שמירה"}</button></div>
       </div>`;
     } else {
-      bodyHtml = `<div style="font-size:12.5px;line-height:1.55;"><b>${esc(name)}</b> ${isCoach ? coachBadgeHtml(role) + " " : ""}${mentionMarkersToHtml(c.body)}</div>`;
+      bodyHtml = `<div style="font-size:12.5px;line-height:1.55;"><b>${esc(name)}</b> ${isCoach ? coachBadgeHtml(role) + " " : ""}${bidiHtml(mentionMarkersToHtml(c.body))}</div>`;
     }
     const edited = c.edited_at ? ` <span style="color:var(--steel);font-size:10.5px;" title="${esc(relativeTime(c.edited_at))}">(נערך)</span>` : "";
     const actions = [];
@@ -5572,8 +5614,8 @@
         return `<div class="chart-card" style="margin-bottom:10px;" data-mod-report-id="${esc(r.report_id)}">
           <div class="flex" style="justify-content:space-between;align-items:flex-start;gap:10px;">
             <div style="min-width:0;">
-              <div style="font-weight:800;">${esc(MOD_TARGET_LABEL[r.target_type] || "פוסט")} · ${esc(r.content_author_name || "חבר/ה שהוסר/ה")}</div>
-              <div style="color:var(--steel);font-size:12.5px;margin-top:4px;white-space:pre-wrap;">${esc(String(r.content_excerpt || "התוכן הוסר").slice(0, 240))}</div>
+              <div style="font-weight:800;">${esc(MOD_TARGET_LABEL[r.target_type] || "פוסט")} · ${bidiText(r.content_author_name || "חבר/ה שהוסר/ה")}</div>
+              <div style="color:var(--steel);font-size:12.5px;margin-top:4px;white-space:pre-wrap;">${bidiText(String(r.content_excerpt || "התוכן הוסר").slice(0, 240))}</div>
             </div>
             <span class="admin-tag" style="${r.status === "open" ? "background:rgba(194,57,44,.12);border-color:var(--red);color:var(--red-text);" : ""}">${esc(MOD_STATUS_LABEL[r.status] || r.status)}</span>
           </div>
@@ -6549,7 +6591,7 @@
     const canPin = hasPerm(PERM.CONTENT_PIN);
     if (!state.admin.pins.length && !state.admin.pinError) return "";
     const chips = state.admin.pins.slice(0, 3).map((p) => `<div class="chip-btn" style="cursor:default;gap:6px;align-items:center;">
-      📌 <span>${esc(p.note || pinTargetLabel(p.target_type))}</span>
+      📌 <span>${bidiText(p.note || pinTargetLabel(p.target_type))}</span>
       ${canPin ? `<button class="link-btn" data-community-action="unpin" data-type="${esc(p.target_type)}" data-id="${esc(p.target_id)}" aria-label="ביטול הצמדה" style="margin:0;padding:0 4px;">✕</button>` : ""}
     </div>`).join("");
     return `<div class="chart-card" id="communityPinnedStrip" style="margin-bottom:12px;">
@@ -6674,7 +6716,7 @@
   function postBodyHtml(post) {
     const body = post && post.body;
     if (!body) return "";
-    return `<div class="post-body" style="white-space:pre-wrap;line-height:1.6;">${esc(String(body).slice(0, POST_BODY_MAX))}</div>`;
+    return `<div class="post-body" style="white-space:pre-wrap;line-height:1.6;">${bidiText(String(body).slice(0, POST_BODY_MAX))}</div>`;
   }
   function postMediaHtml(post) {
     const media = (post && post.media) || [];
@@ -6736,11 +6778,11 @@
     const effortLabel = effort === "rx" ? "Rx" : effort === "scaled" ? "מותאם" : effort === "level" ? ("רמה " + (m.level || "")) : "";
     const isPr = !!(m.is_pr || post.is_pr);
     const prBadge = isPr ? ` <span class="pr-badge badge-tag">PR</span>` : "";
-    const detail = `<div class="post-title">${esc(name)}${prBadge}</div>
+    const detail = `<div class="post-title">${bidiText(name)}${prBadge}</div>
       ${when ? `<div style="color:var(--steel);font-size:12px;">${esc(String(when).slice(0, 10))}</div>` : ""}
       ${result ? `<div class="mono post-result">${esc(result)}</div>` : ""}
       ${(scoreType || effortLabel) ? `<div style="color:var(--steel);font-size:12px;">${[scoreType, effortLabel].filter(Boolean).map(esc).join(" · ")}</div>` : ""}`;
-    const caption = post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : "";
+    const caption = post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${bidiText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : "";
     const src = m.source_id || post.source_id || post.source_record_id;
     const extra = src ? `<button class="chip-btn" data-community-action="open-source" data-source-type="${esc(m.source_type || post.source_type || "workout")}" data-source-id="${esc(src)}">פתיחת האימון</button>` : "";
     return postCardShell(post, detail + caption + postMediaHtml(post), { extra });
@@ -6755,9 +6797,9 @@
       ["שיפור", m.improvement],
       ["תאריך", (m.achieved_on || post.occurred_on) ? String(m.achieved_on || post.occurred_on).slice(0, 10) : ""],
     ].filter((r) => r[1] != null && r[1] !== "");
-    const inner = `<div class="post-title">${esc(movement)} <span class="pr-badge badge-tag">PR</span></div>
+    const inner = `<div class="post-title">${bidiText(movement)} <span class="pr-badge badge-tag">PR</span></div>
       <div class="log-list" style="margin-top:6px;">${rows.map((r) => `<div class="log-row"><span>${esc(r[0])}</span><span class="mono" style="color:var(--brass);">${esc(r[1])}</span></div>`).join("")}</div>
-      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
+      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${bidiText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
     return postCardShell(post, inner + postMediaHtml(post));
   }
 
@@ -6769,10 +6811,10 @@
     const why = m.explanation || post.result_text || "";
     const inner = `<div class="flex gap-10" style="align-items:center;">
         <span aria-hidden="true" style="font-size:26px;">${esc(icon)}</span>
-        <div><div class="post-title" style="margin:0;">${esc(title)}</div>${when ? `<div style="color:var(--steel);font-size:12px;">${esc(String(when).slice(0, 10))}</div>` : ""}</div>
+        <div><div class="post-title" style="margin:0;">${bidiText(title)}</div>${when ? `<div style="color:var(--steel);font-size:12px;">${esc(String(when).slice(0, 10))}</div>` : ""}</div>
       </div>
-      ${why ? `<div style="color:var(--steel);font-size:13px;margin-top:6px;">${esc(why)}</div>` : ""}
-      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
+      ${why ? `<div style="color:var(--steel);font-size:13px;margin-top:6px;">${bidiText(why)}</div>` : ""}
+      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${bidiText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
     return postCardShell(post, inner + postMediaHtml(post));
   }
 
@@ -6782,7 +6824,7 @@
   function renderAttendanceMilestonePostCard(post) {
     const m = post.metadata || {};
     const label = m.milestone_label || post.title || "אבן דרך בנוכחות";
-    const inner = `<div class="post-title">🎯 ${esc(label)}</div>${m.count != null ? `<div class="mono post-result">${esc(m.count)}</div>` : ""}${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
+    const inner = `<div class="post-title">🎯 ${bidiText(label)}</div>${m.count != null ? `<div class="mono post-result">${esc(m.count)}</div>` : ""}${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${bidiText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
     return postCardShell(post, inner);
   }
 
@@ -6804,9 +6846,9 @@
       rows.push(`<div class="mono post-result" style="color:var(--brass);">${esc(m.my_progress)}${m.target_value != null ? ` / ${esc(m.target_value)}` : ""}</div>`);
       if (pct != null) rows.push(`<div class="progress-track"><div style="width:${pct}%;"></div></div>`);
     }
-    const inner = `<div class="post-title">🏆 ${esc(m.challenge_title || post.title || "אתגר")}</div>
+    const inner = `<div class="post-title">🏆 ${bidiText(m.challenge_title || post.title || "אתגר")}</div>
       ${rows.join("")}
-      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:4px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
+      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:4px;">${bidiText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
       <div class="chip-row"><button class="chip-btn" data-community-action="open-challenge" data-id="${esc(m.challenge_id || post.source_id || "")}">פתיחת האתגר</button></div>`;
     return postCardShell(post, inner, { authorless: !postAuthorName(post) });
   }
@@ -6826,17 +6868,17 @@
       meta.push(`${going} משתתפים`);
       if (ev.status === "cancelled") meta.push("בוטל");
       const image = ev.image_url ? `<img src="${esc(ev.image_url)}" alt="" style="width:100%;max-height:160px;object-fit:cover;border-radius:10px;margin-top:6px;"/>` : "";
-      const inner = `<div class="post-title">📅 ${esc(ev.title)}</div>
-        <div style="color:var(--steel);font-size:12px;">${meta.map(esc).join(" · ")}</div>
+      const inner = `<div class="post-title">📅 ${bidiText(ev.title)}</div>
+        <div style="color:var(--steel);font-size:12px;">${meta.map(bidiText).join(" · ")}</div>
         ${image}
-        ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
+        ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${bidiText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
         <div class="chip-row"><button class="chip-btn" data-community-action="open-event" data-id="${esc(ev.id)}">פתיחת האירוע</button></div>`;
       return postCardShell(post, inner, { authorless: !postAuthorName(post) });
     }
     const when = m.starts_at ? String(m.starts_at).slice(0, 16).replace("T", " ") : "";
-    const inner = `<div class="post-title">📅 ${esc(m.event_title || post.title || "אירוע")}</div>
+    const inner = `<div class="post-title">📅 ${bidiText(m.event_title || post.title || "אירוע")}</div>
       ${when ? `<div style="color:var(--steel);font-size:12px;">${esc(when)}</div>` : ""}
-      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:4px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
+      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:4px;">${bidiText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
       <div class="chip-row"><button class="chip-btn" data-community-action="open-event" data-id="${esc(m.event_id || post.source_id || "")}">פתיחת האירוע</button></div>`;
     return postCardShell(post, inner, { authorless: !postAuthorName(post) });
   }
@@ -6844,7 +6886,7 @@
   function renderAnnouncementPostCard(post) {
     const m = post.metadata || {};
     const title = m.title || post.title || "";
-    const inner = `${title ? `<div class="post-title" style="color:var(--brass);">📣 ${esc(title)}</div>` : ""}${postBodyHtml(post)}${postMediaHtml(post)}`;
+    const inner = `${title ? `<div class="post-title" style="color:var(--brass);">📣 ${bidiText(title)}</div>` : ""}${postBodyHtml(post)}${postMediaHtml(post)}`;
     return postCardShell(post, inner, { badge: "הודעת מועדון", authorless: !postAuthorName(post) });
   }
   function renderCoachPostCard(post) {
@@ -7792,7 +7834,7 @@
       <div class="flex gap-10" style="align-items:flex-start;">
         ${image}
         <div style="flex:1;min-width:0;">
-          <button class="link-btn" data-community-action="open-challenge" data-id="${esc(c.id)}" data-source="boards" style="padding:0;text-align:right;font-weight:800;font-size:15px;color:inherit;display:block;">${esc(c.title)}</button>
+          <button class="link-btn" data-community-action="open-challenge" data-id="${esc(c.id)}" data-source="boards" style="padding:0;text-align:right;font-weight:800;font-size:15px;color:inherit;display:block;">${bidiText(c.title)}</button>
           <div style="color:var(--steel);font-size:11.5px;margin-top:2px;">${meta.map(esc).join(" · ")}</div>
           ${myChallengeCardProgressHtml(c)}
         </div>
@@ -8338,7 +8380,7 @@
     const myTeamId = v.myParticipant && v.myParticipant.team_id;
     const canPick = v.myParticipant && !myTeamId;
     const cols = teams.map((t) => `<div class="chart-card" style="flex:1;min-width:130px;${t.team_id === myTeamId ? "border-color:var(--energy);" : ""}">
-        <div style="font-weight:800;font-size:13px;">${esc(t.name)}${t.team_id === myTeamId ? " · הקבוצה שלי" : ""}</div>
+        <div style="font-weight:800;font-size:13px;">${bidiText(t.name)}${t.team_id === myTeamId ? " · הקבוצה שלי" : ""}</div>
         <div class="mono" style="color:var(--brass);font-size:16px;margin-top:4px;">${esc(t.total)}</div>
         ${canPick ? `<button class="chip-btn" data-community-action="challenge-pick-team" data-id="${esc(c.id)}" data-team="${esc(t.team_id)}"${v.teamJoining === t.team_id ? " disabled" : ""} style="margin-top:6px;">${v.teamJoining === t.team_id ? "מצטרפ/ת…" : "הצטרפות לקבוצה"}</button>` : ""}
       </div>`).join("");
@@ -8428,8 +8470,8 @@
     const def = challengeTypeDef(c.challenge_type);
     const staff = hasPerm(PERM.CHALLENGE_CREATE);
     const meta = `<div style="color:var(--steel);font-size:12px;margin-bottom:10px;">${esc(def.label)} · ${formatChallengeDate(c.start_at)}–${formatChallengeDate(c.end_at)} · ${esc(challengeStatusLabel(c))}</div>`;
-    const description = c.description ? `<div style="font-size:13.5px;line-height:1.6;margin-bottom:10px;white-space:pre-wrap;">${esc(c.description)}</div>` : "";
-    const rules = (c.config && c.config.rules_text) ? `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">חוקי האתגר</div><div style="font-size:13px;white-space:pre-wrap;">${esc(c.config.rules_text)}</div></div>` : "";
+    const description = c.description ? `<div style="font-size:13.5px;line-height:1.6;margin-bottom:10px;white-space:pre-wrap;">${bidiText(c.description)}</div>` : "";
+    const rules = (c.config && c.config.rules_text) ? `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">חוקי האתגר</div><div style="font-size:13px;white-space:pre-wrap;">${bidiText(c.config.rules_text)}</div></div>` : "";
     const staffToolbar = staff ? `<div class="chip-row" style="margin-bottom:10px;"><button class="chip-btn" data-community-action="challenge-edit" data-id="${esc(c.id)}">עריכה</button></div>` : "";
     const myProgress = renderMyChallengeProgress(v);
     const typePanel = c.challenge_type === "cooperative" ? renderCooperativePanel(v)
@@ -8461,7 +8503,7 @@
       <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:560px;">
         <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
           <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:12px;">
-            <h2 id="challengeViewTitle" style="margin-top:0;font-weight:800;font-size:17px;margin-bottom:0;">${v.challenge ? esc(v.challenge.title) : "אתגר"}</h2>
+            <h2 id="challengeViewTitle" style="margin-top:0;font-weight:800;font-size:17px;margin-bottom:0;">${v.challenge ? bidiText(v.challenge.title) : "אתגר"}</h2>
             <button class="chip-btn" data-community-action="close-challenge-view" aria-label="סגירה">✕</button>
           </div>
           ${bodyHtml}
@@ -8585,7 +8627,7 @@
       <div class="flex gap-10" style="align-items:flex-start;">
         ${eventCardImageHtml(e)}
         <div style="flex:1;min-width:0;">
-          <button class="link-btn" data-community-action="open-event" data-id="${esc(e.id)}" data-source="boards" style="padding:0;text-align:right;font-weight:800;font-size:15px;color:inherit;display:block;">${esc(e.title)}</button>
+          <button class="link-btn" data-community-action="open-event" data-id="${esc(e.id)}" data-source="boards" style="padding:0;text-align:right;font-weight:800;font-size:15px;color:inherit;display:block;">${bidiText(e.title)}</button>
           <div style="color:var(--steel);font-size:11.5px;margin-top:2px;">${meta.map(esc).join(" · ")}</div>
         </div>
       </div>
@@ -9008,8 +9050,8 @@
     if (statusLabel) meta.push(statusLabel);
     const metaHtml = `<div style="color:var(--steel);font-size:12px;margin-bottom:10px;">${meta.map(esc).join(" · ")}</div>`;
     const image = e.image_url ? `<img src="${esc(e.image_url)}" alt="" style="width:100%;max-height:200px;object-fit:cover;border-radius:12px;margin-bottom:10px;"/>` : "";
-    const description = e.description ? `<div style="font-size:13.5px;line-height:1.6;margin-bottom:10px;white-space:pre-wrap;">${esc(e.description)}</div>` : "";
-    const locationHtml = e.location ? `<div style="font-size:13px;color:var(--steel);margin-bottom:4px;">📍 ${esc(e.location)}${e.map_link ? ` · <a class="link-btn" href="${esc(e.map_link)}" target="_blank" rel="noopener noreferrer">מפה</a>` : ""}</div>` : "";
+    const description = e.description ? `<div style="font-size:13.5px;line-height:1.6;margin-bottom:10px;white-space:pre-wrap;">${bidiText(e.description)}</div>` : "";
+    const locationHtml = e.location ? `<div style="font-size:13px;color:var(--steel);margin-bottom:4px;">📍 ${bidiText(e.location)}${e.map_link ? ` · <a class="link-btn" href="${esc(e.map_link)}" target="_blank" rel="noopener noreferrer">מפה</a>` : ""}</div>` : "";
     const going = eventGoingCount(e.id);
     const capacityHtml = `<div style="font-size:13px;color:var(--steel);margin-bottom:4px;">${e.capacity != null ? `${going} / ${e.capacity} משתתפים` : `${going} משתתפים`}</div>`;
     const deadlineHtml = e.registration_deadline ? `<div style="font-size:12px;color:var(--steel);margin-bottom:4px;">מועד אחרון להרשמה: ${esc(formatEventDate(e.registration_deadline))} ${esc(formatEventTime(e.registration_deadline))}</div>` : "";
@@ -9048,7 +9090,7 @@
       <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:560px;">
         <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
           <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:12px;">
-            <h2 id="eventViewTitle" style="margin-top:0;font-weight:800;font-size:17px;margin-bottom:0;">${v.event ? esc(v.event.title) : "אירוע"}</h2>
+            <h2 id="eventViewTitle" style="margin-top:0;font-weight:800;font-size:17px;margin-bottom:0;">${v.event ? bidiText(v.event.title) : "אירוע"}</h2>
             <button class="chip-btn" data-community-action="close-event-view" aria-label="סגירה">✕</button>
           </div>
           ${bodyHtml}
@@ -9106,7 +9148,7 @@
     const full = eventIsFull(e);
     return `<div class="chart-card" style="margin-top:10px;" data-event-id="${esc(e.id)}">
       <button class="link-btn" data-community-action="open-event" data-id="${esc(e.id)}" data-source="club_top" style="padding:0;text-align:right;display:block;width:100%;">
-        <div style="font-weight:800;font-size:14px;">📅 ${esc(e.title)}</div>
+        <div style="font-weight:800;font-size:14px;">📅 ${bidiText(e.title)}</div>
         <div style="color:var(--steel);font-size:12px;margin-top:2px;">${esc(formatEventDate(e.start_at))} ${esc(formatEventTime(e.start_at))} · ${going} משתתפים</div>
       </button>
       <div class="chip-row" style="margin-top:8px;">
@@ -9383,7 +9425,7 @@
       ? `<div class="log-list">${row.achievements.map((a) => `<div class="log-row"><span>${esc(a.badge_icon || "🏅")} ${esc(a.title)}</span></div>`).join("")}</div>`
       : `<div class="empty">אין הישגים חדשים השבוע</div>`;
     const challengeHtml = Array.isArray(row.challenge_progress) && row.challenge_progress.length
-      ? `<div class="log-list">${row.challenge_progress.map((c) => `<div class="log-row"><span>${esc(c.title)}</span><span class="mono" style="color:var(--brass);">${esc(c.progress)}${c.target != null ? ` / ${esc(c.target)}` : ""}</span></div>`).join("")}</div>`
+      ? `<div class="log-list">${row.challenge_progress.map((c) => `<div class="log-row"><span>${bidiText(c.title)}</span><span class="mono" style="color:var(--brass);">${esc(c.progress)}${c.target != null ? ` / ${esc(c.target)}` : ""}</span></div>`).join("")}</div>`
       : `<div class="empty">לא נרשמה השתתפות באתגר השבוע</div>`;
     // COMM-316 (closing COMM-P06). weekly_recaps.classmates is up to 5
     // {user_id, display_name, handle, avatar_url} objects, already fully
@@ -10392,7 +10434,7 @@
       if (d.recent_achievement) rows.push(["הישג אחרון", d.recent_achievement.title || d.recent_achievement]);
       const recent = Array.isArray(d.recent_workouts) ? d.recent_workouts : [];
       const rowsHtml = rows.length ? `<div class="log-list">${rows.map(([k, v]) => `<div class="log-row"><span>${esc(k)}</span><span class="mono" style="color:var(--brass);">${esc(v)}</span></div>`).join("")}</div>` : "";
-      const recentHtml = recent.length ? `<div class="log-list" style="margin-top:8px;">${recent.map((w) => `<div class="log-row"><span>${esc(w.title || w.name || "")}</span><span style="color:var(--steel);font-size:12px;">${esc(String(w.date || w.occurred_on || "").slice(0, 10))}</span></div>`).join("")}</div>` : "";
+      const recentHtml = recent.length ? `<div class="log-list" style="margin-top:8px;">${recent.map((w) => `<div class="log-row"><span>${bidiText(w.title || w.name || "")}</span><span style="color:var(--steel);font-size:12px;">${esc(String(w.date || w.occurred_on || "").slice(0, 10))}</span></div>`).join("")}</div>` : "";
       bodyHtml = (rowsHtml + recentHtml) || `<div class="empty">אין מידע להצגה</div>`;
     } else if (active === "progress") {
       const prs = Array.isArray(d.prs) ? d.prs : null;
@@ -11491,8 +11533,8 @@
       <div class="modal-sheet" style="border-radius:22px;max-height:none;">
         <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
           <h2 id="modContextTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">הקשר הדיווח</h2>
-          <div style="color:var(--steel);font-size:12.5px;">${esc(MOD_TARGET_LABEL[c.target_type] || "פוסט")} מאת ${esc(c.content_author_name || "חבר/ה שהוסר/ה")}</div>
-          <div class="chart-card" style="margin-top:8px;white-space:pre-wrap;">${esc(String(c.content_excerpt || "התוכן הוסר"))}</div>
+          <div style="color:var(--steel);font-size:12.5px;">${esc(MOD_TARGET_LABEL[c.target_type] || "פוסט")} מאת ${bidiText(c.content_author_name || "חבר/ה שהוסר/ה")}</div>
+          <div class="chart-card" style="margin-top:8px;white-space:pre-wrap;">${bidiText(String(c.content_excerpt || "התוכן הוסר"))}</div>
           ${Array.isArray(c.reporters) && c.reporters.length ? `<div style="color:var(--steel);font-size:12px;margin-top:8px;">דווח ע״י: ${c.reporters.map((r) => esc(r.name || r.id)).join(", ")}</div>` : ""}
           <div class="chip-row" style="margin-top:12px;">
             <button class="chip-btn" data-community-action="mod-context-close">סגירה</button>
@@ -11599,7 +11641,7 @@
     // data-post-id already gives the `target.post` branch. Without it, a
     // tap on an announcement notification switched to the Feed tab (via
     // setCommunityTab) and did nothing further.
-    const pinnedHtml = pinnedToday ? `<div class="chart-card admin-card" data-announcement-id="${esc(pinnedToday.id)}" style="margin-bottom:12px;${announcementAccentStyle(pinnedToday)}"><div style="font-weight:800;margin-bottom:6px;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">📌 הערת האימון להיום${announcementPriorityBadge(pinnedToday)}</div><div style="font-weight:700;">${esc(pinnedToday.title)}</div><div style="color:var(--steel);font-size:13px;margin-top:4px;">${esc(pinnedToday.body)}</div></div>` : "";
+    const pinnedHtml = pinnedToday ? `<div class="chart-card admin-card" data-announcement-id="${esc(pinnedToday.id)}" style="margin-bottom:12px;${announcementAccentStyle(pinnedToday)}"><div style="font-weight:800;margin-bottom:6px;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">📌 הערת האימון להיום${announcementPriorityBadge(pinnedToday)}</div><div style="font-weight:700;">${bidiText(pinnedToday.title)}</div><div style="color:var(--steel);font-size:13px;margin-top:4px;">${bidiText(pinnedToday.body)}</div></div>` : "";
     // COMM-321. announcements_read already empties liveAnnouncements above
     // once the module is off; the composer form has no data of its own to
     // fall silent through, so it needs its own explicit gate.
@@ -11611,7 +11653,7 @@
     // control render for every one of the four target types.
     const canPinContent = hasPerm(PERM.CONTENT_PIN);
     const isPinned = (type, id) => state.admin.pins.some((p) => p.target_type === type && p.target_id === id);
-    const announcementsList = otherAnnouncements.length ? `<div class="log-list">${otherAnnouncements.map((a) => `<div class="log-row" data-announcement-id="${esc(a.id)}" style="align-items:flex-start;flex-direction:column;gap:4px;${announcementAccentStyle(a)}"><div style="font-weight:700;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">${esc(a.title)}${announcementPriorityBadge(a)}</div><div style="color:var(--steel);font-size:13px;">${esc(a.body)}</div><div style="color:var(--steel);font-size:11px;">${esc(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div>${canPinContent ? `<button class="link-btn" data-community-action="${isPinned("announcement", a.id) ? "unpin" : "pin"}" data-type="announcement" data-id="${esc(a.id)}" data-note="${esc(a.title)}" style="margin:2px 0 0;">${isPinned("announcement", a.id) ? "ביטול הצמדה" : "הצמדה למעלה"}</button>` : ""}</div>`).join("")}</div>` : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
+    const announcementsList = otherAnnouncements.length ? `<div class="log-list">${otherAnnouncements.map((a) => `<div class="log-row" data-announcement-id="${esc(a.id)}" style="align-items:flex-start;flex-direction:column;gap:4px;${announcementAccentStyle(a)}"><div style="font-weight:700;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">${bidiText(a.title)}${announcementPriorityBadge(a)}</div><div style="color:var(--steel);font-size:13px;">${bidiText(a.body)}</div><div style="color:var(--steel);font-size:11px;">${esc(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div>${canPinContent ? `<button class="link-btn" data-community-action="${isPinned("announcement", a.id) ? "unpin" : "pin"}" data-type="announcement" data-id="${esc(a.id)}" data-note="${esc(a.title)}" style="margin:2px 0 0;">${isPinned("announcement", a.id) ? "ביטול הצמדה" : "הצמדה למעלה"}</button>` : ""}</div>`).join("")}</div>` : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
     const announcementsHtml = `<div class="ach-section">${sectionHead("var(--brass)", "הודעות מהמועדון")}${pinnedHtml}${announcementsList}${announceComposer}</div>`;
 
     // Sharing itself no longer lives here - it was a standing list of the
@@ -11635,13 +11677,13 @@
         <div class="flex gap-10" style="align-items:center;min-width:0;">
           ${clubMark}
           <div style="min-width:0;">
-            <div style="font-weight:800;font-size:16px;">${esc(club.name || "המועדון")}</div>
+            <div style="font-weight:800;font-size:16px;">${bidiText(club.name || "המועדון")}</div>
             <div style="color:var(--steel);font-size:12px;">${Number(club.member_count || 0)} חברי מועדון</div>
           </div>
         </div>
         ${renderNotificationBell()}
       </div>
-      ${activeChallenge ? `<div class="chip-row" style="margin-top:10px;"><button class="chip-btn primary" data-community-action="open-active-challenge" data-id="${esc(activeChallenge.id || "")}">🏆 ${esc(activeChallenge.title || "אתגר פעיל")}</button></div>` : ""}
+      ${activeChallenge ? `<div class="chip-row" style="margin-top:10px;"><button class="chip-btn primary" data-community-action="open-active-challenge" data-id="${esc(activeChallenge.id || "")}">🏆 ${bidiText(activeChallenge.title || "אתגר פעיל")}</button></div>` : ""}
     </div>` : "";
     // COMM-217: the soonest published, non-cancelled upcoming event, or
     // nothing at all - never an empty placeholder.
@@ -11676,7 +11718,7 @@
       ? `<div class="empty">לא ניתן לטעון את פיד המועדון.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="feed-retry">ניסיון חוזר</button></div></div>`
       : state.feed.items.length ? `<div class="log-list" id="communityFeedList">${state.feed.items.map((post) => post && post.post_type ? renderPostCard(post) : `<article class="chart-card post-card">
       <div class="post-head">${avatarHtml(post.display_name || post.handle, 36, (post.author && post.author.avatar_url) || post.avatar_url)}<div class="post-head-text"><div class="post-author">${nameHtml(post.display_name, post.handle)}</div><div class="post-time">${relativeTime(post.published_at)}</div></div></div>
-      <div class="post-title">${esc(post.title)}</div>
+      <div class="post-title">${bidiText(post.title)}</div>
       <div class="mono post-result">${esc(post.result_text)}</div>
       ${post.photo_path && signedCacheGet(photoUrlCache, post.photo_path) ? `<img src="${signedCacheGet(photoUrlCache, post.photo_path)}" alt="" class="post-photo" onerror="window.__haimuniaEvictSignedUrl&&window.__haimuniaEvictSignedUrl('photo',this.dataset.k)" data-k="${esc(post.photo_path)}"/>` : ""}
       <div class="chip-row post-actions">
@@ -11712,7 +11754,7 @@
     const hideMyResult = state.profile && state.profile.in_leaderboards
       ? `<button class="link-btn" data-community-action="hide-my-leaderboard-result" style="display:block;margin:8px auto 0;">הסתרת התוצאה שלי מהטבלאות</button>`
       : (state.profile ? `<div class="footer-note" style="margin:8px 0 0;">התוצאה שלך מוסתרת מהטבלאות. אפשר להחזיר אותה בהגדרות הפרטיות.</div>` : "");
-    const weeklyChallengeHtml = `<div class="ach-section">${sectionHead("var(--teal)", state.club.weeklyChallenge ? `אתגר השבוע: ${esc(state.club.weeklyChallenge.title)}` : "אתגר השבוע")}${weeklyLeaderboardList}${hideMyResult}${challengeSetter}</div>`;
+    const weeklyChallengeHtml = `<div class="ach-section">${sectionHead("var(--teal)", state.club.weeklyChallenge ? `אתגר השבוע: ${bidiText(state.club.weeklyChallenge.title)}` : "אתגר השבוע")}${weeklyLeaderboardList}${hideMyResult}${challengeSetter}</div>`;
 
     // COMM-210/212. The consistency board, server-ranked through
     // feed_leaderboard, replaces the old community_streaks strip that used to
