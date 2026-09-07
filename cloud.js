@@ -202,6 +202,13 @@
       // the leaderboard VIEW and is null whenever nobody has posted a matching
       // result yet. See loadWeeklyChallenge().
       weeklyChallengeRow: null,
+      // The club WOD catalogue (202609060028), mirrored here so the community
+      // layer has its own view of what it handed app.js. app.js owns the
+      // merged catalogue (allWods()); this is the raw last-read list, which is
+      // what the staff catalogue surfaces render from. Includes RETIRED rows -
+      // club_wods_list() always returns them and the client must keep every id
+      // resolvable.
+      clubWods: [],
       // The coach's picked comparison key, kept in state so a rejected submit
       // (a missing title, a missing date) does not silently reset the picker.
       challengeKeyDraft: "",
@@ -969,7 +976,14 @@
     if (!state.user || !state.profile || !state.profile.recovery_verified_at || state.communityDataLoaded || state.communityDataLoading) return;
     state.communityDataLoading = true;
     try {
-      await Promise.all([loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadEvents(), loadOnboardingProgress(), loadOnboardingStepContent()]);
+      // loadClubWods() joins this Promise.all rather than being awaited ahead
+      // of it. It could not while loadWeeklyChallenge() froze the challenge's
+      // `valid` at load time - losing that race stamped a good club challenge
+      // invalid for the whole session - but activeWeeklyChallenge() derives
+      // that at read time now (see weeklyChallengeIsValid), so there is no
+      // ordering left to preserve and no reason to serialise a round trip in
+      // front of thirteen parallel ones.
+      await Promise.all([loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubWods(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadEvents(), loadOnboardingProgress(), loadOnboardingStepContent()]);
       if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers(), loadActivitySignal()]);
       if (hasPerm(PERM.COMMENT_MODERATE) || isAdmin()) await loadModQueue();
       // COMM-141. Arm the own-row notification channel for this session.
@@ -1799,6 +1813,20 @@
       // build a key for (it returns null), so there is nothing for an EMOM
       // challenge to ever compare against.
       if (!w || !w.id || w.category === "Custom" || !w.scoreType || w.scoreType === "emom") continue;
+      // A retired club WOD stays in allWods() so that history and feed posts
+      // keep resolving its id — but the box has stopped programming it, so it
+      // must not be offerable as the subject of a NEW challenge.
+      //
+      // This DOES flow through into challengeKeyExists() below, which is
+      // built on this list, and that is correct rather than a leak: the
+      // database refuses to retire a WOD while any challenge referencing it
+      // has not yet ENDED (club_wod_retire, 'wod is used by a live
+      // challenge'), and loadWeeklyChallenge() only ever reads a row whose
+      // window contains today. So a currently-active challenge can never be
+      // on a retired WOD, and the only thing this skip can turn away is a
+      // coach trying to open a NEW challenge on programming the box has
+      // retired — which is the intent, not a side effect.
+      if (w.category === "Club" && w.retiredAt) continue;
       out.push({ group: "אימונים", key: `wod:${w.id}:${w.scoreType}:rx`, label: `${w.name} · Rx` });
       out.push({ group: "אימונים", key: `wod:${w.id}:${w.scoreType}:scaled`, label: `${w.name} · Scaled` });
     }
@@ -1855,10 +1883,7 @@
       .order("ends_on", { ascending: true }).limit(1);
     const row = rows && rows.length ? rows[0] : null;
     state.club.weeklyChallengeRow = row
-      ? { id: row.id, title: row.title, comparisonKey: row.comparison_key, startsOn: row.starts_on, endsOn: row.ends_on,
-          // Computed once, here, so every surface asks the same question of
-          // the same answer instead of each re-deriving "is this real".
-          valid: COMPARISON_KEY_SHAPE_RE.test(String(row.comparison_key || "")) && challengeKeyExists(row.comparison_key) }
+      ? { id: row.id, title: row.title, comparisonKey: row.comparison_key, startsOn: row.starts_on, endsOn: row.ends_on }
       : null;
     const { data, error } = await client.from("weekly_challenge_leaderboard").select("*").limit(50);
     if (error || !data || !data.length) { state.club.weeklyChallenge = null; state.club.weeklyLeaderboard = []; return; }
@@ -1869,9 +1894,30 @@
   // right now" - an active row whose key names something real. Anything that
   // advertises a challenge has to go through this, not through the mere
   // existence of a row.
+  //
+  // DERIVED AT READ TIME, NOT FROZEN AT LOAD TIME (202609060028). It used to
+  // be computed once inside loadWeeklyChallenge() and stored as `row.valid`,
+  // which was fine while every catalogue allWods() draws on was a compile-time
+  // constant shipped inside src/constants.js. The club WOD catalogue is not:
+  // it arrives over the network, and on a cold start it also arrives out of
+  // IndexedDB on app.js's own boot timeline. Freezing `valid` therefore made
+  // the answer depend on which of three independent async paths happened to
+  // finish first, and losing that race stamped a perfectly good club
+  // challenge invalid FOR THE WHOLE SESSION - no later load could correct it.
+  //
+  // The alternative considered was ordering the loads (awaiting the catalogue
+  // before the challenge read). That fixes the one ordering inside this file
+  // and none of the others: app.js's cached-catalogue hydration and a
+  // publish made later in the same session are both outside it. Deriving
+  // here removes the dependency instead of sequencing it, and costs one
+  // catalogue walk on a path that already walks the catalogue to render.
+  function weeklyChallengeIsValid(row) {
+    if (!row) return false;
+    return COMPARISON_KEY_SHAPE_RE.test(String(row.comparisonKey || "")) && challengeKeyExists(row.comparisonKey);
+  }
   function activeWeeklyChallenge() {
     const row = state.club.weeklyChallengeRow;
-    return row && row.valid ? row : null;
+    return weeklyChallengeIsValid(row) ? row : null;
   }
   async function setWeeklyChallenge(form) {
     if (!state.user || !isStaff()) return;
@@ -1898,6 +1944,114 @@
     state.club.challengeKeyDraft = "";
     form.reset(); await loadWeeklyChallenge(); setMessage("האתגר השבועי עודכן"); rerender();
   }
+
+  // =====================================================================
+  // The club WOD catalogue (202609060028)
+  // =====================================================================
+  // What this is for, in one sentence: a weekly challenge is a
+  // comparison_key, and a key of the form wod:<id>:... is only joinable when
+  // EVERY member's client can resolve that id. WOD_LIBRARY ships in
+  // src/constants.js so a built-in works for free; a custom WOD is local data
+  // (IndexedDB plus a private_records row nobody else can read), so a
+  // challenge on a coach's own programming resolved on exactly one device and
+  // was dead on arrival for the rest of the box. This is the read that makes
+  // those ids mean the same thing everywhere.
+  //
+  // Note what is NOT here: challengeKeyExists() is untouched. Merging the
+  // catalogue into app.js's allWods() is the entire fix - the existing
+  // one-liner then resolves a club WOD for every member with no special case
+  // and, importantly, without being relaxed to accept ids it cannot resolve.
+  async function loadClubWods() {
+    if (!state.user) return;
+    const { data, error } = await client.rpc("club_wods_list");
+    // On failure the previously-loaded catalogue is LEFT ALONE rather than
+    // blanked. app.js may be holding a cached copy from a previous session
+    // that is resolving a member's own history right now; replacing it with
+    // [] because one request failed would break exactly the offline case the
+    // cache exists for.
+    if (error) return;
+    state.club.clubWods = data || [];
+    if (typeof window.setClubWods === "function") window.setClubWods(state.club.clubWods);
+  }
+  // Publishing is staff-gated HERE only so a member is never shown a control
+  // that can only fail - the real boundary is club_wod_publish() itself,
+  // which checks has_perm('community.challenge.create') server-side (not
+  // is_staff(): 202609060005 deliberately moved the challenge surface off
+  // is_staff(), which also admits the `staff` role, and that role holds no
+  // challenge permission at all).
+  function publishClubWod(wod) {
+    if (!state.user || !isStaff()) return;
+    // Only a member's OWN custom WOD is publishable. A club WOD arriving here
+    // would mean the affordance is being shown on something already published.
+    if (!wod || !wod.id || wod.category !== "Custom" || !wod.name) return;
+    askConfirm({
+      title: "פרסום אימון לקטלוג המועדון",
+      message: "האימון {subject} יהיה זמין לכל חברי המועדון, ויהיה אפשר לקבוע עליו אתגר שבועי. מה שמתפרסם הוא צילום מצב של האימון כפי שהוא עכשיו — עריכה שלו כאן אחר כך לא תעבור לעותק של המועדון.",
+      subject: wod.name,
+      confirmLabel: "פרסום",
+      action: "publish-club-wod",
+      payload: { wod },
+    });
+  }
+  async function doPublishClubWod(wod) {
+    if (!state.user || !isStaff() || !wod || !wod.id) return;
+    // The definition travels in the CALL. The server deliberately does not
+    // read it back out of private_records: cloud backup is opt-out, so a
+    // coach who switched it off - or whose outbox simply has not flushed the
+    // WOD they built two minutes ago - has no server copy to read, and those
+    // are the coaches most likely to be publishing.
+    const args = {
+      p_wod_id: wod.id,
+      p_name: wod.name,
+      p_score_type: wod.scoreType,
+      p_description: wod.desc || "",
+      p_time_cap_seconds: wod.timeCapSeconds || null,
+    };
+    // EMOM is publishable (members can log the box's programming) even though
+    // it can never be a challenge - communityShareCandidateFor() returns a
+    // null comparison key for it and challengeKeyChoices() skips it.
+    if (wod.scoreType === "emom") {
+      args.p_emom_movements = wod.emomMovements || [];
+      args.p_emom_target_reps = wod.emomTargetReps || [];
+      args.p_emom_minutes = wod.emomMinutes || null;
+    }
+    const { error } = await client.rpc("club_wod_publish", args);
+    if (error) return setMessage(serverErrorText(error));
+    // Only this. loadWeeklyChallenge() is deliberately NOT called after a
+    // publish: it used to be needed because the active challenge's `valid`
+    // was frozen at load time, and re-reading the row was the only way to
+    // recompute it. activeWeeklyChallenge() derives that at read time now
+    // (see weeklyChallengeIsValid), so the next render picks the new
+    // catalogue up on its own and a second round trip would buy nothing.
+    await loadClubWods();
+    setMessage("האימון פורסם לקטלוג המועדון"); rerender();
+  }
+  // The three corrections. Thin on purpose: every rule about what may change
+  // and when lives in the database (score type and the EMOM rotation are
+  // immutable because they are what the comparison key and the log form are
+  // built from; retiring a WOD out from under a live challenge is refused;
+  // there is no delete at all), and duplicating any of it here would only
+  // create somewhere for the two to disagree. Each one re-reads the
+  // catalogue so app.js's merged view matches the server.
+  async function editClubWod(wodId, name, description) {
+    if (!state.user || !isStaff() || !wodId) return false;
+    const { error } = await client.rpc("club_wod_edit", { p_wod_id: wodId, p_name: name, p_description: description || "" });
+    if (error) { setMessage(serverErrorText(error)); return false; }
+    await loadClubWods(); setMessage("האימון עודכן"); rerender(); return true;
+  }
+  async function retireClubWod(wodId, reason) {
+    if (!state.user || !isStaff() || !wodId) return false;
+    const { error } = await client.rpc("club_wod_retire", { p_wod_id: wodId, p_reason: reason || null });
+    if (error) { setMessage(serverErrorText(error)); return false; }
+    await loadClubWods(); setMessage("האימון הוסר מהקטלוג"); rerender(); return true;
+  }
+  async function restoreClubWod(wodId) {
+    if (!state.user || !isStaff() || !wodId) return false;
+    const { error } = await client.rpc("club_wod_restore", { p_wod_id: wodId });
+    if (error) { setMessage(serverErrorText(error)); return false; }
+    await loadClubWods(); setMessage("האימון הוחזר לקטלוג"); rerender(); return true;
+  }
+
   async function loadInactiveMembers() {
     if (!state.user || !isStaff()) return;
     const { data, error } = await client.rpc("coach_inactive_members");
@@ -4853,6 +5007,18 @@
     "event not open for rsvp": "האירוע הזה סגור להרשמה — הוא כבר התקיים או שההרשמה נסגרה. אפשר להסיר את ההרשמה מהתור.",
     event_full: "האירוע מלא ואין בו יותר מקומות. אפשר להסיר את ההרשמה מהתור; אם יתפנה מקום, כדאי לבדוק שוב בדף האירוע.",
     "challenge not found": "האתגר הזה כבר לא קיים. אפשר להסיר את העדכון מהתור.",
+    // The club WOD catalogue (202609060028). This is THE error a coach has to
+    // actually understand, and the raw string does not say it: the club copy
+    // is a snapshot taken at publish time, so re-publishing after editing
+    // locally did not overwrite it - and the reason it refuses rather than
+    // overwriting is that overwriting would change what a running challenge
+    // asks of people, mid-week, with scores already on the board. The message
+    // therefore has to name the fix as well as the fact.
+    "wod already published": "האימון הזה כבר נמצא בקטלוג המועדון. העותק של המועדון הוא צילום מצב מרגע הפרסום, ולכן שינוי שנעשה כאן מאז לא עבר אליו — וזה מכוון, כדי שאתגר שכבר רץ לא ישנה את מה שהוא מבקש באמצע השבוע. לתיקון שם או תיאור אפשר לערוך את האימון בקטלוג; לשינוי סוג הניקוד או התרגילים צריך לפרסם אימון חדש.",
+    "wod not found": "האימון הזה לא נמצא בקטלוג המועדון.",
+    "wod id must be a custom WOD id": "אפשר לפרסם רק אימון שנבנה כאן באפליקציה.",
+    "wod is used by a live challenge": "אי אפשר להוציא מהקטלוג אימון שיש עליו אתגר שעדיין לא הסתיים. אפשר לחזור לזה אחרי שהאתגר נגמר.",
+    "wod is locked by a challenge": "כבר התקיים אתגר על האימון הזה, ולכן אי אפשר לשנות אותו — לוח התוצאות מתעד מה אנשים עשו מול אימון מסוים. לאימון שונה צריך לפרסם אימון חדש.",
     "not an active participant": "העדכון הזה שייך לאתגר שכבר לא משתתפים בו. אפשר להסיר אותו מהתור.",
     // Thrown by registerOutboxHandlers() itself, not by the server: the
     // queue tried to send while nobody was signed in.
@@ -5509,6 +5675,7 @@
     else if (c.action === "delete-account") requestDeletion();
     else if (c.action === "delete-post") deletePost(c.payload.postId);
     else if (c.action === "publish") publishWorkout(c.payload.type, c.payload.id, c.payload.visibility, c.payload.file);
+    else if (c.action === "publish-club-wod") doPublishClubWod(c.payload.wod);
     else if (c.action === "admin-grant-coach") adminGrantCoach(c.payload.userId);
     // Defect 1: revoking used to fire straight off the click handler, with no
     // dialog at all, while GRANTING the same permission asked first. The
@@ -13759,7 +13926,7 @@
     // sitting active in the table, invisible to everyone. Staff - and only
     // staff - get told why their challenge is not on any screen, since they
     // are the only ones who can fix it by setting a new one.
-    const brokenChallenge = staff && state.club.weeklyChallengeRow && !state.club.weeklyChallengeRow.valid ? state.club.weeklyChallengeRow : null;
+    const brokenChallenge = staff && state.club.weeklyChallengeRow && !weeklyChallengeIsValid(state.club.weeklyChallengeRow) ? state.club.weeklyChallengeRow : null;
     const brokenChallengeNote = brokenChallenge
       ? `<div class="footer-note" style="margin:0 0 10px;color:var(--brass);">האתגר „${bidiText(brokenChallenge.title || "")}" לא מוצג לחברי המועדון: הוא מצביע על ${bidiText(brokenChallenge.comparisonKey || "")}, שלא קיים באפליקציה, ולכן אף תוצאה לא יכולה להיספר אליו. קבעו אתגר חדש מהרשימה למטה.</div>`
       : "";
@@ -14932,6 +15099,16 @@
   // renderManageApp() itself re-checks internally (defense in depth against
   // a forced ?tab=manage), just exposed for the nav-item decision.
   window.communityIsStaff = function () { return isStaff(); };
+  // The club WOD catalogue's write surface. publishClubWod is what app.js's
+  // staff affordance calls; the other three are the correction paths, exposed
+  // the same way so the catalogue has one callable API rather than three
+  // functions only reachable from inside this closure. All four are
+  // staff-gated here and permission-gated again in the database, which is the
+  // boundary that actually counts.
+  window.publishClubWod = publishClubWod;
+  window.editClubWod = editClubWod;
+  window.retireClubWod = retireClubWod;
+  window.restoreClubWod = restoreClubWod;
   // Redesign, Phase 3 fix: app.js's getNavItems() needs this to badge the
   // Manage bottom-tab nav item - see pendingModerationCount()'s own comment.
   window.communityPendingModerationCount = function () { return pendingModerationCount(); };

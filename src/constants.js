@@ -31,14 +31,18 @@ var cleanISODate = SAFE.cleanISODate, cleanTs = SAFE.cleanTs, uid = SAFE.uid;
 const CATEGORY_COLORS = {
   Squat: "var(--teal)", Deadlift: "var(--red)", Press: "var(--yellow)",
   Olympic: "var(--green)", Pull: "var(--purple)", Other: "var(--steel)",
-  Custom: "var(--brass)", Girls: "var(--purple)", Heroes: "var(--red)",
+  // Club: the box's own published catalogue (202609060028). Deliberately a
+  // different colour from Custom's brass — on the picker the two sit next to
+  // each other and the whole point of the club catalogue is that "everyone in
+  // the box has this one" is not the same statement as "only I have this one".
+  Custom: "var(--brass)", Club: "var(--blue)", Girls: "var(--purple)", Heroes: "var(--red)",
   Gymnastics: "var(--purple)", Weightlifting: "var(--blue)", Dumbbell: "var(--green)",
   Kettlebell: "var(--yellow)", "Odd Object": "var(--red)", Monostructural: "var(--steel)",
 };
 
 const CATEGORY_LABELS = {
   Squat: "Squat", Deadlift: "Deadlift", Press: "Press", Olympic: "Olympic",
-  Pull: "Pull", Other: "Other", Custom: "Custom", Girls: "Girls", Heroes: "Heroes",
+  Pull: "Pull", Other: "Other", Custom: "Custom", Club: "Club", Girls: "Girls", Heroes: "Heroes",
   Gymnastics: "Gymnastics", Weightlifting: "Weightlifting", Dumbbell: "Dumbbell",
   Kettlebell: "Kettlebell", "Odd Object": "Odd Object", Monostructural: "Monostructural",
 };

@@ -357,6 +357,22 @@ let calSelectedDate = todayISO();
 // WOD tab state
 let wodEntries = [];
 let customWods = [];
+// The club's shared WOD catalogue (202609060028), kept beside customWods
+// rather than inside it and NEVER written to CUSTOMWODSTORE. Two separate
+// reasons, both load-bearing:
+//
+//   * CUSTOMWODSTORE is what buildBackupPayload() exports and what the
+//     backup sync pushes up as this member's own private `custom_wod`
+//     records. Merging the club catalogue into it would make every member
+//     silently re-publish the whole box's programming as their own private
+//     data, which is both wrong and a privacy leak the sync model is built
+//     to prevent.
+//   * customWods is the member's own data and deleteCustomWod() may remove
+//     from it; the club catalogue is read-only here.
+//
+// It IS cached (see CLUB_WODS_CACHE_KEY / loadCachedClubWods) in the settings
+// store, which is neither exported nor synced.
+let clubWods = [];
 let wodSubTab = "log";
 // COMM-360: null (not WOD_LIBRARY[0].id/"Fran") until the user actually
 // picks one, unlike selectedId - there's no internal logic depending on
@@ -2148,6 +2164,12 @@ async function clearAllData() {
     await dbClearWodMovementTags();
     // "delete everything" must also drop the stored name and export marker.
     await dbClearSettings();
+    // ...but the club's shared catalogue is not this member's data to delete,
+    // and it stays in memory (the picker keeps offering it). Re-persisting
+    // keeps the cache and memory agreeing — otherwise this device would show
+    // club WODs now and lose them on the next offline start, with nothing
+    // having changed about the club.
+    if (clubWods.length) await dbSetSetting(CLUB_WODS_CACHE_KEY, clubWods).catch(() => {});
     try { localStorage.removeItem(USER_NAME_KEY); localStorage.removeItem(LAST_EXPORT_KEY); } catch (e) {}
     userName = null;
     boxStartDate = null;
@@ -2176,7 +2198,53 @@ async function clearAllData() {
 }
 
 // ---------- WOD helpers & actions ----------
-function allWods() { return WOD_LIBRARY.concat(customWods); }
+// The club catalogue is cached in SETTINGSTORE, not CUSTOMWODSTORE — see the
+// `clubWods` declaration for why that distinction is not cosmetic. The
+// settings store is the one store that is neither exported by
+// buildBackupPayload() nor synced as private_records, which is exactly the
+// property needed here.
+const CLUB_WODS_CACHE_KEY = "haimunia-demo:clubWods";
+// Called by cloud.js once club_wods_list() answers. Re-sanitized on the way
+// in like everything else that crosses into this file, through
+// sanitizeClubWod — which is what MAKES a record a club WOD. The category is
+// never read off the payload (see src/sanitize.js): this call site and
+// loadCachedClubWods() below are the only two that may mint "Club", because
+// they are the only two whose input came from club_wods_list().
+window.setClubWods = function (list) {
+  clubWods = sanitizeList(list, sanitizeClubWod);
+  // Best-effort: a member with no storage quota still gets the catalogue for
+  // this session, they just do not get it offline next time.
+  dbSetSetting(CLUB_WODS_CACHE_KEY, clubWods).catch(() => {});
+};
+// Hydrated at boot, BEFORE the first render and before cloud.js's network
+// read can answer. Without this a member who logged a club WOD and opens the
+// app offline gets wodById() === undefined for it, and their own history
+// renders as an unknown workout — the exact failure the catalogue's
+// retire-never-delete rule exists to prevent, reached by a different route.
+async function loadCachedClubWods() {
+  try {
+    const cached = await dbGetSetting(CLUB_WODS_CACHE_KEY);
+    if (Array.isArray(cached)) clubWods = sanitizeList(cached, sanitizeClubWod);
+  } catch (e) { /* no cache is a cold start, not an error */ }
+}
+// THE CLUB COPY WINS ON AN ID COLLISION, and that is the whole point rather
+// than a tie-break detail.
+//
+// The publishing coach still holds the same customwod-<uuid> in their own
+// customWods (publishing reuses their id — it does not mint a new one, so
+// their already-logged entries and already-published posts match the
+// challenge from day one). Exactly one of the two definitions has to win on
+// their device, and it has to be the club copy: a club WOD is a SNAPSHOT
+// taken at publish time, so a coach who afterwards edits their local
+// scoreType would otherwise build `wod:<id>:<their new type>:rx` while every
+// other member in the box builds `wod:<id>:<the published type>:rx` — a
+// comparison key that differs from everybody else's, which is precisely the
+// unresolvable-key failure this catalogue removes. Their local row is left
+// untouched on disk; it is only shadowed.
+function allWods() {
+  const clubIds = new Set(clubWods.map((w) => w.id));
+  return WOD_LIBRARY.concat(clubWods, customWods.filter((w) => !clubIds.has(w.id)));
+}
 function wodById(id) { return allWods().find((w) => w.id === id); }
 function wodEntriesFor(id, excludeId) { return wodEntries.filter((e) => e.wodId === id && e.id !== excludeId); }
 function recentWodEntriesFor(id, days = 14, cap = 5) {
@@ -3903,6 +3971,33 @@ function render() {
 }
 
 // ---------- WOD tab ----------
+// The one door into the club catalogue (202609060028). Offered only on a
+// member's OWN custom WOD, and only to staff — the box owner asked for this
+// because a coach's own programming is exactly what they want to run a club
+// challenge on, and until the catalogue existed a challenge keyed to it was
+// invisible and unscoreable for everybody else in the box.
+//
+// The gate here is a UI affordance, not the boundary: club_wod_publish()
+// checks has_perm('community.challenge.create') server-side and a member who
+// forges the click is refused there. What this check buys is that a member
+// who cannot publish is never shown a button that will only fail.
+//
+// A club WOD never shows it: once published, the club copy shadows the
+// coach's local row in allWods() (see there), so `w` arrives here already
+// carrying category "Club" and the affordance retires itself.
+function renderClubPublishAffordance(w) {
+  if (!w || w.category !== "Custom") return "";
+  if (typeof window.communityIsStaff !== "function" || !window.communityIsStaff()) return "";
+  if (typeof window.publishClubWod !== "function") return "";
+  return `
+    <div style="margin-bottom:12px;">
+      <button class="link-btn" data-action="publish-club-wod" data-id="${esc(w.id)}"
+              aria-label="פרסום ${esc(w.name)} לקטלוג המועדון" style="min-height:44px;">
+        פרסום לקטלוג המועדון
+      </button>
+      <div style="color:var(--steel); font-size:12px; line-height:1.5;">כל חברי המועדון יוכלו לרשום את האימון הזה, ואפשר יהיה לקבוע עליו אתגר שבועי.</div>
+    </div>`;
+}
 function renderWodLogSection() {
   const w = wodById(selectedWodId);
   // UX audit: the default sub-tab of the אימונים tab used to be one grey
@@ -3989,6 +4084,8 @@ function renderWodLogSection() {
       </div>
       <span class="flex items-center gap-6" style="color:var(--steel); font-size:12px; font-weight:600;">שינוי${ICONS.chevronsLeft}</span>
     </button>
+
+    ${renderClubPublishAffordance(w)}
 
     <div class="flex items-center gap-8" style="margin-bottom:12px;">
       <input type="date" id="wodLogDateInput" value="${esc(wodLogDate)}" max="${todayISO()}" aria-label="תאריך רישום האימון" style="flex:1; min-width:0; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 14px; color:var(--chalk); font-size:14px; font-weight:700; font-family:inherit;" />
@@ -4491,7 +4588,16 @@ function closeWodPicker() {
 }
 function renderWodPickerList(query) {
   const q = query.toLowerCase();
-  const filtered = allWods().filter((w) => w.name.toLowerCase().includes(q));
+  // A RETIRED club WOD is still in allWods() — it has to be, or the member's
+  // own logged history of it would render as an unknown workout and any
+  // challenge or feed post still referencing the id would stop resolving.
+  // What retirement means is that the box has stopped programming it, so it
+  // leaves the picker for NEW logs. The exception is a member who has
+  // actually done it: for them the row is the doorway to their own history
+  // and to logging it again, so hiding it would take away data they own.
+  const filtered = allWods().filter((w) =>
+    w.name.toLowerCase().includes(q)
+    && !(w.category === "Club" && w.retiredAt && wodEntriesFor(w.id).length === 0));
   const exactMatch = allWods().some((w) => w.name.toLowerCase() === q);
   const byCategory = bag();
   filtered.forEach((w) => { (byCategory[w.category] = byCategory[w.category] || []).push(w); });
@@ -4507,7 +4613,9 @@ function renderWodPickerList(query) {
     list.innerHTML = addRow + `<div style="color:var(--steel); text-align:center; padding:16px 0; font-size:13px;">לא נמצא אימון</div>`;
     return;
   }
-  const order = ["Girls", "Heroes", "Custom"];
+  // Club sits between the benchmarks and the member's own: it is the box's
+  // programming, so it outranks a private WOD but not Fran.
+  const order = ["Girls", "Heroes", "Club", "Custom"];
   const cats = Object.keys(byCategory).sort((a, b) => order.indexOf(a) - order.indexOf(b));
   list.innerHTML = addRow + `<div style="height:12px;"></div>` + cats.map((cat) => `
     <div class="cat-group">
@@ -4825,6 +4933,15 @@ document.addEventListener("click", (e) => {
   }
   else if (action === "focus-wod-builder-search") { document.getElementById("wodBuilderMoveSearch").focus(); }
   else if (action === "create-wod") { createWodFromBuilder(); }
+  else if (action === "publish-club-wod") {
+    // The whole WOD definition is handed over, not just the id: publishing is
+    // a SNAPSHOT taken from this call, and the server deliberately does not
+    // read it back out of private_records — cloud backup is opt-out, so a
+    // coach who has it switched off (or whose outbox has not flushed yet)
+    // has no server copy for it to read.
+    const wod = customWods.find((item) => item.id === el.dataset.id);
+    if (wod && typeof window.publishClubWod === "function") window.publishClubWod(wod);
+  }
   else if (action === "save-bw") { saveBodyweight(); }
   else if (action === "toggle-bodyweight") { bodyweightExpanded = !bodyweightExpanded; renderBodyweightArea(); }
   else if (action === "open-add-measure-type") { measureAddOpen = true; renderMeasureArea(); }
@@ -4970,6 +5087,10 @@ async function init() {
   }
   document.getElementById("dateLabel").textContent = new Date().toLocaleDateString("he-IL", { weekday: "short", day: "numeric", month: "short" });
   await reloadFromDb();
+  // Before the first render, and before cloud.js has a session to read the
+  // live catalogue with — see loadCachedClubWods() for why the offline case
+  // is the one that matters.
+  await loadCachedClubWods();
   await loadUserName();
   await loadLastExport();
   await loadBarWeight();
