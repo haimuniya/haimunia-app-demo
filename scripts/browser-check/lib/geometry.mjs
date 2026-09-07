@@ -101,6 +101,42 @@ export async function paintedTextOfUnisolatedControl(page, selector, text) {
   return result;
 }
 
+// Measures an arbitrary HTML fragment as a sibling of a real rendered node, so
+// it inherits that node's computed style, width and inherited direction — then
+// removes it again.
+//
+// This is what makes a RUN-level bidi check possible at all. The line-level
+// bug could be measured on whatever the app happened to render; the run-level
+// one has to be measured against MUTANTS of the same string — the pre-fix
+// build, an over-isolating build, a build with the whole line forced LTR —
+// and none of those exist in the app to point a selector at. Building them
+// beside the real node is the only way to compare them under identical
+// layout, which is the entire reason the control in
+// `paintedTextOfUnisolatedControl` is trustworthy.
+//
+// `html` is inserted as innerHTML on purpose: these fragments ARE markup
+// (<bdi>, <bdi dir="ltr">), and every one of them is built in this repo from
+// literals or from the shipped helper's own output. No untrusted value
+// reaches it.
+export async function paintedTextOfHtmlSibling(page, selector, html) {
+  const inserted = await page.evaluate(
+    ({ sel, h }) => {
+      const real = document.querySelector(sel);
+      if (!real) throw new Error(`html sibling: no element matches ${sel}`);
+      const probe = real.cloneNode(false);
+      probe.id = "__bidiHtmlProbe";
+      probe.innerHTML = h;
+      real.after(probe);
+      return true;
+    },
+    { sel: selector, h: html },
+  );
+  if (!inserted) throw new Error("html probe was not inserted");
+  const result = await paintedText(page, "#__bidiHtmlProbe");
+  await page.evaluate(() => document.getElementById("__bidiHtmlProbe")?.remove());
+  return result;
+}
+
 // Asks the engine which element would receive a tap at a point — the same
 // question the browser asks on a real touch, and the only one that accounts
 // for stacking contexts, transforms, and fixed-position elements parked on

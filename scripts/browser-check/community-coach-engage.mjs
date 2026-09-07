@@ -127,7 +127,13 @@ const reviewedRow = await page.evaluate(() => window.__mock.db.coach_engagement_
 check("marking reviewed wrote status/reviewed_by/reviewed_at in one real RLS update, and the row left the open list", reviewedRow.status === "reviewed" && reviewedRow.reviewed_by === "u1" && !!reviewedRow.reviewed_at, JSON.stringify(reviewedRow));
 
 await page.click('[data-community-action="coach-engage-dismiss"][data-id="flag-2"]');
-await page.waitForFunction(() => document.body.textContent.includes("אין חברים שדורשים תשומת לב"), { timeout: 5000 });
+// The empty state was rewritten in d540a34 ("Stop the dashboard telling staff
+// the club is empty when it just has not loaded"): renderCoachEngageSection()
+// now goes through emptyStateHtml() with the headline below, because an empty
+// engagement list is the club being fine rather than a gap in the data. This
+// check was written in cbe0792, before that, and had been waiting 30s for copy
+// that no longer exists — a stale assertion, not a product failure.
+await page.waitForFunction(() => document.body.textContent.includes("כל החברים בקצב טוב כרגע"), { timeout: 5000 });
 const dismissedRow = await page.evaluate(() => window.__mock.db.coach_engagement_flags.find((f) => f.id === "flag-2"));
 check("dismissing the second flag wrote status='dismissed' and the section fell back to the real empty state, both flags now resolved", dismissedRow.status === "dismissed", JSON.stringify(dismissedRow));
 

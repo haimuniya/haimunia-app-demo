@@ -36,8 +36,8 @@
 // check has stopped proving anything and says so.
 //
 // Usage:
-//   node install-dock-hit-test.mjs                 # local working tree
-//   TARGET_URL=<url> node install-dock-hit-test.mjs # a deployed site
+//   node install-dock-hit-check.mjs                 # local working tree
+//   TARGET_URL=<url> node install-dock-hit-check.mjs # a deployed site
 import { chromium } from "playwright";
 import { resolveTarget } from "./lib/target.mjs";
 import { dismissWelcomeModal, selectMovement, consoleErrorCollector } from "./lib/actions.mjs";
@@ -207,5 +207,5 @@ check("no console errors", errors.length === 0, errors.join(" | "));
 
 await browser.close();
 await target.close();
-console.log(failed ? "\ninstall-dock-hit-test: FAILED" : "\ninstall-dock-hit-test: all checks passed");
+console.log(failed ? "\ninstall-dock-hit-check: FAILED" : "\ninstall-dock-hit-check: all checks passed");
 process.exit(failed ? 1 : 0);

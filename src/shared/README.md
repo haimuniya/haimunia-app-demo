@@ -19,6 +19,8 @@ Only helpers that are (a) pure, (b) dependency-free, and (c) genuinely generic
 | Helper | Purpose |
 | --- | --- |
 | `esc(v)` | HTML-escape for any `innerHTML` / template-literal sink |
+| `bidiText(v)` | escape **and** bidi-isolate a plain-text value for an `innerHTML` sink |
+| `bidiHtml(v)` | the same isolation for a value that is already escaped HTML |
 | `cssSel(v)` | escape a value for use inside a CSS attribute selector |
 | `bag()` | prototype-less accumulator object, for maps keyed by untrusted strings |
 | `cleanStr(v, max)` | strip control chars, trim, hard-cap length |
@@ -34,6 +36,34 @@ the per-record sanitizers (`sanitizeEntry`, `sanitizeCustomWod`, …), which are
 specific to this app's schema; `catColor` / `catLabel`, which are lookups over
 this repo's own tables; `estimate1RM` / `formatDuration` / `fmtDate` /
 `localISODate` / `todayISO`, which are product formatting, not safety.
+
+## Why the bidi isolation is in here
+
+`bidiText` / `bidiHtml` look like formatting. They are not, and they are in
+this file for exactly the reason `esc` is.
+
+The app is `<html lang="he" dir="rtl">` and its content is mixed-script by
+nature — rep schemes, English movement names, weights and times typed into
+Hebrew sentences. Interpolated bare, the Unicode bidirectional algorithm
+reorders those runs, and what is **painted** stops matching what was typed. A
+coach's `21-15-9 Thrusters + Pull-ups. Rx 43/30 ק"ג` reached members with the
+rep scheme at the far end of the line; `עשיתי 3×5 @ 60 היום` paints its
+formula as `60 @ 5×3`; `האימון בשעה 7:30 - 8:30` paints its times as
+`8:30 - 7:30`. None of these is a garbled string a member notices and skips
+past — each is a plausible, valid-looking, *different* instruction that a
+member follows to the letter. The failure mode is silent, which is the same
+property that puts `esc` here.
+
+It was promoted (from two byte-identical copies in `app.js` and `cloud.js`)
+when the run-level half of the fix landed. A copy-pasted one-line `<bdi>`
+wrapper was a manageable duplication; a copy-pasted **run-detection
+algorithm** is not — one copy quietly falling behind produces no broken
+string, only a wrong workout.
+
+Behaviour is covered by `test/bidi-isolation.test.mjs` for the structure it
+emits, and by `scripts/browser-check/bidi-rtl-geometry.mjs` for what is
+actually painted — the second is not optional, because the bidi algorithm
+never touches the DOM and `textContent` is correct on the broken build.
 
 ## How this repo consumes it
 
@@ -76,6 +106,30 @@ header, or via `npm ls` if it consumes the package). To propagate a fix:
 The point is that step 3 is now a version bump against a single named artifact
 with a changelog-able version number, instead of a human diffing two `app.js`
 files from memory.
+
+## Outstanding cross-repo obligation (as of VERSION 1.1.0)
+
+`1.1.0` added `bidiText` / `bidiHtml`. Under the protocol above this is a
+**minor** bump: purely additive, so `crossfit-pwa-Noam` does not go out of
+contract by staying where it is, and nothing there breaks by our shipping it.
+The obligation is to *offer* the fix, not to avoid breaking them.
+
+What is now known, and was not knowable when COMM-368 was written (the sibling
+repo was not in that workspace and is in this one):
+
+- `crossfit-pwa-Noam` is `<html lang="he" dir="rtl">`, same as this app.
+- It still carries the unlinked `esc` fork at `app.js:320`, and consumes no
+  part of this module.
+- It contains **no `<bdi>` anywhere**, so it has *both* halves of this defect
+  — the line-level one fixed in `3a85c76`/`d568aee` and the run-level one
+  fixed in `1.1.0` — unfixed, across ~140 `esc(` sinks.
+
+So the propagation step is not paperwork here; it is the same silent
+wrong-workout bug sitting unfixed in the other client. Discharging it means a
+change in *that* repo (load `safe-helpers.js` as its own `<script>`, or vendor
+it verbatim and record `VERSION: 1.1.0`), then routing its mixed-script sinks
+through `bidiText` the way `3a85c76` did here. That is a change to a different
+repository and is deliberately not made from this one.
 
 ## Known limitation (as of COMM-368)
 

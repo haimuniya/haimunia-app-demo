@@ -889,15 +889,15 @@
   // and only its OUTPUT is wrapped. Never isolate before escaping. Never use
   // this in an attribute or inside <textarea>, where the tag would land as
   // literal characters instead of markup - those contexts keep bare esc().
-  function bidiText(value) {
-    return String(value ?? "").split("\n").map((line) => `<bdi>${esc(line)}</bdi>`).join("\n");
-  }
-  // The same isolation for a run that is ALREADY HTML - a comment body whose
-  // @mentions mentionMarkersToHtml() has turned into buttons, and which is
-  // therefore escaped already. One isolate over the whole run rather than per
-  // line: the embedded markup makes splitting on "\n" unsafe, and a comment
-  // is short enough that a single base direction is the right call.
-  function bidiHtml(html) { return `<bdi>${html}</bdi>`; }
+  // BINDINGS, not definitions: bidiText/bidiHtml live in
+  // src/shared/safe-helpers.js, reached the same way esc is at the head of
+  // this IIFE. Promoted there when the run-level half of the fix landed - see
+  // that module's header for the run rule, the RTL-line gate, and every
+  // restriction on where these may be used. bidiHtml is the already-escaped
+  // variant, for a comment body whose @mentions mentionMarkersToHtml() has
+  // turned into buttons.
+  const bidiText = window.BoxLogSafe.bidiText;
+  const bidiHtml = window.BoxLogSafe.bidiHtml;
   // Shared batch profile lookup - the shape loadCoachEngage(), loadCoachMemberOfWeek()
   // and loadFollowList() each independently hand-rolled. Consolidated after
   // finding real drift between the copies (a missing avatar_url column in
@@ -3127,7 +3127,7 @@
     const form = `<form id="communityInviteCodeCreate" class="chart-card" style="margin-bottom:10px;">
       <div class="field-label" style="margin-bottom:6px;">קוד הצטרפות משותף חדש</div>
       ${field("communityInviteCodeCreate", "maxUses", "מקסימום שימושים", `<input class="text-input" name="maxUses" type="number" min="1" max="1000" placeholder="100"/>`)}
-      ${field("communityInviteCodeCreate", "expiresAt", "תפוגה (רשות)", `<input class="text-input" name="expiresAt" type="date"/>`)}
+      ${dateField("communityInviteCodeCreate", "expiresAt", "תפוגה (רשות)", `<input class="text-input" name="expiresAt" type="date"/>`)}
       <button class="chip-btn primary" type="submit" style="margin-top:6px;">יצירת קוד</button>
     </form>`;
     let list;
@@ -3173,7 +3173,7 @@
         ${admin ? `<label class="flex gap-6" style="align-items:center;"><input type="radio" name="role" value="coach"/> מאמן/ת</label>` : `<span class="footer-note">הזמנת מאמן/ת זמינה רק למנהל/ת</span>`}
       </div>
       ${field("communityInviteCreate", "label", "תווית (רשות)", `<input class="text-input" name="label" maxlength="120" placeholder="למשל: שם המוזמן/ת"/>`)}
-      ${field("communityInviteCreate", "expiresAt", "תפוגה (רשות)", `<input class="text-input" name="expiresAt" type="date"/>`)}
+      ${dateField("communityInviteCreate", "expiresAt", "תפוגה (רשות)", `<input class="text-input" name="expiresAt" type="date"/>`)}
       <button class="chip-btn primary" type="submit" style="margin-top:6px;">יצירת הזמנה</button>
     </form>`;
     const filters = `<div class="chip-row" style="margin:0 0 10px;">${INVITE_STATUS_FILTERS.map((s) => `<button class="chip-btn${iv.status === s.id ? " selected" : ""}" data-community-action="invite-status-filter" data-status="${s.id}">${s.label}</button>`).join("")}</div>`;
@@ -5709,6 +5709,101 @@
     const tagged = err ? inputHtml.replace(/^<(input|textarea|select)/, `<$1 aria-invalid="true" aria-describedby="${errId}"`) : inputHtml;
     return `<label class="field"><span class="field-label">${labelText}</span>${tagged}${err ? `<span class="field-error" id="${errId}" role="alert">${esc(err)}</span>` : ""}</label>`;
   }
+  // ==========================================================================
+  // Five-persona UX audit, defect 2. <input type="date"> in a Hebrew RTL app.
+  //
+  // A native date control renders its segments in the BROWSER/OS locale, not
+  // the document's - Chromium on an en-US profile paints mm/dd/yyyy no matter
+  // what dir or lang the page declares. The beginner persona typed
+  // 01/06/2026 meaning 1 June; the app stored 6 January.
+  //
+  // THE VALUE IS NOT THE BUG. type="date" always submits ISO yyyy-mm-dd and
+  // always round-trips correctly - there is nothing wrong with what gets
+  // stored, only with what the member reads while typing it. That makes this
+  // a DISAMBIGUATION problem, not a parsing one, and it is what decides the
+  // shape of the fix below.
+  //
+  // TWO THINGS THIS DELIBERATELY DOES NOT DO:
+  //
+  //  1. It does not hand-roll a date picker. Six native inputs swapped for
+  //     custom widgets is a far larger regression surface - keyboard entry,
+  //     mobile pickers, form validation, min/max, RTL, screen readers - than
+  //     a display ambiguity justifies. The audit says so outright, and a
+  //     custom widget would have to solve this exact same question anyway.
+  //
+  //  2. It does not print a literal "dd/mm/yyyy" order hint, even though the
+  //     finding offers that as an option. We cannot read back the order the
+  //     browser chose to paint, so such a hint is a claim about the control
+  //     that is WRONG for precisely the member this finding is about: the one
+  //     whose field is showing mm/dd/yyyy. Telling her "dd/mm/yyyy" next to a
+  //     control that is doing the opposite trades one wrong belief for
+  //     another. Asserting nothing about the order beats asserting it wrongly.
+  //
+  // What it does instead is echo the value back in words - "1 ביוני 2026" -
+  // which is unambiguous under every locale the control might be rendering
+  // in, and which the member can check against what she meant. Before a date
+  // exists the same line says the echo is coming, so the slot is never an
+  // empty frame that reads as broken (the same rule §2 applies to empty
+  // states).
+  const HEB_MONTHS = ["ינואר", "פברואר", "מרץ", "אפריל", "מאי", "יוני", "יולי", "אוגוסט", "ספטמבר", "אוקטובר", "נובמבר", "דצמבר"];
+  const DATE_ECHO_PENDING_TEXT = "אחרי הבחירה יופיע כאן התאריך במילים, לבדיקה.";
+  // Parsed off the ISO string with a regex, NEVER through `new Date(value)`.
+  // `new Date("2026-06-01")` is specified to parse as UTC midnight and then
+  // reads back in local time: in Israel that is still 1 June, but the echo
+  // whose entire job is to be unambiguous must not itself be a function of
+  // the device's timezone. There is no Date object anywhere in this path.
+  function hebrewDateEchoText(value) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
+    if (!m) return DATE_ECHO_PENDING_TEXT;
+    const month = Number(m[2]);
+    const day = Number(m[3]);
+    if (!(month >= 1 && month <= 12) || !(day >= 1 && day <= 31)) return DATE_ECHO_PENDING_TEXT;
+    return `התאריך שנבחר: ${day} ב${HEB_MONTHS[month - 1]} ${Number(m[1])}`;
+  }
+  // field() plus the echo line, for the six type="date" inputs in this file.
+  // Not folded into field() itself: every other control it renders is a
+  // text, number, select or textarea with no locale ambiguity to resolve.
+  //
+  // The echo is rendered INSIDE the <label class="field">, not after it, for
+  // two concrete layout reasons. `.field + .field{margin-top:10px}` keys off
+  // adjacency, so a sibling div between two fields silently kills the second
+  // one's top margin; and the weekly-challenge setter puts its two date
+  // fields in a `.flex.gap-16` row where `.flex:not(.col) > .field{flex:1}`
+  // makes every direct child a column - an echo appended there would have
+  // become a third column between them.
+  //
+  // BIDI, which this codebase has been bitten by twice. The echo is a Hebrew
+  // month name sitting between two Latin-digit runs inside an RTL paragraph -
+  // exactly the mixed-script shape bidiText's own header describes. The <bdi>
+  // is emitted ONCE here and the live patch below writes textContent INTO it,
+  // never around it, so the isolation survives every update and no markup is
+  // ever built from a value at patch time.
+  function dateField(formId, name, labelText, inputHtml) {
+    const echoId = `date-echo-${formId}-${name}`;
+    const value = /\svalue="([^"]*)"/.exec(inputHtml);
+    const tagged = inputHtml.replace(/^<input/, `<input data-date-echo="${esc(echoId)}"`);
+    // aria-live rather than aria-describedby: field() rewrites the input's
+    // aria-describedby to point at the error span whenever there is a field
+    // error, so a describedby set here would either be duplicated or lost
+    // depending on validation state. The line is inside the label, so it is
+    // part of the control's accessible name and is read on focus; aria-live
+    // covers the case where it changes while focus is already in the field.
+    const echo = `<span class="footer-note" data-date-echo-line="${esc(name)}" style="display:block;margin:5px 0 0;font-size:11.5px;line-height:1.5;" aria-live="polite"><bdi id="${esc(echoId)}">${esc(hebrewDateEchoText(value ? value[1] : ""))}</bdi></span>`;
+    return field(formId, name, labelText, tagged + echo);
+  }
+  // Patched straight into the DOM, never through rerender(): re-rendering a
+  // focused native date control mid-entry costs it the segment the caret is
+  // in, which is the same reason the member-of-the-week counter and the
+  // coach note drafts are DOM-patched rather than re-rendered.
+  //
+  // textContent, not innerHTML - cloud.js keeps zero innerHTML sinks and
+  // test/app-innerhtml-sinks.test.mjs enforces it.
+  function updateDateEcho(input) {
+    if (!input || !input.dataset) return;
+    const el = document.getElementById(input.dataset.dateEcho);
+    if (!el) return;
+    el.textContent = hebrewDateEchoText(input.value);
+  }
   function renderConfirmSheet() {
     const c = state.ui.confirmDialog;
     if (!c) return "";
@@ -5727,6 +5822,85 @@
   }
   function sectionHead(color, title, adminTag) {
     return `<div class="ach-section-head"><span class="ach-section-dot" style="background:${color};"></span><h2 class="ach-section-title">${title}</h2>${adminTag ? `<span class="admin-tag">ניהול</span>` : ""}</div>`;
+  }
+  // ==========================================================================
+  // Five-persona UX audit, defect 1. Empty states.
+  //
+  // The designer's four-slot pattern (design spec §2.1), factored into one
+  // helper so the eleven call sites below cannot drift apart the way the bare
+  // one-liners did:
+  //
+  //   1. icon         28px, var(--steel). Never red, never a warning glyph -
+  //                   absence is not an error (spec §2.1 tone rule 2).
+  //   2. headline     15px/700 var(--chalk). Says what WILL be here, present
+  //                   or future tense. May not OPEN with אין / עדיין לא /
+  //                   מעולם לא, and never names what is missing (tone rule 1).
+  //   3. explanation  13px var(--steel), one line at 390px. Says what the
+  //                   space is built FROM - the app's own best habit, the one
+  //                   the leaderboard-provenance and invite-explainer lines
+  //                   the spec holds up as exemplars already practise.
+  //   4. action       a real >=44px primary button that genuinely fills this
+  //                   state - OR, where no such button exists, a `when` line
+  //                   naming what will fill it and when. Never both, and
+  //                   never a button that goes nowhere: inventing a dead
+  //                   button is worse than shipping none, and the judgement
+  //                   about which of the two a given state gets is recorded
+  //                   at each call site rather than here.
+  //
+  // The pattern already shipped for the error branches and for
+  // renderIncompleteSignups(); this is that same shape, extracted, and that
+  // function's own good instinct - "this is the GOOD outcome and it should
+  // read like one" - is why two of the states below open positively rather
+  // than apologetically.
+  //
+  // WHY THE max-width, i.e. the half of this finding that only reproduces at
+  // desktop width. `.empty` (index.html:358) is text-align:center with no
+  // width bound. That is fine in a 390px phone column. Centred in the 940px
+  // staff column it lays one short sentence across the middle of ~900px of
+  // nothing, with no icon, no block edge and nothing under it - which is
+  // precisely why a coach reads it as a pane that failed to load rather than
+  // as a calm "nothing here yet". 34ch holds every string below to two lines
+  // at 390px and stops the block stretching at 940px.
+  const EMPTY_STATE_ICONS = {
+    // Deliberately local to this file rather than reaching for app.js's
+    // ICONS: cloud.js is loaded BEFORE app.js (index.html:1591 vs 1596), and
+    // while a top-level `const` in a classic script is readable across
+    // scripts by the time any of this renders, borrowing it would couple the
+    // community module's empty states to a table another file owns and
+    // another agent is editing. Five glyphs, drawn to match ICONS' existing
+    // 24-box / 1.8-weight / round-cap language so they read as the same set.
+    trophy: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4h10v6a5 5 0 0 1-10 0V4Z"/><path d="M7 6H4v1a4 4 0 0 0 3 3.9M17 6h3v1a4 4 0 0 1-3 3.9"/><path d="M12 15v3M9 21h6M10.5 18h3"/></svg>',
+    people: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M2.5 20c0-3.6 3-6.2 6.5-6.2s6.5 2.6 6.5 6.2"/><circle cx="17.5" cy="9.5" r="2.3"/><path d="M17 14.2c2.7.2 4.6 2.2 5 5"/></svg>',
+    star: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8-5.3-2.8-5.3 2.8 1-5.8L3.5 9.7l5.9-.9L12 3.5Z"/></svg>',
+    // The "everyone is fine" glyph. A check inside a circle, NOT a warning
+    // triangle or an exclamation: renderCoachEngageSection's empty state is
+    // good news about the club, and tone rule 2 forbids dressing it as a
+    // fault.
+    check: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.2 12.3l2.6 2.6 5-5.2"/></svg>',
+    chart: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17V11M12 17V5M20 17v-4"/><path d="M3 20.5h18"/></svg>',
+  };
+  // `opts.attr` is a raw attribute string and is therefore only ever passed a
+  // LITERAL from this file - it exists solely so renderCommunityHealthScore()
+  // can keep the data-community-health-empty hook COMM-312's own tests pin.
+  // Nothing derived from server data or member input goes near it; everything
+  // that does (headline, body, when, action label) goes through bidiText/esc
+  // below without exception.
+  function emptyStateHtml(opts) {
+    const o = opts || {};
+    const icon = EMPTY_STATE_ICONS[o.icon] || EMPTY_STATE_ICONS.chart;
+    const slot4 = o.action
+      ? `<div class="chip-row" style="justify-content:center;margin-top:2px;"><button class="chip-btn primary" data-community-action="${esc(o.action)}" style="min-height:44px;">${esc(o.actionLabel || "")}</button></div>`
+      : o.when
+      ? `<div style="font-size:12.5px;color:var(--steel);line-height:1.6;max-width:34ch;">${bidiText(o.when)}</div>`
+      : "";
+    return `<div class="empty" data-empty-state="${esc(o.key || "")}"${o.attr ? ` ${o.attr}` : ""} style="padding:32px 20px;display:flex;flex-direction:column;align-items:center;gap:10px;">
+      <span aria-hidden="true" style="display:inline-flex;color:var(--steel);">${icon}</span>
+      <div style="max-width:34ch;display:flex;flex-direction:column;gap:6px;">
+        <div style="font-size:15px;font-weight:700;color:var(--chalk);line-height:1.5;">${bidiText(o.headline)}</div>
+        <div style="font-size:13px;color:var(--steel);line-height:1.6;">${bidiText(o.body)}</div>
+      </div>
+      ${slot4}
+    </div>`;
   }
   // Top 3 in full, then — if the viewer isn't in the top 3 — a divider and
   // their own row, instead of one long ranked list past the leaders. Same
@@ -7187,7 +7361,23 @@
     } else if (ms.error) {
       body = `<div class="empty">${esc(ms.errorText || "לא ניתן היה לטעון את הפילוח.")}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="member-segments-retry">ניסיון חוזר</button></div></div>`;
     } else if (!ms.data) {
-      body = `<div class="empty">אין עדיין נתונים לתצוגה.</div>`;
+      // WHAT THIS BRANCH ACTUALLY IS, which the copy it replaced got wrong.
+      // loadMemberSegments() ends with `ms.data = Array.isArray(data) ? data
+      // : []`, so after ANY successful load ms.data is truthy - an empty
+      // array included. This branch is therefore unreachable as a "the club
+      // has no data" state; it is only ever "the fetch has not run yet"
+      // (the render pass before afterRenderManage()'s lazy trigger fires, or
+      // a permission gate that nulled it). Saying `אין עדיין נתונים לתצוגה`
+      // told a staff member the club was empty when the truth was that the
+      // panel had not loaded - so the headline now promises the panel and
+      // slot 4 is the real button that fetches it, which is the one action
+      // here that genuinely fills the state.
+      body = emptyStateHtml({
+        key: "member-segments", icon: "chart",
+        headline: "כאן יופיע פילוח המעורבות",
+        body: "הפילוח נבנה מפעילות החברים במועדון בתקופה שנבחרה.",
+        action: "member-segments-retry", actionLabel: "טעינת הפילוח",
+      });
     } else {
       const groups = groupMemberSegments(ms.data);
       const total = ms.data.length;
@@ -7211,7 +7401,17 @@
     } else if (rf.error) {
       body = `<div class="empty">${esc(rf.errorText || "לא ניתן היה לטעון את נתוני ההרשמה.")}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="registration-funnel-retry">ניסיון חוזר</button></div></div>`;
     } else if (!rf.data) {
-      body = `<div class="empty">אין עדיין נתונים לתצוגה.</div>`;
+      // Same "not loaded yet, not empty" reading as renderMemberSegments'
+      // own branch above - loadRegistrationFunnel() only leaves rf.data null
+      // when the RPC has not run (or returned SQL NULL), never because the
+      // club had a quiet period: a quiet period comes back as a funnel of
+      // honest zeros and renders through the populated branch below.
+      body = emptyStateHtml({
+        key: "registration-funnel", icon: "chart",
+        headline: "כאן יופיע משפך ההרשמה",
+        body: "המשפך נבנה מהזמנות אישיות שהופצו ומומשו בתקופה שנבחרה.",
+        action: "registration-funnel-retry", actionLabel: "טעינת המשפך",
+      });
     } else {
       const d = rf.data;
       const sc = d.shared_codes || {};
@@ -7276,7 +7476,19 @@
     } else if (a.error) {
       body = `<div class="empty">${esc(a.errorText || "לא ניתן היה לטעון את הנתונים.")}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="admin-analytics-retry">ניסיון חוזר</button></div></div>`;
     } else if (!a.data) {
-      body = `<div class="empty">אין עדיין נתונים לתצוגה.</div>`;
+      // The shell's own header comment already says it: "empty (a genuinely
+      // quiet period) is not a separate branch at all - it IS the populated
+      // branch, rendering honest zeros and em-dashes, because
+      // analytics_dashboard() always returns the same 18 keys whether the
+      // period was busy or quiet." Which makes this branch, unambiguously,
+      // the not-yet-fetched one - and `אין עדיין נתונים לתצוגה` a claim about
+      // the club that the code right above it contradicts.
+      body = emptyStateHtml({
+        key: "admin-analytics", icon: "chart",
+        headline: "כאן יופיעו נתוני המועדון",
+        body: "הנתונים נמשכים מפעילות המועדון בתקופה שנבחרה למעלה.",
+        action: "admin-analytics-retry", actionLabel: "טעינת הנתונים",
+      });
     } else {
       // COMM-311 appends here, inside this same populated branch, per
       // COMM-310's own commit message: "a later ticket's own section is
@@ -7390,7 +7602,18 @@
       byMonth.get(key).push(row);
     }
     const months = Array.from(byMonth.keys()).sort(retentionCohortSortKey);
-    if (!months.length) return `<div class="empty">אין עדיין נתוני שימור לתצוגה.</div>`;
+    // The genuine empty of the retention section - the fetch succeeded and
+    // there is no cohort yet - as opposed to renderRetentionCorrelations'
+    // own `!r.loaded` branch, which is the pre-fetch one. Restated for the
+    // same reason as the health card's pair above: one card must not show
+    // two different registers depending on which of its two empties it hit.
+    // NO ACTION: nothing an admin can press creates a joining cohort.
+    if (!months.length) return emptyStateHtml({
+      key: "retention-cohorts", icon: "people",
+      headline: "כאן יופיעו קבוצות ההצטרפות",
+      body: "כל קבוצה נמדדת לפי החודש שבו החברים בה הצטרפו למועדון.",
+      when: "אחרי שקבוצת הצטרפות ראשונה תשלים חודש, היא תופיע כאן.",
+    });
     return months.map((m) => adminAnalyticsCard(
       `קבוצת הצטרפות: ${m === "other" ? "קבוצות קטנות (מאוחדות)" : esc(m)}`,
       retentionWeekRows(byMonth.get(m)),
@@ -7460,7 +7683,17 @@
     } else if (r.error) {
       body = `<div class="empty">${esc(r.errorText || "לא ניתן היה לטעון את נתוני השימור.")}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="retention-retry">ניסיון חוזר</button></div></div>`;
     } else if (!r.loaded) {
-      body = `<div class="empty">אין עדיין נתונים לתצוגה.</div>`;
+      // Gated on `!r.loaded` rather than on the data, so this one is
+      // strictly-by-construction the pre-fetch state: once loadRetention
+      // Correlations() returns, r.loaded is true and a club with no cohorts
+      // falls through to renderRetentionCohortCurves' own empty state below,
+      // which says something different because it means something different.
+      body = emptyStateHtml({
+        key: "retention", icon: "chart",
+        headline: "כאן יופיעו עקומות השימור",
+        body: "העקומות נבנות מקבוצות ההצטרפות של החודשים האחרונים.",
+        action: "retention-retry", actionLabel: "טעינת נתוני השימור",
+      });
     } else {
       body = renderRetentionCohortCurves(r.cohorts)
         + `<div class="footer-note" data-retention-correlation-note="1" style="margin:12px 0 0;">${esc(RETENTION_CORRELATION_NOTE)}</div>`
@@ -7581,9 +7814,35 @@
     } else if (h.error) {
       body = `<div class="empty">${esc(h.errorText || "לא ניתן היה לטעון את הציון.")}<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="community-health-retry">ניסיון חוזר</button></div></div>`;
     } else if (!h.loaded) {
-      body = `<div class="empty">אין עדיין נתונים לתצוגה.</div>`;
+      // Pre-fetch, same `!loaded` construction as COMM-313's retention
+      // branch: a real load button, because pressing it really does fill
+      // this space.
+      body = emptyStateHtml({
+        key: "community-health", icon: "chart",
+        headline: "כאן יופיע ציון בריאות הקהילה",
+        body: "הציון נבנה מפעילות, מעורבות ושימור, שבוע אחר שבוע.",
+        action: "community-health-retry", actionLabel: "טעינת הציון",
+      });
     } else if (!h.weeks.length) {
-      body = `<div class="empty" data-community-health-empty="1">טרם חושב ציון קהילה עבור המועדון.</div>`;
+      // The GENUINE empty of this card, and the one place in this cluster
+      // where the two must not be confused: the fetch succeeded and the club
+      // simply has no computed week yet. Not in the ticket's list of five,
+      // restated anyway - the same card would otherwise show a four-slot
+      // state before the load and a bare one-liner after it, which is a
+      // worse inconsistency than the one being fixed.
+      //
+      // NO ACTION SLOT, on purpose. community_health_history() is filled by
+      // a scheduled job (which, per this function's own header, may not be
+      // wired for this club yet). There is no button an admin can press that
+      // computes a week, so slot 4 is a `when` - spec §2.1's own fallback.
+      // The retry button the branch above carries would be a lie here: it
+      // would re-fetch, succeed, and change nothing on screen.
+      body = emptyStateHtml({
+        key: "community-health-empty", icon: "chart", attr: 'data-community-health-empty="1"',
+        headline: "כאן יופיע ציון בריאות הקהילה",
+        body: "הציון מחושב פעם בשבוע מפעילות, מעורבות ושימור במועדון.",
+        when: "אחרי החישוב השבועי הראשון יופיעו כאן הציון והמגמה.",
+      });
     } else {
       const latest = h.weeks[h.weeks.length - 1];
       body = renderCommunityHealthScoreCard(latest) + (h.weeks.length >= 2 ? renderCommunityHealthTrend(h.weeks) : "");
@@ -8914,7 +9173,23 @@
       ? `<div aria-busy="true">${`<div class="chart-card" style="height:56px;background:var(--border);opacity:.35;margin-bottom:10px;"></div>`.repeat(2)}</div>`
       : c.error
       ? `<div class="empty">לא ניתן היה לטעון את לוח המאמנים. נסו שוב.<div class="chip-row" style="justify-content:center;"><button class="chip-btn" data-community-action="coach-celebrate-retry">ניסיון חוזר</button></div></div>`
-      : c.items.length ? `<div class="log-list">${c.items.map(renderCoachCelebrateItem).join("")}</div>` : `<div class="empty">אין דבר לחגוג השבוע.</div>`;
+      : c.items.length ? `<div class="log-list">${c.items.map(renderCoachCelebrateItem).join("")}</div>` : emptyStateHtml({
+        // NO ACTION SLOT. This feed is built entirely out of things MEMBERS
+        // do - a PR logged in the personal training log, a birthday, a club
+        // anniversary, a challenge finished. There is no button a coach can
+        // press that puts a row here, and per the audit an invented one that
+        // goes nowhere is worse than none, so slot 4 is the `when`.
+        //
+        // The `when` is deliberately specific to THIS feed rather than
+        // generic: the celebrate list is empty because nobody hit a PR this
+        // week, which is a different sentence from the welcome list being
+        // empty because nobody joined, and a coach who reads both in one
+        // scroll should be able to tell them apart.
+        key: "coach-celebrate", icon: "trophy",
+        headline: "כאן יופיעו ההישגים של השבוע",
+        body: "הרשימה נבנית משיאים אישיים, ימי הולדת, ותק ואתגרים שהושלמו.",
+        when: "ברגע שמישהו ירשום שיא, הוא יופיע כאן עם כפתור ברכה.",
+      });
     return `<div class="ach-section">${sectionHead("var(--energy)", "לחגוג")}${body}</div>`;
   }
   function renderCoachWelcomeRow(m) {
@@ -8974,7 +9249,23 @@
       ? `<div aria-busy="true">${`<div class="chart-card" style="height:56px;background:var(--border);opacity:.35;margin-bottom:10px;"></div>`.repeat(2)}</div>`
       : w.error
       ? `<div class="empty">לא ניתן היה לבצע את הפעולה. נסו שוב.<div class="chip-row" style="justify-content:center;"><button class="chip-btn" data-community-action="coach-welcome-retry">ניסיון חוזר</button></div></div>`
-      : w.members.length ? `<div class="log-list">${w.members.map(renderCoachWelcomeRow).join("")}</div>` : `<div class="empty">אין חברים חדשים בחודש האחרון.</div>`;
+      : w.members.length ? `<div class="log-list">${w.members.map(renderCoachWelcomeRow).join("")}</div>` : emptyStateHtml({
+        // NO ACTION SLOT, and this is the one of the four where that was a
+        // genuinely close call. There IS a causal action a coach can take -
+        // PERM.MEMBER_INVITE is held by coach and up, so a coach really can
+        // create a per-person invite. But that form lives in the Manage TOP-
+        // LEVEL tab (renderInviteManagement, manageTab "invites"), and this
+        // section is a sub-tab of Community. cloud.js owns setCommunityTab()
+        // and setManageTab() and nothing that switches the top-level tab -
+        // that nav belongs to app.js. A button here would either not
+        // navigate at all or would need a cross-file change, and shipping
+        // the first of those is exactly the dead-end button the audit
+        // forbids. Left as a `when`; raised as a follow-up instead.
+        key: "coach-welcome", icon: "people",
+        headline: "כאן יופיעו החברים החדשים",
+        body: "הרשימה מציגה את מי שהצטרף למועדון בחודש האחרון.",
+        when: "כשמישהו חדש יצטרף, נציג כאן דרך לקבל אותו בברכה.",
+      });
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "קבלת פנים")}${body}</div>`;
   }
   // ---- Member of the Week (COMM-315) ---------------------------------------
@@ -9075,7 +9366,19 @@
     } else if (env.candidates && env.candidates.length) {
       body = `<div class="log-list">${env.candidates.map((c) => renderMemberOfWeekCandidate(c, env.category)).join("")}</div>${renderMemberOfWeekPickForm(env)}`;
     } else {
-      body = `<div class="empty">אין מועמדים השבוע לקטגוריה זו</div>${renderMemberOfWeekPickForm(env)}`;
+      // NO BUTTON IN SLOT 4 - because the action already exists, three
+      // elements further down. renderMemberOfWeekPickForm() renders directly
+      // underneath this state and lets a coach pick ANY member by handle, so
+      // a primary button here would be a second door onto a form already on
+      // screen. Slot 4 points at it instead, which is what the spec's own
+      // "must actually fill the state" rule asks for once the thing that
+      // fills it is already rendered.
+      body = emptyStateHtml({
+        key: "coach-member-of-week", icon: "star",
+        headline: "כאן יופיעו המועמדים לחבר/ת השבוע",
+        body: "המועמדים נבנים מרצפי אימונים, שיאים והשלמות אתגר של השבוע.",
+        when: "בקטגוריה הזו אפשר גם לבחור כל חבר/ה ידנית, בטופס שמתחת.",
+      }) + renderMemberOfWeekPickForm(env);
     }
     return `<div class="ach-section" style="margin-top:18px;">${head}${body}</div>`;
   }
@@ -9212,7 +9515,23 @@
       ? `<div class="empty">לא ניתן היה לטעון את הנתונים.<div class="chip-row" style="justify-content:center;"><button class="chip-btn" data-community-action="coach-engage-retry">ניסיון חוזר</button></div></div>`
       : e.items.length
       ? `<div class="log-list">${e.items.map(renderCoachEngageRow).join("")}</div>`
-      : `<div class="empty">אין חברים שדורשים תשומת לב</div>`;
+      : emptyStateHtml({
+        // The GOOD outcome, written like one - the same instinct
+        // renderIncompleteSignups() already committed to ("an admin who
+        // finds nothing here has learned something, and the screen should
+        // say what"). An empty engagement list is not a gap in the data, it
+        // is the club being fine, and under a red section dot a bare
+        // one-liner read like a panel that had failed rather than like the
+        // all-clear it is.
+        //
+        // NO ACTION SLOT: there is nobody to reach out to. The reach-out,
+        // review and dismiss buttons live on the rows, and a row is what
+        // this state is the absence of.
+        key: "coach-engage", icon: "check",
+        headline: "כל החברים בקצב טוב כרגע",
+        body: "הרשימה מתמלאת כשקצב האימונים של חבר/ה יורד.",
+        when: "אם קצב של מישהו יירד, הוא יופיע כאן עם דרך ליצור קשר.",
+      });
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מעקב מעורבות")}${body}</div>`;
   }
   function renderCoachTab() {
@@ -9244,8 +9563,8 @@
       ${field("communityChallengeForm", "metricType", "מדד", `<input class="text-input" name="metricType" value="${esc(f.metricType)}" placeholder="למשל session_count" required/>`)}
       ${showTarget ? field("communityChallengeForm", "targetValue", "יעד", `<input class="text-input" name="targetValue" type="number" step="any" value="${esc(f.targetValue)}"/>`) : ""}
       <div class="flex gap-16 field">
-        ${field("communityChallengeForm", "startAt", "תאריך התחלה", `<input class="text-input" name="startAt" type="date" value="${esc(f.startAt)}" required/>`)}
-        ${field("communityChallengeForm", "endAt", "תאריך סיום", `<input class="text-input" name="endAt" type="date" value="${esc(f.endAt)}" required/>`)}
+        ${dateField("communityChallengeForm", "startAt", "תאריך התחלה", `<input class="text-input" name="startAt" type="date" value="${esc(f.startAt)}" required/>`)}
+        ${dateField("communityChallengeForm", "endAt", "תאריך סיום", `<input class="text-input" name="endAt" type="date" value="${esc(f.endAt)}" required/>`)}
       </div>
       ${typeFields}
       ${f.mode === "create" ? `<label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="publishNow"/><span style="font-size:12.5px;color:var(--steel);">פרסום מיידי (אחרת יישמר כטיוטה)</span></label>` : ""}
@@ -10800,6 +11119,21 @@
     if (!c) return "";
     const bodyLen = cleanPostBody(c.body).length;
     const canPublish = composerCanPublish();
+    // Five-persona UX audit, defect 5, as re-scoped by QA. Filed as "an
+    // unstyled checkbox", which it was not: index.html:1014 sets
+    // `input[type="checkbox"]{ accent-color: var(--energy) }` as a BARE
+    // ELEMENT selector, so every checkbox in the app is styled and none of
+    // them can individually miss it.
+    //
+    // The real outlier was LAYOUT. The "image is decorative" row below was
+    // the one checkbox label in this file on `class="flex gap-6"` WITHOUT
+    // the shared `field` wrapper every other one uses, carrying bare text
+    // after the input where its siblings carry a <span>. Missing `field`
+    // cost it `.field + .field{margin-top:10px}` - it hand-rolled
+    // margin-top:4px instead - so it sat a half-step tighter and a half-step
+    // out of line against the alt-text field directly above it inside the
+    // same tile. Now the same shape as all four of its siblings: the two
+    // publishNow rows, teamAuto and pinToday.
     const tiles = c.photos.map((p) => `
       <div class="composer-photo-tile" data-photo-id="${esc(p.id)}" style="border:1px solid var(--border);border-radius:12px;padding:8px;margin-bottom:8px;">
         <div class="flex" style="justify-content:space-between;align-items:center;gap:8px;">
@@ -10810,9 +11144,7 @@
         ${p.status === "failed" ? `<button class="chip-btn" data-community-action="composer-retry-photo" data-id="${esc(p.id)}">ניסיון חוזר</button>` : ""}
         <label class="field" style="margin-top:6px;"><span class="field-label">תיאור לקורא מסך</span>
           <input class="text-input" type="text" maxlength="${ALT_TEXT_MAX}" data-composer-alt="${esc(p.id)}" value="${esc(p.altText || "")}"${p.decorative ? " disabled" : ""} placeholder="תיאור קצר של התמונה"/></label>
-        <label class="flex gap-6" style="align-items:center;font-size:12px;color:var(--steel);margin-top:4px;">
-          <input type="checkbox" data-composer-decorative="${esc(p.id)}"${p.decorative ? " checked" : ""}/> התמונה דקורטיבית, אין צורך בתיאור
-        </label>
+        <label class="field flex gap-6" style="align-items:center;"><input type="checkbox" data-composer-decorative="${esc(p.id)}"${p.decorative ? " checked" : ""}/><span style="font-size:12.5px;color:var(--steel);">התמונה דקורטיבית, אין צורך בתיאור</span></label>
       </div>`).join("");
     return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="postComposerTitle" data-composer-overlay data-cloud-dialog="composer" style="align-items:center;padding:0 16px;">
       <div class="modal-sheet" id="postComposer" style="border-radius:22px;max-height:90vh;overflow:auto;">
@@ -11446,6 +11778,25 @@
   // because that is the whole point of <bdi> and because a card is a fixed,
   // known-width composition where the base direction is a design decision
   // rather than a guess.
+  //
+  // OPEN, AND KNOWN TO DIVERGE — the mirror of this note lives on bidiText()
+  // in src/shared/safe-helpers.js; change both sites or neither.
+  //
+  // The paragraph above is not just a note about the card, it is a live
+  // DISAGREEMENT between the two surfaces about one shape: an LTR-first
+  // sentence with a long Hebrew tail, `Rx 43/30 ק"ג. נשבר לי הראש`. This
+  // function gives it an RTL base and keeps the unit beside its number. The
+  // DOM path resolves first-strong, so the same sentence there resolves LTR
+  // off the leading `Rx` and paints the ק"ג about eight characters away from
+  // the 43/30 — the second symptom bidiText()'s own header documents, still
+  // present on the DOM surfaces and NOT fixed by the run-level isolation
+  // added alongside this note.
+  //
+  // Whether the app should adopt this function's rule everywhere is a product
+  // decision, not a bug: doing so would flip
+  // `21-15-9 Thrusters + Pull-ups. Rx 43/30 ק"ג.` to an RTL base and break
+  // the assertion in scripts/browser-check/bidi-rtl-geometry.mjs that its rep
+  // scheme paints at the start of the line. Left for the owner on purpose.
   function bidiIsolateProse(value) {
     const s = String(value == null ? "" : value);
     if (!s) return "";
@@ -13901,7 +14252,7 @@
     const feedTab = renderPinnedStrip() + renderOnboardingStep() + clubTopHtml + announcementsHtml + feedHtml;
 
     // ---- Boards tab: weekly challenge + streaks, top-3-plus-your-rank ----
-    const challengeSetter = staff ? `<form id="communityWeeklyChallenge" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">קביעת אתגר שבועי<span class="admin-tag">ניהול</span></div>${field("communityWeeklyChallenge", "title", "שם האתגר", `<input class="text-input" name="title" placeholder="שם האתגר" required/>`)}${field("communityWeeklyChallenge", "comparisonKey", "על מה מתחרים", renderChallengeKeyPicker())}<div style="color:var(--steel);font-size:11px;margin:-6px 0 10px;">רק תרגילים ואימונים שקיימים באפליקציה — כך התוצאות שחברי המועדון משתפים נספרות לאתגר מעצמן.</div><div class="flex gap-16 field">${field("communityWeeklyChallenge", "startsOn", "תאריך התחלה", `<input class="text-input" name="startsOn" type="date" required/>`)}${field("communityWeeklyChallenge", "endsOn", "תאריך סיום", `<input class="text-input" name="endsOn" type="date" required/>`)}</div><button class="chip-btn primary" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
+    const challengeSetter = staff ? `<form id="communityWeeklyChallenge" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">קביעת אתגר שבועי<span class="admin-tag">ניהול</span></div>${field("communityWeeklyChallenge", "title", "שם האתגר", `<input class="text-input" name="title" placeholder="שם האתגר" required/>`)}${field("communityWeeklyChallenge", "comparisonKey", "על מה מתחרים", renderChallengeKeyPicker())}<div style="color:var(--steel);font-size:11px;margin:-6px 0 10px;">רק תרגילים ואימונים שקיימים באפליקציה — כך התוצאות שחברי המועדון משתפים נספרות לאתגר מעצמן.</div><div class="flex gap-16 field">${dateField("communityWeeklyChallenge", "startsOn", "תאריך התחלה", `<input class="text-input" name="startsOn" type="date" required/>`)}${dateField("communityWeeklyChallenge", "endsOn", "תאריך סיום", `<input class="text-input" name="endsOn" type="date" required/>`)}</div><button class="chip-btn primary" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
     // Three states, not two. state.club.weeklyChallenge comes from the
     // leaderboard VIEW, which is empty until someone posts a matching result,
     // so treating "no rows" as "no challenge" told every member there was
@@ -15345,6 +15696,11 @@
     // after a rejected submit. liveValidateCredentialField() patches the field
     // in place and never rerenders - see its header for why.
     if ("liveValidate" in t.dataset) { liveValidateCredentialField(t); return; }
+    // Five-persona UX audit, defect 2. Same patch-in-place-never-rerender
+    // shape as liveValidateCredentialField just above, and for the sharper
+    // version of the same reason: a rerender would rebuild a native date
+    // control while the member is part-way through typing into it.
+    if ("dateEcho" in t.dataset) { updateDateEcho(t); return; }
     if ("composerBody" in t.dataset) composerSetBody(t.value);
     else if ("commentInput" in t.dataset) onCommentInput(t);
     else if ("commentEditInput" in t.dataset && state.engagement.commentEdit) state.engagement.commentEdit.body = t.value;
@@ -15404,6 +15760,13 @@
   document.addEventListener("change", (e) => {
     const t = e.target;
     if (!t || !t.dataset) return;
+    // Both `input` (above) and `change` (here) for the date echo, on purpose
+    // rather than by accident: Chromium fires input as each segment
+    // completes, but a value committed through the OS/native calendar popup
+    // is not guaranteed to fire input on every engine, and an echo that
+    // silently stops matching the field is worse than no echo at all.
+    // updateDateEcho() is idempotent, so the double delivery costs nothing.
+    if ("dateEcho" in t.dataset) { updateDateEcho(t); return; }
     if ("composerFile" in t.dataset) { const f = t.files && t.files[0]; if (f) composerAddPhoto(f); try { t.value = ""; } catch (err) {} }
     else if ("avatarFile" in t.dataset) { const f = t.files && t.files[0]; if (f) avatarPhotoSelected(f); try { t.value = ""; } catch (err) {} }
     else if ("composerDecorative" in t.dataset) composerToggleDecorative(t.dataset.composerDecorative, t.checked);

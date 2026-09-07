@@ -86,7 +86,7 @@ test("a load error shows the standard message with a working retry", async () =>
   await openCoachTab(window);
   await waitFor(() => window.document.body.textContent.includes("לא ניתן היה לטעון את המועמדים."), 3000);
   window.document.querySelector('[data-community-action="coach-mow-retry"]').click();
-  await waitFor(() => window.document.body.textContent.includes("אין מועמדים השבוע לקטגוריה זו"), 3000);
+  await waitFor(() => !!window.document.querySelector('[data-empty-state="coach-member-of-week"]'), 3000);
 });
 
 // --- populated / empty / coachs_pick states ---------------------------------
@@ -119,7 +119,7 @@ test("Empty: a computed category with zero candidates shows the exact Hebrew emp
   mock.onRpc("member_of_week_candidates", () => ({ data: [computedEnvelope({ category: "most_prs", candidates: [] })], error: null }));
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openCoachTab(window);
-  await waitFor(() => window.document.body.textContent.includes("אין מועמדים השבוע לקטגוריה זו"), 3000);
+  await waitFor(() => !!window.document.querySelector('[data-empty-state="coach-member-of-week"]'), 3000);
   assert.ok(window.document.querySelector('[data-mow-pick-handle]'), "staff can still fall back to a coach's pick from the empty state");
 });
 
@@ -132,7 +132,7 @@ test("the coachs_pick week shows only the free-selection form - no candidate lis
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openCoachTab(window);
   await waitFor(() => !!window.document.querySelector('[data-mow-pick-handle]'), 3000);
-  assert.equal(window.document.body.textContent.includes("אין מועמדים השבוע לקטגוריה זו"), false, "the coachs_pick week is never rendered as the empty state");
+  assert.equal(!!window.document.querySelector('[data-empty-state="coach-member-of-week"]'), false, "the coachs_pick week is never rendered as the empty state");
   assert.equal(window.document.querySelector('[data-community-action="coach-mow-publish-candidate"]'), null, "there is no computed candidate to publish on a coachs_pick week");
 });
 
