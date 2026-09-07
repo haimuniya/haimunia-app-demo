@@ -318,6 +318,68 @@
      dot - there's nothing to color yet) instead of the normal chosen look,
      for whenever COMM-360 starts actually leaving selectedId unset. */
   .exercise-select.log-empty-hint{ border-style:dashed; border-color:var(--brass); color:var(--brass); }
+  /* ---- The log screen's primary action --------------------------------
+     `מה עשינו היום?` is the one thing the whole app is for, and until an
+     exercise is chosen nothing else on the screen can be done at all. It
+     used to render as a plain .exercise-select, i.e. the same flat box as
+     the tour offer stacked directly beneath it, so the screen had no
+     primary at a glance. Same button, same tap, same copy - it just looks
+     like the thing to press now.
+     Applied ONLY while nothing is chosen (app.js adds the class): once an
+     exercise IS picked, this row becomes a status line and the orange save
+     button at the bottom of the screen is the primary. Two energy-coloured
+     blocks competing for "press me" would be worse than none.
+     The striped spine is the brand's own hazard motif - the same --stripe
+     .brand-stripe and .pr-flash already use - on the leading edge, so this
+     reads as this app's card rather than a generically tinted button. */
+  .exercise-select.pick-hero{ position:relative; overflow:hidden; gap:12px; padding:16px; padding-inline-start:28px; border-color:color-mix(in srgb, var(--energy) 55%, var(--border)); background:linear-gradient(180deg, color-mix(in srgb, var(--energy) 14%, var(--surface)), var(--surface) 78%); }
+  .pick-hero::before{ content:""; position:absolute; top:0; bottom:0; inset-inline-start:0; width:10px; background-image:var(--stripe); }
+  .pick-hero-title{ font-weight:800; font-size:19px; line-height:1.25; color:var(--chalk); }
+  /* --energy-text, not --energy: this is small bold TEXT, which is exactly
+     the case the --energy-text token exists for (see its comment above).
+     The 8% tint behind it is not a taste call either - at the 15% this
+     started on, --energy-text measured 4.50:1 in the dark theme and
+     scripts/browser-check/a11y-axe-scan.mjs failed it as a serious
+     contrast violation. 8% measures 4.87:1 dark / 5.36:1 light, which
+     leaves room for the token to be nudged later without silently
+     dropping under the floor. The border carries the accent instead. */
+  .pick-hero-cta{ display:inline-flex; align-items:center; gap:6px; flex-shrink:0; padding:9px 13px; border-radius:999px; font-size:13px; font-weight:800; color:var(--energy-text); background:color-mix(in srgb, var(--energy) 8%, var(--surface)); border:1px solid color-mix(in srgb, var(--energy) 50%, transparent); }
+  /* ---- The four-slot empty state, on the log screen -------------------
+     Same shape as cloud.js's emptyStateHtml() (d540a34): a decorative icon,
+     a forward-looking headline, one line of explanation, and one when-line
+     - and the same 34ch bound, 15/13/12.5px sizes and 10px gap, so the
+     member's log screen and the coach dashboard read as one product rather
+     than two.
+     What is local to here is the frame and the medallion. This empty state
+     has to occupy the top half of an otherwise blank first-run screen and
+     say what will fill it, which is a bigger job than the small in-pane
+     empties in the community module; the dashed frame gives the space an
+     edge, and the ring around the icon is the app's bumper-plate motif. */
+  .log-empty{ display:flex; flex-direction:column; align-items:center; gap:10px; text-align:center; border:1px dashed var(--border); border-radius:18px; padding:24px 20px; margin-bottom:12px; }
+  .log-empty-medal{ width:56px; height:56px; flex-shrink:0; border-radius:999px; display:flex; align-items:center; justify-content:center; color:var(--brass); background:color-mix(in srgb, var(--brass) 14%, var(--surface)); border:2px solid color-mix(in srgb, var(--brass) 55%, transparent); box-shadow:var(--shadow-card); }
+  /* Headline and explanation are ONE block with the helper's 6px gap; the
+     10px above is the container's, between slots. Same nesting as
+     emptyStateHtml(), so the two read at the same rhythm. */
+  .log-empty-text{ max-width:34ch; display:flex; flex-direction:column; gap:6px; }
+  .log-empty-head{ font-size:15px; font-weight:700; line-height:1.5; color:var(--chalk); }
+  .log-empty-body{ font-size:13px; line-height:1.6; color:var(--steel); }
+  .log-empty-when{ max-width:34ch; font-size:12.5px; line-height:1.6; color:var(--steel); }
+  /* The day's own log when it is empty. Deliberately slimmer and quieter
+     than .log-empty above, because on a first run BOTH render at once and
+     they answer two different questions - "what goes in the card above"
+     and "what has been logged today". Two identical blocks would just read
+     as the screen having failed twice. */
+  .day-empty{ display:flex; align-items:center; justify-content:center; gap:8px; border:1px dashed var(--border); border-radius:14px; padding:14px 16px; color:var(--steel); font-size:13px; line-height:1.5; text-align:center; }
+  .day-empty > svg{ flex-shrink:0; opacity:.75; }
+  /* The tour offer. It keeps its place directly under the picker and its
+     64px target (scripts/browser-check/first-run-sequence.mjs pins both),
+     but it no longer wears the brass border, the filled surface and the
+     card shadow - three accents for a one-minute optional explainer, on the
+     same screen as the app's actual primary action. Its border stays SOLID
+     while the two empty states above and below it are dashed: on this
+     screen dashed means "something will appear here", and the tour offer is
+     a real thing to press, not a placeholder. */
+  .exercise-row.tour-offer{ background:transparent; box-shadow:none; }
   .dot{ width:8px; height:8px; border-radius:999px; flex-shrink:0; }
   .stat-row{ display:flex; gap:8px; margin-bottom:16px; }
   .stat-card{ flex:1; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:10px 12px; box-shadow:var(--shadow-card); }
