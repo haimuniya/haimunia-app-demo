@@ -77,7 +77,16 @@ test("COMM-360: a fresh load shows the log screen's pick-a-movement empty state,
   const window = await bootApp();
   window.document.getElementById("tabAddBtn").click();
   const content = window.document.getElementById("content").innerHTML;
-  assert.match(content, /בחרו תרגיל כדי להתחיל/, "should prompt to pick a movement");
+  // The prompt used to be the single sentence "בחרו תרגיל כדי להתחיל".
+  // It is now the four-slot empty state (icon / forward-looking headline /
+  // one line of explanation / a when-line) that cloud.js's emptyStateHtml()
+  // established in d540a34 and the coach dashboard already uses, so the two
+  // halves of the product read as one app. The CLAIM this test makes is
+  // unchanged: a fresh load asks for a movement instead of pre-filling one.
+  // Pinned on the state's key rather than on any one sentence, so the copy
+  // can be improved again without this failing for the wrong reason.
+  assert.match(content, /data-empty-state="log-choose-exercise"/, "should prompt to pick a movement");
+  assert.match(content, /בוחרים תרגיל/, "and the explanation must say what to do");
   assert.doesNotMatch(content, /Back Squat|סקוואט/, "must not pre-fill a movement's name before one is chosen");
   assert.equal(window.document.getElementById("bottomBar").style.display, "none", "no save action until a movement is chosen");
 });
@@ -129,7 +138,7 @@ test("COMM-360: clearAllData() resets both selections back to unset, not back to
   await window.clearAllData();
 
   const logContent = window.document.getElementById("content").innerHTML;
-  assert.match(logContent, /בחרו תרגיל כדי להתחיל/, "post-wipe log screen must ask again, not resume on Back Squat");
+  assert.match(logContent, /data-empty-state="log-choose-exercise"/, "post-wipe log screen must ask again, not resume on Back Squat");
 
   window.document.getElementById("tabWodBtn").click();
   const wodContent = window.document.getElementById("wodContent").innerHTML;

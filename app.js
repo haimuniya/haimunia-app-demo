@@ -3107,6 +3107,14 @@ const ICONS = {
   down: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--steel)" stroke-width="2.2" stroke-linecap="round"><path d="M3 7l6 6 4-4 8 8"/><path d="M14 17h7v-7"/></svg>',
   flat: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--steel)" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14"/></svg>',
   chevronsLeft: '<img src="./assets/icon-chevrons.png" alt="" width="11" height="10" style="transform:scaleX(-1); vertical-align:middle;" />',
+  // The two log-screen empty-state glyphs. Drawn to cloud.js's
+  // EMPTY_STATE_ICONS conventions on purpose - 28-box, 1.8 stroke, round
+  // caps and joins, currentColor - so the log screen's empty state and the
+  // coach dashboard's look like one set. Kept here rather than borrowed
+  // from cloud.js for the mirror image of the reason stated there: app.js
+  // is the offline log and must not depend on the community module loading.
+  emptyBarbell: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9.5v5M7 6.5v11M17 6.5v11M20 9.5v5M7 12h10"/></svg>',
+  emptyDay: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4.5" width="16" height="16" rx="2.5"/><path d="M9 2.8h6M8.5 10.5h7M8.5 15h4"/></svg>',
   ladder: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3v18M18 3v18M6 8h12M6 13h12M6 18h12"/></svg>',
   repeat: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>',
   bell: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>',
@@ -3246,12 +3254,21 @@ function ladderRoundSummary(r, showExercise) {
 // first-run screen that is otherwise a paragraph of grey text and a large
 // void, nothing above the fold competes with it, and the app's whole job
 // stays the first thing on the page.
+//
+// PROMINENCE, revisited. The sentence above ("nothing above the fold
+// competes with it") was true only because the picker above it was styled
+// as flatly as this card was. Now that the picker reads as the primary
+// action it is meant to be, an optional one-minute explainer wearing a
+// brass border, a filled surface and a card shadow was the second-loudest
+// thing on the screen and out of proportion to what it offers. It keeps its
+// place, its copy and its 64px target - only the three accents are gone
+// (.tour-offer, index.html).
 function renderTourCard() {
   if (!shouldShowTourCard()) return "";
   return `
-    <button class="exercise-row" data-action="open-onboarding" style="border-color:var(--brass); min-height:64px; margin-bottom:12px;">
+    <button class="exercise-row tour-offer" data-action="open-onboarding" style="min-height:64px; margin-bottom:12px;">
       <div style="text-align:right;">
-        <div style="font-weight:700; font-size:14px; color:var(--chalk);">סיור קצר במסכים</div>
+        <div style="font-weight:700; font-size:13.5px; color:var(--chalk);">סיור קצר במסכים</div>
         <!-- "חמשת" is a claim about the explainer's contents, so it is pinned
              rather than trusted: scripts/browser-check/first-run-sequence.mjs
              asserts the overlay still has exactly five rows. -->
@@ -3307,20 +3324,40 @@ function renderLogTab() {
       <button data-action="cancel-edit-entry" style="color:var(--steel); font-size:12px; text-decoration:underline;">ביטול</button>
     </div>` : ""}
 
-    <button class="exercise-select" data-action="open-picker">
+    <!-- .pick-hero only while nothing is chosen - see index.html for why the
+         chosen state deliberately stays a calm row. The chosen branch's
+         markup is untouched: several checks read the exercise name off
+         ".exercise-select span", i.e. the FIRST span in this button, so
+         nothing may be inserted ahead of it. -->
+    <button class="exercise-select${movementExplicitlyChosen ? "" : " pick-hero"}" data-action="open-picker">
       ${movementExplicitlyChosen ? `
       <div class="flex items-center gap-8">
         <div class="dot" style="background:${esc(catColor(selected.category))}"></div>
         <span style="font-weight:800; font-size:16px;">${bidiText(selected.name)}</span>
       </div>
       <span class="flex items-center gap-6" style="color:var(--steel); font-size:12px; font-weight:600;">שינוי${ICONS.chevronsLeft}</span>` : `
-      <span style="font-weight:800; font-size:16px;">מה עשינו היום?</span>
-      <span class="flex items-center gap-6" style="color:var(--steel); font-size:12px; font-weight:600;">בחירת תרגיל${ICONS.chevronsLeft}</span>`}
+      <span class="pick-hero-title">מה עשינו היום?</span>
+      <span class="pick-hero-cta">בחירת תרגיל${ICONS.chevronsLeft}</span>`}
     </button>
 
     ${renderTourCard()}
 
-    ${!movementExplicitlyChosen ? `<div class="empty">בחרו תרגיל כדי להתחיל</div>` : `
+    <!-- The four-slot empty state (icon / forward-looking headline / one
+         line of explanation / a when-line), the same pattern d540a34 landed
+         in cloud.js's emptyStateHtml() and the coach dashboard uses.
+         It replaces a single unstyled sentence floating in roughly 60% of a
+         blank screen. The when-line is the load-bearing slot here: an empty
+         log screen that says what is about to appear in it reads as ready,
+         where one that says only "choose an exercise" reads as broken. -->
+    ${!movementExplicitlyChosen ? `
+    <div class="log-empty" data-empty-state="log-choose-exercise">
+      <span class="log-empty-medal" aria-hidden="true">${ICONS.emptyBarbell}</span>
+      <div class="log-empty-text">
+        <div class="log-empty-head">כאן מתחיל האימון של היום</div>
+        <div class="log-empty-body">בוחרים תרגיל בכרטיס שלמעלה, ומשקל, חזרות וסטים נפתחים בדיוק כאן.</div>
+      </div>
+      <div class="log-empty-when">מיד אחרי הבחירה יופיעו כאן גם השיא שלכם, האימון האחרון וההיסטוריה בתרגיל.</div>
+    </div>` : `
 
     <div class="rx-toggle" role="radiogroup" aria-label="סוג רישום">
       <button class="rx-btn ${!isDuration ? "active-type" : ""}" data-action="set-log-entry-type" data-type="reps" role="radio" aria-checked="${!isDuration}">משקל וחזרות</button>
@@ -3421,7 +3458,7 @@ function renderLogTab() {
     `}
 
     ${dayEntries.length === 0 ? `
-    <div class="empty">${isToday ? "עדיין לא נרשמו סטים היום. קדימה למוט." : `עדיין לא נרשמו סטים ב-${esc(dayLabel)}.`}</div>` : `
+    <div class="day-empty">${ICONS.emptyDay}<span>${isToday ? "עדיין לא נרשמו סטים היום. קדימה למוט." : `עדיין לא נרשמו סטים ב-${esc(dayLabel)}.`}</span></div>` : `
     <button class="exercise-row" data-action="view-log-date-calendar" style="margin-bottom:0;">
       <div class="flex items-center gap-8">
         ${dayEntries[0].isPR ? ICONS.flame : ""}
