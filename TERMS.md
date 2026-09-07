@@ -1,6 +1,111 @@
-# Terms of Service
+# תנאי שימוש / Terms of Service
 
-*Last updated: 2026-09-04*
+*עודכן לאחרונה: 6 בספטמבר 2026 — Last updated: 2026-09-06*
+
+המסמך הזה קיים בשתי שפות: קודם עברית, ואחריה אנגלית. התוכן זהה. אם
+נפלה סתירה בין הנוסחים, הנוסח העברי הוא הקובע מול חברי המועדון.
+
+This document is bilingual: Hebrew first, English second, same content.
+The Hebrew text is the one members are given; if the two ever diverge,
+the Hebrew governs for members.
+
+---
+
+# תנאי שימוש
+
+התנאים האלה חלים על השימוש שלכם ביומן האימונים ובתכונות הקהילה. אין
+חברה מאחורי האפליקציה — היא מופעלת ישירות על ידי צוות המאמנים של
+המועדון עבור החברים שלו, ובכל מקום שכתוב "אנחנו" הכוונה היא אליהם.
+שימוש באפליקציה או פתיחת חשבון משמעם הסכמה לתנאים. מי שלא מסכים, שלא
+ישתמש בשירות.
+
+## גיל
+
+צריך להיות מבוגרים מספיק כדי להסכים לתנאים האלה באחריות, ובכל מקרה בני
+13 לפחות — רף שבחרנו כברירת מחדל סבירה, לא מספר שחוק מסוים מחייב כאן.
+בשימוש בשירות אתם מאשרים שאתם עומדים בדרישה הזו.
+
+## חשבונות
+
+אפשר להשתמש בשירות אנונימית או עם שם משתמש וסיסמה. אתם אחראים לשמור על
+פרטי הכניסה שלכם ולפעולות שנעשות בחשבון שלכם. חלק מהתכונות (פרסום,
+מעקב, תגובות, הצטרפות לקהילת המועדון) דורשות מימוש קוד הזמנה תקף. קודי
+הזמנה מוגבלים בשימוש ובקצב ניסיונות, ואנחנו רשאים לבטל קוד או מימוש
+שנעשה בטעות או בחוסר תום לב.
+
+**חשבון נפתח לכם אוטומטית בשמירת האימון הראשון.** האפליקציה פותחת
+חשבון אנונימי כדי לגבות את היומן לענן, בלי לבקש מכם קודם. זה מוסבר
+במלואו במדיניות הפרטיות, כולל איך לכבות את זה.
+
+חשבון אנונימי קשור לדפדפן ולמכשיר שבו הוא נפתח, ולא לפרטי כניסה שאפשר
+לשחזר. אם הגישה לחשבון כזה אובדת — מחיקת נתוני האתר, התקנה מחדש או
+מעבר למכשיר אחר בלי להגדיר קודם שם משתמש וסיסמה — אין לנו דרך להחזיר
+לכם אותו, וההיסטוריה שבו אבודה. **בנוסף, חשבון שנפתח רק לגיבוי ולא
+הוגדרו לו שם משתמש וסיסמה נמחק אוטומטית 30 יום אחרי שנפתח.** הגדרת שם
+משתמש וסיסמה במסך ההגדרות היא מה שהופך את החשבון לכזה שאפשר לשחזר מכל
+מכשיר, ומה ששומר עליו לאורך זמן.
+
+## שימוש הוגן
+
+אתם מתחייבים לא:
+
+- להטריד, לאיים או להתחזות לחבר/ה אחר/ת או לאיש צוות.
+- לפרסם ספאם, או תוכן לא חוקי, מסוכן או שפוגע בזכויות של מישהו אחר.
+- לעקוף מגבלות הזמנה, מגבלות קצב או כל בקרת פרטיות וגישה שהאפליקציה
+  אוכפת.
+- לגשת, או לנסות לגשת, למידע של חבר/ה אחר/ת מעבר למה שהגדרות הפרטיות
+  שלהם והתכונות של האפליקציה מאפשרות.
+
+## התוכן שלכם
+
+התוכן שאתם יוצרים — ביומן האימונים ובקהילה — נשאר שלכם. בפרסום פוסט,
+תגובה, תמונה או שדה פרופיל לקהל רחב יותר מכם עצמכם, אתם נותנים לצוות
+רישיון לאחסן, להציג ולהפיץ את התוכן הזה לקהל שבחרתם, כל עוד הוא מפורסם
+או עד שתסירו אותו או תמחקו את החשבון. אתם אחראים לתוכן שאתם מפרסמים
+ומאשרים שיש לכם זכות לפרסם אותו.
+
+## ניהול ומודרציה
+
+אנחנו רשאים לבדוק תוכן שדווח, להגביל פוסט או תגובה בזמן הבדיקה, ולהגביל
+או להשעות חשבון בגלל הפרה של התנאים — גם בלי התראה מראש, כשיש סיבה
+סבירה להאמין שזה נדרש כדי להגן על חברים אחרים או על השירות. אתם יכולים
+בכל רגע להסיר פוסטים, תגובות ומעקבים שלכם, לחסום חברים ולדווח על תוכן.
+
+## זה לא ייעוץ רפואי או מקצועי
+
+תוצאות, ניקוד והשוואות באפליקציה מגיעים ממה שהמשתמשים רושמים. הם לא
+ייעוץ רפואי, לא תוצאה רשמית של תחרות, ולא תחליף להדרכה של מאמן/ת מוסמכ/ת
+או איש מקצוע רפואי. התייעצו עם איש מקצוע לפני שמתחילים תוכנית אימונים,
+והפעילו שיקול דעת לגבי הגבולות הפיזיים שלכם.
+
+## הגבלת אחריות
+
+השירות ניתן כמות שהוא, בלי אחריות מכל סוג, במידה המרבית שהדין מתיר.
+איננו אחראים לנזק עקיף, תוצאתי או נלווה שנובע מהשימוש בשירות, ולא
+לפציעה שנגרמת מתרגילים או אימונים שבחרתם לבצע, במידה המרבית שהדין
+מתיר.
+
+## סיום
+
+אתם יכולים להפסיק להשתמש בשירות ולבקש מחיקת חשבון בכל רגע, כמתואר
+במדיניות הפרטיות. אנחנו רשאים להשעות או לסגור חשבון שמפר את התנאים.
+סעיפים שמטבעם ממשיכים לחול אחרי סיום (בעלות על תוכן, הגבלת אחריות)
+נשארים בתוקף גם אחרי סגירת החשבון.
+
+## שינויים בתנאים
+
+אנחנו עשויים לעדכן את התנאים ככל שהשירות משתנה. שינוי מהותי יסומן
+בעדכון התאריך בראש המסמך, ובמקום שנדרש גם בהודעה בתוך האפליקציה. המשך
+שימוש בשירות אחרי שהשינוי נכנס לתוקף משמעו הסכמה לתנאים המעודכנים.
+
+## יצירת קשר
+
+שאלות בנוגע לתנאים — למאמן/ת שלכם ישירות. אין חברה או כתובת תמיכה
+נפרדת מאחורי האפליקציה.
+
+---
+
+# Terms of Service (English)
 
 These terms govern your use of the app's training log and community
 features. There is no separate company behind this app — it is run
@@ -22,16 +127,22 @@ You can use the service anonymously or with a member handle and password.
 You are responsible for keeping your credentials secure and for activity
 that happens under your account. Some features (posting, following,
 commenting, joining a club's community) require redeeming a valid invite
-code issued by a club; invite codes are single-use and rate-limited, and we
-may revoke a code or a redemption made in error or bad faith.
+code issued by a club; invite codes are limited in use and rate-limited,
+and we may revoke a code or a redemption made in error or bad faith.
 
-Choosing an anonymous account means your account is tied to the current
-device/browser session rather than a recoverable login. If that session is
-lost — for example by clearing site data, reinstalling, or switching
-devices without first linking a recovery method — we cannot restore access
-to that account, and its history is lost. Setting a member handle and
-password, where the app offers it, lets you recover your account from a
-new device.
+**An account is opened for you automatically when you save your first
+workout.** The app opens an anonymous account in order to back your log up
+to the cloud, without asking you first. This is explained in full in the
+Privacy Policy, including how to turn it off.
+
+An anonymous account is tied to the browser and device it was opened on
+rather than to a recoverable login. If access to such an account is lost —
+by clearing site data, reinstalling, or switching devices without first
+setting a username and password — we cannot restore it, and its history is
+lost. **In addition, an account opened only for backup, with no username
+and password set, is deleted automatically 30 days after it was opened.**
+Setting a username and password in Settings is what makes an account
+recoverable from any device, and what keeps it beyond that window.
 
 ## Acceptable use
 
