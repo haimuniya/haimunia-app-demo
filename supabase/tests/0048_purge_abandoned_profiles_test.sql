@@ -34,6 +34,18 @@
 --      three checks (the redeemed and verified fixtures stay untouched
 --      under the same narrower call).
 --
+-- WHAT THIS FILE DOES NOT COVER, and did not when it shipped: every
+-- fixture below is an EMPTY account. That is why all nine assertions passed
+-- against a predicate that also deleted the entire training history of any
+-- backup-only member (private_records cascades from auth.users, and cloud
+-- backup opens an anonymous account on the first saved set). The
+-- training-data guard that closed that - 202609070001, PURGE_VERSION 2 -
+-- and its `retained_with_data` count are covered by 0090, which is where
+-- any fixture that HOLDS data belongs. The only change made to this file
+-- was adding the new fourth key to the three exact-jsonb comparisons below;
+-- it is 0 in every one of them, because none of these fixtures holds
+-- anything.
+--
 -- Plus the grant boundary (service_role and nothing else) and the
 -- SECURITY DEFINER structural check, the same shape 0044's coverage of
 -- coach_detect_engagement_decline() established for the nearest sibling
@@ -103,7 +115,7 @@ values (tests.pap_uid('redeemed'), '11111111-2222-4333-8444-555555555555', 'memb
 -- =====================================================================
 select is(
   public.purge_abandoned_profiles(),
-  jsonb_build_object('checked', 1, 'success', 1, 'failure', 0),
+  jsonb_build_object('checked', 1, 'success', 1, 'failure', 0, 'retained_with_data', 0),
   'exactly one candidate found and purged at the default 30-day window - the other four each fail exactly one of the four criteria and are never even counted as checked');
 
 select is(
@@ -126,7 +138,7 @@ select is(
 -- =====================================================================
 select is(
   public.purge_abandoned_profiles(),
-  jsonb_build_object('checked', 0, 'success', 0, 'failure', 0),
+  jsonb_build_object('checked', 0, 'success', 0, 'failure', 0, 'retained_with_data', 0),
   'a rerun finds nothing left to purge for an account already removed, and does not touch anything still ineligible - the same idempotent shape purge_due_accounts() already has');
 
 -- =====================================================================
@@ -139,7 +151,7 @@ select is(
 
 select is(
   public.purge_abandoned_profiles(3),
-  jsonb_build_object('checked', 1, 'success', 1, 'failure', 0),
+  jsonb_build_object('checked', 1, 'success', 1, 'failure', 0, 'retained_with_data', 0),
   'a narrower, explicitly-passed 3-day window makes the 5-day-old account eligible - the window is a real parameter this run responds to, not a hardcoded 30');
 
 select is(
