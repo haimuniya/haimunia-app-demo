@@ -129,11 +129,23 @@ test("dashboard: a moderator with zero open reports sees the green all-clear emp
 
 test("dashboard: an inactive-members shortcut navigates to Members", async () => {
   const mock = seeded(null, "admin");
-  mock.onRpc("coach_inactive_members", () => ({ data: [{ display_name: "מישהו", handle: "someone", last_activity_on: null }], error: null }));
+  // A GENUINELY lapsed member: someone we have recorded activity for, whose
+  // most recent activity is old. The fixture used to be
+  // `{ last_activity_on: null }` with no state at all, which is the "we have
+  // never recorded anything about this person" case - and asserting that it
+  // produced an attention row was asserting the defect 202609060020 fixed.
+  // The attention row counts state === 'lapsed' only; a no_data member is
+  // not something to alarm a coach with, and the assertion that they are
+  // excluded lands with the client half of that change.
+  mock.onRpc("coach_inactive_members", () => ({ data: [{ user_id: "u-someone", display_name: "מישהו", handle: "someone", last_activity_on: "2026-08-01", state: "lapsed", days_since_activity: 37, joined_on: "2026-05-01" }], error: null }));
   const window = await bootCommunity(mock, { syncEnabled: false });
   window.document.getElementById("tabManageBtn").click();
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
-  await waitFor(() => window.document.body.textContent.includes("חברים לא פעילים"), 3000);
+  // Waits on the shortcut itself rather than on its Hebrew label: this test
+  // is about the row navigating to Members, and pinning the copy here made
+  // it a second, accidental owner of a string it does not assert anything
+  // about.
+  await waitFor(() => !!window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="members"]'), 3000);
 
   window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="members"]').click();
   await waitFor(() => {
