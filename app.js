@@ -4636,12 +4636,25 @@ function dismissIOSInstallBanner() {
 
 // ---------- Event delegation ----------
 document.addEventListener("click", (e) => {
+  // Community actions dispatch UNCONDITIONALLY, not only when no
+  // [data-action] ancestor exists. The old `if (!el)` guard meant any
+  // [data-community-action] rendered inside a [data-action] container was
+  // silently dropped: closest() found the container first, so the community
+  // branch was skipped, and the container's own branch then returned early
+  // on `e.target !== el`. Both paths dropped the click. That made the cloud
+  // backup opt-out (rendered into #settingsBody, inside #settingsOverlay's
+  // data-action="close-settings") completely inert since 8ab7ca6.
+  //
+  // Dispatching first and then falling through is strictly additive: no
+  // element carries both attributes, cloud.js emits no data-action at all,
+  // and every container-level data-action is a modal overlay whose branch
+  // returns early unless the click was on the backdrop itself (where there
+  // is no community ancestor to match). So nothing double-fires, and every
+  // data-action behaves exactly as it did before.
+  const communityEl = e.target.closest("[data-community-action]");
+  if (communityEl && typeof handleCommunityClick === "function") handleCommunityClick(communityEl);
   const el = e.target.closest("[data-action]");
-  if (!el) {
-    const communityEl = e.target.closest("[data-community-action]");
-    if (communityEl && typeof handleCommunityClick === "function") handleCommunityClick(communityEl);
-    return;
-  }
+  if (!el) return;
   const action = el.dataset.action;
   if (action === "reload-app") { applyUpdate(); }
   else if (action === "install-app") { installApp(); }

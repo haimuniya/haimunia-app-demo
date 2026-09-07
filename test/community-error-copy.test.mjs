@@ -408,36 +408,93 @@ test("HONESTY AT THE MOMENT OF OPTING OUT: the card states the two things a memb
   assert.match(panel, /מחיקת חשבון/, "and it names the thing that actually does delete it");
 });
 
-test("KNOWN DEFECT, app.js: a real click on the backup toggle never reaches cloud.js at all", async () => {
-  // NOT a cloud.js bug and NOT fixable from this file - recorded here
-  // because it is the true reason the admin persona reported that turning
-  // backup off "didn't appear to take effect". It does not take effect: the
-  // button is inert.
-  //
-  // index.html:1045 gives #settingsOverlay data-action="close-settings".
-  // app.js's delegation (the "---------- Event delegation ----------"
-  // listener) reads:
-  //
-  //     const el = e.target.closest("[data-action]");
-  //     if (!el) { ...dispatch [data-community-action]...; return; }
-  //
-  // so for ANY [data-community-action] inside the overlay, closest() finds
-  // the overlay first, the community branch is skipped entirely, and the
-  // close-settings branch then returns early on `e.target !== el`. The click
-  // is swallowed by both paths. This has been true since the settings screen
-  // was introduced (8ab7ca6), and #settingsOverlay is the only overlay that
-  // currently contains a community action.
-  //
-  // THE FIX IS ONE LINE IN app.js: dispatch [data-community-action]
-  // unconditionally rather than only when no [data-action] ancestor exists.
-  // When that lands, this test flips - which is the point of it being here.
+// ===========================================================================
+// FIXED (was "KNOWN DEFECT, app.js"). The tests above drive
+// handleCommunityClick directly; these drive a REAL DOM click, because the
+// bug was never in the handler - it was that the click never arrived.
+//
+// index.html:1045 gives #settingsOverlay data-action="close-settings", and
+// app.js's delegation used to dispatch [data-community-action] only when
+// e.target.closest("[data-action]") found NOTHING:
+//
+//     const el = e.target.closest("[data-action]");
+//     if (!el) { ...dispatch [data-community-action]...; return; }
+//
+// so for any community control inside the overlay, closest() found the
+// overlay first, the community branch was skipped, and the close-settings
+// branch then returned early on `e.target !== el`. Both paths dropped the
+// click and the backup toggle was inert from 8ab7ca6 until the delegation
+// was changed to dispatch [data-community-action] unconditionally.
+// ===========================================================================
+
+test("a real click on the backup toggle reaches cloud.js, persists, and confirms itself", async () => {
   const window = await bootedPanel({ syncEnabled: true });
   const btn = window.document.querySelector('[data-community-action="backup-optout"]');
   assert.ok(btn, "the button is rendered into #settingsBody");
+  // The exact geometry that used to swallow the click: this button has no
+  // data-action of its own, so its nearest [data-action] ancestor is the
+  // overlay. If that ever stops being true this test stops covering the bug.
   assert.equal(btn.closest("[data-action]").id, "settingsOverlay",
-    "and its nearest [data-action] ancestor is the overlay that swallows it");
+    "and it still sits inside the overlay whose data-action used to swallow it");
   btn.click();
-  await new Promise((r) => setTimeout(r, 100));
-  assert.equal(window.localStorage.getItem("haimunia-demo:backupOptOut"), null,
-    "REGRESSION TRIPWIRE: if this now fails, app.js's delegation was fixed - delete this test and assert the click works");
+  await waitFor(() => window.localStorage.getItem("haimunia-demo:backupOptOut") === "1", 3000);
+  assert.equal(window.localStorage.getItem("haimunia-demo:backupOptOut"), "1",
+    "the click itself - not a direct handler call - persists the choice");
+  await waitFor(() => !!window.document.getElementById("appToastBar"), 3000);
+  assert.match(window.document.getElementById("appToastBar").textContent, /כובה/,
+    "and the member sees the confirmation at the moment of the tap");
+});
+
+test("a real click turns backup back ON too - the toggle works in both directions", async () => {
+  const window = await bootedPanel({ localStorage: { "haimunia-demo:backupOptOut": "1" } });
+  const btn = window.document.querySelector('[data-community-action="backup-enable"]');
+  assert.ok(btn, "the opted-out card offers the way back");
+  btn.click();
+  await waitFor(() => window.localStorage.getItem("haimunia-demo:backupOptOut") === null, 3000);
+  await waitFor(() => !!window.document.getElementById("appToastBar"), 3000);
+  assert.match(window.document.getElementById("appToastBar").textContent, /הופעל/);
+});
+
+test("THE GENERAL PROPERTY: a [data-community-action] inside a [data-action] ancestor still dispatches", async () => {
+  // The bug was structural, not specific to backup: ANY community control
+  // rendered inside a [data-action] container was dropped. #settingsOverlay
+  // is the only such container today, but this pins the rule itself so the
+  // next overlay to host a community control does not silently repeat it.
+  const window = await bootedPanel({ syncEnabled: true });
+  const seen = [];
+  const real = window.handleCommunityClick;
+  window.handleCommunityClick = (el) => { seen.push(el.dataset.communityAction); };
+  try {
+    const overlay = window.document.getElementById("settingsOverlay");
+    const probe = window.document.createElement("button");
+    probe.setAttribute("data-community-action", "probe-action");
+    overlay.appendChild(probe);
+    probe.click();
+    assert.deepEqual(seen, ["probe-action"],
+      "the community handler receives the click even though closest('[data-action]') matches the overlay");
+    // The reverse direction: dispatching unconditionally must not ALSO run
+    // the ancestor's own action. Nothing may double-fire.
+    assert.equal(overlay.classList.contains("open"), false,
+      "and the ancestor's close-settings branch does not fire on the same click");
+    probe.remove();
+  } finally {
+    window.handleCommunityClick = real;
+  }
+});
+
+test("close-settings still behaves: backdrop click closes, click inside does not", async () => {
+  const window = await bootedPanel({ syncEnabled: true });
+  const overlay = window.document.getElementById("settingsOverlay");
+  window.openSettings();
+  assert.ok(overlay.classList.contains("open"), "opened");
+
+  // A click on something INSIDE the sheet must not close the dialog - the
+  // `e.target !== el` guard the fix had to leave intact.
+  const inside = window.document.getElementById("settingsBody");
+  inside.click();
+  assert.ok(overlay.classList.contains("open"), "a click inside the sheet leaves it open");
+
+  // A click on the backdrop itself (e.target === the overlay) still closes.
+  overlay.click();
+  assert.equal(overlay.classList.contains("open"), false, "a backdrop click still closes it");
 });
