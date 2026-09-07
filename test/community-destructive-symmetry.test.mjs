@@ -284,10 +284,21 @@ test("subjectSentenceHtml escapes both halves and isolates only the name, and no
     "the sentence fragments stay esc()'d and only the name is wrapped - never the other way round");
   assert.match(fn, /\|\| CONFIRM_SUBJECT_UNKNOWN/, "one shared fallback wording, not a per-call-site one");
   // The route: askConfirm was taught to carry the subject, so this fix adds
-  // no dialog. renderGhostReclaimSheet stays the only dedicated one, and the
-  // CLOUD_DIALOGS count pinned in community-state-namespaces.test.mjs is
-  // untouched by this change.
+  // no dialog. renderGhostReclaimSheet stays the only dedicated one.
+  //
+  // The count moved 13 -> 14 for the outward-share sheet (five-persona UX
+  // audit, outward sharing) and for nothing else. That sheet is not a
+  // confirmation and could not have reused askConfirm: it renders a canvas
+  // preview of the image about to leave the device, a switch that repaints
+  // that image, and four different exits (share, copy, download, close).
+  // askConfirm is a title + message + one confirm + one cancel, with no
+  // place to put any of that. Assert the exact set rather than only the
+  // count, so a NEW dialog still trips this even if one is removed in the
+  // same change.
   const dialogs = src.slice(src.indexOf("const CLOUD_DIALOGS = ["), src.indexOf("];", src.indexOf("const CLOUD_DIALOGS = [")));
-  assert.equal((dialogs.match(/\{ key: "/g) || []).length, 13,
-    "this fix must not add a dialog - if it ever does, update the pin in community-state-namespaces.test.mjs too");
+  assert.deepEqual([...dialogs.matchAll(/\{ key: "([^"]+)"/g)].map((m) => m[1]), [
+    "confirmSheet", "outwardShare", "reportSheet", "modAction", "reclaimInvite", "modContext",
+    "notifCenter", "achUnlock", "prPrompt", "composer", "profileView",
+    "challengeView", "eventView", "recapView",
+  ], "a dialog was added or removed - say why here and update the pin in community-state-namespaces.test.mjs too");
 });
