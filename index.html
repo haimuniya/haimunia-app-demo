@@ -856,11 +856,48 @@
   .subtabbar{ display:flex; background:var(--surface2); border-radius:12px; padding:3px; margin-bottom:16px; border:1px solid var(--border); }
   .subtabbtn{ flex:1; min-height:44px; padding:8px 0; border-radius:9px; font-weight:700; font-size:13px; color:var(--steel); }
   .subtabbtn.active{ background:var(--surface); color:var(--chalk); box-shadow:var(--shadow-sm); }
+  /* Design spec section 3.6 — RX IS THE DEFAULT AND THAT IS A DATA-INTEGRITY
+     BUG, NOT A COPY BUG.
+
+     `Rx` means "as prescribed, full weights". A beginner is almost always
+     Scaled. app.js opens the log form with `let wodRx = true` (app.js:371),
+     so unless she finds and understands two undefined English words, her
+     session is silently recorded as HARDER than it was — in a history she
+     can never audit, because neither word is defined anywhere in the app.
+     That is a wrong number in the database, not a wording problem.
+
+     THE MARKUP IS app.js's (app.js:4481-4483) AND IS NOT CHANGED HERE. What
+     this file can ship ahead of it is the styling that change needs, written
+     so it is inert until app.js emits the new labels and harmless — in fact
+     an improvement — in the meantime:
+
+       * min-height:44px. Today's .rx-btn is a ~40px target for the single
+         most consequential binary choice on the screen. This is a straight
+         accessibility fix that stands on its own whatever app.js does.
+       * A column layout and .term-sub support, so each chip can carry the
+         Hebrew-first label with its one-line gloss underneath
+         (`מותאם (Scaled)` / `במשקלים שמתאימים לי`) — the same tier-1 pattern
+         the WOD-builder format chips already use.
+       * .rx-toggle.unset, the "neither chip is selected yet" state. Dashed
+         rather than coloured, because an unmade choice must not look like a
+         made one — which is exactly how today's pre-selected Rx reads.
+
+     WHAT app.js STILL HAS TO DO is listed in the handover notes: drop the
+     `= true` default, disable the save CTA until a choice exists, emit the
+     Hebrew-first labels and remember the member's last choice as their
+     personal default. CSS cannot fix a wrong default. */
   .rx-toggle{ display:flex; gap:8px; margin-bottom:16px; }
-  .rx-btn{ flex:1; padding:10px 0; border-radius:12px; border:1px solid var(--border); background:var(--surface); font-weight:700; font-size:13px; color:var(--steel); }
+  .rx-toggle.unset{ border:1px dashed var(--brass); border-radius:14px; padding:4px; gap:4px; }
+  .rx-btn{ flex:1; min-height:44px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px; padding:8px 6px; border-radius:12px; border:1px solid var(--border); background:var(--surface); font-weight:700; font-size:15px; color:var(--steel); line-height:1.2; }
   .rx-btn.active-rx{ background:rgba(63,132,85,.15); border-color:var(--green); color:var(--green); }
   .rx-btn.active-scaled{ background:rgba(224,178,60,.15); border-color:var(--yellow); color:var(--yellow); }
   .rx-btn.active-type{ background:rgba(201,75,41,.15); border-color:var(--energy); color:var(--energy); box-shadow:var(--shadow-sm); }
+  /* The gloss inherits the chip's own colour once that chip is selected, the
+     same way .format-chip.active .format-chip-sub does — a steel-grey
+     subtitle on a green chip reads as disabled text rather than part of the
+     selected option. Slightly dimmed so it stays subordinate to the label. */
+  .rx-btn .term-sub{ font-size:12px; margin-top:1px; }
+  .rx-btn.active-rx .term-sub, .rx-btn.active-scaled .term-sub, .rx-btn.active-type .term-sub{ color:inherit; opacity:.8; }
   .wod-desc{ color:var(--steel); font-size:12px; margin-top:2px; }
   .text-input{ width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:12px; padding:10px 12px; color:var(--chalk); font-size:16px; }
   input[type="date"]{ color-scheme:var(--color-scheme); }
@@ -1006,6 +1043,54 @@
      that just needs to read as destructive (remove member, delete draft). */
   .chip-btn.danger{ border-color:var(--red); color:var(--red-text); }
   .chip-btn.primary.danger{ background:var(--red); border-color:var(--red); color:#fff; }
+  /* Design spec section 7.1 - THE GATE'S SECONDARY ACTION IS A CONTROL, NOT
+     A LINK. The community gate used to lead with a login form and push
+     "חבר/ה חדש/ה? התחלת הרשמה עם קוד הזמנה" to the bottom as a .link-btn.
+     The gate is now flipped (invite code is the primary .save-btn), and the
+     action that moved into second place - "התחברות" - must not inherit the
+     same de-emphasis that was the defect: .link-btn is 13px/36px and
+     underlined, and the spec calls for a >=44px button here.
+
+     Deliberately NOT a new global idiom. This is the one screen in the app
+     where a SECONDARY action still has to be unmistakably tappable, because
+     the whole point of the redesign is that both doors are real doors - the
+     member who does have an account must not have to hunt for a link the
+     way a new member had to hunt before. Everywhere else, .chip-btn is
+     still the right answer for a secondary action, and this rule is scoped
+     to the gate rather than offered app-wide so it cannot quietly become a
+     fourth button size. */
+  .gate-alt{ display:inline-flex; align-items:center; justify-content:center; min-height:44px; padding:10px 18px; border-radius:12px; border:1px solid var(--border); background:var(--surface2); color:var(--chalk); font-weight:700; font-size:14px; text-decoration:none; }
+  /* The "‹ חזרה" control on the invite and login steps. Same 44px floor: it
+     is the only way out of the invite step that is not the bottom tab bar
+     (spec 7.2), and a member who tapped in by accident is exactly the
+     member least likely to persevere with a small target. */
+  .gate-back{ display:inline-flex; align-items:center; gap:4px; min-height:44px; padding:8px 10px; color:var(--steel); font-size:14px; font-weight:700; background:none; border:none; }
+  /* Design spec section 3, TIER 2 - THE `?` MARKER.
+     A term that has an explanation carries a small circle after it. The
+     circle is 20px so it does not disturb the line it sits in; the ::after
+     pseudo-element inflates the TAP TARGET to 44x44 without changing a
+     single pixel of layout. Both halves are load-bearing: a 20px tap target
+     fails WCAG 2.5.8 and, more to the point, fails a person holding a phone
+     in a gym.
+
+     The marker never restyles the term itself - an expert reading `AMRAP 20`
+     sees exactly today's text plus one grey circle, which is what makes
+     tier 2 safe to apply to content rather than only to controls. */
+  .term-mark{ display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border-radius:50%; border:1px solid var(--steel); color:var(--steel); font-size:11px; font-weight:700; line-height:1; margin-inline-start:4px; vertical-align:middle; position:relative; background:none; flex-shrink:0; }
+  .term-mark::after{ content:""; position:absolute; inset:-12px; }
+  .term-mark:focus-visible{ outline:2px solid var(--brass); outline-offset:2px; }
+  /* The term sheet (tier 3). A bottom sheet, not a full-screen modal: the
+     member must still be able to see the thing they were looking at when
+     they asked what the word meant. Nothing here blocks a tap. */
+  .term-sheet-term{ font-size:20px; font-weight:800; color:var(--chalk); line-height:1.2; }
+  .term-sheet-gloss{ font-size:15px; font-weight:700; color:var(--chalk); margin-top:4px; line-height:1.4; }
+  .term-sheet-body{ font-size:14px; color:var(--steel); line-height:1.55; margin-top:10px; }
+  /* "אצלך:" - the optional worked example. Brass, because it is the one line
+     on the sheet that is about this member's own numbers. */
+  .term-sheet-you{ font-size:14px; color:var(--brass); line-height:1.55; margin-top:8px; }
+  .term-glossary-row{ display:flex; justify-content:space-between; align-items:center; gap:10px; width:100%; min-height:44px; padding:10px 0; border-top:1px solid var(--border); color:var(--chalk); font-weight:700; font-size:14px; margin-top:14px; }
+  .term-glossary-item{ padding:12px 0; border-bottom:1px solid var(--border); }
+  .term-glossary-item:last-child{ border-bottom:none; }
   /* No rule anywhere styled [disabled] - 75+ disabled buttons across the
      app (a busy submit, a parked filter, a checkbox mid-save) rendered
      pixel-identical to an enabled one, cursor:pointer included. One rule,

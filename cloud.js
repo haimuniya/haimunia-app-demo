@@ -116,7 +116,32 @@
       // hit this) swapped the form for a fresh one and silently erased
       // what had been typed. A member then submitted an empty code and
       // got "code required" for a code they had just entered.
-      inviteCodeDraft: "" },
+      inviteCodeDraft: "",
+      // Design spec section 7. Which of the community gate's THREE screens is
+      // showing while there is still no redemption: "" is the neutral choice
+      // screen (what the club is, then "יש לי קוד הזמנה" as the primary
+      // action), "login" is the credential form on a screen of its own.
+      //
+      // A SEPARATE FIELD RATHER THAN A THIRD STATE OF signupStarted, because
+      // the two answer different questions and conflating them is what would
+      // break the QR deep link: signupStarted means "this person is joining"
+      // (captureInviteDeepLink sets it, ensureAnonymousSession keys off it),
+      // while gateView only decides which of the two pre-signup screens to
+      // paint. Keeping them apart is what lets "כבר יש לכם חשבון? התחברות" on
+      // the invite step land a QR scanner directly on the login FORM - clear
+      // one flag, set the other - rather than on the choice screen, which
+      // would have made 9c15214's way back one tap longer than it is today.
+      gateView: "",
+      // The term sheet (design spec section 3, tier 3): the id of the
+      // glossary entry being explained, or null. Lives in ui rather than a
+      // namespace of its own for the same reason confirmDialog does - it is
+      // shell furniture that any surface can raise, owned by no feature.
+      termSheet: null,
+      // The full glossary list, pushed onto the same sheet from its
+      // "כל המונחים" row. A boolean, not a second dialog: it is the same
+      // sheet showing a different page, so it shares the focus trap, the
+      // Escape handler and the backdrop click rather than duplicating them.
+      termGlossaryOpen: false },
 
     // ---- feed (COMM-110..115) ----
     // items holds feed_page() rows in the exact order the function returned
@@ -912,6 +937,200 @@
   // turned into buttons.
   const bidiText = window.BoxLogSafe.bidiText;
   const bidiHtml = window.BoxLogSafe.bidiHtml;
+
+  // ==========================================================================
+  // JARGON DISCLOSURE (design spec section 3)
+  //
+  // THE DIAGNOSIS THAT MATTERS: the app already wrote this fix and hid it.
+  // Four plain-Hebrew glosses have lived in #wodBuilderOverlay since COMM-324
+  // ("זמן" -> "כמה מהר סיימתם", "AMRAP" -> "כמה סיבובים הספקתם", ...), behind
+  // a comment saying they had been written once, lost, and deliberately put
+  // back. They shipped at 9.5px - the smallest type in the app, explaining
+  // the hardest words in the app - and behind an overlay with no reachable
+  // opener. index.html:886 has since raised them to 13px on the shared
+  // .term-sub rule. So the vocabulary below is NOT new copy: the four format
+  // glosses are lifted VERBATIM from what the team already wrote, and the
+  // rest are the spec's own table.
+  //
+  // THREE TIERS, one vocabulary, one glossary:
+  //
+  //   Tier 1 - a permanent inline gloss (.term-sub) under a term that LABELS
+  //            A CONTROL. Always on, for everyone, including experts: one
+  //            line under a chip you are choosing between helps a ten-year
+  //            athlete too. This is the existing "רישום סולם / סופרסט"
+  //            pattern, which the beginner persona singled out as the one
+  //            thing the app already did right.
+  //   Tier 2 - a `?` marker (.term-mark) after a term that appears inside
+  //            CONTENT. First occurrence only, at most 4 per screen, and it
+  //            AUTO-RETIRES after three sheets have been opened.
+  //   Tier 3 - a bottom sheet (this file's termSheet dialog) that never
+  //            blocks a tap and never covers the thing being explained.
+  //
+  // WHAT IS DELIBERATELY *NOT* HERE: Hebrew translations of movement names.
+  // "Back Squat" and "Fran" are what the coach says on the floor of an
+  // Israeli box - they are the vernacular, not jargon. The distinction this
+  // whole section rests on is between a NAME that needs no translation and a
+  // CONCEPT that needs an explanation. AMRAP and Rx are concepts. Thruster is
+  // a name, and the entry for it explains the movement rather than renaming
+  // it. src/constants.js's CATEGORY_LABELS is untouched for the same reason.
+  //
+  // `term` is printed as-is and is the sheet's heading; `gloss` is the
+  // one-line tier-1/tier-2 headline (max ~28 Hebrew characters so it fits one
+  // line at 390px - if it does not fit, shorten the gloss, never shrink the
+  // type); `body` is the sheet's explanation. Keys are lowercased for lookup.
+  const TERM_GLOSSARY = Object.freeze([
+    { id: "wod", term: "WOD", gloss: "אימון היום", body: "האימון המשותף שכל המועדון עושה באותו יום. ראשי תיבות של Workout Of the Day." },
+    { id: "amrap", term: "AMRAP", gloss: "כמה סיבובים הספקתם", body: "עובדים בזמן קבוע — נניח 20 דקות — וסופרים כמה סיבובים שלמים הספקתם. אין \"לסיים\", יש \"כמה\"." },
+    { id: "emom", term: "EMOM", gloss: "תרגיל חדש כל דקה", body: "בתחילת כל דקה מתחילים את התרגיל הבא. מה שנשאר מהדקה הוא המנוחה שלכם." },
+    { id: "fortime", term: "For Time", gloss: "כמה מהר סיימתם", body: "עושים את כל מה שכתוב, כמה שיותר מהר, ורושמים את הזמן." },
+    { id: "rx", term: "Rx", gloss: "במשקלים המלאים שנכתבו", body: "האימון בדיוק כפי שנכתב — אותם משקלים, אותן חזרות." },
+    { id: "scaled", term: "Scaled", gloss: "בהתאמה אישית", body: "אותו אימון, במשקלים או בתרגילים שמתאימים לכם. זו הבחירה של רוב המתאמנים, וזה נחשב בדיוק אותו אימון." },
+    { id: "1rm", term: "1RM", gloss: "הערכה של המשקל המרבי לחזרה אחת", body: "חישוב בלבד, לפי המשקל והחזרות שרשמתם — לא משקל שהרמתם בפועל." },
+    { id: "pr", term: "שיא אישי (PR)", gloss: "התוצאה הכי טובה שלכם עד היום", body: "בתרגיל הזה, מאז שהתחלתם לרשום כאן. לא השוואה לאף אחד אחר." },
+    { id: "repscheme", term: "21-15-9", gloss: "מספר החזרות בכל סיבוב", body: "שלושה סיבובים: בראשון 21 חזרות מכל תרגיל, בשני 15, בשלישי 9." },
+    { id: "thruster", term: "Thruster", gloss: "סקוואט קדמי ודחיפה מעל הראש", body: "תנועה אחת רציפה: עולים מהסקוואט ומיד דוחפים את המוט מעל הראש." },
+    { id: "hspu", term: "HSPU", gloss: "שכיבת סמיכה בעמידת ידיים", body: "Handstand Push-Up. דחיפה כלפי מעלה מעמידת ידיים, בדרך כלל בעזרת הקיר." },
+    { id: "ohs", term: "OHS", gloss: "סקוואט עם מוט מעל הראש", body: "Overhead Squat. סקוואט כשהמוט מוחזק ישר מעל הראש בידיים פשוטות." },
+    { id: "doubleunders", term: "Double-unders", gloss: "שני סיבובי חבל בכל קפיצה", body: "בדילגית — החבל מספיק להסתובב פעמיים לפני שהרגליים נוחתות." },
+    { id: "kbswing", term: "KB swing", gloss: "נדנוד קטלבל", body: "מניפים משקולת כדור מבין הרגליים ולמעלה, בכוח שמגיע מהירכיים ולא מהידיים." },
+    { id: "wallball", term: "Wall Ball", gloss: "סקוואט וזריקת כדור לקיר", body: "יורדים לסקוואט עם כדור כבד, ובעלייה זורקים אותו לסימן על הקיר." },
+    { id: "muscleup", term: "Muscle-up", gloss: "עלייה מהמתח אל מעל המוט", body: "מתח, ואז דחיפה שמעבירה את הגוף מעל המוט או הטבעות בתנועה אחת." },
+    { id: "pistol", term: "Pistol", gloss: "סקוואט על רגל אחת", body: "יורדים לסקוואט מלא על רגל אחת, כשהשנייה מושטת קדימה." },
+    { id: "superset", term: "סולם / סופרסט", gloss: "כמה סטים ברצף", body: "כמה סטים ברצף — אותו תרגיל במשקלים שונים, או שני תרגילים לסירוגין." },
+  ]);
+  const TERM_BY_ID = Object.create(null);
+  for (const t of TERM_GLOSSARY) TERM_BY_ID[t.id] = t;
+  function termById(id) { return TERM_BY_ID[String(id || "")] || null; }
+
+  // ---- Tier 2's off-switches -----------------------------------------------
+  // Two of them, and they are different things on purpose (spec 3.5).
+  //
+  //   AUTO-RETIRE is the one that matters. After a member has opened three
+  //   term sheets they have demonstrated they know how this works, so the
+  //   circles stop being PAINTED app-wide. The terms stay tappable and the
+  //   glossary stays reachable - nothing is taken away, the visual noise just
+  //   stops. This costs an expert three grey circles, once, ever.
+  //
+  //   THE EXPLICIT SWITCH is the escape hatch for the member the counter gets
+  //   wrong in either direction: an expert who wants them gone on day one,
+  //   and a returning beginner who wants them back after the counter retired
+  //   them. Default on, and it overrides the counter both ways.
+  //
+  // localStorage-backed rather than state-backed for the same reason
+  // BACKUP_OPTOUT_KEY is: this is a per-device preference that must survive a
+  // sign-out, and nothing else in the app needs to react to it changing.
+  const TERM_OPENS_KEY = "haimunia-demo:termSheetOpens";
+  const TERM_MARKS_KEY = "haimunia-demo:termMarks";
+  const TERM_RETIRE_AFTER = 3;
+  function termMarksSwitchOn() { return localStorage.getItem(TERM_MARKS_KEY) !== "0"; }
+  function termSheetOpenCount() {
+    const n = parseInt(localStorage.getItem(TERM_OPENS_KEY) || "0", 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+  function termMarksVisible() { return termMarksSwitchOn() && termSheetOpenCount() < TERM_RETIRE_AFTER; }
+
+  // ---- Tier 2's per-screen budget ------------------------------------------
+  // "First occurrence only, at most 4 per screen." Both halves are about the
+  // same failure: a feed of twelve workout posts carrying a circle on every
+  // AMRAP is not disclosure, it is a rash. The budget is reset at the top of
+  // each full community render (see rerender()), so it counts marks per
+  // PAINT, not per session - which is what "per screen" actually means once
+  // the screen re-renders on every state change.
+  const TERM_MARKS_PER_SCREEN = 4;
+  let termMarksDrawn = null;
+  function resetTermMarkBudget() { termMarksDrawn = Object.create(null); }
+  resetTermMarkBudget();
+  function termMarkBudgetAllows(id) {
+    if (!termMarksDrawn) resetTermMarkBudget();
+    if (termMarksDrawn[id]) return false;                       // first occurrence only
+    if (Object.keys(termMarksDrawn).length >= TERM_MARKS_PER_SCREEN) return false;
+    termMarksDrawn[id] = true;
+    return true;
+  }
+  // The marker itself. Returns "" - not a space, not a placeholder - when the
+  // term is unknown, retired or over budget, so a caller can concatenate it
+  // unconditionally and an expert's line is byte-identical to today's.
+  //
+  // aria-label carries the whole question ("מה זה AMRAP?") because the visible
+  // text is a single "?" character, which tells a screen-reader user nothing
+  // about which term is being asked about.
+  function termMark(id) {
+    const t = termById(id);
+    if (!t || !termMarksVisible() || !termMarkBudgetAllows(id)) return "";
+    return `<button type="button" class="term-mark" data-community-action="term-open" data-term="${esc(t.id)}" aria-label="${esc("מה זה " + t.term + "?")}">?</button>`;
+  }
+  // Tier 1. The permanent gloss under a control's label. Hardcoded copy, but
+  // it still goes through bidiText: several glosses are pure Hebrew today and
+  // a future one will not be, and this is exactly the class of line - Hebrew
+  // beside a Latin term - that e013bed was written for.
+  function termSub(id) {
+    const t = termById(id);
+    return t ? `<span class="term-sub">${bidiText(t.gloss)}</span>` : "";
+  }
+  // A term rendered inside content, with its marker: the term's own
+  // typography is untouched (spec 3.3 - an expert must see exactly what they
+  // see today plus a small grey circle), so this is deliberately NOT a
+  // wrapper that styles anything.
+  function termWithMark(id, text) {
+    const t = termById(id);
+    const label = text == null ? (t ? t.term : "") : text;
+    return `<bdi>${esc(label)}</bdi>${termMark(id)}`;
+  }
+
+  // ---- The two vocabularies a workout post actually prints -----------------
+  //
+  // SCORE TYPE. app.js stores one of WOD_SCORE_TYPES (src/constants.js:333)
+  // and the feed card printed it RAW - a member reading somebody's post saw
+  // the literal lowercase string `amrap`, which is not a word in either
+  // language. So this is two fixes in one line: a display form, and a `?` on
+  // the two entries that are genuinely opaque.
+  //
+  // `load` and `time` get Hebrew labels and NO marker, on purpose. Once the
+  // label reads `משקל מקסימלי` there is nothing left to explain, and spending
+  // one of the four per-screen markers on a self-explanatory Hebrew phrase is
+  // exactly the noise that makes a member stop reading them. Markers are for
+  // AMRAP and EMOM, which stay in Latin because that is what is written on
+  // the whiteboard at the box.
+  // Keyed by the STORAGE enum and by the display spellings that reach the
+  // same field from the server: a POST_WORKOUT's metadata.score_type is free
+  // text on the wire and real rows carry "For Time" as well as "time". Both
+  // spellings must land on the same gloss, or the marker would appear for
+  // one member's post and not for the identical workout posted by another.
+  const SCORE_TYPE_DISPLAY = Object.freeze({
+    time: { label: "זמן", term: "fortime" },
+    "for time": { label: "זמן", term: "fortime" },
+    fortime: { label: "זמן", term: "fortime" },
+    amrap: { label: "AMRAP", term: "amrap" },
+    emom: { label: "EMOM", term: "emom" },
+    load: { label: "משקל מקסימלי", term: null },
+    "max load": { label: "משקל מקסימלי", term: null },
+  });
+  function scoreTypeHtml(scoreType) {
+    const key = String(scoreType || "").trim().toLowerCase();
+    const d = Object.prototype.hasOwnProperty.call(SCORE_TYPE_DISPLAY, key) ? SCORE_TYPE_DISPLAY[key] : null;
+    // An unrecognised score type is still shown, escaped and unmarked -
+    // dropping it would hide a real value the server sent, and the club's own
+    // programming is allowed to invent a format this app has never heard of.
+    if (!d) return scoreType ? bidiText(scoreType) : "";
+    return `<bdi>${esc(d.label)}</bdi>${d.term ? termMark(d.term) : ""}`;
+  }
+  // EFFORT. Design spec 3.6, the display half. `Rx` and `מותאם` were an
+  // asymmetric pair: one bare English abbreviation nobody defines, one
+  // Hebrew word - so the two halves of a binary choice did not even read as
+  // the same kind of thing. Hebrew first, English kept in parentheses so the
+  // member can still recognise `Rx` on the whiteboard rather than having it
+  // vanish, which is the whole reason not to simply translate it away.
+  const EFFORT_DISPLAY = Object.freeze({
+    rx: { label: "מלא (Rx)", term: "rx" },
+    scaled: { label: "מותאם (Scaled)", term: "scaled" },
+  });
+  function effortHtml(effort, level) {
+    const key = String(effort || "").toLowerCase();
+    if (key === "level") return bidiText(("רמה " + (level || "")).trim());
+    const d = Object.prototype.hasOwnProperty.call(EFFORT_DISPLAY, key) ? EFFORT_DISPLAY[key] : null;
+    if (!d) return "";
+    return `<bdi>${esc(d.label)}</bdi>${termMark(d.term)}`;
+  }
   // Shared batch profile lookup - the shape loadCoachEngage(), loadCoachMemberOfWeek()
   // and loadFollowList() each independently hand-rolled. Consolidated after
   // finding real drift between the copies (a missing avatar_url column in
@@ -5433,7 +5652,10 @@
     }
     // onAuthStateChange below picks up the new session and loads everything.
   }
-  function startSignup() { state.signupStarted = true; ensureAnonymousSession(); rerender(); }
+  // gateView is cleared here so that backing out of the invite step later
+  // lands on the choice screen rather than silently reopening the login form
+  // a member had visited earlier in the same session.
+  function startSignup() { state.signupStarted = true; state.ui.gateView = ""; ensureAnonymousSession(); rerender(); }
 
   // Private-backup-to-cloud is opt-out, not opt-in - see PRIVACY.md. Distinct
   // from cloudSyncEnabled (which is the actual on/off switch flushOutbox()
@@ -8820,13 +9042,21 @@
     const result = m.result_text || post.result_text || "";
     const scoreType = m.score_type || post.score_type || "";
     const effort = m.effort || (post.rx === true ? "rx" : post.rx === false ? "scaled" : m.level ? "level" : "");
-    const effortLabel = effort === "rx" ? "Rx" : effort === "scaled" ? "מותאם" : effort === "level" ? ("רמה " + (m.level || "")) : "";
     const isPr = !!(m.is_pr || post.is_pr);
-    const prBadge = isPr ? ` <span class="pr-badge badge-tag">PR</span>` : "";
+    // The PR badge is the first term a beginner meets in the feed and the one
+    // they are most likely to misread as a comparison against other members.
+    // Marked here, once, and the sheet says so in as many words.
+    const prBadge = isPr ? ` <span class="pr-badge badge-tag">PR</span>${termMark("pr")}` : "";
+    // Design spec section 3. Both halves of this line used to be printed with
+    // a bare esc(): the score type as app.js's raw storage value (`amrap`),
+    // the effort as a bare `Rx`. Both are now display forms with a first-
+    // occurrence `?`, and both are pre-escaped HTML - hence .join() on the
+    // already-built strings rather than .map(esc).
+    const metaParts = [scoreTypeHtml(scoreType), effortHtml(effort, m.level)].filter(Boolean);
     const detail = `<div class="post-title">${bidiText(name)}${prBadge}</div>
       ${when ? `<div style="color:var(--steel);font-size:12px;">${esc(String(when).slice(0, 10))}</div>` : ""}
       ${result ? `<div class="mono post-result">${esc(result)}</div>` : ""}
-      ${(scoreType || effortLabel) ? `<div style="color:var(--steel);font-size:12px;">${[scoreType, effortLabel].filter(Boolean).map(esc).join(" · ")}</div>` : ""}`;
+      ${metaParts.length ? `<div style="color:var(--steel);font-size:12px;">${metaParts.join(" · ")}</div>` : ""}`;
     const caption = post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${bidiText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : "";
     const src = m.source_id || post.source_id || post.source_record_id;
     const extra = src ? `<button class="chip-btn" data-community-action="open-source" data-source-type="${esc(m.source_type || post.source_type || "workout")}" data-source-id="${esc(src)}">פתיחת האימון</button>` : "";
@@ -14534,6 +14764,11 @@
   function renderConfirmDialog() {
     return renderPostComposer() + renderPrSharePrompt() + renderAchievementUnlockCelebration() + renderCommunityProfileOverlay() + renderNotificationCenter()
       + renderReportSheet() + renderModActionSheet() + renderGhostReclaimSheet() + renderModContextOverlay() + renderChallengeViewOverlay() + renderEventViewOverlay() + renderRecapViewOverlay()
+      // Third-to-last, for the same DOM-order/z-order reason as the two
+      // below it: a `?` marker can sit inside a challenge, event or recap
+      // overlay's own content, so the term sheet has to paint AFTER those or
+      // it opens underneath the thing it is explaining.
+      + renderTermSheet()
       // Second-to-last, immediately under the confirm sheet: the outward
       // share sheet is opened FROM the PR prompt and the achievement
       // celebration, so it stacks on top of them and must paint after them
@@ -14541,6 +14776,77 @@
       + renderOutwardShareSheet()
       + renderConfirmSheet();
   }
+  // ==========================================================================
+  // Design spec section 3, TIER 3 — the term sheet.
+  //
+  // A BOTTOM SHEET, NOT A FULL-SCREEN MODAL, and that is the whole design.
+  // The member asked what a word on the screen means; covering the screen
+  // that word is on answers the question in the one place they cannot check
+  // it against. .modal-sheet anchored to the bottom (the .modal-overlay
+  // default) is the same component the exercise picker already uses, so this
+  // adds a vocabulary, not a component.
+  //
+  // Two pages, one dialog: the term itself, and the full glossary behind
+  // "כל המונחים". state.ui.termGlossaryOpen is a boolean rather than a second
+  // registry entry precisely so both pages share one focus trap, one Escape
+  // binding and one backdrop click — a second dialog would have had to
+  // duplicate all three and would have been a second thing to get wrong.
+  //
+  // Dismiss by tap-outside, ✕, or Esc — all three come free from
+  // CLOUD_DIALOGS. There is no confirm button: nothing here is a decision.
+  function renderTermGlossaryPage() {
+    const items = TERM_GLOSSARY.map((t) => `<div class="term-glossary-item">
+      <div style="font-weight:800;font-size:15px;color:var(--chalk);"><bdi>${esc(t.term)}</bdi></div>
+      <div style="font-size:13px;color:var(--steel);margin-top:2px;line-height:1.4;">${bidiText(t.gloss)}</div>
+    </div>`).join("");
+    return `<button class="gate-back" data-community-action="term-glossary-back">‹ חזרה</button>
+      <h2 id="termSheetTitle" style="margin-top:0;margin-bottom:4px;color:var(--chalk);font-weight:800;font-size:18px;">כל המונחים</h2>
+      <div style="max-height:52vh;overflow-y:auto;margin-top:8px;">${items}</div>`;
+  }
+  function renderTermSheet() {
+    const open = state.ui.termSheet;
+    if (!open) return "";
+    const t = termById(open);
+    if (!t) return "";
+    // An <h2>, not a styled div: it is the aria-labelledby target of a
+    // role="dialog", so it has to appear in heading navigation (a11y A2). The
+    // two margins are pinned for the same reason every other converted
+    // dialog title pins them - an h2's UA default margin would push the
+    // sheet's content down and make this a design change as well as a
+    // semantic one.
+    const page = state.ui.termGlossaryOpen ? renderTermGlossaryPage() : `
+      <h2 class="term-sheet-term" id="termSheetTitle" style="margin-top:0;margin-bottom:0;"><bdi>${esc(t.term)}</bdi></h2>
+      <div class="term-sheet-gloss">${bidiText(t.gloss)}</div>
+      <div class="term-sheet-body">${bidiText(t.body)}</div>
+      <button class="term-glossary-row" data-community-action="term-glossary">
+        <span>כל המונחים</span><span aria-hidden="true">›</span>
+      </button>`;
+    // No data-community-action on the overlay itself: the backdrop click is
+    // handled generically off data-cloud-dialog (and only fires when the
+    // overlay IS the event target), so putting an action here as well would
+    // make every click INSIDE the sheet bubble up and close it.
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="termSheetTitle" data-cloud-dialog="termSheet" style="align-items:flex-end;padding:0;">
+      <div class="modal-sheet" data-term-sheet style="max-height:none;">
+        <div class="modal-head">
+          <span class="modal-title" style="font-size:13px;color:var(--steel);">${state.ui.termGlossaryOpen ? "מונחים" : "מה זה?"}</span>
+          <button class="chip-btn" data-community-action="term-close" aria-label="סגירה">✕</button>
+        </div>
+        <div style="padding:4px 18px calc(env(safe-area-inset-bottom,0px) + 22px);">${page}</div>
+      </div>
+    </div>`;
+  }
+  // Opening a sheet is what advances the auto-retire counter (spec 3.5): the
+  // signal that a member no longer needs the circles is that they have USED
+  // them, three times. Paging into the glossary from an already-open sheet is
+  // not a fourth open and deliberately does not count.
+  function openTermSheet(id) {
+    if (!termById(id)) return;
+    state.ui.termSheet = id;
+    state.ui.termGlossaryOpen = false;
+    try { localStorage.setItem(TERM_OPENS_KEY, String(termSheetOpenCount() + 1)); } catch (e) {}
+    rerender();
+  }
+  function closeTermSheet() { state.ui.termSheet = null; state.ui.termGlossaryOpen = false; rerender(); }
   // COMM-151. The report reason sheet. Reasons are a fixed list, an optional
   // capped free-text note, and a plain acknowledgement that discloses
   // nothing about what happens next.
@@ -14791,21 +15097,98 @@
   }
 
   window.renderCommunityApp = function () {
+    // Design spec 3.3's "at most 4 markers per screen, first occurrence
+    // only". The budget is per PAINT, which is what "per screen" means in an
+    // app that re-renders the whole tab on every state change. Reset HERE
+    // rather than in renderConfirmDialog() because app.js calls this first
+    // (app.js:4241) and the dialog mount second (app.js:4287) - so an open
+    // overlay shares the budget with the content behind it instead of
+    // resetting it halfway through one paint.
+    resetTermMarkBudget();
     if (!configured) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:8px;">הקהילה מוכנה לחיבור</div><div style="color:var(--steel);font-size:13px;line-height:1.7;">יש ליצור פרויקט Supabase, להריץ את קובץ המיגרציה ולהכניס URL ומפתח publishable בקובץ cloud-config.js. אין להכניס מפתח secret.</div></div>`;
     if (!state.user || (state.user.is_anonymous && !state.signupStarted)) {
-      // Two real entry points, both visible at once: log into an existing
-      // account (any device, same identity), or start fresh with a club
-      // invite code. Nothing happens silently *from this screen* — but
-      // state.user can already be a real (anonymous) session by the time
-      // anyone opens this tab: maybeAutoStartBackup() (Settings > protect
-      // my data) may have already created a backup-only session off the
-      // back of a saved set, with no invite code and no Community
+      // Two real entry points — log into an existing account, or start fresh
+      // with a club invite code. Nothing happens silently *from this screen*
+      // — but state.user can already be a real (anonymous) session by the
+      // time anyone opens this tab: maybeAutoStartBackup() (Settings >
+      // protect my data) may have already created a backup-only session off
+      // the back of a saved set, with no invite code and no Community
       // involvement at all. The is_anonymous + !signupStarted check keeps
-      // that person on this same neutral login-or-start choice instead of
-      // skipping straight to "enter your invite code" as if they had
-      // clicked start-signup — ensureAnonymousSession() below still
-      // no-ops for them since a session already exists.
-      if (!state.signupStarted) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">כניסה לקהילה</div><div style="color:var(--steel);font-size:12.5px;line-height:1.7;margin-bottom:14px;">התחברות עם שם הכניסה והסיסמה משחזרת את הפרופיל, העוקבים, הסנכרון הפרטי והרשאות הצוות — גם ממכשיר חדש או אחרי מחיקת נתונים.</div><form id="communityLogin">${field("communityLogin", "username", LOGIN_NAME_LABEL, `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="${esc(LOGIN_NAME_LABEL)}" required/>`)}${field("communityLogin", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="current-password" placeholder="סיסמה" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">התחברות ושחזור החשבון</button></form><button class="link-btn" data-community-action="start-signup" style="display:block;margin:18px auto 0;">חבר/ה חדש/ה? התחלת הרשמה עם קוד הזמנה</button>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
+      // that person on this same neutral choice instead of skipping straight
+      // to "enter your invite code" as if they had clicked start-signup —
+      // ensureAnonymousSession() below still no-ops for them since a session
+      // already exists.
+      //
+      // ================ DESIGN SPEC SECTION 7: THE GATE WAS BACKWARDS =======
+      //
+      // Until now this branch rendered ONE screen, and it led with a login
+      // form and a 56px primary `התחברות ושחזור החשבון` — for an account the
+      // arriving member does not have. The path they actually need was an
+      // 11px underlined .link-btn at the bottom of it.
+      //
+      // For a club rolling this out to a cohort, EVERY arriving member is
+      // new. The primary action was the one almost nobody needs. The
+      // beginner persona's verbatim first reaction was "I don't have a
+      // username. Did I already sign up and forget? Did I do something
+      // wrong?" — a member blaming herself for the app's ordering.
+      //
+      // So the one screen becomes two, and they swap emphasis:
+      //
+      //   gateView ""      the neutral CHOICE screen. Says what the community
+      //                    is, then offers the invite code as the primary
+      //                    .save-btn and login as a real >=44px secondary
+      //                    control (.gate-alt — not the 13px .link-btn that
+      //                    was the defect, just pointed the other way).
+      //   gateView "login" the credential form, alone on a screen.
+      //
+      // THE TWO SENTENCES MOVED UP VERBATIM. The invite-code screen's own
+      // copy — "הכניסה עם קוד הזמנה שמקבלים מהמאמן/ת" and "הקוד לא נוגע
+      // לרישום האימונים" — is the app's own best writing and the sentence
+      // that stops a nervous member panicking. It was one screen too late.
+      // It is repeated on the invite step rather than moved off it:
+      // reassurance is allowed to repeat.
+      //
+      // THE STAFF SENTENCE IS DELETED FROM THE GATE. "הסנכרון הפרטי" and
+      // "הרשאות הצוות" mean nothing to a member and were being shown, at
+      // 12.5px, to a person who has no account and no staff role. Rewritten
+      // in member terms and shown only on the login screen, which is the one
+      // place it is answering a question somebody actually asked.
+      //
+      // WHAT THIS DOES *NOT* FIX, so nobody believes it did: the spec claims
+      // splitting login onto its own screen is also the structural fix for
+      // the duplicate input[name="username"]. It is not. Measured on the
+      // real boot: the second field is backupCredentials in #settingsBody,
+      // which app.js repopulates on EVERY render regardless of whether the
+      // settings overlay is open (app.js:4263), so it sits in the DOM
+      // permanently — display:none, but present — from the moment any
+      // anonymous backup session exists. The gate was never rendering two
+      // forms at once. What this split genuinely buys is that a COLD
+      // ARRIVING MEMBER now has zero credential forms mounted instead of
+      // one, so the collision needs a deliberate tap onto the login screen
+      // to happen at all. The real fix is app.js's, and is reported there.
+      if (!state.signupStarted && state.ui.gateView !== "login") {
+        return `<div class="chart-card">
+          <div aria-hidden="true" style="font-size:32px;line-height:1;margin-bottom:10px;color:var(--brass);">👥</div>
+          <div style="font-weight:800;font-size:20px;margin-bottom:8px;">קהילת המועדון</div>
+          <div style="color:var(--chalk);font-size:15px;line-height:1.5;margin-bottom:12px;">${bidiText("כאן רואים מה קורה במועדון: אימונים ושיאים של חברי המועדון, הודעות מהמאמנים ולוחות תוצאות.")}</div>
+          <div style="color:var(--steel);font-size:14px;line-height:1.6;margin-bottom:18px;">${bidiText("הכניסה עם קוד הזמנה שמקבלים מהמאמן/ת. הקוד לא נוגע לרישום האימונים שלכם — הוא רק פותח את לשונית הקהילה.")}</div>
+          <button class="save-btn" data-community-action="start-signup">יש לי קוד הזמנה</button>
+          <div style="display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:18px;">
+            <span style="color:var(--steel);font-size:14px;">${bidiText("כבר יש לך חשבון קהילה?")}</span>
+            <button class="gate-alt" data-community-action="show-login">התחברות</button>
+          </div>
+          ${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}
+        </div>`;
+      }
+      if (!state.signupStarted) {
+        return `<div class="chart-card">
+          <button class="gate-back" data-community-action="gate-back">‹ חזרה</button>
+          <div style="font-weight:800;font-size:20px;margin:6px 0 8px;">התחברות לקהילה</div>
+          <div style="color:var(--steel);font-size:14px;line-height:1.6;margin-bottom:14px;">${bidiText("התחברות מחזירה את הפרופיל שלך, את מי שאת/ה עוקב/ת אחריו ואת ההיסטוריה בקהילה — גם במכשיר חדש.")}</div>
+          <form id="communityLogin">${field("communityLogin", "username", LOGIN_NAME_LABEL, `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="${esc(LOGIN_NAME_LABEL)}" required/>`)}${field("communityLogin", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="current-password" placeholder="סיסמה" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">התחברות</button></form>
+          ${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}
+        </div>`;
+      }
       ensureAnonymousSession();
       return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">מתחברים לקהילה…</div><div style="color:var(--steel);font-size:13px;">שנייה אחת.</div>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     }
@@ -14829,7 +15212,15 @@
     //    log-in-or-start-fresh screen - correct for a genuine new member,
     //    wrong for a returning one who scanned the same flyer, and this is
     //    their way out.
-    if (!state.redemption) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">קוד הזמנה למועדון</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">הקהילה פתוחה רק למי שקיבל/ה קוד הזמנה מהמאמן/ת. הקוד לא נוגע לרישום האימונים עצמו — הוא רק פותח את לשונית הקהילה.</div>${state.ui.inviteCodeDraft ? `<div class="footer-note" data-invite-prefilled="1" style="margin-bottom:10px;color:var(--brass);">${bidiText("הקוד מולא אוטומטית מהקישור שנסרק. אפשר להמשיך.")}</div>` : ""}<form id="communityInviteCode">${field("communityInviteCode", "code", "קוד הזמנה", `<input class="text-input" name="code" dir="ltr" placeholder="קוד הזמנה" value="${esc(state.ui.inviteCodeDraft)}" data-invite-code required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">אישור קוד</button></form><button class="link-btn" data-community-action="back-to-login" style="display:block;margin:16px auto 0;">כבר יש לכם חשבון? התחברות</button>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
+    // 3. Design spec 7.2: a `‹ חזרה` control at >=44px. Before it, the only
+    //    button on this screen was `אישור קוד` — a member who tapped in by
+    //    accident, or who wants to re-read what the community even is, had
+    //    to leave via the bottom tab bar and lose their place. It is
+    //    deliberately a SEPARATE control from "כבר יש לכם חשבון? התחברות"
+    //    below it, because they go to different places and answer different
+    //    questions: back to the choice screen, versus straight to the login
+    //    form. Collapsing them would make one of the two labels a lie.
+    if (!state.redemption) return `<div class="chart-card"><button class="gate-back" data-community-action="gate-back">‹ חזרה</button><div style="font-weight:800;font-size:18px;margin:6px 0 6px;">קוד הזמנה למועדון</div><div style="color:var(--steel);font-size:14px;line-height:1.6;margin-bottom:14px;">${bidiText("הכניסה עם קוד הזמנה שמקבלים מהמאמן/ת. הקוד לא נוגע לרישום האימונים שלכם — הוא רק פותח את לשונית הקהילה.")}</div>${state.ui.inviteCodeDraft ? `<div class="footer-note" data-invite-prefilled="1" style="margin-bottom:10px;color:var(--brass);">${bidiText("הקוד מולא אוטומטית מהקישור שנסרק. אפשר להמשיך.")}</div>` : ""}<form id="communityInviteCode">${field("communityInviteCode", "code", "קוד הזמנה", `<input class="text-input" name="code" dir="ltr" inputmode="text" autocomplete="off" maxlength="128" placeholder="קוד הזמנה" value="${esc(state.ui.inviteCodeDraft)}" data-invite-code required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">אישור קוד</button></form><div style="display:flex;justify-content:center;margin-top:16px;"><button class="gate-alt" data-community-action="back-to-login">כבר יש לכם חשבון? התחברות</button></div>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     // Right after the code, before anything else — this is what turns the
     // bootstrap anonymous session into a real, log-in-from-any-device
     // account. state.user.is_anonymous flips to false the moment
@@ -15126,6 +15517,34 @@
       <div class="log-list">${privacyRows}</div>
     </div>`;
 
+    // Design spec section 3.5 — the one explicit switch over the `?` markers.
+    //
+    // The markers already auto-retire after three sheets have been opened, so
+    // this is NOT the primary control; it is the escape hatch for the member
+    // the counter gets wrong in either direction. An expert who wants them
+    // gone on day one, and a returning beginner who wants them back months
+    // after the counter retired them, both need a way to say so, and neither
+    // can be served by a counter.
+    //
+    // It lives on the community Account tab rather than app.js's Settings
+    // sheet for the plain reason that app.js is not this pass's to edit — the
+    // switch is per-device localStorage either way, so moving it later is a
+    // markup change with no data migration. Spec 3.5 asks for it under
+    // Settings, and that is noted in the handover rather than faked here.
+    //
+    // The status line states which of the two mechanisms is currently in
+    // effect, because "on" is not the whole truth once the counter has
+    // retired the markers on its own.
+    const marksOn = termMarksSwitchOn();
+    const marksRetired = marksOn && !termMarksVisible();
+    const termMarkPanel = `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--steel)", "מונחים והסברים")}
+      <label class="log-row" style="justify-content:space-between;gap:12px;cursor:pointer;">
+        <span style="font-size:13px;">סימוני הסבר על מונחים<span style="color:var(--steel);display:block;font-size:11px;line-height:1.5;">${bidiText(marksRetired ? "העיגול הקטן עם ? ליד מונחים כמו AMRAP. הוא מפסיק להופיע אחרי שפותחים שלושה הסברים, וזה כבר קרה — אפשר להחזיר אותו בכל רגע." : "העיגול הקטן עם ? ליד מונחים כמו AMRAP. הוא נעלם מעצמו אחרי שפותחים שלושה הסברים.")}</span></span>
+        <input type="checkbox" data-term-marks="1"${marksOn ? " checked" : ""} aria-label="סימוני הסבר על מונחים"/>
+      </label>
+      <button class="chip-btn" data-community-action="term-glossary-open" style="margin-top:10px;">כל המונחים</button>
+    </div>`;
+
     // COMM-221. The "View Week" entry point into the recap surface.
     const recapEntry = `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--teal)", "הסיכום השבועי שלי")}<button class="chip-btn primary" data-community-action="open-recap">צפייה בשבוע</button></div>`;
     // COMM-309. The monthly club recap's member-facing card, right beside
@@ -15156,7 +15575,7 @@
     // renderCoachAppActivitySection() above, which are defined outside this
     // function so its staff-gate count stays at the asserted 5.
     const movedToManageNote = staff ? `<div class="footer-note" style="color:var(--steel);text-align:center;margin:16px 0 4px;">כלי ניהול עברו ל"ניהול" בתפריט התחתון</div>` : "";
-    const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderMyAchievements() + renderNotifPrefsPanel() + movedToManageNote
+    const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + termMarkPanel + people + newMembersHtml + inactiveHtml + renderMyAchievements() + renderNotifPrefsPanel() + movedToManageNote
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red-text);">בקשת מחיקת חשבון</button>`;
 
@@ -15595,6 +16014,20 @@
     // to be checked before either or the Tab trap locks focus into the
     // covered dialog underneath and Escape closes the wrong one.
     { key: "outwardShare", isOpen: () => state.posts.outwardShare, close: function () { closeOutwardShare(); } },
+    // Design spec section 3, tier 3. THIRD, and for the same stacking reason
+    // the two entries above it are first and second: a `?` marker can be
+    // rendered inside the challenge, event, recap or profile overlay's own
+    // content, so the term sheet opens ON TOP of those and has to be matched
+    // before them or the Tab trap locks focus into the covered dialog
+    // underneath and Escape closes the wrong one.
+    //
+    // It stays BELOW confirmSheet and outwardShare, and that ordering is not
+    // arbitrary either: neither of those two can contain a term marker (one
+    // is a title + message + two buttons, the other is a share preview), so
+    // nothing can ever stack on top of the term sheet, while both of them
+    // can still stack on top of it. Moving it above either would reintroduce
+    // exactly the A3 defect this registry order exists to prevent.
+    { key: "termSheet", isOpen: () => state.ui.termSheet, close: function () { closeTermSheet(); } },
     { key: "reportSheet", isOpen: () => state.admin.reportSheet, close: function () { closeReportSheet(); } },
     { key: "modAction", isOpen: () => state.admin.modAction, close: function () { closeModAction(); } },
     { key: "reclaimInvite", isOpen: () => state.admin.reclaim, close: function () { closeGhostReclaim(); } },
@@ -15873,6 +16306,15 @@
     document.querySelectorAll("[data-privacy-field]").forEach((el) => {
       el.addEventListener("change", () => savePrivacyField(el.dataset.privacyField, el.checked));
     });
+    // Design spec 3.5. Per-device and localStorage-backed, so unlike the
+    // privacy toggles above it there is no server write and nothing to roll
+    // back on failure.
+    document.querySelectorAll("[data-term-marks]").forEach((el) => {
+      el.addEventListener("change", () => {
+        try { localStorage.setItem(TERM_MARKS_KEY, el.checked ? "1" : "0"); } catch (e) {}
+        rerender();
+      });
+    });
     // COMM-113/114. Both observers are rebuilt here because rerender()
     // replaces every card element, so the previous ones point at nodes that
     // are no longer in the document.
@@ -16099,12 +16541,40 @@
     else if (action === "suggestion-follow") followSuggestion(el.dataset.id);
     else if (action === "confirm-yes") runConfirm();
     else if (action === "confirm-no") closeConfirm();
+    // Design spec section 3, tiers 2 and 3.
+    else if (action === "term-open") openTermSheet(el.dataset.term);
+    else if (action === "term-close") closeTermSheet();
+    else if (action === "term-glossary") { state.ui.termGlossaryOpen = true; rerender(); }
+    // Opening the glossary DIRECTLY, from Settings rather than from a term.
+    // termSheet still has to hold an id (it is what keeps the sheet mounted
+    // and what the back control returns to), so it opens on the first entry -
+    // but this deliberately does NOT go through openTermSheet(), because
+    // browsing the glossary on purpose is not the same signal as tapping a
+    // `?` you did not understand, and must not advance the auto-retire count.
+    else if (action === "term-glossary-open") {
+      state.ui.termSheet = TERM_GLOSSARY[0].id;
+      state.ui.termGlossaryOpen = true;
+      rerender();
+    }
+    else if (action === "term-glossary-back") { state.ui.termGlossaryOpen = false; rerender(); }
     else if (action === "start-signup") startSignup();
-    // The way back out of the invite step. It matters most for the QR deep
-    // link: captureInviteDeepLink() puts a scanner straight onto the code
-    // screen, so a returning member who scanned a flyer out of curiosity
-    // needs the login form to still be one tap away.
-    else if (action === "back-to-login") { state.signupStarted = false; rerender(); }
+    // Design spec 7.1. The choice screen's secondary door.
+    else if (action === "show-login") { state.ui.gateView = "login"; rerender(); }
+    // Design spec 7.2. `‹ חזרה` from either the login form or the invite
+    // step, back to the neutral choice screen. Clears BOTH flags: reached
+    // from the invite step it has to undo signupStarted, and reached from
+    // the login screen it has to undo gateView, and a member cannot tell
+    // which of the two screens they are backing out of by looking.
+    else if (action === "gate-back") { state.signupStarted = false; state.ui.gateView = ""; rerender(); }
+    // The way back out of the invite step for someone who already has an
+    // account. It matters most for the QR deep link: captureInviteDeepLink()
+    // puts a scanner straight onto the code screen, so a returning member who
+    // scanned a flyer out of curiosity needs the login form to still be ONE
+    // tap away. Now that login has a screen of its own, that means setting
+    // gateView too — without it this would land them on the choice screen and
+    // quietly make 9c15214's escape hatch two taps instead of one, which is
+    // the opposite of what this whole pass is for.
+    else if (action === "back-to-login") { state.signupStarted = false; state.ui.gateView = "login"; rerender(); }
     else if (action === "retry-join-load") retryJoinFunnelLoad();
     else if (action === "outbox-retry") retryOutboxItem(el.dataset.id);
     else if (action === "outbox-discard") discardOutboxItem(el.dataset.id);
@@ -16515,6 +16985,11 @@
         state.profileLoadError = false; state.redemptionLoadError = false;
         state.avatarUpload = { status: "idle", error: "" }; state.permissions = []; state.permissionsLoaded = false;
         state.ui.fieldErrors = {}; state.ui.confirmDialog = null;
+        // Back to the neutral choice screen, not to whichever gate screen the
+        // member happened to be on before. Signing out on a shared phone and
+        // being handed back a login form pre-framed as "the way in" is the
+        // exact ordering design spec 7 exists to undo.
+        state.ui.gateView = ""; state.ui.termSheet = null; state.ui.termGlossaryOpen = false;
         // hideMine is per-device and outlives the session - see the literal.
         state.leaderboard.scope = "club"; state.leaderboard.rows = []; state.leaderboard.loading = false;
         state.leaderboard.loaded = false; state.leaderboard.error = false;
@@ -16750,6 +17225,11 @@
     // Same position, same reason, as its CLOUD_DIALOGS entry: stacked over
     // the PR prompt and the achievement celebration below.
     if (state.posts.outwardShare) { e.preventDefault(); closeOutwardShare(); return; }
+    // Third, mirroring its CLOUD_DIALOGS position exactly: the term sheet can
+    // be opened from inside the challenge/event/recap/profile overlays below,
+    // so Escape must close IT and leave the one underneath open — a member
+    // who asked what a word meant has not asked to leave the challenge.
+    if (state.ui.termSheet) { e.preventDefault(); closeTermSheet(); return; }
     if (state.admin.reportSheet) { e.preventDefault(); closeReportSheet(); return; }
     if (state.admin.modAction) { e.preventDefault(); closeModAction(); return; }
     if (state.admin.reclaim) { e.preventDefault(); closeGhostReclaim(); return; }

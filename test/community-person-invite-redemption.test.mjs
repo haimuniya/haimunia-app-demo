@@ -9,12 +9,12 @@
 // user a generic "invalid" error while their code was already burned.
 import { test } from "node:test";
 import assert from "node:assert";
-import { bootCommunity, waitFor } from "./helpers/boot.mjs";
+import { bootCommunity, waitFor, waitForCommunityGate } from "./helpers/boot.mjs";
 import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
 async function reachInviteForm(window) {
   window.document.getElementById("tabCommunityBtn").click();
-  await waitFor(() => !!window.document.getElementById("communityLogin"), 3000);
+  await waitForCommunityGate(window);
   window.document.querySelector('[data-community-action="start-signup"]').click();
   await waitFor(() => !!window.document.getElementById("communityInviteCode"), 3000);
 }

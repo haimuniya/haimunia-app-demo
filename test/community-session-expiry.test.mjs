@@ -28,7 +28,7 @@
 //    gate, not a half-alive state with dead subscriptions and stale UI.
 import { test } from "node:test";
 import assert from "node:assert";
-import { bootCommunity, waitFor } from "./helpers/boot.mjs";
+import { bootCommunity, waitFor, waitForCommunityGate } from "./helpers/boot.mjs";
 import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
 const VERIFIED = new Date().toISOString();
@@ -88,8 +88,16 @@ test("realtime-subscribe path: a session that dies mid-session (refresh failure,
 
   mock.expireSession();
 
-  await waitFor(() => !!window.document.getElementById("communityLogin"), 3000);
+  await waitForCommunityGate(window);
   assert.deepEqual(mock.openChannels(), [], "every realtime channel must close when the session dies, not just on an explicit sign-out click");
   assert.equal(window.document.querySelector(".subtabbar"), null, "the main app must not still be showing as if the session were live");
-  assert.ok(window.document.getElementById("communityLogin"), "the app must degrade to a clear signed-out gate, not a half-alive state with a dead session");
+  // The gate is the CHOICE screen since design spec section 7, not the login
+  // form - which is the stronger assertion for this test anyway: a member
+  // whose session died mid-use lands on a screen that explains what the
+  // community is and offers both doors, rather than on a bare credential
+  // form implying they have done something wrong.
+  assert.ok(window.document.querySelector('#content [data-community-action="start-signup"]'),
+    "the app must degrade to a clear signed-out gate, not a half-alive state with a dead session");
+  assert.ok(window.document.querySelector('#content [data-community-action="show-login"]'),
+    "and the signed-out gate must still offer the way back in for someone who already has an account");
 });

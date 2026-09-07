@@ -19,7 +19,7 @@
 // ACCEPTS are the same thing, and only running both halves can show that.
 import { test } from "node:test";
 import assert from "node:assert";
-import { bootCommunity, waitFor } from "./helpers/boot.mjs";
+import { bootCommunity, waitFor, waitForCommunityGate } from "./helpers/boot.mjs";
 import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
 function submit(window, id) {
@@ -40,7 +40,7 @@ function fieldError(window, formId, name) {
 // screen - the same path community-intro-carousel.test.mjs uses.
 async function reachCredentials(window) {
   window.document.getElementById("tabCommunityBtn").click();
-  await waitFor(() => !!window.document.getElementById("communityLogin"), 3000);
+  await waitForCommunityGate(window);
   window.document.querySelector('[data-community-action="start-signup"]').click();
   await waitFor(() => !!window.document.getElementById("communityInviteCode"), 3000);
   window.document.querySelector('#communityInviteCode input[name="code"]').value = "CLUBCODE";

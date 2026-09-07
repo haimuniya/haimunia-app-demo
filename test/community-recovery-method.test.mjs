@@ -11,7 +11,7 @@
 // when the current user has a credential pair on file.
 import { test } from "node:test";
 import assert from "node:assert";
-import { bootCommunity, waitFor } from "./helpers/boot.mjs";
+import { bootCommunity, waitFor, waitForCommunityGate, openCommunityLogin } from "./helpers/boot.mjs";
 import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
 function submit(window, id) {
@@ -22,7 +22,7 @@ test("full signup stamps recovery_verified_at and lands the member in the commun
   const mock = createMockSupabase();
   const window = await bootCommunity(mock, { syncEnabled: false });
   window.document.getElementById("tabCommunityBtn").click();
-  await waitFor(() => !!window.document.getElementById("communityLogin"), 3000);
+  await waitForCommunityGate(window);
 
   window.document.querySelector('[data-community-action="start-signup"]').click();
   await waitFor(() => !!window.document.getElementById("communityInviteCode"), 3000);
@@ -124,8 +124,9 @@ test("recovery on a new device: signing in with the same credentials reaches the
 
   const window = await bootCommunity(mock, { syncEnabled: false });
   window.document.getElementById("tabCommunityBtn").click();
-  await waitFor(() => !!window.document.getElementById("communityLogin"), 3000);
-
+  // Design spec section 7: login is its own screen behind the gate's choice
+  // screen, so a returning member opens it explicitly.
+  await openCommunityLogin(window);
   window.document.querySelector('#communityLogin input[name="username"]').value = "yael";
   window.document.querySelector('#communityLogin input[name="password"]').value = "CorrectHorse9";
   submit(window, "communityLogin");

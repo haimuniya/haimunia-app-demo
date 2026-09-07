@@ -156,6 +156,33 @@ export async function bootCommunity(mock, opts = {}) {
   return window;
 }
 
+// ---- The community gate, after design spec section 7 ---------------------
+//
+// The gate used to be ONE screen that led with the login form, so a large
+// number of tests used `#communityLogin` as their proxy for "the signed-out
+// gate has rendered". It is now two screens: a neutral CHOICE screen (what
+// the community is, "יש לי קוד הזמנה" as the primary action) with the login
+// form one deliberate tap behind it, because for a club rolling this out
+// every arriving member is new and the login form was the primary action
+// almost nobody needed.
+//
+// These two helpers keep that distinction honest in the tests rather than
+// papering over it. A test that only needs "the signed-out gate is up" waits
+// for the gate; a test that genuinely exercises LOGGING IN opens the form
+// explicitly, which is exactly what a returning member now does.
+export async function waitForCommunityGate(window) {
+  await waitFor(() => !!window.document.querySelector(
+    '#content [data-community-action="start-signup"], #content #communityLogin'), 4000);
+  return window.document.getElementById("content");
+}
+export async function openCommunityLogin(window) {
+  await waitForCommunityGate(window);
+  const btn = window.document.querySelector('#content [data-community-action="show-login"]');
+  if (btn) btn.click();
+  await waitFor(() => !!window.document.getElementById("communityLogin"), 4000);
+  return window.document.getElementById("communityLogin");
+}
+
 export function waitFor(check, timeoutMs = 2000, intervalMs = 5) {
   const start = Date.now();
   return new Promise((resolve, reject) => {

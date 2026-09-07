@@ -147,7 +147,20 @@ test("the dialog registry keeps DOM keys and state paths separate", () => {
   //   the achievement celebration and renders stacked over them, so - exactly
   //   like confirmSheet above it - it must be matched before the dialog
   //   underneath or the Tab trap and Escape address the covered one.
-  assert.equal(entries.length, 14, "every dialog entry needs a key and an isOpen getter");
+  //
+  // 15 since design spec section 3 (jargon disclosure) added "termSheet", the
+  // bottom sheet behind every `?` marker. Treated as the review trigger this
+  // pin is meant to be — the full reasoning (why a new dialog rather than
+  // askConfirm, why it sits third, and why the glossary is a second PAGE of
+  // this sheet rather than a sixteenth entry) is written out beside the
+  // matching key-order pin in community-destructive-symmetry.test.mjs, so the
+  // two pins do not drift into two different half-explanations.
+  //
+  // The one thing worth repeating HERE, because it is this file's own
+  // assertion: state.ui.termSheet must default to null like every other
+  // dialog flag. It holds a glossary entry id while open, and `null` - not
+  // "" - is what the loop below checks, so a dialog genuinely starts closed.
+  assert.equal(entries.length, 15, "every dialog entry needs a key and an isOpen getter");
   const state = readStateLiteral();
   for (const [, key, path] of entries) {
     const value = path.split(".").slice(1).reduce((o, k) => (o == null ? o : o[k]), state);
