@@ -8,7 +8,9 @@ Attendance-blocked: no
 ## User outcome
 
 A member tracks a "train N times a week for M weeks" pattern using their
-logged workouts, without needing verified class attendance.
+logged workouts alone. (No class-attendance source exists in this product —
+class scheduling and check-in are Arbox's; see 202609060024 and COMM-300's
+note on what "verified" means.)
 
 ## Acceptance criteria
 

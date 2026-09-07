@@ -113,16 +113,66 @@ export async function selectMovement(page, partialQuery) {
 
 // COMM-360: selectedWodId now defaults to unset (was WOD_LIBRARY[0]/"Fran"),
 // so a fresh visit to the WOD tab's log subtab shows a pick-a-WOD empty
-// state with no exercise-select/open-wod-picker button of its own (same
-// shape as the log tab's own pick-a-movement state) - anything that needs
-// a real WOD selected (the picker, the builder, an actual log/save) has to
-// pick one first. Goes through the benchmarks subtab, same as a real user
-// would, and lands back on the log subtab with that WOD selected.
+// state - anything that needs a real WOD selected (an actual log/save) has
+// to pick one first. That empty state has since been rewritten (8afbc57)
+// and now carries its own open-wod-picker button and a builder link; this
+// helper still goes the long way round, through the benchmarks subtab, the
+// way a member picking a named benchmark would, and lands back on the log
+// subtab with that WOD selected. benchmarks.mjs is what pins the empty
+// state's own copy and its doors out.
 export async function selectBenchmarkWod(page, id) {
   await page.click("button.subtabbtn[data-subtab='benchmarks']");
   await page.waitForTimeout(150);
   await page.click(`[data-action='select-benchmark'][data-id='${id}']`);
   await page.waitForTimeout(150);
+}
+
+// Destructive actions on the offline half of the app (deleting a logged
+// set, deleting a logged WOD) now route through askAppConfirm() rather than
+// firing on the click. The trigger is a 23x26px unlabelled bin icon flush
+// against an identically sized edit pencil, and a logged set is the only
+// data in the app that cannot be recreated - so before this, the least
+// guarded action in the product destroyed the least recoverable data, while
+// blocking a club member did confirm. That asymmetry was the launch
+// blocker; the dialog is the fix, and every check that deletes has to drive
+// it rather than route around it.
+//
+// Returns the dialog's own text so callers can assert it NAMES its subject
+// (the second half of the same finding: no confirmation in the app said
+// what it was about to delete).
+export async function readAppConfirm(page, { timeout = 5000 } = {}) {
+  await page.waitForSelector("#appConfirmOverlay", { state: "visible", timeout });
+  // askAppConfirm() focuses the first control on a setTimeout(..., 50) after
+  // the render, so sampling activeElement the instant the overlay appears
+  // races it and reads <body>. Wait for focus to land instead of sampling
+  // once - same lesson as dismissWelcomeModal above. A dialog that really
+  // never focuses times out here and reports focused:"" for the caller to
+  // fail on, rather than hanging the run.
+  try {
+    await page.waitForFunction(
+      () => document.getElementById("appConfirmOverlay")?.contains(document.activeElement),
+      { timeout: 2000 },
+    );
+  } catch { /* fall through: focused reads "" below and the caller fails on it */ }
+  return page.evaluate(() => {
+    const o = document.getElementById("appConfirmOverlay");
+    return {
+      title: (o.querySelector("#appConfirmTitle")?.textContent || "").trim(),
+      message: (o.textContent || "").replace(/\s+/g, " ").trim(),
+      // The confirm button must read as destructive, not as a bare "OK".
+      destructive: !!o.querySelector("[data-action='app-confirm-yes'].danger"),
+      focused: o.contains(document.activeElement) ? (document.activeElement.dataset.action || "(unnamed)") : "",
+    };
+  });
+}
+
+// accept=true presses the destructive confirm, accept=false presses cancel.
+// Waits for the overlay to actually leave the DOM either way: it is a
+// full-screen .modal-overlay at z-index 50 and will intercept the caller's
+// next click if we return while it is still up.
+export async function resolveAppConfirm(page, accept, { timeout = 5000 } = {}) {
+  await page.click(`#appConfirmOverlay [data-action='app-confirm-${accept ? "yes" : "no"}']`, { timeout });
+  await page.waitForSelector("#appConfirmOverlay", { state: "detached", timeout });
 }
 
 // The PR-celebration popup blocks every click behind it until dismissed.

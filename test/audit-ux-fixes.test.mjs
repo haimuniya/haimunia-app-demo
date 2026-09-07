@@ -87,7 +87,13 @@ test("unchecking then rechecking an EMOM station restores its original rotation 
   assert.deepEqual(window.activeBuilderMovementNames(), names, "the rotation order must be unchanged after an uncheck/recheck cycle");
 });
 
-test("the weekly-challenge comparison-key field validates the real movement:/wod: format, and the placeholder shows a real example", () => {
-  assert.match(cloudJs, /placeholder="movement:back-squat:est1rm"/);
-  assert.match(cloudJs, /\/\^\(movement:\[a-z0-9-\]\+:\(est1rm\|duration\)\|wod:\[a-z0-9-\]\+:\[a-z\]\+:\(rx\|scaled\)\)\$\//);
+// Superseded by the picker. The shape check this used to pin is still there
+// (COMPARISON_KEY_SHAPE_RE), but a shape check was never enough on its own -
+// "movement:bck-squat:est1rm" is correctly shaped and names nothing. The field
+// is a <select> now and the behavioural coverage lives in
+// test/community-weekly-challenge.test.mjs; this keeps the structural half.
+test("the weekly-challenge comparison key is a picker, and the documented format is still enforced on submit", () => {
+  assert.doesNotMatch(cloudJs, /name="comparisonKey"[^>]*class="text-input"[^>]*placeholder=/, "the free-text comparison-key input must be gone");
+  assert.match(cloudJs, /const COMPARISON_KEY_SHAPE_RE = \/\^\(movement:\[a-z0-9-\]\+:\(est1rm\|duration\)\|wod:\[a-z0-9-\]\+:\[a-z\]\+:\(rx\|scaled\)\)\$\//);
+  assert.match(cloudJs, /function renderChallengeKeyPicker\(\)/);
 });

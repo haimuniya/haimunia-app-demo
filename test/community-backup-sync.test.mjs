@@ -83,7 +83,44 @@ test("the stale-local-export reminder threshold tightens for anyone not already 
   assert.match(fn, /cloudCovered \? 30 : 5/);
 });
 
-test("PRIVACY.md discloses automatic private backup as separate from joining the community, and reversible", () => {
-  assert.match(privacyMd, /backed up automatically and privately/);
-  assert.match(privacyMd, /turned off at any time/);
+// PRIVACY.md became bilingual (Hebrew first, English second) on 2026-09-06,
+// so the English sentence this test used to grep for was rewritten and the
+// line wrapping moved. The GUARANTEE is unchanged and is what is asserted
+// below - in BOTH languages, because the Hebrew half is the text members are
+// actually given and an English-only assertion would let the Hebrew half
+// silently lose the disclosure:
+//
+//   1. the backup is automatic and private,
+//   2. it begins at the first saved workout (the real point of collection),
+//   3. it is separate from joining the community, and
+//   4. it is reversible from Settings.
+//
+// Matching is done on a whitespace-normalised copy so a reflow of the source
+// paragraphs can never fail this the way it just did; the phrases themselves
+// are still required verbatim.
+const privacyText = privacyMd.replace(/\s+/g, " ");
+
+test("PRIVACY.md discloses automatic private backup - private, from the first save, separate from joining the community, and reversible - in Hebrew", () => {
+  assert.match(privacyText, /גיבוי אוטומטי ופרטי לענן/);
+  assert.match(privacyText, /מהאימון הראשון שאתם שומרים/);
+  assert.match(privacyText, /נפרד לחלוטין מהקהילה/);
+  assert.match(privacyText, /אפשר לכבות בכל רגע/);
+});
+
+test("PRIVACY.md discloses automatic private backup - private, from the first save, separate from joining the community, and reversible - in English", () => {
+  assert.match(privacyText, /Automatic private cloud backup/);
+  assert.match(privacyText, /From the first workout you save, the app opens a cloud account for you/);
+  assert.match(privacyText, /entirely separate from the community/);
+  assert.match(privacyText, /turn it off at any time in Settings/);
+});
+
+// The 30-day rule is the other half of an honest backup disclosure: a
+// backup-only anonymous account (no invite redeemed, no username/password) is
+// collected by purge_abandoned_profiles() 30 days after it was opened, taking
+// the private_records rows with it through the auth.users cascade. A policy
+// that advertises automatic backup without this reads as long-term storage.
+test("PRIVACY.md warns that a backup-only account, and everything backed up to it, is deleted after 30 days", () => {
+  assert.match(privacyText, /חשבון גיבוי בלבד נמחק אחרי 30 יום/);
+  assert.match(privacyText, /a backup-only account is deleted after 30 days/i);
+  assert.match(privacyText, /set a username and password/);
 });

@@ -31,16 +31,26 @@ choose to share the badge.
 ## Client calls and contracts
 
 - Consumes ACHIEVEMENT_UNLOCKED.
-- `ach_share(member_achievement_id uuid, caption text, media jsonb) returns
-  uuid`.
+- `ach_share(member_achievement_id uuid, caption text default '', media jsonb
+  default '[]'::jsonb, p_idempotency_key uuid default null) returns uuid` —
+  **shipped 202609060019**, not before. The client half was wired from the
+  day this ticket landed and answered PGRST202 on every call until then. Full
+  contract in `contracts.md` under **Achievements**.
 
 ## Validation rules and limits
 
 - Note max 1000 characters.
+- A repeat share returns the first post's id and writes nothing — the server
+  is idempotent on `(author_id, source_type, source_record_id)` as well as on
+  the optional key, so a double tap is not an error state the client has to
+  render.
+- `only_me` is refused server-side with `a private achievement cannot be
+  shared`, in addition to the client not offering Share. The client check is
+  not the boundary.
 
 ## Migration outline
 
-- `ach_share` function. schema lands it.
+- `ach_share` function. Shipped by schema in 202609060019.
 
 ## Dependencies
 

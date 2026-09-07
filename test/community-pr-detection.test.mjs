@@ -71,6 +71,16 @@ test("no PR_CREATED and no behaviour change when the community is not signed in"
   window.HaimuniaEvents.on(window.PRODUCT_EVENTS.PR_CREATED, (p) => seen.push(p));
 
   await window.addMovement("PR Hook Offline", "Deadlift");
+  // UX-audit recalibration (design spec 5.3.1, MIN_ENTRIES_BEFORE_PR): the
+  // local celebration now needs 3 prior entries for the exercise to beat, so
+  // a baseline is logged before the set under test. PR_CREATED itself is
+  // deliberately NOT subject to that gate (it also feeds challenge progress
+  // and only ever offers a share) - which is why the "nothing is announced
+  // offline" assertion below still covers every one of these saves.
+  for (const kg of [100, 105, 110]) {
+    await logReps(window, kg);
+    window.closeCelebration();
+  }
   await logReps(window, 120);
 
   assert.equal(seen.length, 0, "detection still runs but nothing is announced offline");

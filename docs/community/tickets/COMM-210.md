@@ -7,8 +7,11 @@ Attendance-blocked: no
 
 ## User outcome
 
-A member sees who in the club is training most consistently, ranked without
-needing verified class attendance.
+A member sees who in the club is training most consistently, ranked from
+shared workout posts alone. (This ticket predates `attendance_log`. "Class
+attendance" is not a source this product has at all — class scheduling and
+check-in are Arbox's; see 202609060024 and COMM-300's note on what
+"verified" means.)
 
 ## Acceptance criteria
 

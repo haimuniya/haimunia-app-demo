@@ -667,7 +667,9 @@ client was already built against.
   'in_leaderboards')` and `can_view_profile_field(member, 'visible_to_club')`,
   and in `consistency` mode `can_view_profile_field(member,
   'show_attendance')` as well (COMM-306, 202608310004 — the value being ranked
-  is verified attendance, which carries its own toggle). A member who fails any
+  is attendance-derived, and attendance carries its own toggle; on what that
+  word does and does not mean, see 202609060024 below — it is the member's own
+  logged training, never a class check-in). A member who fails any
   of the three is **absent from the ranked set, not ranked at 0**: on a board
   where 0 is a real value, publishing a 0 for an opted-out member would state
   something false about them rather than withhold something true. The
@@ -988,11 +990,171 @@ should read those entries instead.
   as `hidden_posts`. The client owns the toggle, the table has no state
   beyond the row existing.
 
-### pr_share(record_id uuid, note text, media jsonb) returns uuid
+### pr_share(record_id text, note text default '', media jsonb default '[]'::jsonb, p_idempotency_key uuid default null) returns uuid
 
+- Shipped in 202609060019 (five-persona UX audit, defect 1). Before that
+  migration this function **did not exist in any migration**: it was
+  documented here, fully wired in `cloud.js` (`sharePrPrompt()`), and
+  answered PGRST202 "Could not find the function" on every call since the
+  day the prompt shipped. Sharing a PR had never once worked.
+- **`record_id` is `text`, not `uuid`, and this entry published the wrong
+  type until 202609060019 landed.** The value the client sends is
+  `entry.id` from the offline training log — `uid("set")` in
+  `src/shared/safe-helpers.js`, i.e. the literal string
+  `"set-" || crypto.randomUUID()`. A `uuid` parameter would fail to cast in
+  PostgREST before the body ever ran, on every single call. `text` is also
+  what `private_records.record_id` and `workout_posts.source_record_id`
+  already are. Anyone who implemented the old line would have shipped a
+  second outage on top of the one being fixed.
+- Argument names are the shipped client's and are deliberately **not**
+  `p_`-prefixed — PostgREST resolves an RPC by the exact set of named
+  arguments in the request body, and the live call site is
+  `rpc("pr_share", { record_id, note, media })`. Same reason `post_create`,
+  `post_delete` and `community_profile` are unprefixed. Only the optional
+  idempotency key carries the `p_` form, matching 202609060014.
 - Purpose: create a POST_PR from a detected personal record.
-- Auth: the record owner. Side effects: inserts a POST_PR, improvement is
-  recomputed server-side from the record, not trusted from the client.
+- Auth: `security definer`, granted to `authenticated` only (`revoke ... from
+  public, anon`). It writes `workout_posts` and `post_media` past
+  `posts_insert_self` and `post_media_insert_author`, so it re-checks
+  `post_create`'s gates by hand, in `post_create`'s order: `not authorized`
+  (null caller), `recovery method required` (`is_community_member()`),
+  `not authorized` (`has_perm('community.post.create')`),
+  `posting_restricted` (COMM-153), then `rate_limited` past 20 per 10
+  minutes. The rate limit uses **`post_create`'s own action key**, not a
+  per-function one: a member's posting budget is one budget, and a separate
+  key would hand a scripted client 20 posts plus 20 shares per window.
+- Ownership, and the three cases it resolves server-side. The client sends
+  an id and nothing else, so every figure on the card is read out of the
+  caller's own `private_records` rows or not published at all.
+  - The caller owns a live `strength_entry`/`wod_entry` row with this
+    `record_id` (`deleted_at is null`). Normal path; all figures are
+    recomputed from it.
+  - The `record_id` belongs to a **different** member: refused,
+    `not authorized`. Without this a member could attach their post to
+    someone else's record and the card's "פתיחת האימון" deep link would
+    point a reader at a record that is not the post's.
+  - **Nobody at all holds the `record_id`: allowed, with no performance
+    claim of any kind — note and photo only.** This is not a hole. Cloud
+    backup is opt-**out** (`enableSyncIfAllowed`/`backupOptedOut`), so a
+    member who turned sync off in Settings has a genuine PR on their device
+    and no server copy of it, forever; refusing would make "share my PR"
+    permanently and silently broken for them. It also covers the ordinary
+    race where the share is tapped before `flushOutbox()` lands the row. An
+    unclaimed id buys the caller nothing they could not get from
+    `post_create` with free text.
+- Metadata written, all recomputed here and none of it read from the
+  request: `movement`, `new_result`, `previous_result`, `improvement`,
+  `achieved_on` — the exact keys `renderPrPostCard` reads and the exact
+  first four `feed_page` strips when the author has `show_workout_results`
+  off (202608310006). `previous_result`/`improvement` come from the caller's
+  own best prior weight for the **same movement at the same rep count**,
+  excluding this record and anything logged after it, so "improvement is
+  recomputed server-side from the record, not trusted from the client" is
+  literal.
+- **Known limitation, recorded rather than papered over: `movement`
+  resolves only for a CUSTOM movement.** Only `customMovements` are ever
+  synced to `private_records` (`queueAllLocalRecordsForSync`, app.js), so a
+  PR on a built-in movement publishes its numbers with no movement name and
+  `renderPrPostCard` falls back to `שיא אישי`. Closing it needs either the
+  movement name in the call (a signature change plus a client-supplied
+  display string) or a server-side catalogue of the built-in movements.
+  Neither was smuggled into 202609060019.
+- Validation: `record is required` for null, blank, or over 160 characters
+  (`private_records.record_id`'s own CHECK, so a longer id cannot name a
+  record in this database and is malformed rather than case three).
+  `at most 4 photos per post`; `each media item needs a storage_path`;
+  `a post needs text or at least one photo`, reachable only when there is no
+  server copy of the record AND no note AND no photo. Body normalisation is
+  `post_create`'s byte for byte — control characters stripped, trimmed,
+  capped at 1000, empty stored as NULL.
+- **Idempotent twice over.** The optional `p_idempotency_key`
+  (202609060014's `idem_begin`/`idem_complete`, the same shape
+  `post_create` takes, so the `cloud.js` owner can route the call through
+  `communityRpc()`/`OUTBOX_ACTIONS` later with no signature change); and,
+  with no key at all, the natural unique
+  `workout_posts(author_id, source_type, source_record_id)`. A repeat share
+  finds the record's existing **POST_PR**, returns its id and writes nothing,
+  so a double tap on "שיתוף" or a retry after a dropped response converges on
+  one post rather than raising 23505 the client would render as a failure.
+  The already-POST_PR check runs ahead of the rate limit, so a double tap
+  costs no budget, and it cannot overwrite the note that was published first.
+- **RESOLVED in 202609060025 — the natural key collided with the legacy
+  workout share, and `pr_share` reported a success it had not performed.**
+  `publishWorkout()` (cloud.js) upserts `workout_posts` with
+  `source_type = item.type` (`strength_entry`/`wod_entry`) and
+  `source_record_id = item.id`, i.e. **the same `entry.id`** `pr_share` is
+  keyed on, `on conflict author_id,source_type,source_record_id`. The unique
+  constraint does not include `post_type`, so one logged record owns one slot.
+  As shipped in 202609060019 the prior-post probe did not filter on
+  `post_type` either: a member who had already shared that workout and then
+  tapped "שיתוף" on the PR prompt got the POST_WORKOUT's id back, no POST_PR
+  was created, the note and photo were discarded, and `sharePrPrompt()` still
+  showed `השיא שותף לקהילה` and emitted `POST_CREATED` with
+  `post_type: "POST_PR"` for a post that was not one. Four ordinary taps.
+  - **The resolution: one record yields one post, and a prior POST_WORKOUT
+    for that record is UPGRADED IN PLACE into the POST_PR.** `post_type`,
+    `source_type`, `title`, `result_text`, `occurred_on`,
+    `score_value`/`score_direction` (server-recomputed, replacing
+    `publishWorkout`'s client-supplied score), `metadata` and `body` are set;
+    `deleted_at` is cleared; supplied media replaces the card's `post_media`.
+    `sharePrPrompt()`'s existing message and event become true with **no
+    client change**.
+  - The other two candidates were rejected. Adding `post_type` to the unique
+    constraint means dropping the three-column one, which is
+    `publishWorkout()`'s `on conflict` arbiter — Postgres would raise 42P10
+    on that upsert and break the legacy workout share for every member the
+    moment the migration deployed. A distinct `source_type` for a PR share is
+    landable alone but still ships two cards for one logged set, and it
+    destroys what `source_type` is for on these rows: the card's
+    "פתיחת האימון" deep link emits
+    `data-source-type="${m.source_type || post.source_type || "workout"}"`,
+    so a literal `pr` would reach the client's open-source handler as a value
+    it has never seen.
+  - Two cards for one set is also the wrong product answer, and this feed's
+    own ranking amplifies it rather than absorbing it: `feed_page` classes
+    `POST_WORKOUT` as diversity class `workout` and `POST_PR` as `boost`, and
+    the diversity pass explicitly **prefers** a boost card once a workout run
+    reaches its threshold — so two near-identical cards from one member about
+    one set are actively steered adjacent. The repetition penalty (−6 per
+    extra post by one author inside 24h, capped at −18) does not undo that; it
+    just also penalises the member's genuinely separate posts that day.
+  - **No constraint or index changed, so there is no migration cost on
+    existing rows**: nothing is dropped, nothing is rebuilt, no row is
+    rewritten, and `publishWorkout`'s on-conflict target keeps its arbiter.
+- **What the upgrade deliberately does not move.** `visibility` — promoting an
+  already-published `followers` post to `club` would widen its audience
+  without the member asking (an `identity-privacy` boundary; the upgraded post
+  keeps the visibility it was published with, the same principle `ach_share`
+  applies by inheriting the achievement's). `published_at` — `pr_share` is
+  reachable directly over PostgREST for any of the caller's own record ids, so
+  bumping it would let a member re-float an arbitrarily old post to the top of
+  every feed. `comparison_key` — the leaderboard key belongs to the workout
+  share that computed it. Reactions and comments survive the upgrade: it is
+  still the card for that set.
+- A prior post whose `status` is `hidden` or `removed` is **refused** with
+  `post is not available` rather than revived — a moderator acted on that
+  card, and re-publishing the same content under a new `post_type` would be
+  moderation evasion. A merely soft-deleted prior post **is** revived, because
+  the member is at that moment explicitly asking to publish the record. A
+  prior post that is neither `POST_WORKOUT` nor `POST_PR` raises
+  `this record already has a post`; it is unreachable from any shipped writer
+  (`post_create` never sets `source_record_id`) and refusing loudly beats
+  rewriting a row of unknown shape.
+- The upgrade's `UPDATE` runs inside the transaction-local
+  `app.allow_moderation_write` pin, because `deleted_at`, `score_value` and
+  `score_direction` are guarded by `workout_posts_guard_moderated_fields`
+  (202609060011). Same mechanism `post_delete()`,
+  `request_account_deletion()` and `admin_remove_member()` already use; set
+  and cleared around that one statement.
+- Side effects: one `workout_posts` row created **or one upgraded** (`POST_PR`;
+  visibility `club` on the insert path, preserved on the upgrade path;
+  `source_type` the record's own type, `source_record_id` the text id), up
+  to 4 `post_media` rows (replacing any existing set when media is supplied),
+  one `post_create` rate-limit token. The post-type privilege guard
+  (202609060004) needs nothing added and is not weakened: `POST_PR` is outside
+  its four staff-only labels, and this function takes no `post_type` from the
+  caller at all. Returns the post id, which is now always the id of a
+  `POST_PR`.
 
 ### community_profile(user_id uuid) returns jsonb
 
@@ -1055,8 +1217,9 @@ should read those entries instead.
 - Every number here except `current_streak` is derived from posts the member
   published. A member who trains and never posts reads as zero in those. Since
   COMM-306 (202608310004) `current_streak` is the exception and comes from
-  verified attendance, so the reverse also holds: a member who trains and
-  never posts has a real streak and no `training_frequency`.
+  `attendance_log` — the member's own logged training, not a class check-in
+  (202609060024) — so the reverse also holds: a member who trains and never
+  posts has a real streak and no `training_frequency`.
 
 ## Client card contract (renderPostCard)
 
@@ -1121,10 +1284,68 @@ Markup feed and engagement can rely on:
 - Side effects: inserts member_achievements once per non-repeatable
   definition, emits ACHIEVEMENT_UNLOCKED. Idempotent on repeat.
 
-### ach_share(member_achievement_id uuid, caption text, media jsonb) returns uuid
+### ach_share(member_achievement_id uuid, caption text default '', media jsonb default '[]'::jsonb, p_idempotency_key uuid default null) returns uuid
 
-- Purpose: create a POST_ACHIEVEMENT and set `shared_at`.
-- Auth: the achievement owner. Rejects a private-visibility achievement.
+- Shipped in 202609060019 (five-persona UX audit, defect 1), alongside
+  `pr_share` and for the same reason: it was documented here and wired in
+  `cloud.js` (`shareAchievementUnlock()`) but had no definition in any
+  migration, so it answered PGRST202 on every call. The published signature
+  was **correct** — argument names and the `uuid` first parameter are the
+  shipped client's — and was implemented as documented; only the parameter
+  defaults and the idempotency key are new.
+- Purpose: create a POST_ACHIEVEMENT for one of the caller's own
+  `member_achievements` rows and set `shared_at`.
+- Auth: `security definer`, granted to `authenticated` only. The same gate
+  ladder as `pr_share`, in the same order, sharing the same `post_create`
+  rate-limit key. Ownership is one predicate: the row is read from
+  `member_achievements` and refused with `not authorized` when its `user_id`
+  is not the caller — **not** `achievement not found`, which would be a lie
+  to the one member whose achievement it is not.
+- Raises: `achievement is required`, `achievement not found` (unknown row, or
+  a definition since deleted), `a private achievement cannot be shared`
+  (`visibility = 'only_me'`), `at most 4 photos per post`, `each media item
+  needs a storage_path`. The client already refuses `only_me` before
+  calling, which is exactly why the server has to as well.
+- The post **inherits the achievement's own visibility** (`club` or
+  `friends`), never a hardcoded `club`, so a friends-only decoration does not
+  become a club-wide post by being shared.
+- Title, `result_text` and metadata (`achievement_id`, `code`, `title`,
+  `badge_icon`, `explanation`, `earned_on` — the keys
+  `renderAchievementPostCard` reads) come from `achievement_definitions`,
+  never from the request. Only the caption and the media are read from the
+  caller.
+- Idempotent twice over, exactly as `pr_share` is: the optional
+  `p_idempotency_key`, and the natural unique
+  `workout_posts(author_id, source_type, source_record_id)` with
+  `source_type = 'achievement'` and the member-achievement id as text. A
+  repeat share returns the first post's id, writes no second post, and does
+  **not** rewrite an existing `shared_at` — `shared_at` is stamped only when
+  it was null, so a re-share does not overwrite the date it was first
+  shared.
+- **Sibling risk checked and cleared while resolving `pr_share`'s collision
+  (202609060025), because the two paths share one unique slot and nobody had
+  verified it.** `publishAchievement()` (cloud.js) writes the same
+  `source_type = 'achievement'` with `source_record_id = achievementId`, where
+  `achievementId` is app.js's own local badge id. Those ids are slugs —
+  `capstone`, `well-rounded`, `pr-<category>-<tier>`, `streak-<tier>`,
+  `sessions-<n>`, `tenure-<id>`, `rx-<wodId>` — while `ach_share` writes
+  `member_achievements.id::text`, a column typed `uuid` with a
+  `gen_random_uuid()` default. **No slug is uuid-shaped, so the two id spaces
+  are disjoint and cannot collide**; asserted in
+  `supabase/tests/0087_pr_share_workout_collision_test.sql`. The server
+  `achievement_definitions.code` namespace is separate again
+  (`sessions_10`, `well_rounded` — underscores, and never written into
+  `source_record_id` by either path).
+  - What remains is **duplicate content, not a false success**: a member can
+    share the same milestone from the app.js celebration sheet and from the
+    community unlock sheet and get two `POST_ACHIEVEMENT` cards. Both writes
+    genuinely land, each returns a real post, and neither reports something it
+    did not do — so this is not `pr_share`'s defect class and it is recorded
+    here rather than silently "fixed" by a migration. Collapsing the two is a
+    client-side question about which sheet should offer the share at all.
+- Side effects: one `workout_posts` row, up to 4 `post_media` rows,
+  `member_achievements.shared_at`, one `post_create` rate-limit token.
+  Returns the post id.
 
 ### ach_claim(p_codes text[]) returns setof ach_claim_row
 
@@ -2658,16 +2879,39 @@ documented under "## Challenges" above, not here.
 - Notes: expiry is evaluated at read time, not by a scheduled job, so a
   temporary restriction ends on its own with no cron and no backfill.
 
-### log_admin_action(p_action_type text, p_target_type text, p_target_id uuid, p_before jsonb, p_after jsonb) returns void
+### log_admin_action(p_action_type text, p_target_type text, p_target_id uuid, p_before jsonb, p_after jsonb, p_action_detail text, p_note text, p_target_user_id uuid) returns void
 
-- Shipped in 202608280002. `p_target_id`, `p_before`, and `p_after` default
-  to null.
+- Shipped in 202608280002, **widened to eight arguments in 202609060022**
+  (five-persona UX audit, defect 2). The five-argument form was `drop
+  function`-ed in that migration, so it no longer exists: there must be
+  exactly one write path into `admin_actions` and leaving the old one alive
+  would leave a path that records no identity. Every existing five-argument
+  call site still resolves, because the three new parameters default to
+  null and plpgsql resolves a called function by name at runtime.
+- All of `p_target_id`, `p_before`, `p_after`, `p_action_detail`, `p_note`
+  and `p_target_user_id` default to null.
 - Purpose: append one audit row. Called inside the acting function, before it
   returns, so a failed log fails the action.
 - Auth: security definer with no grant to anon or authenticated, so it is
   callable only from inside another server function. `admin_id` is taken from
   auth.uid() and never from a parameter, so an audit row cannot be forged for
-  someone else.
+  someone else. Raises `not authorized` when `auth.uid()` is null.
+- **Fills three columns itself, for every caller, old and new.**
+  `admin_display` and `target_display` come from `audit_identity_label()` as
+  **snapshots at write time**, not joins — `admin_id` has no FK to `profiles`
+  precisely so the row outlives the account, and a decision must stay
+  defensible under the name its author was actually using.
+  `target_user_id` is derived from the target: `target_id` for a `member`,
+  the author for a `post` or a `comment`, and for a `report` the reported
+  content's author (or the reported member). Null for `club`, `challenge`,
+  `invite` and `onboarding_step` targets, which have no member behind them —
+  inventing one would be worse than leaving it null.
+  `p_target_user_id` is an **override**, not a requirement: a caller that
+  already holds the affected member passes it and saves the lookup. Callers
+  that must pass it are the ones whose target is gone by the time the log
+  line runs — `mod_review` on a `remove` decision, and `post_delete`.
+- `p_action_detail` is trimmed to 80 and `p_note` to 1000; both are stored as
+  null when empty.
 - Side effects: inserts `admin_actions`. The table has no insert, update, or
   delete policy and no write grant, which is what makes it append-only for
   every client including an admin. `p_before` and `p_after` are capped at
@@ -2675,12 +2919,33 @@ documented under "## Challenges" above, not here.
   `pg_column_size()` is STABLE and Postgres refuses a non-IMMUTABLE function
   in a check constraint.
 
+### audit_identity_label(p_user uuid) returns text — PRIVATE, granted to no role
+
+- Shipped in 202609060022. `stable security definer`, and **revoked from
+  `public`, `anon` and `authenticated` alike**. One member id to one human
+  label: `display_name`, else `@handle`, else null for an unknown or purged
+  account — the same order `mod_queue`'s `content_author_name` and the roster
+  use, so the audit screen and the moderation queue cannot name one member
+  two ways.
+- Definer so it resolves past `profiles_read_authenticated` (a soft-deleted
+  or blocked admin must still be nameable inside the log), which is exactly
+  why it must never be callable directly: granted to `authenticated` it would
+  be a uuid-to-display-name oracle over the whole club, blocks and
+  `visible_to_club` included. `log_admin_action()` is its only caller.
+
 ### admin_actions_page(p_cursor timestamptz, p_limit integer, p_filters jsonb) returns setof admin_actions
 
-- Shipped in 202608280002.
+- Shipped in 202608280002. Signature and return type **unchanged** by
+  202609060022 — it still returns `setof public.admin_actions`, so the five
+  columns that migration added simply appear in the rows `cloud.js` already
+  receives, and nothing breaks if the client renderer is updated later or
+  never.
 - Purpose: the admin log view.
-- Params: `p_filters` optional {action_type, admin_id}. `p_limit` clamped to
-  1 to 100, default 25.
+- Params: `p_filters` optional {action_type, admin_id, target_user_id}.
+  `target_user_id` was added in 202609060022, because the question a review
+  actually starts from is "everything ever done to this member" and until
+  then the only filters answered "everything this admin did".
+  `p_limit` clamped to 1 to 100, default 25.
 - Auth: `community.analytics.view`, checked inside the function and again by
   the table's own select policy.
 
@@ -3437,9 +3702,11 @@ yet".
   `invite_redemptions.redeemed_at`, the module's authoritative
   `MEMBER_JOINED` timestamp, which the member can already read on their own
   row and which `ach_claim` already meters the anniversary achievements off.
-- The two steps tied to first and third class attendance landed in
-  202609010003 (COMM-316, closing COMM-P07) as `first_class_shown_at` and
-  `third_class_shown_at`. **Their eligibility is not a column here either**,
+- The two steps tied to the member's first and third logged training day
+  landed in 202609010003 (COMM-316, closing COMM-P07) as
+  `first_class_shown_at` and `third_class_shown_at`. The column names say
+  "class"; the clock does not, and cannot — see 202609060024 below.
+  **Their eligibility is not a column here either**,
   for the same reason there is no `joined_at`: the clock is
   `public.attendance_log`, which the member already reads on their own rows
   under `attendance_log_self_select`. "Do I have at least one row" and "do I
@@ -3717,6 +3984,20 @@ through an optional public post-share" — the same trust boundary
 staff-confirmed, and a determined member could still misdate a local entry
 before it syncs. That is the accepted shape of the 2026-08-30 resolution, not
 a gap this ticket left open.
+
+**The word is a misnomer and 202609060024 corrected it in the schema
+itself.** `attendance_log`'s table comment said "Verified class attendance"
+and three function comments said "verified attendance"; all four now say
+what the table is — self-reported training days, one row per member per day,
+written only by the `private_records_attendance_log` trigger from the
+member's own logged `strength_entry`/`wod_entry` rows. **"Class" never
+belonged in the phrase at all**: class scheduling and check-in are Arbox's,
+which this app reads from and does not manage, so there is no source in this
+product that could verify anything. That exact misnomer already produced a
+privacy policy claiming class attendance was recorded when no such record
+exists, and a coach dashboard that told a box owner his most loyal members
+had never trained. The ticket titles are left as they were shipped, because
+they are identifiers; this paragraph is what they mean.
 
 ## Needs from schema, attendance achievements (COMM-305, Phase 3)
 
@@ -4822,7 +5103,8 @@ a UI label.**
 2. **`declining` outranks `highly_active` and `steady`**, which departs from
    the order the acceptance criteria happen to *list* the buckets in (that
    list is an enumeration of definitions; the ticket states no precedence).
-   The flag is **verified attendance decline** computed from `attendance_log`;
+   The flag is a **decline in logged training** computed from
+   `attendance_log` (self-reported, never a class check-in — 202609060024);
    WCAM is **app engagement** and can be earned by opening four notifications
    in four weeks. A member who stopped training but still opens the app is
    exactly who this segmentation exists to surface and must not be hidden
@@ -6483,7 +6765,12 @@ Refuses `'use account deletion for your own account'` when
 `p_user_id = auth.uid()`, forcing an admin through their own
 `request_account_deletion()` for themselves. Otherwise mirrors that
 function's exact effect (same upsert, same immediate soft-delete of profile
-and posts) triggered on someone else's behalf.
+and posts) triggered on someone else's behalf. **Since 202609060022 it also
+writes exactly one `admin_actions` row** (`member_remove` / `member` /
+`target_id` = the removed member, `after_data` `{posts_removed,
+purge_after}`), logged after the writes so a failed removal leaves no audit
+row claiming it happened. Before that migration the single most destructive
+staff action in the module was completely untracked.
 
 **`purge_due_accounts() returns integer`** — shipped 202608260001,
 `service_role` only (`revoke ... from public, anon, authenticated`), no
@@ -6533,6 +6820,24 @@ viewer hasn't blocked" a client-side count through
 `weekly_challenges` row when `challenges` (Phase 2) has none active — which
 is the only path that actually renders today, since `challenges` starts
 empty — and the caller's own unread notification count.
+
+**Return shape, as shipped after 202609060027** (signature unchanged, the
+addition is additive and an existing reader is unaffected):
+
+```
+{ name, image_url, member_count, unread_notifications,
+  active_challenge: { id, title, source, starts_at, ends_at, comparison_key } | null }
+```
+
+`comparison_key` and `starts_at` were added by 202609060027 so the caller no
+longer has to re-read `weekly_challenges` to find out whether the advertised
+challenge is one a member can actually join. `comparison_key` is **null when
+`source` is `'challenge'`** — `public.challenges` has no such column — and
+that null means "this challenge kind needs no key", not "invalid"; branch on
+`source`. The key it carries is shape-checked only
+(`weekly_challenges_comparison_key_shape`, 202609060026); whether it names a
+real movement or WOD is a client-catalog question and stays the client's.
+See "Weekly-challenge key integrity" at the end of this document.
 
 ### admin_member_roster(p_cursor timestamptz default null, p_limit int default 25) (COMM-374)
 
@@ -6970,8 +7275,10 @@ in **Posts**; the achievement copy fix (finding 9) in
   activity_pings' own RLS, and `show_attendance` defaults to **false** while
   the other two default to true. Gating the row on it would empty the view
   for the whole club — breaking the coach Welcome surface — for a toggle
-  whose subject (verified class attendance) this view's source (`activity_pings`,
-  days the member opened the app) does not expose. Self and, through
+  whose subject (the member's own logged training days, `attendance_log`;
+  **not** class attendance, which this product has no source for at all —
+  202609060024) this view's source (`activity_pings`, days the member opened
+  the app) does not expose. Self and, through
   `can_view_profile_field`'s admin branch, an admin, are exempt.
 - pgTAP: `supabase/tests/0068_community_streaks_privacy_test.sql`.
 
@@ -7175,3 +7482,487 @@ places rather than three.
   require a stamped `recovery_verified_at`: `ensureCommunityDataLoaded()` is
   the sole caller of `loadFeed()`, `loadClubSummary()` and the role cache,
   and it returns early until the column is set.
+
+## Five-persona UX audit (202609060019–202609060024)
+
+Five migrations, one per defect. `pr_share` and `ach_share` (defect 1) are
+documented under **Posts** and **Achievements** above; the audit-log identity
+work (defect 2) is under **Moderation and admin**. What follows is the rest,
+plus the two entries this file had never carried at all.
+
+There is no `202609060021`. The number was not used; the sequence is 0019,
+0020, 0022, 0023, 0024.
+
+### The coach activity signals, rewritten (202609060020)
+
+Neither `coach_inactive_members()` nor `coach_new_members()` had ever had a
+contract entry here, which is part of why both were being read as training
+signals in the client. Both are recorded now, in their post-rewrite shape.
+
+**What was measured, once, against a seeded and visibly active club (41
+posts, reactions, comments, several members posting):**
+`coach_inactive_members()` returned 8 of 8 members as never-active, including
+the coach who had posted moments earlier, and `coach_new_members()` returned
+4 of 12 members who had all joined that same day.
+
+**The source is `activity_pings`, and it is not a training signal.** That
+table has exactly one writer in the whole system — `pingActivity()` in
+`cloud.js`, which upserts TODAY only, from a live browser session, once the
+profile has loaded. No trigger, no backfill, no server-side producer. It is
+"one row per day the member OPENED THE APP" (202609060002). A member who
+trains five mornings a week and dislikes phone apps has no pings at all.
+Class attendance and check-in belong to Arbox, which this app reads from and
+does not manage.
+
+**Why these two were NOT repointed at `attendance_log`.** 202609060013
+deliberately narrowed `attendance_log_staff_select` from
+`has_perm('community.analytics.view') or is_staff()` down to the permission
+alone, as an explicit product decision, because PRIVACY.md promises members
+that coaches see a baseline rate and a recent rate and **not** a detailed
+log. A real coach has `is_staff() = true`, `has_perm('community.analytics
+.view') = false`, and reads zero attendance rows. Returning a per-member
+last-trained date to a coach would reopen that hole to fix a UX bug. The
+sanctioned attendance-based coach surface already exists and is already
+honest: `coach_engagement_flags` fed by
+`coach_detect_engagement_decline()` (202608310008), which compares a member
+against their own baseline, refuses to flag anyone without an eight-week
+baseline, and exposes rates rather than days.
+
+#### coach_inactive_members(p_since date default (current_date - 7)) returns table(...)
+
+- **DROP and CREATE, not `create or replace`** — the OUT parameter list
+  changed and Postgres refuses to replace a function whose `returns
+  table(...)` columns differ (42P13). Same name, same single date parameter,
+  same staff gate, same source table.
+- `returns table(user_id uuid, handle text, display_name text,
+  last_activity_on date, state text, days_since_activity integer, joined_on
+  date)`. **`state` is new and is the point of the rewrite**, a real
+  enum-shaped contract the client branches on rather than something it infers
+  from a null:
+  - `'lapsed'` — we HAVE recorded app activity for this member and the most
+    recent of it is older than `p_since`. A fact about a person; a coach may
+    act on it.
+  - `'no_data'` — we have recorded nothing for this member, ever. A fact
+    about our data, not about the member. It must never be rendered as
+    "never trained", and the client renders it in a separate, non-alarming
+    group.
+- The old shape merged the two with `max(activity_date) is null or
+  max(activity_date) < p_since` in a HAVING clause and the client printed the
+  literal string `מעולם לא` for the null branch. That is the whole of the
+  8-of-8 result: an absence of data reported as a fact about a person.
+- `days_since_activity` is **null** for a `no_data` member, deliberately —
+  there is no "days since" a thing that never happened, and 0 or a huge
+  number is something a client can accidentally render.
+- **Members who joined on or after `p_since` are excluded.** They have not
+  lapsed, they are new, and they belong in `coach_new_members()`, which is
+  the list with the actions for them on it. Without the rule every new member
+  appears in both lists from the day they join, and the alarming one is where
+  a coach sees them first. The join date is the same
+  `coalesce(invite_redemptions.redeemed_at, profiles.created_at)` the new-
+  member list uses, so no member can fall into a gap between the two.
+- Both states come back from one call rather than the client filtering, so
+  "how many members are genuinely lapsed" has exactly one definition and the
+  Manage tab's attention row cannot drift from the list it links to. That row
+  previously counted the whole result set, which is why a club with no data
+  reported every member as inactive on its landing screen.
+- Order: genuinely lapsed first, longest-gone first within that; `no_data`
+  members sort last — they are context, not a queue.
+- Auth: `stable security definer`, inline `is_staff()`, raises `not
+  authorized`. Granted to `authenticated`, revoked from `public`/`anon`.
+
+#### coach_new_members(p_within_days integer default 14) returns table(...)
+
+- DROP and CREATE, for the same 42P13 reason. Same name, same single integer
+  parameter, same staff gate.
+- `returns table(user_id uuid, handle text, display_name text, avatar_url
+  text, joined_on date, days_since_join integer, sessions_logged integer,
+  has_opened_app boolean, last_seen_on date, contacted boolean, contacted_at
+  timestamptz, assigned_coach_id uuid)`.
+- **`joined_on` is the join date**, `coalesce(invite_redemptions.redeemed_at,
+  profiles.created_at)`, read across members because this is `security
+  definer` — the same way `coach_celebrate_feed()`'s anniversary branch
+  already reads `redeemed_at`. The old definition was
+  `min(activity_pings.activity_date)` over an **INNER JOIN**, which
+  (1) is a first-app-open date, not a join date, so for any member predating
+  the feature it reported the feature's own deploy date, and (2) structurally
+  excluded every member who registered and never opened the app again —
+  exactly the member day-0 retention outreach exists for.
+- `activity_pings` is now a **LEFT JOIN** and appears only as
+  `has_opened_app` / `last_seen_on`. A member who registered and has not
+  opened the app sorts to the top of the coach's attention.
+- **`sessions_logged` is a COUNT, not a log, and the distinction is
+  load-bearing.** It is `count(*)` over the member's `attendance_log` rows —
+  read here rather than through a coach's own grant precisely because this
+  function is `security definer` and can return the aggregate without handing
+  the coach the rows behind it. It discloses no individual session, no date
+  and no result, which is what lets a coach see it while 202609060013 keeps
+  raw attendance rows at admin rank. It replaces the client's previous
+  stand-in for this number, `community_streaks.current_streak`, which counts
+  consecutive days the member OPENED THE APP and was being shown beside a new
+  member's name where a coach would read it as training.
+- `p_within_days` is **clamped** to 1..365 rather than rejected, the same
+  shape `coach_celebrate_feed()` uses: this is a read a dashboard makes on
+  load, and a bad number is a client bug, not an error toast in front of a
+  coach.
+- Order: newest first; within a single day, uncontacted before contacted, so
+  the list reads as a work queue rather than a roster.
+- Auth: `stable security definer`, inline `is_staff()`, raises `not
+  authorized`. Granted to `authenticated`.
+
+#### coach_activity_signal_status() returns table(...) — NEW
+
+- `returns table(members_total integer, members_with_app_activity integer,
+  members_with_logged_sessions integer, last_app_activity_on date,
+  last_logged_session_on date)`. Always exactly one row.
+- Purpose: the honest-empty-state input, and the reason it is a function
+  rather than something the client infers. "The list came back empty" has two
+  completely different meanings a client cannot tell apart from the list
+  alone: "every member is active" (good news, and the old client said exactly
+  that — `כולם פעילים`) or "we have never received a single ping from
+  anybody, so this section knows nothing". A club that has just turned the
+  community on gets the second and was shown the first. That needs a fact to
+  fix, not a heuristic.
+- `members_with_app_activity` counts members with any `activity_pings` row
+  (days the app was opened); `members_with_logged_sessions` counts members
+  with any `attendance_log` row (training logged in the app — never an Arbox
+  class check-in, which this product does not see).
+- Aggregate counts only, **no member identities**: this is a question about
+  the dataset. Auth: `stable security definer`, inline `is_staff()`, raises
+  `not authorized`. Granted to `authenticated`.
+
+### admin_actions gains five identity columns (202609060022)
+
+Defect 2. The audit log could not answer "who did what": a real moderation
+decision's only durable record read `מנהל/ת f70f95f5 · לפני 3 דקות` — eight
+characters of a uuid, a relative timestamp, and nothing else. No admin name,
+no indication of who it was done to, which decision was taken, or why.
+
+Five new columns, all nullable, no default, all filled by
+`log_admin_action()` (above) rather than by ~40 call sites resolving identity
+by hand:
+
+| column | meaning |
+| --- | --- |
+| `admin_display` | the acting admin's display identity AS IT WAS when the action was taken — display name, else `@handle`, else null. A snapshot, never a join. Max 160. |
+| `target_user_id` | the MEMBER the action landed on, when there is one. No FK, for `admin_id`'s reason. |
+| `target_display` | `target_user_id`'s label, same snapshot rule. Max 160. |
+| `action_detail` | WHICH action was chosen inside the broader `action_type`. Free text, max 80. |
+| `note` | the acting admin's own free-text justification. Max 1000. |
+
+- **Why snapshots and not joins.** `admin_actions` has no FK to `profiles`,
+  deliberately, so an audit row outlives the account that produced it — which
+  also means a join resolves to nothing for exactly the admin most worth
+  identifying. A decision must stay defensible under the name the person was
+  actually using when they took it.
+- **`action_detail` exists because `action_type` alone is not enough.**
+  `comment_moderate` logs `content_delete` for BOTH `remove` and `restore`,
+  so the log could not distinguish taking a comment down from putting it
+  back. It now records `remove` / `restore`. Elsewhere: `mod_review`'s
+  decision (`remove`, `warn`, `restrict_temp`, `restrict_permanent`,
+  `dismiss`), the granted role for a `role_change`, `temporary` / `permanent`
+  for a restriction, `lift` for a lifted one, `slot N` for a pin. Null where
+  the `action_type` is already total.
+- **`note` is the moderator note `mod_review`, `mod_restrict_member` and
+  `mod_lift_restriction` already collected and then threw away** at the audit
+  boundary.
+- Index `admin_actions_target_user_idx (target_user_id, created_at desc)
+  where target_user_id is not null`, for the `target_user_id` filter
+  `admin_actions_page` gained.
+- **The one-time backfill restates only what a row already carried**:
+  identities resolved from `profiles` as they read at migration time (a late
+  resolution of a real identity, not a snapshot — and null where the account
+  was already gone); `target_user_id` from `target_id` for `member` targets;
+  `action_detail` and `note` lifted out of `after_data` keys that already
+  held them (`decision`, `role`, `restriction_type`, `reason`,
+  `lift_reason`). A pre-existing row with no decision recorded keeps a null
+  `action_detail` rather than acquiring a plausible one.
+- **Two paths that wrote no audit row at all now do.**
+  `admin_remove_member()` gains one `member_remove` row (see its own entry
+  above). `review_report()` — the Phase 0 transition, superseded for the
+  client by `mod_review()` but still granted to `authenticated` and still
+  able to resolve a report — gains one `report_review` row, with the new
+  status as `action_detail` and the resolution notes as `note`. Until
+  202609060022 an admin could move a report through it and leave no trace.
+- No signature changed except `log_admin_action`'s, so no `cloud.js` call
+  site moved. `action_type` gained `member_remove` here and
+  `invite_reclaimed` in 202609060023; that CHECK constraint is restated in
+  full by whichever migration widens it last, this module's convention since
+  202609010001.
+
+### Ghost accounts holding invites (202609060023)
+
+Defect 3. Signup is two-stage and the stages are separated by a three-slide
+carousel: anonymous session → `redeem_invite_code()` → credentials →
+CAROUSEL → the `profiles` insert → `mark_recovery_verified()`. The redemption
+is what consumes the invite; everything after it is optional as far as the
+database is concerned. Close the tab on slide two and what is left is a real
+`auth.users` row, a real `invite_redemptions` row, a spent invite — and **no
+`public.profiles` row at all**.
+
+Every roster surface starts `from public.profiles`
+(`admin_member_roster`, `admin_search_members`, `admin_user_directory`), so a
+row that does not exist cannot be listed by any of them. `registration_funnel`
+can see the shape of the problem — its redeemed vs profile_completed steps
+are exactly this gap — but is aggregate-only by design and names nobody.
+`purge_abandoned_profiles()` (202609010004) deliberately and correctly never
+touches these accounts either: it requires **no** `invite_redemptions` row,
+and a carousel ghost has one. The two paths are complementary, and
+202609060023 is written to hand accounts TO that job rather than duplicate
+it.
+
+Two rejected alternatives, recorded because both look obvious: moving invite
+consumption to profile creation (a redesign of the highest-risk function in
+the module — `invite_redemptions` **is** the membership fact that
+`is_community_member()`, `has_perm()`, `role_rank()` and `my_role_code()` all
+read — to fix a reporting problem), and folding ghosts into
+`admin_member_roster()` (which owes `admin_search_members` a byte-identical
+eight-column shape so one client row renderer serves both).
+
+#### admin_incomplete_signups(p_cursor timestamptz default null, p_limit integer default 25) returns table(...)
+
+- `returns table(user_id uuid, username text, label text, role text,
+  invite_source text, redeemed_at timestamptz, signed_up_at timestamptz,
+  last_sign_in_at timestamptz, stalled_days integer,
+  purgeable_after_reclaim boolean)`.
+- Purpose: the accounts every roster surface is structurally blind to — an
+  `auth.users` row that HAS redeemed an invite and has no `profiles` row.
+- Auth: `stable security definer` (`auth.users` is not client-reachable at
+  all); `auth.uid()` first, then **`is_staff()`** — the same read-only browse
+  rank `admin_member_roster()` takes, because a coach chasing a member who
+  never appeared is the obvious first user. Raises `not authorized`. Granted
+  to `authenticated`.
+- **`username` is a privacy boundary, not a convenience.** It is the LOCAL
+  PART of `auth.users.email` and **only** when the address is this app's own
+  synthetic `<username>@members.haimuniya.invalid` form (`usernameToEmail()`,
+  cloud.js). Any other address — a real one, from any future provider —
+  returns null rather than being handed to staff, because a login address a
+  member gave for authentication is not roster data. The synthetic local part
+  is the username the member typed into this app's signup form.
+- `label` is the per-person invite's own admin-authored label ("דנה מהבוקר של
+  שני"), usually the only thing that identifies a ghost who abandoned before
+  setting credentials.
+- `invite_source` is `shared_code` or `person_invite`.
+  `purgeable_after_reclaim` is `auth.users.is_anonymous` — whether
+  `purge_abandoned_profiles()` would collect this account once
+  `admin_reclaim_invite()` removes the redemption row that currently
+  disqualifies it.
+- **A soft-deleted profile is NOT a ghost.** That row exists,
+  `admin_member_roster` already owns it, and this function must not
+  double-report a removed member as an unfinished signup. The predicate is
+  "no `profiles` row at all".
+- `p_limit` clamped 1..100; cursor pages backwards on `redeemed_at` with
+  `user_id` as tie-break, `admin_member_roster`'s reason — a club that
+  redeemed a batch in one sitting shares timestamps, and a cursor paginator
+  whose sort key repeats can loop or skip. Read-only.
+- **No client call site yet.** Nothing in `cloud.js` invokes it; the surface
+  that consumes it is not built. Recorded here so it is not re-invented.
+
+#### admin_reclaim_invite(p_user_id uuid, p_note text default null, p_older_than_days integer default 7) returns jsonb
+
+- Purpose: return the invite an abandoned signup is holding to circulation,
+  **without deleting the account**.
+- Auth: `security definer`; `auth.uid()` first, then a real
+  `profiles.is_admin` row — **not `is_staff()`** and not a permission code,
+  because this un-memberships an account. `admin_remove_member()` and
+  `admin_grant_coach()` take the same inline check for the same reason. Note
+  the deliberate permission split with `admin_incomplete_signups()`: listing
+  is staff, reclaiming is admin.
+- Raises (all P0001, and every one of them means the admin is looking at a
+  different situation than they think, so a UI must surface them by name):
+  `not authorized`, `target account required`, `cannot reclaim your own
+  invite`, `member has a profile` (a `profiles` row exists, even soft-deleted
+  — `admin_remove_member` is the function they want), `no invite to reclaim`
+  (no `invite_redemptions` row), `signup is still in progress` (redeemed
+  inside the grace window).
+- **`p_older_than_days` is a hard floor, not just a default.** It is
+  `greatest(coalesce(p_older_than_days, 7), 1)`, so a caller passing 0 or a
+  negative number gets one day, not "right now" — no amount of admin urgency
+  can reclaim a code out from under someone who is on slide two of the
+  carousel at that moment. Seven days is the default because an abandoned
+  carousel is abandoned in minutes, and a member who comes back after a week
+  to find their code spent has a worse day than the club has waiting a week.
+- Side effects, exactly: a shared code gets `invite_codes.use_count`
+  decremented, **floored at 0** (`use_count` is also that code's rate-limit
+  counter and a negative one would hand out unlimited redemptions); a
+  per-person invite has `redeemed_at`/`redeemed_by` cleared, which is
+  precisely what `invite_status()` reads as `pending`, so the invite
+  reappears in `admin_invite_list` as outstanding and the SAME code works
+  again — unless it was revoked in the meantime, which is left revoked; the
+  `invite_redemptions` row is deleted; the `POST_NEW_MEMBER` welcome post
+  that redemption produced (`post_new_member_on_join`, 202608290014) is
+  **soft**-deleted, because the club was told someone joined and they did
+  not; one `invite_reclaimed` `admin_actions` row is written through
+  `log_admin_action()`.
+- **It never touches `auth.users`.** The account stays, signed-in sessions
+  stay valid, and the member simply lands back on the invite screen, which is
+  the correct place for someone no longer holding a redemption. Removing the
+  redemption is also the one condition that was keeping an empty anonymous
+  account out of `purge_abandoned_profiles()`, so afterwards that job
+  collects it under its own retention window — see
+  `docs/community/abandoned-profile-purge-runbook.md`.
+- Returns jsonb `{user_id, invite_source, invite_id, released,
+  welcome_posts_retracted, purgeable_by_purge_abandoned_profiles}`.
+- **No client call site yet**, same as the listing function.
+
+### `attendance_log` is self-reported training, not class attendance (202609060024)
+
+A comment-only migration — no table, function, policy, grant or row is
+touched — and it is recorded here because the claim it corrected had already
+produced two real defects.
+
+- **The claim.** `public.attendance_log`'s own table comment opened with
+  "Verified class attendance", and three live function comments
+  (`community_profile()`, `feed_leaderboard()`, `member_segments()`) repeated
+  "verified attendance".
+- **Why it is false.** `attendance_log` has exactly one writer, and it is not
+  a turnstile, a coach or a booking system: it is the
+  `private_records_attendance_log` trigger (202608310001), which fires on the
+  member's OWN `private_records` rows of `record_type` `strength_entry` or
+  `wod_entry` and writes one row per `(user_id, occurred_on)`. Every value in
+  the table is **self-reported training the member typed into their own
+  offline log**. Nothing verifies it, because nothing in this product could:
+  class scheduling and check-in are Arbox's, which this app reads from and
+  does not manage.
+- **What the misnomer cost.** A privacy policy that told members their class
+  attendance was recorded when no such record exists, and a coach dashboard
+  that reported a box owner's most loyal members as never having trained.
+- **What this does not change.** The column semantics, the trigger, the
+  policies and every caller are exactly as they were. The data was never
+  wrong; only the label on it. The `--` prose inside already-shipped
+  migration files still says "verified attendance" in several places
+  (202608310004, 202608290015, 202608280020, 202609010012); those files are
+  immutable and are the historical record of what was believed when they were
+  written.
+- **The reading rule for this file and for every ticket title.** Wherever a
+  Phase 3 ticket title or a line here says "verified attendance", read it as
+  what "### What 'verified attendance' means" above already defines: derived
+  server-side from the member's own private training log rather than proxied
+  through an optional public post-share. It is **not** a physical check-in,
+  not staff-confirmed, and "class" never belonged in the phrase at all.
+
+## Weekly-challenge key integrity (202609060026–202609060027)
+
+Two follow-ups to `fbf5a43`, which replaced the free-text
+`comparison_key` field with a `<select>` and added two client-side checks:
+the key's **shape**, and whether the key **names something the app's catalog
+actually has**. Both are client-side, and `weekly_challenges` is INSERT-able
+and UPDATE-able over PostgREST by any holder of `community.challenge.create`
+(202609060005) — so the picker was an affordance, not a boundary.
+
+### `weekly_challenges_comparison_key_shape` (202609060026)
+
+- A **validated** `CHECK` on `public.weekly_challenges.comparison_key`,
+  byte-for-byte `cloud.js`'s `COMPARISON_KEY_SHAPE_RE`:
+
+```
+^(movement:[a-z0-9-]+:(est1rm|duration)|wod:[a-z0-9-]+:[a-z]+:(rx|scaled))$
+```
+
+- **Deliberately not one character stricter than the client**, so the
+  database can never refuse a key the shipped picker offers — including
+  custom-WOD ids, which are `uid("customwod")` output
+  (`customwod-<lower-case uuid>`).
+- **It enforces SHAPE ONLY, and cannot enforce more.** The movement and WOD
+  catalog lives in `src/constants.js` and in each device's own custom WODs;
+  Postgres has never seen it and has no table to join against.
+  `movement:not-a-real-lift:est1rm` passes this constraint and is exactly as
+  dead as a Hebrew movement name was. **`challengeKeyExists()` in `cloud.js`
+  remains the only check for that half and must not be removed on the
+  grounds that "the database validates it now."** pgTAP 0088 pins this limit
+  with a passing insert of a well-shaped ghost key, precisely so the
+  constraint is not later read as more than it is.
+- Applies on **UPDATE** as well, which is where the client has no say at all:
+  `setWeeklyChallenge()` only ever INSERTs, while 202609060005 granted
+  UPDATE so a coach could fix a typo. A `PATCH` to a malformed key is
+  refused with `23514`.
+- No notion of role. A coach and an admin are refused identically; this is a
+  data-integrity rule, not a permission.
+- `workout_posts.comparison_key` is **left unconstrained** on purpose:
+  nullable, written by `publishWorkout()` across years of existing rows, and
+  a malformed value there is inert (it simply never joins). A validated
+  `CHECK` on it would risk aborting `supabase db push` against production
+  rows for no security gain.
+
+### `public.weekly_challenges_archive` (202609060026)
+
+The rows that had to move before the constraint could be **validated** —
+the six the five-persona UX audit found plus one seeded while verifying
+`fbf5a43`, and on any other database whatever fails the same predicate.
+
+- `(id, comparison_key, title, starts_on, ends_on, created_by, created_at,
+  archived_at, archived_by_migration, archived_reason)`. Rows are copied
+  **whole** and then deleted from `weekly_challenges`, in one transaction, so
+  the removal is reversible in principle: restoring one is an INSERT with a
+  corrected key, and the coach's title, dates and original `created_at`
+  survive verbatim. `created_by` carries **no FK** — same reason
+  `admin_actions.admin_id` has none (202609060022): the record must outlive
+  the account, and a cascade would erase the evidence of the cleanup.
+- RLS on. `grant select ... to authenticated` plus
+  `weekly_challenges_archive_read` `using (has_perm('community.challenge
+  .create'))` — the same permission that may create or delete a weekly
+  challenge. **No INSERT/UPDATE/DELETE grant and no policy for them**: this
+  table is written by migrations only, so a client can neither forge nor
+  erase a removal. `anon` reaches nothing.
+- **Why remove the rows rather than add the constraint `NOT VALID`.** A dead
+  row is not passive here: `club_summary()` picks the active weekly challenge
+  with `order by ends_on asc limit 1`, so a malformed row that ends sooner
+  **shadows** a good one set alongside it — the club home advertises the
+  broken challenge and the working one is invisible. The client's `valid`
+  flag hides the hero but cannot un-shadow the good challenge.
+- **What removing them costs, stated plainly.** A coach with a broken
+  challenge currently sees the staff-only banner `cloud.js` renders from
+  `weeklyChallengeRow.valid`; once the row is gone that banner stops
+  appearing and the coach simply sees no active challenge. Judged worth it —
+  the banner's job is to get a real challenge set, the Boards tab already
+  reported these rows as "no active challenge", and no member ever saw them.
+- **Nothing referenced the removed rows**, checked before deciding: no
+  foreign key anywhere points at `weekly_challenges` (`chal_progress` and the
+  whole `challenge_*` family belong to the separate Phase-2
+  `public.challenges` table); `weekly_challenge_leaderboard` joins
+  `workout_posts` on `comparison_key` text equality, which a malformed key
+  matches zero of by construction; `club_summary()` and
+  `loadWeeklyChallenge()` read by date window only.
+
+### `club_summary()` returns the key (202609060027)
+
+Signature unchanged; see the full return shape under **`club_summary()`**
+above. `comparison_key` and `starts_at` are added inside `active_challenge`.
+
+- **Why the key rather than a validity boolean.** A boolean computed in the
+  database can only mean "the shape is valid", because shape is the only half
+  Postgres can check — so the caller would still have had to fetch the key to
+  finish the job and the round-trip would have survived. And after
+  202609060026 that boolean is a **constant**: shape validity is now a table
+  invariant, and a field that can only ever say `true` is decoration a later
+  reader will mistake for a guarantee.
+- **The key exposes nothing new.** `movement:back-squat:est1rm` is a content
+  identifier, not member data, and every community member can already read it
+  two ways — `weekly_challenges_read` (202609060011) is
+  `using (is_community_member())` over the whole row, and
+  `weekly_challenge_leaderboard` selects `comparison_key` by name. Making it
+  staff-only here would have been theatre.
+- The weekly branch selects the **same row and ordering** as
+  `loadWeeklyChallenge()` (`current_date` inside the window,
+  `order by ends_on asc limit 1`). The two must not drift, or the client
+  would validate one row and render another.
+
+### Client change this enables (not made here — `cloud.js` is owned elsewhere)
+
+`loadWeeklyChallenge()` can drop its first query entirely and build
+`state.club.weeklyChallengeRow` from `club_summary()`'s `active_challenge`
+when `source === 'weekly'`, keeping `COMPARISON_KEY_SHAPE_RE &&
+challengeKeyExists()` exactly as they are. **Both migrations are safe to land
+without it** — the added keys are ignored by the shipped reader.
+
+While reading that call site, two things worth a separate ticket, neither
+fixable in the schema:
+
+1. `renderClubHome()` gates the `club_summary`-sourced hero on
+   `activeWeeklyChallenge()`, which only ever inspects the `weekly` row. A
+   Phase-2 `challenges` hero (`source === 'challenge'`) would therefore be
+   suppressed by an unrelated broken weekly row. Latent today because
+   `challenges` is empty; `source` is in the payload and is the fix.
+2. `challengeKeyExists()` is **device-relative** for custom WODs, which are
+   local per-member data. A challenge set on coach A's custom WOD looks
+   broken to coach B and invalid to every member. The database cannot help
+   with this — a shared challenge needs a shared catalog.

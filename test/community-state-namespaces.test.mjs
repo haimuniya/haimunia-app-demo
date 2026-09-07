@@ -123,7 +123,31 @@ test("the dialog registry keeps DOM keys and state paths separate", () => {
   const entries = [...registry.matchAll(/\{ key: "([^"]+)", isOpen: \(\) => (state\.[\w.]+),/g)];
   // 12 since the launch-readiness audit's A3 fix added the confirm sheet -
   // it was previously invisible to this whole registry.
-  assert.equal(entries.length, 12, "every dialog entry needs a key and an isOpen getter");
+  // 13 since the five-persona audit's defect 3 added "reclaimInvite", the
+  // invite-reclaim confirmation. Deliberate, and this count is the review
+  // trigger that made it deliberate: a new overlay that is NOT registered
+  // here is unreachable by Escape, by the Tab trap and by a backdrop click,
+  // which is the exact defect A3 found in the confirm sheet.
+  //
+  // 14 since the five-persona audit's outward-sharing work added
+  // "outwardShare". Treated as the review trigger this pin is meant to be:
+  //
+  //   WHY A DIALOG AND NOT A REUSE. The three candidates were askConfirm
+  //   (title + message + confirm + cancel), the PR prompt and the achievement
+  //   celebration. None of them fits. The outward sheet has to show a canvas
+  //   PREVIEW of the exact image about to leave the device, a name switch
+  //   that repaints that image, and four independent exits - share, copy
+  //   text, download the PNG, close - because which of them is available
+  //   depends on what the browser actually supports (navigator.canShare with
+  //   files, navigator.share, navigator.clipboard, none of the above).
+  //   Bolting that onto askConfirm would have made askConfirm a general
+  //   dialog framework, which is the thing this pin exists to prevent.
+  //
+  //   WHY IT IS SECOND IN THE REGISTRY. It is opened FROM the PR prompt and
+  //   the achievement celebration and renders stacked over them, so - exactly
+  //   like confirmSheet above it - it must be matched before the dialog
+  //   underneath or the Tab trap and Escape address the covered one.
+  assert.equal(entries.length, 14, "every dialog entry needs a key and an isOpen getter");
   const state = readStateLiteral();
   for (const [, key, path] of entries) {
     const value = path.split(".").slice(1).reduce((o, k) => (o == null ? o : o[k]), state);

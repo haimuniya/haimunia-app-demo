@@ -70,11 +70,20 @@ test("a locked achievement shows its rule as a visible caption (touch screens ne
 test("a plain PR with no new badge still celebrates, without a badge grid", async () => {
   const window = await bootApp();
   await window.addMovement("Test Plain PR Deadlift", "Deadlift");
-  window.applyFieldValue("step", "weight", 60);
+  // UX-audit recalibration (design spec 5.3.1, MIN_ENTRIES_BEFORE_PR): a
+  // result is only a personal record once there are 3 prior entries for the
+  // exercise to beat. This test used to celebrate on the SECOND set ever
+  // logged, which is the old "with no history every set is a record"
+  // behaviour the audit named as the reason the word stopped meaning
+  // anything. Building a real baseline first is what the test needs to say
+  // now; what it asserts about the popup itself is unchanged.
   window.applyFieldValue("step", "reps", 5);
   window.applyFieldValue("step", "sets", 1);
-  await window.saveSet();
-  window.closeCelebration();
+  for (const kg of [50, 55, 60]) {
+    window.applyFieldValue("step", "weight", kg);
+    await window.saveSet();
+    window.closeCelebration();
+  }
 
   // A heavier set on the same movement is a PR but (on its own) shouldn't
   // complete any category/streak/milestone tier this fresh.

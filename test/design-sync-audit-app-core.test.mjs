@@ -101,7 +101,13 @@ test("COMM-360: a fresh load shows the WOD screen's pick-a-WOD empty state, not 
   const window = await bootApp();
   window.document.getElementById("tabWodBtn").click();
   const wodContent = window.document.getElementById("wodContent").innerHTML;
-  assert.match(wodContent, /בחרו אימון כדי להתחיל/, "should prompt to pick a WOD");
+  // Copy updated by the UX-audit empty-state work (design spec 2.3): the
+  // screen this test guards used to be one grey sentence with no control on
+  // it at all, which is the dead end the audit found. The assertion that
+  // matters is unchanged - a fresh load asks rather than pre-filling Fran -
+  // and now also pins the picker control that makes it escapable.
+  assert.match(wodContent, /בחרו אימון ונרשום אותו/, "should prompt to pick a WOD");
+  assert.ok(wodContent.includes('data-action="open-wod-picker"'), "the empty state must offer a real way to pick one, not just describe the state");
   assert.doesNotMatch(wodContent, /Fran/i, "must not pre-fill a WOD's name before one is chosen");
   assert.equal(window.document.getElementById("bottomBar").style.display, "none", "no save action until a WOD is chosen");
 });
@@ -127,5 +133,5 @@ test("COMM-360: clearAllData() resets both selections back to unset, not back to
 
   window.document.getElementById("tabWodBtn").click();
   const wodContent = window.document.getElementById("wodContent").innerHTML;
-  assert.match(wodContent, /בחרו אימון כדי להתחיל/, "post-wipe WOD screen must ask again, not resume on Fran");
+  assert.match(wodContent, /בחרו אימון ונרשום אותו/, "post-wipe WOD screen must ask again, not resume on Fran");
 });

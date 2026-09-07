@@ -130,6 +130,14 @@
       composer: null, composerTrigger: null, openMenu: null, savedIds: {},
       captionEdit: null, visibilityEdit: null, prPrompt: null, openShare: {},
       comparison: [], comparisonForPostId: null,
+      // Five-persona UX audit, outward sharing. The share-outside-the-app
+      // sheet: { subject, caption, showName, spec, status, previewUrl, blob,
+      // sharing, result }. Lives in `posts` rather than a namespace of its
+      // own because this domain is already "composing, own-post controls,
+      // sharing" and every one of its subjects is a post or a post's source
+      // record. Holds a Blob and an object URL, so closeOutwardShare() is the
+      // only way it is cleared - it revokes the URL on the way out.
+      outwardShare: null,
     },
 
     // ---- engagement: comments, replies, reactions, mentions (COMM-120..125) ----
@@ -187,8 +195,23 @@
     club: {
       row: null, features: {}, featuresLoaded: false, moduleBusy: null,
       announcements: [], announcementSaving: false, streaks: [],
-      inactiveMembers: [], newMembers: [],
+      inactiveMembers: [], newMembers: [], activitySignal: null,
       weeklyChallenge: null, weeklyLeaderboard: [],
+      // The active weekly_challenges ROW (with its comparison_key and a
+      // computed `valid`), as distinct from weeklyChallenge above, which is
+      // the leaderboard VIEW and is null whenever nobody has posted a matching
+      // result yet. See loadWeeklyChallenge().
+      weeklyChallengeRow: null,
+      // The club WOD catalogue (202609060028), mirrored here so the community
+      // layer has its own view of what it handed app.js. app.js owns the
+      // merged catalogue (allWods()); this is the raw last-read list, which is
+      // what the staff catalogue surfaces render from. Includes RETIRED rows -
+      // club_wods_list() always returns them and the client must keep every id
+      // resolvable.
+      clubWods: [],
+      // The coach's picked comparison key, kept in state so a rejected submit
+      // (a missing title, a missing date) does not silently reset the picker.
+      challengeKeyDraft: "",
     },
 
     // ---- leaderboard (COMM-210/211/212) ----
@@ -253,6 +276,21 @@
       // sort key needs (documented in docs/community/backlog.md's COMM-377
       // paragraph).
       roster: { items: [], cursor: null, loading: false, loadingMore: false, loaded: false, error: false, end: false },
+
+      // ---- Five-persona UX audit, defect 3. Incomplete signups ---------
+      // The accounts every roster surface is structurally blind to: a real
+      // auth.users row that HAS redeemed an invite and has NO profiles row,
+      // because the profile insert sits at the END of the intro carousel
+      // (migration 202609060023's own header). items is
+      // admin_incomplete_signups()'s accumulated pages, most-recently-
+      // redeemed first; cursor/end/loading are the same shape as roster
+      // above. reclaim is the open confirm sheet - the one that NAMES ITS
+      // SUBJECT - and reclaimResult holds what admin_reclaim_invite()
+      // actually did, so the admin reads it instead of a silent success;
+      // same one-shot reveal shape as passwordResetResult above.
+      incompleteSignups: { items: [], cursor: null, loading: false, loadingMore: false, loaded: false, error: false, end: false },
+      reclaim: null,
+      reclaimResult: null,
     },
 
     // ---- analytics: the admin dashboards (COMM-310..313) ----
@@ -818,6 +856,48 @@
   function nameHtml(displayName, handle) {
     return displayName ? esc(displayName) : `<bdi>@${esc(handle || "")}</bdi>`;
   }
+  // The isolation nameHtml() applies to "@handle" is needed by EVERY string a
+  // human typed, and there the failure is far worse than a misplaced "@". A
+  // coach's pinned announcement reading
+  //
+  //     21-15-9 Thrusters + Pull-ups. Rx 43/30 ק"ג.
+  //
+  // rendered its rep scheme as 9-15-21, and in a second observed paint
+  // stranded the ק"ג at the opposite end of the line from the 43/30 it
+  // belongs to. Two personas hit this independently. The cause is the LTR
+  // runs a workout is made of - rep schemes, English movement names,
+  // weights, times - being reordered against the RTL Hebrew paragraph they
+  // sit in. This is not a garbled string a member notices and ignores: it is
+  // a plausible, valid-looking, DIFFERENT workout that a member can follow
+  // without ever knowing it was not what the coach wrote.
+  //
+  // <bdi> rather than a CSS `unicode-bidi: isolate` (what .est-line and .mono
+  // use): those two are LTR-only surfaces, but a body of free text sits in a
+  // paragraph that must stay RTL for its Hebrew. Only <bdi>'s implicit
+  // dir="auto" lets each run take its base direction from its own first
+  // strong character - so the line above resolves LTR and reads 21-15-9,
+  // while an ordinary Hebrew-first line still resolves RTL exactly as today.
+  //
+  // Isolation is per LINE, not per field. Bodies are multi-line and a workout
+  // note routinely pairs a Hebrew intro line with an LTR rep-scheme line; one
+  // dir="auto" over the whole field would resolve from the first line only
+  // and leave every later line as broken as before. Joining the pieces back
+  // on "\n" reproduces the original text exactly, so a `white-space:pre-wrap`
+  // surface still breaks where it did and a collapsing one still collapses.
+  //
+  // ESCAPING IS UNCHANGED AND NON-NEGOTIABLE: esc() still runs over the text
+  // and only its OUTPUT is wrapped. Never isolate before escaping. Never use
+  // this in an attribute or inside <textarea>, where the tag would land as
+  // literal characters instead of markup - those contexts keep bare esc().
+  function bidiText(value) {
+    return String(value ?? "").split("\n").map((line) => `<bdi>${esc(line)}</bdi>`).join("\n");
+  }
+  // The same isolation for a run that is ALREADY HTML - a comment body whose
+  // @mentions mentionMarkersToHtml() has turned into buttons, and which is
+  // therefore escaped already. One isolate over the whole run rather than per
+  // line: the embedded markup makes splitting on "\n" unsafe, and a comment
+  // is short enough that a single base direction is the right call.
+  function bidiHtml(html) { return `<bdi>${html}</bdi>`; }
   // Shared batch profile lookup - the shape loadCoachEngage(), loadCoachMemberOfWeek()
   // and loadFollowList() each independently hand-rolled. Consolidated after
   // finding real drift between the copies (a missing avatar_url column in
@@ -896,8 +976,15 @@
     if (!state.user || !state.profile || !state.profile.recovery_verified_at || state.communityDataLoaded || state.communityDataLoading) return;
     state.communityDataLoading = true;
     try {
-      await Promise.all([loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadEvents(), loadOnboardingProgress(), loadOnboardingStepContent()]);
-      if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers()]);
+      // loadClubWods() joins this Promise.all rather than being awaited ahead
+      // of it. It could not while loadWeeklyChallenge() froze the challenge's
+      // `valid` at load time - losing that race stamped a good club challenge
+      // invalid for the whole session - but activeWeeklyChallenge() derives
+      // that at read time now (see weeklyChallengeIsValid), so there is no
+      // ordering left to preserve and no reason to serialise a round trip in
+      // front of thirteen parallel ones.
+      await Promise.all([loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubWods(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadEvents(), loadOnboardingProgress(), loadOnboardingStepContent()]);
+      if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers(), loadActivitySignal()]);
       if (hasPerm(PERM.COMMENT_MODERATE) || isAdmin()) await loadModQueue();
       // COMM-141. Arm the own-row notification channel for this session.
       ensureNotifRealtime();
@@ -1370,7 +1457,7 @@
   }
   function renderOnboardingCard(title, bodyHtml, step, extraActionHtml) {
     return `<div class="chart-card admin-card" style="margin-bottom:12px;" data-onboarding-step="${step}">
-      <div style="font-weight:800;margin-bottom:6px;">${esc(title)}</div>
+      <div style="font-weight:800;margin-bottom:6px;">${bidiText(title)}</div>
       <div style="font-size:13px;line-height:1.6;color:var(--steel);margin-bottom:10px;">${bodyHtml}</div>
       <div class="chip-row">${extraActionHtml || ""}<button class="chip-btn primary" data-community-action="onboarding-dismiss" data-step="${step}">הבנתי</button></div>
     </div>`;
@@ -1404,17 +1491,17 @@
   }
   function renderOnboardingWelcomeStep() {
     const bodyRaw = onboardingStepBodyRaw("welcome") || `כאן רואים מה קורה במועדון, ואפשר לשתף אימונים ושיאים ולהגיב לחברים אחרים. לחיצה על "כתיבת פוסט" למעלה פותחת את השיתוף הראשון שלכם.`;
-    return renderOnboardingCard(onboardingStepTitle("welcome", "ברוכים הבאים לקהילה!"), esc(bodyRaw), "welcome");
+    return renderOnboardingCard(onboardingStepTitle("welcome", "ברוכים הבאים לקהילה!"), bidiText(bodyRaw), "welcome");
   }
   function renderOnboardingFirstWeekStep() {
     // COMM-207's own list, sorted the same soonest-end-first order the
     // Boards tab already uses - just the first entry.
     const active = state.challenges.items.filter((c) => c.status === "active").slice().sort((a, b) => new Date(a.end_at) - new Date(b.end_at))[0];
     const computed = active
-      ? `יש אתגר פעיל במועדון עכשיו: <strong>${esc(active.title)}</strong>.`
+      ? `יש אתגר פעיל במועדון עכשיו: <strong>${bidiText(active.title)}</strong>.`
       : `אין כרגע אתגר פעיל במועדון, אבל שווה להציץ בלוח האתגרים מדי פעם.`;
     const leadRaw = onboardingStepBodyRaw("first_week");
-    const lead = leadRaw ? esc(leadRaw) + " " : "";
+    const lead = leadRaw ? bidiText(leadRaw) + " " : "";
     const openBtn = active ? `<button class="chip-btn" data-community-action="open-challenge" data-id="${esc(active.id)}" data-source="onboarding">פתיחת האתגר</button>` : "";
     return renderOnboardingCard(onboardingStepTitle("first_week", "השבוע הראשון שלכם מאחוריכם"), lead + computed, "first_week", openBtn);
   }
@@ -1426,7 +1513,7 @@
       ? `החודש הראשון שלכם הסתיים - לא הצלחנו לטעון את הסיכום כרגע.`
       : `החודש הראשון שלכם: ${summary.sessions} אימונים, ${summary.prs} שיאים ו-${summary.achievements} הישגים חדשים. כל הכבוד!`;
     const leadRaw = onboardingStepBodyRaw("first_month");
-    const lead = leadRaw ? esc(leadRaw) + " " : "";
+    const lead = leadRaw ? bidiText(leadRaw) + " " : "";
     return renderOnboardingCard(onboardingStepTitle("first_month", "החודש הראשון שלכם במועדון"), lead + computed, "first_month");
   }
   // COMM-316. Static copy, same shape as welcome above - no dependent data
@@ -1435,11 +1522,11 @@
   // the way first_month's summary needs one.
   function renderOnboardingFirstClassStep() {
     const bodyRaw = onboardingStepBodyRaw("first_class") || `האימון הראשון שלכם כבר נרשם במערכת. ממשיכים באותו הקצב?`;
-    return renderOnboardingCard(onboardingStepTitle("first_class", "הגעתם לאימון הראשון!"), esc(bodyRaw), "first_class");
+    return renderOnboardingCard(onboardingStepTitle("first_class", "הגעתם לאימון הראשון!"), bidiText(bodyRaw), "first_class");
   }
   function renderOnboardingThirdClassStep() {
     const bodyRaw = onboardingStepBodyRaw("third_class") || `שלושה אימונים כבר מאחוריכם. ככה בונים הרגל אימונים.`;
-    return renderOnboardingCard(onboardingStepTitle("third_class", "אימון שלישי — אתם כבר בקצב!"), esc(bodyRaw), "third_class");
+    return renderOnboardingCard(onboardingStepTitle("third_class", "אימון שלישי — אתם כבר בקצב!"), bidiText(bodyRaw), "third_class");
   }
   function renderOnboardingStep() {
     const step = currentOnboardingStep();
@@ -1684,12 +1771,153 @@
     if (error) return setMessage("לא ניתן היה לשמור את ההודעה. נסו שוב.");
     form.reset(); await loadAnnouncements(); setMessage("ההודעה פורסמה"); rerender();
   }
+  // The comparison key a challenge is built on is a DATABASE key
+  // ("movement:back-squat:est1rm"), and until now a coach had to type it into
+  // a free-text box from memory. The audit typed six malformed keys and all
+  // six were accepted and stored: Hebrew free text, a missing prefix, a
+  // misspelled movement id, a bare "movement:". A key that matches nothing
+  // produces a challenge no member can ever appear on - and, worse, one that
+  // still advertises itself as a hero button on every member's club home.
+  //
+  // The field is a <select> now, built from the same catalogs app.js builds a
+  // key from when someone shares a real result (communityShareCandidateFor:
+  // `movement:${entry.exerciseId}:${duration ? "duration" : "est1rm"}` and
+  // `wod:${entry.wodId}:${entry.scoreType}:${entry.rx ? "rx" : "scaled"}`), so
+  // an invalid key cannot be produced by typing at all, and the two sides
+  // cannot drift. The box owner's own words were that being asked to type a
+  // database key by hand is why he would not use the feature.
+  //
+  // CUSTOM movements and WODs are deliberately excluded even though
+  // allMovements()/allWods() include them. A custom id is generated per device
+  // (uid()), so the coach's own "custom" back squat variant carries a
+  // different id from every member's, and a challenge on it could never match
+  // anybody's post - exactly the dead leaderboard this is fixing, just
+  // reached by a different route.
+  //
+  // Reached through window.*, not as bare identifiers: allMovements/allWods
+  // are function declarations in app.js and so are real properties of the
+  // global object, while MOVEMENTS/WOD_LIBRARY are top-level `const`s, which
+  // live in a lexical environment cloud.js's own script does not share under
+  // the jsdom test harness (see test/helpers/boot.mjs).
+  function challengeKeyChoices() {
+    const out = [];
+    const movements = typeof window.allMovements === "function" ? window.allMovements() : [];
+    for (const m of movements) {
+      if (!m || !m.id || m.category === "Custom") continue;
+      out.push({ group: "תרגילים", key: `movement:${m.id}:est1rm`, label: `${m.name} · 1RM` });
+      out.push({ group: "תרגילים", key: `movement:${m.id}:duration`, label: `${m.name} · Time` });
+    }
+    const wods = typeof window.allWods === "function" ? window.allWods() : [];
+    for (const w of wods) {
+      // EMOM is the one score type communityShareCandidateFor() refuses to
+      // build a key for (it returns null), so there is nothing for an EMOM
+      // challenge to ever compare against.
+      if (!w || !w.id || w.category === "Custom" || !w.scoreType || w.scoreType === "emom") continue;
+      // A retired club WOD stays in allWods() so that history and feed posts
+      // keep resolving its id — but the box has stopped programming it, so it
+      // must not be offerable as the subject of a NEW challenge.
+      //
+      // This DOES flow through into challengeKeyExists() below, which is
+      // built on this list, and that is correct rather than a leak: the
+      // database refuses to retire a WOD while any challenge referencing it
+      // has not yet ENDED (club_wod_retire, 'wod is used by a live
+      // challenge'), and loadWeeklyChallenge() only ever reads a row whose
+      // window contains today. So a currently-active challenge can never be
+      // on a retired WOD, and the only thing this skip can turn away is a
+      // coach trying to open a NEW challenge on programming the box has
+      // retired — which is the intent, not a side effect.
+      if (w.category === "Club" && w.retiredAt) continue;
+      out.push({ group: "אימונים", key: `wod:${w.id}:${w.scoreType}:rx`, label: `${w.name} · Rx` });
+      out.push({ group: "אימונים", key: `wod:${w.id}:${w.scoreType}:scaled`, label: `${w.name} · Scaled` });
+    }
+    return out;
+  }
+  function challengeKeyExists(comparisonKey) {
+    return challengeKeyChoices().some((c) => c.key === comparisonKey);
+  }
+  // Option labels are deliberately pure LTR ("Back Squat · 1RM", "Fran · Rx"):
+  // the movement and WOD names are English, and <option> text cannot carry a
+  // <bdi>, so a Hebrew metric word appended to an English name would be at the
+  // mercy of the bidi algorithm with no way to isolate it. Rx/Scaled/1RM are
+  // already this app's own vocabulary - app.js prints them untranslated on
+  // every WOD entry. The Hebrew that explains the field lives in the label and
+  // the hint underneath, where it can be written properly.
+  function renderChallengeKeyPicker() {
+    const choices = challengeKeyChoices();
+    // app.js publishes its catalogs at load; if they are somehow not there
+    // yet, a disabled control that says so is honest, and - unlike the free
+    // text box this replaces - cannot be used to store a key that means
+    // nothing.
+    if (!choices.length) return `<select class="text-input" name="comparisonKey" disabled><option value="">רשימת התרגילים והאימונים עדיין נטענת…</option></select>`;
+    const selected = state.club.challengeKeyDraft || "";
+    const groups = [];
+    for (const c of choices) {
+      let group = groups.find((g) => g.label === c.group);
+      if (!group) groups.push(group = { label: c.group, items: [] });
+      group.items.push(c);
+    }
+    const optgroups = groups.map((g) => `<optgroup label="${esc(g.label)}">${g.items.map((c) => `<option value="${esc(c.key)}"${c.key === selected ? " selected" : ""}>${esc(c.label)}</option>`).join("")}</optgroup>`).join("");
+    return `<select class="text-input" name="comparisonKey" data-challenge-key required><option value=""${selected ? "" : " selected"}>בחרו תרגיל או אימון…</option>${optgroups}</select>`;
+  }
+  // The shape the inline hint under the field has always described. Kept as a
+  // separate check from the existence check above so the two failures can say
+  // different things: "that is not a key" and "that key names something this
+  // app has never heard of" are different mistakes with different fixes.
+  const COMPARISON_KEY_SHAPE_RE = /^(movement:[a-z0-9-]+:(est1rm|duration)|wod:[a-z0-9-]+:[a-z]+:(rx|scaled))$/;
   async function loadWeeklyChallenge() {
     if (!state.user) return;
+    // TWO reads, because they answer two different questions and conflating
+    // them is what let the club home and the Boards tab contradict each other.
+    //
+    // weekly_challenge_leaderboard only returns rows where a real post ALREADY
+    // matches the challenge key, so a challenge with no entries yet - whether
+    // it is brand new or permanently unmatchable because its key is malformed
+    // - comes back empty, and the Boards tab reported that as "אין אתגר פעיל
+    // כרגע" while the club home was simultaneously showing a bright hero
+    // button for that very challenge. The weekly_challenges row is what says
+    // whether a challenge EXISTS; the view says who is on it.
+    const today = todayIso();
+    const { data: rows } = await client.from("weekly_challenges")
+      .select("id,title,comparison_key,starts_on,ends_on")
+      .lte("starts_on", today).gte("ends_on", today)
+      .order("ends_on", { ascending: true }).limit(1);
+    const row = rows && rows.length ? rows[0] : null;
+    state.club.weeklyChallengeRow = row
+      ? { id: row.id, title: row.title, comparisonKey: row.comparison_key, startsOn: row.starts_on, endsOn: row.ends_on }
+      : null;
     const { data, error } = await client.from("weekly_challenge_leaderboard").select("*").limit(50);
     if (error || !data || !data.length) { state.club.weeklyChallenge = null; state.club.weeklyLeaderboard = []; return; }
     state.club.weeklyChallenge = { title: data[0].title, comparisonKey: data[0].comparison_key, startsOn: data[0].starts_on, endsOn: data[0].ends_on };
     state.club.weeklyLeaderboard = data.sort((a, b) => a.score_direction === "lower" ? Number(a.score_value) - Number(b.score_value) : Number(b.score_value) - Number(a.score_value));
+  }
+  // The one answer to "is there a weekly challenge a member can actually join
+  // right now" - an active row whose key names something real. Anything that
+  // advertises a challenge has to go through this, not through the mere
+  // existence of a row.
+  //
+  // DERIVED AT READ TIME, NOT FROZEN AT LOAD TIME (202609060028). It used to
+  // be computed once inside loadWeeklyChallenge() and stored as `row.valid`,
+  // which was fine while every catalogue allWods() draws on was a compile-time
+  // constant shipped inside src/constants.js. The club WOD catalogue is not:
+  // it arrives over the network, and on a cold start it also arrives out of
+  // IndexedDB on app.js's own boot timeline. Freezing `valid` therefore made
+  // the answer depend on which of three independent async paths happened to
+  // finish first, and losing that race stamped a perfectly good club
+  // challenge invalid FOR THE WHOLE SESSION - no later load could correct it.
+  //
+  // The alternative considered was ordering the loads (awaiting the catalogue
+  // before the challenge read). That fixes the one ordering inside this file
+  // and none of the others: app.js's cached-catalogue hydration and a
+  // publish made later in the same session are both outside it. Deriving
+  // here removes the dependency instead of sequencing it, and costs one
+  // catalogue walk on a path that already walks the catalogue to render.
+  function weeklyChallengeIsValid(row) {
+    if (!row) return false;
+    return COMPARISON_KEY_SHAPE_RE.test(String(row.comparisonKey || "")) && challengeKeyExists(row.comparisonKey);
+  }
+  function activeWeeklyChallenge() {
+    const row = state.club.weeklyChallengeRow;
+    return weeklyChallengeIsValid(row) ? row : null;
   }
   async function setWeeklyChallenge(form) {
     if (!state.user || !isStaff()) return;
@@ -1698,21 +1926,132 @@
     const startsOn = form.elements.startsOn.value, endsOn = form.elements.endsOn.value;
     const errors = {};
     if (!title) errors.title = "יש למלא שם לאתגר";
-    if (!comparisonKey) errors.comparisonKey = "יש למלא מפתח השוואה";
-    // A key in the wrong shape (e.g. the bare movement name a coach might
-    // reasonably guess) silently creates a challenge that can never match
-    // a real post - the empty leaderboard then looks identical to a
-    // legitimately fresh challenge with no entries yet, so the mistake
-    // was invisible. Catch the shape here instead.
-    else if (!/^(movement:[a-z0-9-]+:(est1rm|duration)|wod:[a-z0-9-]+:[a-z]+:(rx|scaled))$/.test(comparisonKey)) errors.comparisonKey = "פורמט לא תקין — movement:שם-תרגיל:est1rm או wod:שם-אימון:סוג-תוצאה:rx";
+    // The <select> above cannot produce an invalid key, but a <select> is a UI
+    // affordance and not a guarantee - this is the check that actually keeps a
+    // dead challenge out of the database.
+    if (!comparisonKey) errors.comparisonKey = "יש לבחור תרגיל או אימון לאתגר";
+    else if (!COMPARISON_KEY_SHAPE_RE.test(comparisonKey)) errors.comparisonKey = "פורמט לא תקין — movement:שם-תרגיל:est1rm או wod:שם-אימון:סוג-תוצאה:rx";
+    // An empty catalog means app.js has not finished loading its data, not
+    // that nothing is valid - refusing everything then would be its own lie.
+    // The shape check above still stands in that window.
+    else if (challengeKeyChoices().length && !challengeKeyExists(comparisonKey)) errors.comparisonKey = "התרגיל או האימון הזה לא קיים באפליקציה, אז אף תוצאה לא תוכל להיספר לאתגר. בחרו מהרשימה.";
     if (!startsOn) errors.startsOn = "יש לבחור תאריך התחלה";
     if (!endsOn) errors.endsOn = "יש לבחור תאריך סיום";
     if (Object.keys(errors).length) return setFieldErrors("communityWeeklyChallenge", errors);
     setFieldErrors("communityWeeklyChallenge", {});
     const { error } = await client.from("weekly_challenges").insert({ title, comparison_key: comparisonKey, starts_on: startsOn, ends_on: endsOn, created_by: state.user.id });
     if (error) return setMessage("קביעת האתגר נכשלה");
+    state.club.challengeKeyDraft = "";
     form.reset(); await loadWeeklyChallenge(); setMessage("האתגר השבועי עודכן"); rerender();
   }
+
+  // =====================================================================
+  // The club WOD catalogue (202609060028)
+  // =====================================================================
+  // What this is for, in one sentence: a weekly challenge is a
+  // comparison_key, and a key of the form wod:<id>:... is only joinable when
+  // EVERY member's client can resolve that id. WOD_LIBRARY ships in
+  // src/constants.js so a built-in works for free; a custom WOD is local data
+  // (IndexedDB plus a private_records row nobody else can read), so a
+  // challenge on a coach's own programming resolved on exactly one device and
+  // was dead on arrival for the rest of the box. This is the read that makes
+  // those ids mean the same thing everywhere.
+  //
+  // Note what is NOT here: challengeKeyExists() is untouched. Merging the
+  // catalogue into app.js's allWods() is the entire fix - the existing
+  // one-liner then resolves a club WOD for every member with no special case
+  // and, importantly, without being relaxed to accept ids it cannot resolve.
+  async function loadClubWods() {
+    if (!state.user) return;
+    const { data, error } = await client.rpc("club_wods_list");
+    // On failure the previously-loaded catalogue is LEFT ALONE rather than
+    // blanked. app.js may be holding a cached copy from a previous session
+    // that is resolving a member's own history right now; replacing it with
+    // [] because one request failed would break exactly the offline case the
+    // cache exists for.
+    if (error) return;
+    state.club.clubWods = data || [];
+    if (typeof window.setClubWods === "function") window.setClubWods(state.club.clubWods);
+  }
+  // Publishing is staff-gated HERE only so a member is never shown a control
+  // that can only fail - the real boundary is club_wod_publish() itself,
+  // which checks has_perm('community.challenge.create') server-side (not
+  // is_staff(): 202609060005 deliberately moved the challenge surface off
+  // is_staff(), which also admits the `staff` role, and that role holds no
+  // challenge permission at all).
+  function publishClubWod(wod) {
+    if (!state.user || !isStaff()) return;
+    // Only a member's OWN custom WOD is publishable. A club WOD arriving here
+    // would mean the affordance is being shown on something already published.
+    if (!wod || !wod.id || wod.category !== "Custom" || !wod.name) return;
+    askConfirm({
+      title: "פרסום אימון לקטלוג המועדון",
+      message: "האימון {subject} יהיה זמין לכל חברי המועדון, ויהיה אפשר לקבוע עליו אתגר שבועי. מה שמתפרסם הוא צילום מצב של האימון כפי שהוא עכשיו — עריכה שלו כאן אחר כך לא תעבור לעותק של המועדון.",
+      subject: wod.name,
+      confirmLabel: "פרסום",
+      action: "publish-club-wod",
+      payload: { wod },
+    });
+  }
+  async function doPublishClubWod(wod) {
+    if (!state.user || !isStaff() || !wod || !wod.id) return;
+    // The definition travels in the CALL. The server deliberately does not
+    // read it back out of private_records: cloud backup is opt-out, so a
+    // coach who switched it off - or whose outbox simply has not flushed the
+    // WOD they built two minutes ago - has no server copy to read, and those
+    // are the coaches most likely to be publishing.
+    const args = {
+      p_wod_id: wod.id,
+      p_name: wod.name,
+      p_score_type: wod.scoreType,
+      p_description: wod.desc || "",
+      p_time_cap_seconds: wod.timeCapSeconds || null,
+    };
+    // EMOM is publishable (members can log the box's programming) even though
+    // it can never be a challenge - communityShareCandidateFor() returns a
+    // null comparison key for it and challengeKeyChoices() skips it.
+    if (wod.scoreType === "emom") {
+      args.p_emom_movements = wod.emomMovements || [];
+      args.p_emom_target_reps = wod.emomTargetReps || [];
+      args.p_emom_minutes = wod.emomMinutes || null;
+    }
+    const { error } = await client.rpc("club_wod_publish", args);
+    if (error) return setMessage(serverErrorText(error));
+    // Only this. loadWeeklyChallenge() is deliberately NOT called after a
+    // publish: it used to be needed because the active challenge's `valid`
+    // was frozen at load time, and re-reading the row was the only way to
+    // recompute it. activeWeeklyChallenge() derives that at read time now
+    // (see weeklyChallengeIsValid), so the next render picks the new
+    // catalogue up on its own and a second round trip would buy nothing.
+    await loadClubWods();
+    setMessage("האימון פורסם לקטלוג המועדון"); rerender();
+  }
+  // The three corrections. Thin on purpose: every rule about what may change
+  // and when lives in the database (score type and the EMOM rotation are
+  // immutable because they are what the comparison key and the log form are
+  // built from; retiring a WOD out from under a live challenge is refused;
+  // there is no delete at all), and duplicating any of it here would only
+  // create somewhere for the two to disagree. Each one re-reads the
+  // catalogue so app.js's merged view matches the server.
+  async function editClubWod(wodId, name, description) {
+    if (!state.user || !isStaff() || !wodId) return false;
+    const { error } = await client.rpc("club_wod_edit", { p_wod_id: wodId, p_name: name, p_description: description || "" });
+    if (error) { setMessage(serverErrorText(error)); return false; }
+    await loadClubWods(); setMessage("האימון עודכן"); rerender(); return true;
+  }
+  async function retireClubWod(wodId, reason) {
+    if (!state.user || !isStaff() || !wodId) return false;
+    const { error } = await client.rpc("club_wod_retire", { p_wod_id: wodId, p_reason: reason || null });
+    if (error) { setMessage(serverErrorText(error)); return false; }
+    await loadClubWods(); setMessage("האימון הוסר מהקטלוג"); rerender(); return true;
+  }
+  async function restoreClubWod(wodId) {
+    if (!state.user || !isStaff() || !wodId) return false;
+    const { error } = await client.rpc("club_wod_restore", { p_wod_id: wodId });
+    if (error) { setMessage(serverErrorText(error)); return false; }
+    await loadClubWods(); setMessage("האימון הוחזר לקטלוג"); rerender(); return true;
+  }
+
   async function loadInactiveMembers() {
     if (!state.user || !isStaff()) return;
     const { data, error } = await client.rpc("coach_inactive_members");
@@ -1723,6 +2062,20 @@
     const { data, error } = await client.rpc("coach_new_members");
     state.club.newMembers = error ? [] : (data || []);
   }
+  // Whether the two lists above have any data behind them AT ALL.
+  //
+  // An empty inactive list means one of two completely different things -
+  // "everyone is active" or "we have never received a single data point" -
+  // and the list itself cannot tell them apart. This section used to assert
+  // the first in both cases ("כולם פעילים"), which on a brand-new club is a
+  // confident all-clear over an empty table. Distinguishing them needs a
+  // fact, not a heuristic, which is what coach_activity_signal_status()
+  // (202609060020) returns: aggregate counts, no member identities.
+  async function loadActivitySignal() {
+    if (!state.user || !isStaff()) return;
+    const { data, error } = await client.rpc("coach_activity_signal_status");
+    state.club.activitySignal = error ? null : ((data || [])[0] || null);
+  }
 
   // ==========================================================================
   // COMM-223..226 coach-tools cluster. Coach Dashboard: Celebrate, Welcome,
@@ -1732,29 +2085,30 @@
   // three "###" subsections under "Needs from schema, coach-tools" in
   // contracts.md for the exact shapes read below.
   //
-  // Read-path note (COMM-224 "new members"): the ticket text says to join
-  // profiles with invite_redemptions.redeemed_at directly. That table has
-  // exactly one SELECT policy on this schema, invite_redemptions_self_select
-  // (202608270003, `user_id = auth.uid()`), and 202608290013 did not widen
-  // it for staff - so a coach's cross-user select of it would silently
-  // return nothing for every row but their own, the exact "looks like it
-  // works, does nothing" failure mode 202608290013's own comments call out
-  // for the Assign-coach column. profiles.created_at is used instead: it is
-  // already club-wide readable (profiles_read_authenticated, 202608280003)
-  // and profiles_insert_self requires a redeemed invite to already exist, so
-  // it lands within the same session as redeemed_at for every real member.
-  // Follow-up: either invite_redemptions gets a staff-readable SELECT
-  // policy, or created_at is accepted as the canonical join date for good.
+  // Read-path note (COMM-224 "new members"), RESOLVED by 202609060020 - both
+  // halves of what used to be recorded here as open follow-ups.
   //
-  // "Sessions logged" (COMM-224): there is no readable-by-a-coach raw
-  // lifetime session count anywhere in this schema (community_streaks
-  // exposes a consecutive-day run, not a total; community_profile's
-  // training_frequency/current_streak are the same shape, gated to the
-  // subject's own toggle). current_streak from community_streaks - the
-  // exact figure and the exact label ("רצף נוכחי") the profile overlay
-  // already uses at community_profile's current_streak field - is reused
-  // here rather than inventing a new count query, per COMM-224's own
-  // instruction to reuse what already exists.
+  // JOIN DATE. The ticket asked for invite_redemptions.redeemed_at. That
+  // table has exactly one SELECT policy, invite_redemptions_self_select
+  // (202608270003, `user_id = auth.uid()`), so a coach's cross-user select of
+  // it returns nothing but their own row - the "looks like it works, does
+  // nothing" failure mode 202608290013's own comments flag for the
+  // Assign-coach column. This section used profiles.created_at instead and
+  // logged a follow-up. The follow-up is closed the third way: the read moved
+  // INTO a SECURITY DEFINER function (coach_new_members), which reads
+  // redeemed_at across users without widening any policy - the same thing
+  // coach_celebrate_feed() already does for anniversaries. redeemed_at is now
+  // the canonical join date, with created_at as the fallback.
+  //
+  // SESSIONS LOGGED. There genuinely was no coach-readable lifetime session
+  // count when this section shipped, and community_streaks.current_streak was
+  // reused as a stand-in. That was wrong in a way worth naming: it counts
+  // CONSECUTIVE DAYS THE MEMBER OPENED THE APP, and it sat beside a new
+  // member's name under the label "רצף נוכחי" where a coach reads it as
+  // training. coach_new_members().sessions_logged replaces it - a real count
+  // of attendance_log days, delivered as an AGGREGATE by the definer function
+  // precisely so that 202609060013's rule (raw attendance rows are admin
+  // rank, not coach rank) keeps holding.
   function celebrateItemKey(item) { return `${item.kind}|${item.user_id}|${item.occurred_at}`; }
   async function loadCoachCelebrate() {
     if (!state.user || !isStaff()) return;
@@ -1837,26 +2191,42 @@
     state.coach.welcome.loading = true;
     state.coach.welcome.error = false;
     rerender();
-    const cutoffIso = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    const { data, error } = await client.from("profiles").select("id,handle,display_name,avatar_url,created_at,assigned_coach_id").gte("created_at", cutoffIso).order("created_at", { ascending: false });
+    // ONE call where there used to be two (a profiles range-scan plus a
+    // batched member_contact_log read). Not consolidation for its own sake:
+    // `sessions_logged` cannot be obtained client-side at all, because
+    // 202609060013 deliberately narrowed attendance_log's staff read to
+    // has_perm('community.analytics.view') - admin rank - so a coach's own
+    // select of it returns zero rows. The count has to come from a definer
+    // function, and coach_new_members() is the one that already answers every
+    // other question this section asks.
+    const { data, error } = await client.rpc("coach_new_members", { p_within_days: 30 });
     if (error) {
       state.coach.welcome.loading = false; state.coach.welcome.loaded = true; state.coach.welcome.error = true; state.coach.welcome.members = [];
       rerender();
       return;
     }
-    // deleted_at isn't selected above - profiles_read_authenticated already
-    // excludes a soft-deleted row server-side, so there is nothing left for
-    // a client-side filter to add here.
-    const members = data || [];
-    state.coach.welcome.members = members;
-    const ids = members.map((m) => m.id);
-    // Staff can read any user's member_contact_log rows (COMM-224's own
-    // shipped RLS), so this is one batched read, not one per member.
+    // The RPC excludes soft-deleted profiles server-side, so there is nothing
+    // left for a client-side filter to add here.
+    const rows = data || [];
+    // Mapped onto the shape renderCoachWelcomeRow() and the assign/contact
+    // handlers already use (id, created_at), so this is a change of data
+    // SOURCE and not a rewrite of the section.
+    state.coach.welcome.members = rows.map((r) => ({
+      id: r.user_id,
+      handle: r.handle,
+      display_name: r.display_name,
+      avatar_url: r.avatar_url,
+      created_at: r.joined_on,
+      assigned_coach_id: r.assigned_coach_id,
+      days_since_join: r.days_since_join,
+      sessions_logged: r.sessions_logged,
+      has_opened_app: r.has_opened_app,
+    }));
+    // Contact status rides along on the same row now. coachMarkContacted()
+    // still writes into this map directly, so an optimistic update after a
+    // "Mark contacted" tap behaves exactly as before.
     const contactedIds = {};
-    if (ids.length) {
-      const { data: contacts } = await client.from("member_contact_log").select("user_id").in("user_id", ids);
-      for (const row of contacts || []) contactedIds[row.user_id] = true;
-    }
+    for (const r of rows) if (r.contacted) contactedIds[r.user_id] = true;
     state.coach.welcome.contactedIds = contactedIds;
     state.coach.welcome.loading = false;
     state.coach.welcome.loaded = true;
@@ -2346,14 +2716,26 @@
     { id: "other", label: "אחר" },
   ];
   function reportReasonLabel(code) { const r = REPORT_REASONS.find((x) => x.id === code); return r ? r.label : (code || ""); }
+  // mod_queue() returns a null author name for content whose author is gone.
+  // One constant for the three surfaces that render it (queue row, context
+  // overlay, action sheet) so a report and the dialog acting on it cannot
+  // describe the same missing member differently.
+  const MOD_UNKNOWN_AUTHOR_TEXT = "חבר/ה שהוסר/ה";
   // The five queue decisions. restrict_temp carries a duration; the rest
   // do not. Every one is passed straight to mod_review().
+  //
+  // Five-persona UX audit, defect 2. `effect` is the sentence the sheet shows
+  // under the title, and it NAMES THE MEMBER: "הגבלת פרסום קבועה" on its own
+  // told an admin what button they pressed and nothing about who it lands on,
+  // in a queue where every row looks alike. {subject} is the placeholder
+  // subjectSentenceHtml() fills with a bidi-isolated name - see
+  // CONFIRM_SUBJECT_TOKEN. The label stays the button/title text.
   const MOD_DECISIONS = [
-    { id: "remove", label: "הסרת התוכן", destructive: true },
-    { id: "warn", label: "אזהרה לחבר/ה" },
-    { id: "restrict_temp", label: "הגבלת פרסום זמנית" },
-    { id: "restrict_permanent", label: "הגבלת פרסום קבועה", destructive: true },
-    { id: "dismiss", label: "דחיית הדיווח" },
+    { id: "remove", label: "הסרת התוכן", destructive: true, effect: "התוכן שפרסמ/ה {subject} יוסר מהפיד." },
+    { id: "warn", label: "אזהרה לחבר/ה", effect: "אזהרה תירשם ל{subject}." },
+    { id: "restrict_temp", label: "הגבלת פרסום זמנית", effect: "{subject} לא יוכל/תוכל לפרסם בקהילה עד תום התקופה שנבחרה." },
+    { id: "restrict_permanent", label: "הגבלת פרסום קבועה", destructive: true, effect: "{subject} לא יוכל/תוכל לפרסם בקהילה יותר. ההגבלה נשארת עד שמנהל/ת מסיר/ה אותה." },
+    { id: "dismiss", label: "דחיית הדיווח", effect: "הדיווח על {subject} ייסגר ללא פעולה." },
   ];
   const RESTRICT_TEMP_DAYS = [3, 7, 14, 30];
 
@@ -2385,7 +2767,10 @@
   function openModAction(reportId, decision) {
     const item = (state.admin.modQueue || []).find((r) => r.report_id === reportId);
     if (!item || !MOD_DECISIONS.some((d) => d.id === decision)) return;
-    state.admin.modAction = { reportId, decision, note: "", days: 7, saving: false, error: "", targetType: item.target_type };
+    // subjectName is carried on the action rather than re-read from the queue
+    // at render time: the queue reloads underneath an open sheet, and the
+    // name in the confirmation must stay the one the admin clicked.
+    state.admin.modAction = { reportId, decision, note: "", days: 7, saving: false, error: "", targetType: item.target_type, subjectName: item.content_author_name || "" };
     rerender();
   }
   function closeModAction() { state.admin.modAction = null; rerender(); }
@@ -2423,6 +2808,75 @@
     }
     setMessage("הפעולה נרשמה");
     await loadModQueue();
+  }
+  // ---- Five-persona UX audit, defect 3. Reclaiming a ghost's invite ------
+  //
+  // THE CONFIRMATION NAMES ITS SUBJECT. A standing finding of this audit is
+  // that no confirmation in this app says what it is about to act on:
+  // askConfirm()'s message is a fixed sentence and renderConfirmSheet()
+  // escapes it as plain text, so it structurally cannot carry a name that
+  // mixes Latin and Hebrew without breaking bidi anyway. This is a dedicated
+  // sheet on renderModActionSheet's model - which is already where an
+  // optional note field lives - and the first thing inside it is WHO.
+  function openGhostReclaim(userId) {
+    // Second layer, not the only one: ghostRowHtml already withholds the
+    // control from a non-admin, admin_reclaim_invite checks a real
+    // profiles.is_admin server-side, and this is the fallback if a future
+    // change ever renders the button more widely than it should.
+    if (!isAdmin()) return;
+    const item = (state.admin.incompleteSignups.items || []).find((r) => r.user_id === userId);
+    if (!item) return;
+    state.admin.reclaim = { userId, item, note: "", saving: false, error: "" };
+    rerender();
+  }
+  function closeGhostReclaim() { state.admin.reclaim = null; rerender(); }
+  // admin_reclaim_invite raises four named errors, and every one of them
+  // means the admin is looking at a different situation than they think - so
+  // each gets its own sentence naming the real reason and, where there is
+  // one, the thing to do instead. NONE of them offers a retry: a generic
+  // "try again" would be a lie for all four, because not one can ever
+  // succeed on a second identical call.
+  function ghostReclaimErrorText(error) {
+    const msg = error && error.message;
+    return {
+      "member has a profile": "לחשבון הזה כבר יש פרופיל - זה חבר/ה במועדון ולא הרשמה שלא הושלמה. להסרה יש להשתמש בניהול חברים.",
+      "signup is still in progress": `ההרשמה עדיין בתהליך. אפשר לשחרר הזמנה רק אחרי ${GHOST_GRACE_DAYS} ימים ללא השלמה, כדי לא לקחת קוד ממי שנמצא באמצע ההרשמה ברגע זה.`,
+      "no invite to reclaim": "אין כאן הזמנה לשחרר. ייתכן שהיא כבר שוחררה - שווה לרענן את הרשימה.",
+      "cannot reclaim your own invite": "אי אפשר לשחרר את ההזמנה של עצמך.",
+      "target account required": "לא נבחר חשבון לשחרור.",
+      "not authorized": "שחרור הזמנה שמור למנהל/ת.",
+    }[msg] || "לא ניתן היה לשחרר את ההזמנה. נסו שוב.";
+  }
+  async function runGhostReclaim() {
+    const a = state.admin.reclaim;
+    if (!a || a.saving) return;
+    a.saving = true; a.error = ""; rerender();
+    const { data, error } = await client.rpc("admin_reclaim_invite", {
+      p_user_id: a.userId,
+      // Capped at 500 like mod_review's note, and sent as null rather than an
+      // empty string so the audit row carries "no reason given" instead of a
+      // reason that is the empty string.
+      p_note: String(a.note || "").slice(0, 500) || null,
+    });
+    if (error) {
+      a.saving = false;
+      a.error = ghostReclaimErrorText(error);
+      rerender();
+      return;
+    }
+    const result = data || {};
+    // The name is carried over from the row rather than re-read: the reclaim
+    // has just deleted this account's invite_redemptions row, which is the
+    // row admin_incomplete_signups INNER JOINs on, so the reload below will
+    // not return it and there would be nothing left to name it by.
+    state.admin.reclaimResult = {
+      name: ghostDisplayName(a.item),
+      invite_source: result.invite_source || a.item.invite_source,
+      welcome_posts_retracted: Number(result.welcome_posts_retracted || 0),
+      purgeable: !!result.purgeable_by_purge_abandoned_profiles,
+    };
+    state.admin.reclaim = null;
+    await loadIncompleteSignups(true);
   }
   // Admin-only member lookup/management - was previously only possible
   // through the Supabase SQL editor. Search by handle/name or paste an
@@ -2471,6 +2925,24 @@
     if (error) return setMessage("שינוי ההרשאה נכשל");
     setMessage("ההרשאה עודכנה ל" + roleCodeLabel(roleCode));
     await searchMembers(state.members.search);
+  }
+  // Five-persona UX audit, defect 1. Granting coach asked "are you sure?";
+  // revoking the same permission fired on a single click, from a list, with
+  // no dialog at all - the destructive direction was the UNGUARDED one. This
+  // is the one dialog definition for it, shared by the dedicated revoke
+  // control and by admin-set-role's "member" branch (the other route into
+  // the same RPC), so the two cannot diverge again. It is also marked
+  // destructive: true, which grant deliberately is not.
+  function askRevokeCoachConfirm(userId) {
+    askConfirm({
+      title: "ביטול הרשאת מאמן/ת",
+      message: "להסיר הרשאת מאמן/ת מ{subject}? הגישה לכלי המאמנים ולניהול הקהילה תיפסק מיד.",
+      subject: subjectNameFor(userId),
+      confirmLabel: "ביטול ההרשאה",
+      destructive: true,
+      action: "admin-revoke-coach",
+      payload: { userId },
+    });
   }
   async function adminRevokeCoach(userId) {
     if (!state.user || !isAdmin()) return;
@@ -2559,6 +3031,16 @@
     { id: "revoked", label: "בוטל" }, { id: "expired", label: "פג תוקף" },
   ];
   function inviteStatusLabel(s) { return { pending: "ממתין", redeemed: "מומש", revoked: "בוטל", expired: "פג תוקף" }[s] || s; }
+  // A personal invite has no member behind it yet, so the only thing that can
+  // identify it in a confirmation is the label the admin typed when creating
+  // it ("שם המוזמן/ת" is literally what the field asks for). Single source,
+  // shared with the row renderer, so the list and the dialog cannot describe
+  // the same unlabelled invite two different ways.
+  const INVITE_UNLABELLED_TEXT = "(ללא תווית)";
+  function inviteSubjectName(inviteId) {
+    const inv = (state.admin.invites.items || []).find((i) => i && i.id === inviteId);
+    return (inv && inv.label) || INVITE_UNLABELLED_TEXT;
+  }
   async function loadInvites(reset) {
     if (!state.user || !(hasPerm(PERM.MEMBER_INVITE) || isAdmin())) { state.admin.invites.items = []; return; }
     const iv = state.admin.invites;
@@ -2697,7 +3179,7 @@
     const filters = `<div class="chip-row" style="margin:0 0 10px;">${INVITE_STATUS_FILTERS.map((s) => `<button class="chip-btn${iv.status === s.id ? " selected" : ""}" data-community-action="invite-status-filter" data-status="${s.id}">${s.label}</button>`).join("")}</div>`;
     const rowHtml = (inv) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:4px;" data-invite-id="${esc(inv.id)}">
       <div class="flex" style="justify-content:space-between;width:100%;">
-        <span>${esc(inv.label || "(ללא תווית)")} · ${roleCodeLabel(inv.role)}</span>
+        <span>${bidiText(inv.label || INVITE_UNLABELLED_TEXT)} · ${roleCodeLabel(inv.role)}</span>
         <span class="admin-tag">${inviteStatusLabel(inv.status)}</span>
       </div>
       <div style="color:var(--steel);font-size:12px;">נוצר ${esc(String(inv.created_at || "").slice(0, 10))}${inv.expires_at ? " · תפוגה " + esc(String(inv.expires_at).slice(0, 10)) : ""}</div>
@@ -3941,6 +4423,139 @@
   function usernameToEmail(username) { return `${username}@members.haimuniya.invalid`; }
   const USERNAME_RE = /^[a-z0-9_]{3,24}$/;
 
+  // ONE source of truth for the two credential rules, because the screen and
+  // the validator had drifted into stating different ones. The password
+  // placeholder promised "לפחות 8 תווים" while the check below demanded ten
+  // characters plus three character classes, so eight characters - exactly
+  // what the app asked for - came back rejected. Three separate audit
+  // personas hit that on their first attempt, which is every member's first
+  // attempt. The username field had the same defect in milder form: the
+  // placeholder said "אותיות אנגליות" and the error added a case and a length
+  // the member had never been shown.
+  //
+  // These constants are what the placeholders render AND what the messages
+  // below quote, so the promise and the rule cannot come apart again.
+  //
+  // Phrasing note: the length is deliberately spelled "3 עד 24" rather than as
+  // a "3–24" range. A numeric range joined by a neutral dash inside an RTL
+  // sentence is reordered by the bidi algorithm and can paint as "24–3" - the
+  // same class of defect bidiText() exists for, and one <bdi> around the whole
+  // message cannot fix because the message's own base direction is still RTL.
+  // Separating the two numbers with a Hebrew word removes the ambiguity at the
+  // source instead of trying to mark it up afterwards.
+  const USERNAME_RULE_TEXT = "3 עד 24 אותיות אנגליות קטנות, ספרות או קו תחתון";
+  const PASSWORD_RULE_TEXT = "לפחות 10 תווים, עם אות גדולה, אות קטנה וספרה";
+
+  // Signup asks for a name TWICE, three screens apart, and both fields used to
+  // be labelled "שם משתמש" with contradictory rules behind them: stage one
+  // accepts English only, stage two accepts Hebrew and even suggested it
+  // ("למשל דנה_כהן"). Nothing on either screen said they were different
+  // things, so a member could not tell which name the club would see, and the
+  // login name and the roster handle drifted apart silently - which an admin
+  // separately reported as making "find this member" harder.
+  //
+  // The fix is to stop calling them the same thing. Each label now says what
+  // its field is FOR, in the same plain register the invite-code screen uses
+  // ("הקוד לא נוגע לרישום האימונים עצמו — הוא רק פותח את לשונית הקהילה"), and
+  // each screen names the other name so neither reads as a duplicate.
+  const LOGIN_NAME_LABEL = "שם לכניסה";
+  const CLUB_NAME_LABEL = "השם שרואים במועדון";
+  const CREDENTIALS_INTRO_TEXT = "שם וסיסמה לכניסה — כדי שתוכלו להיכנס לחשבון שוב מכל מכשיר. שם הכניסה הוא רק בשבילכם ואף אחד במועדון לא רואה אותו; את השם שחברי המועדון כן יראו בוחרים בשלב הבא, והוא יכול להיות אחר לגמרי.";
+  const CLUB_NAME_HINT_TEXT = "זה השם שחברי המועדון יראו לידכם בפיד ובלוחות. הוא לא שם הכניסה לחשבון, ואפשר לכתוב אותו בעברית.";
+  // The value setCredentials() will actually save, not the raw keystrokes: it
+  // trims and lower-cases before validating, so "Dana_K" is accepted and
+  // stored as "dana_k". The live check normalises identically, otherwise it
+  // would flag a capital letter the submit goes on to accept - a validator
+  // disagreeing with its own form is the defect being fixed here, not a
+  // stricter version of it.
+  function normalizeUsername(value) { return String(value || "").trim().toLowerCase(); }
+  // Same shape as serverErrorText()/ghostReclaimErrorText(): a flat set of
+  // answers, each saying what is wrong and what to do about it, and "" when
+  // there is nothing to say. No "try again" anywhere - retyping the same
+  // thing cannot succeed; the member has to change it.
+  function usernameRuleError(value) {
+    const username = normalizeUsername(value);
+    if (!username) return "יש להזין שם לכניסה";
+    if (username.length < 3) return `שם הכניסה קצר מדי. צריך ${USERNAME_RULE_TEXT}.`;
+    if (username.length > 24) return `שם הכניסה ארוך מדי. צריך ${USERNAME_RULE_TEXT}.`;
+    if (!USERNAME_RE.test(username)) return "בשם הכניסה אפשר להשתמש באותיות אנגליות, בספרות ובקו תחתון בלבד — בלי עברית, רווחים או סימנים.";
+    return "";
+  }
+  function passwordRuleError(value) {
+    const password = String(value || "");
+    if (!password) return "יש להזין סיסמה";
+    if (password.length < 10) return `הסיסמה קצרה מדי. צריך ${PASSWORD_RULE_TEXT}.`;
+    if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) return "הסיסמה צריכה לכלול אות גדולה, אות קטנה וספרה באנגלית.";
+    return "";
+  }
+  // Live, as-you-type validation for the two credential-creation forms.
+  //
+  // Patched into the DOM IN PLACE rather than through setFieldErrors(), which
+  // calls rerender(): this runs on every keystroke, and a full rerender
+  // rebuilds the <input> and throws away focus and caret position mid-word.
+  // The markup written here is byte-for-byte what field() writes on the next
+  // full render, and state.ui.fieldErrors is updated alongside it, so a
+  // rerender triggered from anywhere else paints exactly the same thing.
+  //
+  // textContent/setAttribute/createElement only. cloud.js has no innerHTML
+  // sinks and this does not add one (test/app-innerhtml-sinks.test.mjs).
+  function liveValidateCredentialField(input) {
+    const rule = input.dataset.liveValidate;
+    const formId = input.dataset.liveValidateForm || (input.form && input.form.id) || "";
+    if (!formId || !input.name) return;
+    // An empty field says nothing: an error that appears before the member has
+    // typed a character is noise, and one that appears the moment they clear a
+    // field to start over is worse. The submit check still catches empty.
+    let message = "";
+    if (input.value !== "") {
+      if (rule === "username") message = usernameRuleError(input.value);
+      else if (rule === "password") message = passwordRuleError(input.value);
+      else if (rule === "passwordConfirm") message = passwordConfirmError(input.form, input.value);
+    }
+    setFieldErrorInPlace(input, formId, input.name, message);
+    // Typing in the password field is also the moment a "passwords do not
+    // match" error on the OTHER field can stop being true, so it is
+    // re-evaluated here rather than waiting for the member to go back and
+    // touch a field that is already correct.
+    if (rule === "password" && input.form && input.form.elements.passwordConfirm) {
+      const confirmEl = input.form.elements.passwordConfirm;
+      if (confirmEl.value !== "") setFieldErrorInPlace(confirmEl, formId, "passwordConfirm", passwordConfirmError(input.form, confirmEl.value));
+    }
+  }
+  function passwordConfirmError(form, value) {
+    if (!form || !form.elements.password) return "";
+    return form.elements.password.value === value ? "" : "הסיסמאות לא תואמות";
+  }
+  function setFieldErrorInPlace(input, formId, name, message) {
+    const errors = state.ui.fieldErrors[formId] || (state.ui.fieldErrors[formId] = {});
+    if (message) errors[name] = message;
+    else delete errors[name];
+    if (!Object.keys(errors).length) delete state.ui.fieldErrors[formId];
+    // field() wraps every input in <label class="field"> and appends the error
+    // span as that label's last child, so the label is the unit to patch and
+    // ".field-error" inside it is unambiguous - one field per label.
+    const label = input.closest ? input.closest("label.field") : null;
+    if (!label) return;
+    let errEl = label.querySelector(".field-error");
+    if (!message) {
+      if (errEl) errEl.remove();
+      input.removeAttribute("aria-invalid");
+      input.removeAttribute("aria-describedby");
+      return;
+    }
+    const errId = `err-${formId}-${name}`;
+    if (!errEl) {
+      errEl = document.createElement("span");
+      errEl.className = "field-error";
+      errEl.setAttribute("role", "alert");
+      label.appendChild(errEl);
+    }
+    errEl.id = errId;
+    errEl.textContent = message;
+    input.setAttribute("aria-invalid", "true");
+    input.setAttribute("aria-describedby", errId);
+  }
+
   // A brand-new member starts anonymous (zero typing) purely so
   // redeem_invite_code has a session to attach the redemption to - this
   // identity is upgraded to a real username+password account (same
@@ -4141,7 +4756,7 @@
     const username = String(form.elements.username.value || "").trim().toLowerCase();
     const password = String(form.elements.password.value || "");
     const errors = {};
-    if (!USERNAME_RE.test(username)) errors.username = "שם משתמש לא תקין";
+    if (!USERNAME_RE.test(username)) errors.username = "שם הכניסה לא תקין";
     if (!password) errors.password = "יש להזין סיסמה";
     if (Object.keys(errors).length) return setFieldErrors("communityLogin", errors);
     const { error } = await withCaptcha((captchaToken) =>
@@ -4153,7 +4768,7 @@
       // A failed challenge is not a wrong password, and saying so avoids
       // sending a member off to reset a password that was fine.
       if (error.message === "captcha_failed") return setFieldErrors("communityLogin", { password: "אימות האבטחה נכשל, נסו שוב" });
-      return setFieldErrors("communityLogin", { password: "שם משתמש או סיסמה שגויים" });
+      return setFieldErrors("communityLogin", { password: "שם הכניסה או הסיסמה שגויים" });
     }
     setFieldErrors("communityLogin", {});
     // onAuthStateChange picks up the session and loads the existing account.
@@ -4174,13 +4789,16 @@
     const password = String(form.elements.password.value || "");
     const passwordConfirm = String(form.elements.passwordConfirm.value || "");
     const errors = {};
-    if (!USERNAME_RE.test(username)) errors.username = "שם משתמש: 3–24 תווים, אותיות אנגליות קטנות, ספרות או קו תחתון";
-    // Matches supabase/config.toml's minimum_password_length/password_requirements
-    // (launch-readiness audit, SEC-012) - checked client-side too so a member
-    // gets this message instead of a raw Supabase rejection after submitting.
-    if (password.length < 10 || !/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
-      errors.password = "הסיסמה חייבת להכיל לפחות 10 תווים, כולל אות גדולה, אות קטנה וספרה";
-    }
+    // Same two validators the placeholders quote and the as-you-type check
+    // runs, so submitting can no longer be the first time a member is told a
+    // rule. The password rule still mirrors supabase/config.toml's
+    // minimum_password_length/password_requirements (launch-readiness audit,
+    // SEC-012) - checked client-side so a member gets this message rather than
+    // a raw Supabase rejection.
+    const usernameError = usernameRuleError(username);
+    if (usernameError) errors.username = usernameError;
+    const passwordError = passwordRuleError(password);
+    if (passwordError) errors.password = passwordError;
     if (password !== passwordConfirm) errors.passwordConfirm = "הסיסמאות לא תואמות";
     if (Object.keys(errors).length) return setFieldErrors(formId, errors);
     // updateUser() is the account-creation step (it turns the bootstrap
@@ -4191,7 +4809,7 @@
         { email: usernameToEmail(username), password },
         captchaToken ? { captchaToken } : undefined,
       ));
-    if (error) return setFieldErrors(formId, { username: /registered|exists|taken/i.test(error.message || "") ? "שם המשתמש כבר תפוס" : "השמירה נכשלה, נסו שוב" });
+    if (error) return setFieldErrors(formId, { username: /registered|exists|taken/i.test(error.message || "") ? "שם הכניסה הזה כבר תפוס. בחרו שם אחר." : "השמירה נכשלה, נסו שוב" });
     state.user = data.user;
     setFieldErrors(formId, {});
     setMessage("החשבון נוצר, אפשר להתחבר איתו מכל מכשיר");
@@ -4207,7 +4825,11 @@
     if (!state.user) return;
     const formId = form.id;
     const handle = String(form.elements.handle.value || "").trim().toLowerCase();
-    if (!/^[a-zא-ת0-9_]{3,24}$/.test(handle)) return setFieldErrors(formId, { handle: "שם המשתמש חייב להכיל 3–24 תווים (עברית או אנגלית), מספרים או קו תחתון, בלי רווחים" });
+    // Deliberately a DIFFERENT rule from the login name (USERNAME_RE): this is
+    // the name the club sees, Hebrew is welcome here, and the message says so
+    // rather than leaving a member to infer it from a rejection. The lengths
+    // are spelled "3 עד 24" for the same bidi reason USERNAME_RULE_TEXT is.
+    if (!/^[a-zא-ת0-9_]{3,24}$/.test(handle)) return setFieldErrors(formId, { handle: "השם שרואים במועדון צריך להיות 3 עד 24 תווים — עברית או אנגלית, ספרות או קו תחתון, בלי רווחים." });
     // is_admin is deliberately never sent from here — a coach-code
     // redemption is a label only (invite_redemptions.role), not automatic
     // full admin access. Full admin stays a manual dashboard-only flip;
@@ -4216,7 +4838,7 @@
     const payload = { id: state.user.id, handle, display_name: String(form.elements.displayName.value || "").trim().slice(0, 80), bio: String(form.elements.bio.value || "").trim().slice(0, 160) };
     const { error } = await client.from("profiles").upsert(payload);
     if (error) {
-      if (error.code === "23505") setFieldErrors(formId, { handle: "שם המשתמש כבר תפוס" });
+      if (error.code === "23505") setFieldErrors(formId, { handle: "השם הזה כבר תפוס במועדון. בחרו שם אחר." });
       else setMessage("שמירת הפרופיל נכשלה");
       return;
     }
@@ -4304,6 +4926,149 @@
     // supabase-js surfaces a dropped connection as a TypeError from fetch;
     // the message text differs per browser, hence the alternation.
     return /failed to fetch|networkerror|network request failed|load failed|fetch failed|timeout|timed out/i.test(m);
+  }
+
+  // ---- Five-persona UX audit: the server speaks Postgres, members read Hebrew --
+  //
+  // Every write in this file ends at an RPC that refuses with a bare English
+  // wire code - 'posting_restricted', 'recovery method required',
+  // 'rate_limited'. Those are strings for a CLIENT to branch on, not
+  // sentences for a person, and renderOutboxBanner() printed one straight
+  // into the failure card it shows a member:
+  //
+  //     פוסט
+  //     posting_restricted
+  //
+  // That was how a moderated member found out they had been sanctioned. An
+  // English enum, no statement of what the sanction covers, no route to a
+  // human who can lift it - and, because the queue classifies that message
+  // as permanent, a "ניסיון חוזר" button sitting next to it that can never
+  // work. Verified against the real stack rather than read off the schema:
+  // signed in as a restricted member, post_create and add_post_comment both
+  // answer 'posting_restricted' while feed_page, community_search and
+  // toggle_reaction all still return 200 - which is why the sentence below
+  // can promise reading and cheering without lying.
+  //
+  // Same shape as ghostReclaimErrorText() rather than a second pattern: one
+  // flat lookup on the message, plain Hebrew, and a neutral fallback. Two
+  // rules carried over from it:
+  //
+  //   1. Each entry says WHAT HAPPENED and WHAT TO DO NEXT, in the register
+  //      of the invite-code screen - which explains why there is a code and
+  //      then bounds what it does NOT affect. Bounding the blast radius is
+  //      most of the reassurance: a member who cannot post needs to hear
+  //      that their workout log is untouched.
+  //   2. NO "try again" on anything a retry cannot fix. A restriction, a
+  //      missing recovery method and a permission refusal are all stable
+  //      states; telling a member to retry one is a lie that costs them a
+  //      few more taps and the last of their trust. Only 'rate_limited' and
+  //      the connection failures below are genuinely time-limited, and only
+  //      they invite another attempt.
+  //
+  // NOTHING falls through to a raw server string. An unrecognised message is
+  // a message this app has never seen, which makes it the LEAST safe thing
+  // to show, not the most informative - it would be untranslated, probably
+  // English, possibly a Postgres internal, and it is never actionable.
+  const SERVER_ERROR_TEXT = {
+    // The COMM-016 gate. Worth being blunt that this closes reading too:
+    // feed_page carries the same is_community_member() check as post_create,
+    // so "you can still browse" would be the same false promise the account
+    // security screen used to make.
+    "recovery method required": "החשבון עוד לא אומת כחשבון שאפשר לשחזר, ולכן הקהילה כולה סגורה בפניו — גם הפיד וגם הפרסום. במסך אבטחת החשבון יש כפתור אימות שפותח את הכול; רישום האימונים עצמו לא מושפע וממשיך לעבוד כרגיל.",
+    // COMM-153. The one message in this table that a member may be reading
+    // as the first news that they have been moderated at all, so it names
+    // the sanction plainly, states exactly what still works, and points at
+    // the only people who can lift it. No retry: only a moderator clears it.
+    posting_restricted: "צוות המועדון הגביל את הפרסום מהחשבון הזה, ולכן פוסטים ותגובות חדשים לא נשלחים. אפשר להמשיך לקרוא את הפיד ולעודד אחרים כרגיל, וההגבלה נפתחת רק על ידי הצוות — כדאי לפנות למאמן/ת.",
+    "not authorized": "לחשבון הזה אין הרשאה לפעולה הזו. הרשאות של צוות המועדון ניתנות על ידי מנהל/ת, וניסיון נוסף לא ישנה את התוצאה.",
+    // The only server refusal that clears on its own, so the only one that
+    // earns a "try again". Matches the wording react() and the comment
+    // editor already use for the same code.
+    rate_limited: "נשלחו יותר מדי פעולות בזמן קצר והשרת עצר את האחרונה. זו הגבלה זמנית — אפשר לנסות שוב בעוד כמה דקות.",
+    "captcha_failed": "אימות האבטחה לא עבר. אפשר לנסות שוב; אם זה חוזר, כדאי לרענן את הדף.",
+    // Content refusals a queued post or comment can carry. Each one is a
+    // thing the member can actually fix in the composer, so each names the
+    // fix instead of the rule.
+    "a post needs text or at least one photo": "פוסט חייב לכלול טקסט או לפחות תמונה אחת, והפוסט הזה יצא ריק. אפשר להסיר אותו מהתור ולכתוב אותו מחדש.",
+    "at most 4 photos per post": "אפשר לצרף עד ארבע תמונות לפוסט. יש להסיר את הפוסט מהתור ולפרסם אותו מחדש עם פחות תמונות.",
+    "each media item needs a storage_path": "אחת התמונות לא הועלתה במלואה, ולכן הפוסט לא נשלח. אפשר להסיר אותו מהתור ולצרף את התמונה שוב.",
+    "at most 10 mentions per comment": "אפשר לתייג עד עשרה אנשים בתגובה אחת. יש להסיר את התגובה מהתור ולכתוב אותה מחדש עם פחות תיוגים.",
+    "comment body required": "לא נשלחה תגובה ריקה. אפשר להסיר אותה מהתור ולכתוב אותה מחדש.",
+    "reply depth is capped at 2": "אפשר להגיב לתגובה, אבל לא לתגובה על תגובה. כדאי להשיב ישירות לתגובה הראשונה בשרשור.",
+    // The target of a queued write moved while the write was waiting. None
+    // of these can succeed on a retry: the row is gone or closed.
+    "post not found": "הפוסט הזה כבר לא קיים — יכול להיות שהכותב/ת מחק/ה אותו בינתיים. אפשר להסיר את הפעולה מהתור.",
+    "post is not available": "הפוסט הזה כבר לא זמין לצפייה. אפשר להסיר את הפעולה מהתור.",
+    "comment not found": "התגובה הזו כבר לא קיימת. אפשר להסיר את הפעולה מהתור.",
+    "parent comment not found": "התגובה שאליה רצינו להשיב כבר לא קיימת. אפשר להסיר את הפעולה מהתור ולהגיב ישירות לפוסט.",
+    "parent comment is no longer available": "התגובה שאליה רצינו להשיב הוסרה בינתיים. אפשר להסיר את הפעולה מהתור ולהגיב ישירות לפוסט.",
+    "content author is no longer available": "החשבון שכתב את התוכן הזה כבר לא פעיל, ולכן הפעולה לא רלוונטית. אפשר להסיר אותה מהתור.",
+    "event not found": "האירוע הזה כבר לא קיים. אפשר להסיר את ההרשמה מהתור.",
+    "event not open for rsvp": "האירוע הזה סגור להרשמה — הוא כבר התקיים או שההרשמה נסגרה. אפשר להסיר את ההרשמה מהתור.",
+    event_full: "האירוע מלא ואין בו יותר מקומות. אפשר להסיר את ההרשמה מהתור; אם יתפנה מקום, כדאי לבדוק שוב בדף האירוע.",
+    "challenge not found": "האתגר הזה כבר לא קיים. אפשר להסיר את העדכון מהתור.",
+    // The club WOD catalogue (202609060028). This is THE error a coach has to
+    // actually understand, and the raw string does not say it: the club copy
+    // is a snapshot taken at publish time, so re-publishing after editing
+    // locally did not overwrite it - and the reason it refuses rather than
+    // overwriting is that overwriting would change what a running challenge
+    // asks of people, mid-week, with scores already on the board. The message
+    // therefore has to name the fix as well as the fact.
+    "wod already published": "האימון הזה כבר נמצא בקטלוג המועדון. העותק של המועדון הוא צילום מצב מרגע הפרסום, ולכן שינוי שנעשה כאן מאז לא עבר אליו — וזה מכוון, כדי שאתגר שכבר רץ לא ישנה את מה שהוא מבקש באמצע השבוע. לתיקון שם או תיאור אפשר לערוך את האימון בקטלוג; לשינוי סוג הניקוד או התרגילים צריך לפרסם אימון חדש.",
+    "wod not found": "האימון הזה לא נמצא בקטלוג המועדון.",
+    "wod id must be a custom WOD id": "אפשר לפרסם רק אימון שנבנה כאן באפליקציה.",
+    "wod is used by a live challenge": "אי אפשר להוציא מהקטלוג אימון שיש עליו אתגר שעדיין לא הסתיים. אפשר לחזור לזה אחרי שהאתגר נגמר.",
+    "wod is locked by a challenge": "כבר התקיים אתגר על האימון הזה, ולכן אי אפשר לשנות אותו — לוח התוצאות מתעד מה אנשים עשו מול אימון מסוים. לאימון שונה צריך לפרסם אימון חדש.",
+    "not an active participant": "העדכון הזה שייך לאתגר שכבר לא משתתפים בו. אפשר להסיר אותו מהתור.",
+    // Thrown by registerOutboxHandlers() itself, not by the server: the
+    // queue tried to send while nobody was signed in.
+    "session expired": "החיבור לחשבון פג, ולכן הפעולה לא נשלחה. אחרי התחברות מחדש עם שם המשתמש והסיסמה אפשר לשלוח אותה שוב מכאן.",
+  };
+  // Accepts a Supabase error object, an Error, or a bare string - the outbox
+  // stores lastError as a string, every other caller holds the error object,
+  // and neither should have to remember which.
+  function serverErrorText(error) {
+    const msg = String((error && error.message) || error || "").trim();
+    if (SERVER_ERROR_TEXT[msg]) return SERVER_ERROR_TEXT[msg];
+    // A dropped connection, which is the one failure that is nobody's fault
+    // and always worth another attempt. Checked on the message alone rather
+    // than through isOfflineError(), which also consults navigator.onLine -
+    // wrong here, because a row that failed offline is being described later,
+    // very possibly after the connection came back.
+    if (/failed to fetch|networkerror|network request failed|load failed|fetch failed|timeout|timed out/i.test(msg)) {
+      return "הפעולה לא הגיעה לשרת, כנראה בגלל חיבור לא יציב. שום דבר לא אבד — אפשר לנסות לשלוח שוב כשהחיבור חוזר.";
+    }
+    // outbox.js writes "unsupported action: <action>" for an op queued by a
+    // previous version of the app whose handler no longer exists. The raw
+    // string ends in an English action id, which is exactly the kind of
+    // token that must not reach a member.
+    if (/^unsupported action/i.test(msg)) {
+      return "הפעולה הזו נוצרה בגרסה קודמת של האפליקציה וכבר אינה נתמכת, ולכן היא לא תישלח. אפשר להסיר אותה מהתור ולבצע אותה מחדש.";
+    }
+    // Rate limiting is expressed as 'rate_limited' by every RPC in this
+    // schema, but the Supabase edge (and any proxy in front of it) can answer
+    // 429 with its own wording, so the family is matched as well as the code.
+    if (/rate.?limit|too many requests|429/i.test(msg)) return SERVER_ERROR_TEXT.rate_limited;
+    // Unrecognised. Deliberately says nothing about the cause rather than
+    // guessing, and offers the one next step that is always true.
+    return "הפעולה לא הושלמה. אפשר לנסות שוב, ואם זה חוזר כדאי לפנות לצוות המועדון.";
+  }
+  // The other half of "no message says try again unless it can work". The
+  // failure banner offers a "ניסיון חוזר" button on every failed row, which
+  // for a restriction or a deleted post is a button that reruns the same
+  // call and lands the row straight back in the same list - and it sits
+  // directly under a sentence that has just told the member a retry will not
+  // help. One of the two has to go, and it is not the sentence.
+  //
+  // Allow-list, not a deny-list: retry stays for the connection failures,
+  // rate limiting and anything UNRECOGNISED, since an unknown error is
+  // exactly where the member should keep the option. Only the codes this
+  // file can positively identify as stable states lose it.
+  const PERMANENT_SERVER_ERRORS = Object.keys(SERVER_ERROR_TEXT).filter((k) => k !== "rate_limited" && k !== "captcha_failed");
+  function serverErrorIsRetryable(error) {
+    const msg = String((error && error.message) || error || "").trim();
+    if (/^unsupported action/i.test(msg)) return false;
+    return PERMANENT_SERVER_ERRORS.indexOf(msg) < 0;
   }
 
   function newIdempotencyKey() {
@@ -4826,6 +5591,79 @@
   // (publishing to the community feed, which — unlike blocking someone —
   // used to fire immediately). Every destructive or broadcast-to-others
   // action now goes through this same path.
+  //
+  // ---- WHO the action is about (five-persona UX audit, defect 2) ---------
+  //
+  // "הגבלת פרסום קבועה" / "לחסום את המשתמש?" named no one. Every one of these
+  // dialogs is opened from a LIST, which is exactly how the wrong row gets
+  // actioned - the admin reads a name in the roster, taps, and then confirms
+  // a sentence that could be about anybody.
+  //
+  // The earlier pass (commit 05e1ee5) concluded askConfirm() "structurally
+  // cannot carry a name that mixes Latin and Hebrew" and built a dedicated
+  // sheet instead. That conclusion was about the MESSAGE field only: it is
+  // rendered with esc() as one flat run, so a name spliced into the string
+  // before it reaches here would indeed be reordered against the Hebrew
+  // sentence around it (and could not be <bdi>-isolated, since esc() would
+  // turn the tag into literal text). The fix is to stop splicing: the
+  // message carries a TOKEN, the name travels beside it as `subject`, and
+  // the sheet joins the escaped sentence fragments around a bidiText()-
+  // isolated name. esc() still runs over both halves - nothing is bypassed -
+  // and every existing call site is fixed at once instead of growing a
+  // fourth dialog. CLOUD_DIALOGS stays at 13.
+  const CONFIRM_SUBJECT_TOKEN = "{subject}";
+  // Single source, so the degraded wording cannot drift between call sites:
+  // used only when a subject could not be resolved at all (a stale list, an
+  // id the client has never seen a profile for). "לחסום את החבר/ה?" is a
+  // worse dialog than "לחסום את יעל בר?" but it is still a grammatical one.
+  const CONFIRM_SUBJECT_UNKNOWN = "החבר/ה";
+  function personDisplayName(p) {
+    if (!p) return "";
+    return p.display_name || (p.handle ? "@" + p.handle : "");
+  }
+  // One lookup for every surface that can open a confirmation about a person,
+  // keyed by id so it cannot return a different member than the row clicked.
+  // Ordered admin-first: the member-management search and the roster are the
+  // lists these dialogs are actually opened from, and they carry the freshest
+  // role column too (subjectRecordFor is what tells "downgrade" from "grant").
+  function subjectRecordFor(userId) {
+    if (!userId) return null;
+    const lists = [
+      state.members.results,
+      state.admin.roster.items,
+      state.members.people,
+      state.members.directory.items,
+      state.members.suggestions.items,
+    ];
+    for (const list of lists) {
+      if (!Array.isArray(list)) continue;
+      const hit = list.find((p) => p && (p.id === userId || p.user_id === userId));
+      if (hit) return hit;
+    }
+    const pv = state.members.profileView;
+    if (pv && pv.userId === userId && pv.data) return pv.data;
+    return null;
+  }
+  // Feed authors are the other entry point (the post menu's "block"), and
+  // there the name lives on the post rather than on a profile row.
+  function subjectNameFor(userId) {
+    const name = personDisplayName(subjectRecordFor(userId));
+    if (name) return name;
+    if (userId && Array.isArray(state.feed.items)) {
+      const post = state.feed.items.find((p) => p && p.author_id === userId);
+      if (post) { const n = postAuthorName(post); if (n) return n; }
+    }
+    return "";
+  }
+  // Shared by renderConfirmSheet() and renderModActionSheet(): the same
+  // sentence-with-a-name rendering, so the two dialogs cannot drift into
+  // naming their subject two different ways.
+  function subjectSentenceHtml(message, subject) {
+    const parts = String(message == null ? "" : message).split(CONFIRM_SUBJECT_TOKEN);
+    if (parts.length === 1) return esc(parts[0]);
+    const name = String(subject == null ? "" : subject).trim() || CONFIRM_SUBJECT_UNKNOWN;
+    return parts.map(esc).join(bidiText(name));
+  }
   function askConfirm(opts) { state.ui.confirmDialog = opts; rerender(); }
   function closeConfirm() { state.ui.confirmDialog = null; rerender(); }
   function runConfirm() {
@@ -4837,7 +5675,12 @@
     else if (c.action === "delete-account") requestDeletion();
     else if (c.action === "delete-post") deletePost(c.payload.postId);
     else if (c.action === "publish") publishWorkout(c.payload.type, c.payload.id, c.payload.visibility, c.payload.file);
+    else if (c.action === "publish-club-wod") doPublishClubWod(c.payload.wod);
     else if (c.action === "admin-grant-coach") adminGrantCoach(c.payload.userId);
+    // Defect 1: revoking used to fire straight off the click handler, with no
+    // dialog at all, while GRANTING the same permission asked first. The
+    // destructive direction now runs from here like every other one.
+    else if (c.action === "admin-revoke-coach") adminRevokeCoach(c.payload.userId);
     else if (c.action === "admin-set-role") adminSetRole(c.payload.userId, c.payload.role);
     else if (c.action === "admin-remove-member") adminRemoveMember(c.payload.userId);
     else if (c.action === "admin-reset-password") adminResetPassword(c.payload.userId);
@@ -4860,7 +5703,10 @@
   function field(formId, name, labelText, inputHtml) {
     const err = (state.ui.fieldErrors[formId] || {})[name];
     const errId = `err-${formId}-${name}`;
-    const tagged = err ? inputHtml.replace(/^<(input|textarea)/, `<$1 aria-invalid="true" aria-describedby="${errId}"`) : inputHtml;
+    // <select> joined the list when the weekly-challenge comparison key became
+    // a picker instead of a text box - without it that field would have shown
+    // a visible error with nothing tying it to the control for a screen reader.
+    const tagged = err ? inputHtml.replace(/^<(input|textarea|select)/, `<$1 aria-invalid="true" aria-describedby="${errId}"`) : inputHtml;
     return `<label class="field"><span class="field-label">${labelText}</span>${tagged}${err ? `<span class="field-error" id="${errId}" role="alert">${esc(err)}</span>` : ""}</label>`;
   }
   function renderConfirmSheet() {
@@ -4870,7 +5716,7 @@
       <div class="modal-sheet" style="border-radius:22px;border-bottom:1px solid var(--border);max-height:none;">
         <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
           <h2 id="communityConfirmTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">${esc(c.title || "אישור פעולה")}</h2>
-          <div style="color:var(--steel);font-size:13.5px;line-height:1.6;margin-bottom:20px;">${esc(c.message)}</div>
+          <div style="color:var(--steel);font-size:13.5px;line-height:1.6;margin-bottom:20px;"${c.subject !== undefined ? ' data-confirm-subject="1"' : ""}>${subjectSentenceHtml(c.message, c.subject)}</div>
           <div class="chip-row" style="margin-top:0;">
             <button class="chip-btn" data-community-action="confirm-no">ביטול</button>
             <button class="chip-btn primary${c.destructive ? " danger" : ""}" data-community-action="confirm-yes">${esc(c.confirmLabel || "אישור")}</button>
@@ -5385,7 +6231,7 @@
     return { members: "חברים", events: "אירועים", challenges: "אתגרים" }[key] || key;
   }
   function searchMemberRowHtml(person) {
-    return `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32, person.avatar_url)}<div><div style="font-weight:700;">${nameHtml(person.display_name, person.handle)}${isCoachRole(memberRole(person.id)) ? " " + coachBadgeHtml(memberRole(person.id)) : ""}</div><div style="color:var(--steel);font-size:12px;"><bdi>@${esc(person.handle)}</bdi> ${esc(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="view-profile" data-id="${esc(person.id)}">פרופיל</button>${person.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${esc(person.id)}">מעקב</button>`}<button class="chip-btn" data-community-action="block" data-id="${esc(person.id)}">חסימה</button></div></div>`;
+    return `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32, person.avatar_url)}<div><div style="font-weight:700;">${nameHtml(person.display_name, person.handle)}${isCoachRole(memberRole(person.id)) ? " " + coachBadgeHtml(memberRole(person.id)) : ""}</div><div style="color:var(--steel);font-size:12px;"><bdi>@${esc(person.handle)}</bdi> ${bidiText(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="view-profile" data-id="${esc(person.id)}">פרופיל</button>${person.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${esc(person.id)}">מעקב</button>`}<button class="chip-btn" data-community-action="block" data-id="${esc(person.id)}">חסימה</button></div></div>`;
   }
   function searchEventRowHtml(ev) {
     // No event detail surface exists yet (COMM-213 builds it), so the row
@@ -5393,11 +6239,11 @@
     // navigate somewhere that is not built.
     const when = ev.start_at ? String(ev.start_at).slice(0, 16).replace("T", " ") : "";
     const meta = [when, ev.status === "draft" ? "טיוטה" : ev.status === "cancelled" ? "בוטל" : ""].filter(Boolean);
-    return `<div class="log-row" data-search-event-id="${esc(ev.id)}"><div><div style="font-weight:700;">📅 ${esc(ev.title || "אירוע")}</div>${meta.length ? `<div style="color:var(--steel);font-size:12px;">${meta.map(esc).join(" · ")}</div>` : ""}</div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="open-event" data-id="${esc(ev.id)}" data-source="search">פרטים</button></div></div>`;
+    return `<div class="log-row" data-search-event-id="${esc(ev.id)}"><div><div style="font-weight:700;">📅 ${bidiText(ev.title || "אירוע")}</div>${meta.length ? `<div style="color:var(--steel);font-size:12px;">${meta.map(bidiText).join(" · ")}</div>` : ""}</div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="open-event" data-id="${esc(ev.id)}" data-source="search">פרטים</button></div></div>`;
   }
   function searchChallengeRowHtml(c) {
     const meta = [challengeTypeDef(c.challenge_type).label, challengeStatusLabel(c), c.end_at ? `עד ${formatChallengeDate(c.end_at)}` : ""].filter(Boolean);
-    return `<div class="log-row" data-search-challenge-id="${esc(c.id)}"><div><div style="font-weight:700;">${esc(challengeTypeDef(c.challenge_type).icon)} ${esc(c.title || "אתגר")}</div><div style="color:var(--steel);font-size:12px;">${meta.map(esc).join(" · ")}</div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="open-challenge" data-id="${esc(c.id)}" data-source="search">פרטים</button></div></div>`;
+    return `<div class="log-row" data-search-challenge-id="${esc(c.id)}"><div><div style="font-weight:700;">${esc(challengeTypeDef(c.challenge_type).icon)} ${bidiText(c.title || "אתגר")}</div><div style="color:var(--steel);font-size:12px;">${meta.map(bidiText).join(" · ")}</div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="open-challenge" data-id="${esc(c.id)}" data-source="search">פרטים</button></div></div>`;
   }
   function renderCommunitySearch() {
     const box = `<div class="search-box"><input id="communityPeopleSearch" placeholder="חיפוש חברים, אירועים ואתגרים" aria-label="חיפוש בקהילה" value="${esc(state.search.query || "")}"/></div>`;
@@ -5465,7 +6311,7 @@
         <div class="chip-row" style="margin-top:6px;"><button class="chip-btn" data-community-action="comment-edit-cancel">ביטול</button><button class="chip-btn primary" data-community-action="comment-edit-save"${e.saving ? " disabled" : ""}>${e.saving ? "שומר…" : "שמירה"}</button></div>
       </div>`;
     } else {
-      bodyHtml = `<div style="font-size:12.5px;line-height:1.55;"><b>${esc(name)}</b> ${isCoach ? coachBadgeHtml(role) + " " : ""}${mentionMarkersToHtml(c.body)}</div>`;
+      bodyHtml = `<div style="font-size:12.5px;line-height:1.55;"><b>${esc(name)}</b> ${isCoach ? coachBadgeHtml(role) + " " : ""}${bidiHtml(mentionMarkersToHtml(c.body))}</div>`;
     }
     const edited = c.edited_at ? ` <span style="color:var(--steel);font-size:10.5px;" title="${esc(relativeTime(c.edited_at))}">(נערך)</span>` : "";
     const actions = [];
@@ -5572,8 +6418,8 @@
         return `<div class="chart-card" style="margin-bottom:10px;" data-mod-report-id="${esc(r.report_id)}">
           <div class="flex" style="justify-content:space-between;align-items:flex-start;gap:10px;">
             <div style="min-width:0;">
-              <div style="font-weight:800;">${esc(MOD_TARGET_LABEL[r.target_type] || "פוסט")} · ${esc(r.content_author_name || "חבר/ה שהוסר/ה")}</div>
-              <div style="color:var(--steel);font-size:12.5px;margin-top:4px;white-space:pre-wrap;">${esc(String(r.content_excerpt || "התוכן הוסר").slice(0, 240))}</div>
+              <div style="font-weight:800;">${esc(MOD_TARGET_LABEL[r.target_type] || "פוסט")} · ${bidiText(r.content_author_name || MOD_UNKNOWN_AUTHOR_TEXT)}</div>
+              <div style="color:var(--steel);font-size:12.5px;margin-top:4px;white-space:pre-wrap;">${bidiText(String(r.content_excerpt || "התוכן הוסר").slice(0, 240))}</div>
             </div>
             <span class="admin-tag" style="${r.status === "open" ? "background:rgba(194,57,44,.12);border-color:var(--red);color:var(--red-text);" : ""}">${esc(MOD_STATUS_LABEL[r.status] || r.status)}</span>
           </div>
@@ -5612,6 +6458,12 @@
       invite_created: "יצירת הזמנה", invite_revoked: "ביטול הזמנה",
       shared_code_created: "יצירת קוד שיתוף", shared_code_status_changed: "שינוי סטטוס קוד שיתוף",
       onboarding_content_updated: "עדכון תוכן קליטה", member_password_reset: "איפוס סיסמה לחבר/ה",
+      // Five-persona UX audit, defect 3 (202609060023). admin_reclaim_invite
+      // writes one invite_reclaimed row per reclaim, so without this the
+      // feature's own audit trail renders as raw English in an otherwise
+      // all-Hebrew log - the exact gap the two comments above already record
+      // for nine earlier action types.
+      invite_reclaimed: "שחרור הזמנה",
     }[t] || t;
   }
   // The other half of an audit row's headline. admin_actions.target_type is
@@ -5629,7 +6481,7 @@
       invite: "הזמנה", invite_code: "קוד הזמנה", onboarding_step: "שלב קליטה",
     }[t] || t;
   }
-  const AUDIT_ACTION_TYPES = ["content_delete", "content_hide", "member_restrict", "member_unrestrict", "role_change", "challenge_edit", "achievement_edit", "privacy_config", "content_pin", "content_unpin", "report_review", "member_of_week_publish", "monthly_recap_publish", "club_feature_toggle", "invite_created", "invite_revoked", "shared_code_created", "shared_code_status_changed", "onboarding_content_updated", "member_password_reset"];
+  const AUDIT_ACTION_TYPES = ["content_delete", "content_hide", "member_restrict", "member_unrestrict", "role_change", "challenge_edit", "achievement_edit", "privacy_config", "content_pin", "content_unpin", "report_review", "member_of_week_publish", "monthly_recap_publish", "club_feature_toggle", "invite_created", "invite_revoked", "shared_code_created", "shared_code_status_changed", "onboarding_content_updated", "member_password_reset", "invite_reclaimed"];
   function renderAuditLog() {
     if (!hasPerm(PERM.ANALYTICS_VIEW)) return "";
     const filterChips = `<div class="chip-row" style="margin:0 0 10px;">
@@ -5686,13 +6538,20 @@
   // (default true) hides the destructive remove-member control on the
   // roster row, which this ticket's own acceptance criteria never asks for
   // there - only the dedicated search-based panel below offers it.
+  // `last_activity_on` here comes from admin_member_roster /
+  // admin_search_members, both of which read activity_pings - days the member
+  // OPENED THE APP, not days they trained. This row used to render a null as
+  // "מעולם לא" ("never"), the same false assertion 202609060020 removed from
+  // the coach lists: a member with no ping row is a member we have no data
+  // about, which is a fact about our records and not about them. The label
+  // now names the app, and the empty case says so.
   function memberManagementRowHtml(m, opts) {
     opts = opts || {};
     const readOnly = !!opts.readOnly;
     const showRemove = opts.showRemove !== false;
     return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:6px;">
       <div class="flex gap-10" style="align-items:center;">${avatarHtml(m.display_name || m.handle, 32, m.avatar_url)}<div><div style="font-weight:700;">${nameHtml(m.display_name, m.handle)}${isCoachRole(m.role) ? " " + coachBadgeHtml(m.role) : ""}</div><div style="color:var(--steel);font-size:11px;"><bdi>@${esc(m.handle)}</bdi> · ${memberRoleLabel(m)}</div></div></div>
-      <div style="color:var(--steel);font-size:11px;">הצטרפ/ה: ${m.redeemed_at ? esc(String(m.redeemed_at).slice(0, 10)) : "—"} · פעילות אחרונה: ${m.last_activity_on ? esc(m.last_activity_on) : "מעולם לא"}</div>
+      <div style="color:var(--steel);font-size:11px;">הצטרפ/ה: ${m.redeemed_at ? esc(String(m.redeemed_at).slice(0, 10)) : "—"} · פעילות אחרונה באפליקציה: ${m.last_activity_on ? esc(m.last_activity_on) : "אין נתונים"}</div>
       <div class="footer-note" style="margin:0;font-size:10.5px;">${esc(m.id)}</div>
       ${m.is_admin ? "" : `<div class="chip-row" style="margin-top:0;">
         ${memberRoleButtonsHtml(m, readOnly)}
@@ -5770,6 +6629,196 @@
       body = `<div class="log-list">${r.items.map((m) => memberManagementRowHtml(m, { readOnly, showRemove: false })).join("")}</div>${r.end ? "" : `<div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="roster-more"${r.loadingMore ? " disabled" : ""}>${r.loadingMore ? "טוען…" : "טעינת עוד"}</button></div>`}`;
     }
     return `<div class="ach-section" style="margin-top:18px;" data-member-roster-section="1">${sectionHead("var(--teal)", "רשימת חברים", true)}${body}</div>`;
+  }
+  // ==========================================================================
+  // Five-persona UX audit, defect 3. Incomplete signups ("ghost accounts"),
+  // the client half of migration 202609060023.
+  //
+  // WHAT THESE ARE, because nobody meeting this list has seen them before.
+  // Signup is two-stage and the stages are separated by a three-slide intro
+  // carousel: redeem_invite_code() consumes the invite and creates the real
+  // auth.users account, and the public.profiles row is written only after the
+  // carousel. Close the tab in between and what is left is a real
+  // authenticated account holding a spent invite with no profiles row at all.
+  //
+  // Every roster surface in this module starts `from public.profiles`
+  // (admin_member_roster, admin_search_members, admin_user_directory), so a
+  // row that does not exist cannot be listed by any of them: the club can see
+  // that four invites went missing and has no way to find out whose they
+  // were. registration_funnel can see the SHAPE of the gap and names nobody.
+  // Until this section existed the only way to look was the Supabase SQL
+  // editor, which defeats the purpose of having an admin screen at all.
+  //
+  // TWO GATES, DELIBERATELY DIFFERENT, and this UI has to show both:
+  //   * LISTING is is_staff() - admin_member_roster's own read-only browse
+  //     rank. A coach chasing a member who never appeared is the obvious
+  //     first user of it.
+  //   * RECLAIMING is a real profiles.is_admin, the same rank
+  //     admin_remove_member takes, because it un-memberships an account.
+  // A coach therefore sees every row and is offered NO reclaim control -
+  // not a disabled one. The roster above disables its role buttons for a
+  // coach because those controls belong to a screen a coach does legitimately
+  // share; here there is no path from a coach to this action at all, and a
+  // greyed-out button would imply one they simply have not found yet.
+  const GHOST_PAGE_SIZE = 25;
+  // admin_reclaim_invite's own p_older_than_days default, which the server
+  // ALSO floors at 1 so no caller can shorten it to "right now". Mirrored
+  // here only to disable a control that cannot succeed and to say why; the
+  // server refuses regardless, and its named refusal is what the sheet
+  // reports if this client-side mirror is ever wrong.
+  const GHOST_GRACE_DAYS = 7;
+  async function loadIncompleteSignups(reset) {
+    if (!state.user || !isStaff()) { state.admin.incompleteSignups.items = []; return; }
+    const g = state.admin.incompleteSignups;
+    if (reset) { g.items = []; g.cursor = null; g.end = false; g.loading = true; } else { g.loadingMore = true; }
+    g.error = false; rerender();
+    const { data, error } = await client.rpc("admin_incomplete_signups", { p_cursor: g.cursor, p_limit: GHOST_PAGE_SIZE });
+    g.loading = false; g.loadingMore = false; g.loaded = true;
+    if (error) { g.error = true; rerender(); return; }
+    const page = Array.isArray(data) ? data : [];
+    g.items = reset ? page : g.items.concat(page);
+    const last = page[page.length - 1];
+    // admin_incomplete_signups pages backwards on invite_redemptions.redeemed_at
+    // and INNER JOINs that table, so unlike admin_member_roster (see
+    // loadRoster's own GAP comment) redeemed_at can never come back null here.
+    // The same guard is kept anyway and costs nothing: the RPC reads a null
+    // p_cursor as "no bound at all" and would restart from the very top,
+    // looping the same page forever rather than paging.
+    g.end = page.length < GHOST_PAGE_SIZE || !last || last.redeemed_at == null;
+    g.cursor = last ? last.redeemed_at : g.cursor;
+    rerender();
+  }
+  // The ONLY two identifying strings a ghost has, in the order they come to
+  // exist. `username` is the local part of the synthetic login address this
+  // app mints (usernameToEmail) and exists only once they reached the
+  // credentials slide; `label` is the admin-authored label on the per-person
+  // invite ("דנה מהבוקר של שני"), which for someone who abandoned BEFORE
+  // credentials is the sole identifying string anywhere in the system. There
+  // is no display name and no handle - those live on profiles, which is
+  // exactly the row that was never written, and that is the whole point.
+  //
+  // Neither is guaranteed: a shared code abandoned on the username slide
+  // leaves nothing at all. That row says so plainly rather than rendering a
+  // blank line where a name should be.
+  function ghostName(g) { return (g && (g.username || g.label)) || ""; }
+  function ghostDisplayName(g) { return ghostName(g) || "הרשמה ללא שם"; }
+  function ghostSourceLabel(source) {
+    return source === "person_invite" ? "הזמנה אישית" : "קוד הצטרפות משותף";
+  }
+  function ghostStalledText(days) {
+    const d = Number(days || 0);
+    if (d <= 0) return "התחיל/ה היום";
+    if (d === 1) return "תקוע/ה יום אחד";
+    return `תקוע/ה ${d} ימים`;
+  }
+  // What happens to the ACCOUNT, stated per row rather than once for the
+  // section, because the two answers are genuinely different and an admin
+  // cannot infer which one they are looking at.
+  //
+  // purgeable_after_reclaim is auth.users.is_anonymous - whether
+  // purge_abandoned_profiles() would ever collect this account once the
+  // reclaim removes the redemption row that currently disqualifies it.
+  // CHOOSING A USERNAME AND PASSWORD FLIPS IT TO FALSE, verified against a
+  // real ghost made through the real signup flow. So for the COMMON ghost -
+  // someone who got as far as credentials and then abandoned the carousel -
+  // the empty account is never collected by anything and simply persists. A
+  // blanket "it will be cleaned up later" would be false for exactly the case
+  // an admin meets most often, and this audit has already found two screens
+  // asserting things that were not true. The false branch says so out loud
+  // instead of merely omitting the reassurance.
+  function ghostAfterwardsText(g) {
+    return g.purgeable_after_reclaim
+      ? "אחרי השחרור החשבון הריק ייאסף בהמשך על ידי ניקוי החשבונות הנטושים."
+      : "החשבון הזה יישאר קיים גם אחרי השחרור, ולא יימחק מעצמו - כבר נבחרו לו שם משתמש וסיסמה.";
+  }
+  function ghostRowHtml(g, admin) {
+    const stalled = Number(g.stalled_days || 0);
+    const ready = stalled >= GHOST_GRACE_DAYS;
+    // Both identifiers when both exist: the label is what the admin typed
+    // when they created the invite, and it is often the only thing that turns
+    // a username back into a person they remember.
+    const secondary = g.username && g.label
+      ? `<div style="color:var(--steel);font-size:12.5px;margin-top:2px;">${bidiText(`תווית ההזמנה: ${g.label}`)}</div>` : "";
+    const meta = [ghostSourceLabel(g.invite_source), ghostStalledText(stalled), `מימש/ה ${String(g.redeemed_at || "").slice(0, 10)}`];
+    const control = !admin
+      ? `<div class="footer-note" style="margin:10px 0 0;">שחרור ההזמנה שמור למנהל/ת.</div>`
+      : `<div class="chip-row" style="margin-top:10px;">
+          <button class="chip-btn danger"${ready ? "" : ` disabled title="${esc(`אפשר לשחרר רק אחרי ${GHOST_GRACE_DAYS} ימים ללא השלמה`)}"`} data-community-action="ghost-reclaim" data-id="${esc(g.user_id)}">שחרור ההזמנה</button>
+        </div>`;
+    return `<div class="chart-card" style="margin-bottom:10px;" data-ghost-user-id="${esc(g.user_id)}">
+      <div class="flex" style="justify-content:space-between;align-items:flex-start;gap:10px;">
+        <div style="min-width:0;">
+          <div style="font-weight:800;">${bidiText(ghostDisplayName(g))}</div>
+          ${secondary}
+        </div>
+        <span class="admin-tag"${ready ? ` style="background:rgba(194,57,44,.12);border-color:var(--red);color:var(--red-text);"` : ""}>${ready ? "ניתן לשחרור" : "עדיין בתהליך"}</span>
+      </div>
+      <div style="color:var(--steel);font-size:12px;margin-top:8px;">${meta.map(bidiText).join(" · ")}</div>
+      <div style="color:var(--steel);font-size:12px;margin-top:4px;">${bidiText(ghostAfterwardsText(g))}</div>
+      <div class="footer-note" style="margin:6px 0 0;font-size:10.5px;">${esc(g.user_id)}</div>
+      ${control}
+    </div>`;
+  }
+  // The explainer. Shown ALWAYS, not only when the list has rows: an admin
+  // opening this for the first time has to be able to tell that a list of
+  // near-nameless accounts is not an error report and not a wave of spam
+  // signups. Plain warm register, and explicit about what reclaiming does NOT
+  // do - which is the part an admin will otherwise assume wrongly, in the
+  // more alarming direction.
+  function ghostExplainerHtml() {
+    return `<div style="color:var(--steel);font-size:12.5px;line-height:1.7;margin:-2px 0 12px;">
+      <div>${bidiText("אלה חשבונות שנעצרו באמצע ההרשמה. מישהו הזין קוד הזמנה והתחיל להירשם, ואז עצר לפני שהשלים פרופיל - סגר את האפליקציה, נקרא לאימון, התחרט. זו לא תקלה ואלה לא חשבונות ספאם.")}</div>
+      <div style="margin-top:6px;">${bidiText("בלי פרופיל הם לא מופיעים ברשימת החברים ולא בשום מקום אחר באפליקציה, אבל ההזמנה שלהם כבר נוצלה - ולכן הם כאן.")}</div>
+      <div style="margin-top:6px;">${bidiText("שחרור ההזמנה מחזיר אותה למחזור: קוד משותף מקבל בחזרה שימוש אחד, והזמנה אישית חוזרת להמתנה כך שאפשר להשתמש שוב באותו קוד. השחרור לא מוחק את החשבון של מי שהתחיל להירשם, לא שולח לו שום הודעה, ולא מונע ממנו להירשם שוב.")}</div>
+    </div>`;
+  }
+  // The result card. admin_reclaim_invite() returns exactly what it did, and
+  // an admin who has just taken a destructive-sounding action deserves to
+  // read it rather than a bare "done" - especially welcome_posts_retracted,
+  // which is a change to the club's own feed that nothing else would tell
+  // them about.
+  function ghostReclaimResultHtml() {
+    const r = state.admin.reclaimResult;
+    if (!r) return "";
+    const releasedLine = r.invite_source === "person_invite"
+      ? "ההזמנה האישית חזרה להמתנה - אפשר להשתמש שוב באותו קוד."
+      : "שימוש אחד הוחזר לקוד ההצטרפות המשותף.";
+    const posts = Number(r.welcome_posts_retracted || 0);
+    const postsLine = posts > 0
+      ? `${posts} פוסטי הצטרפות למועדון הוסרו מהפיד.`
+      : "לא היה פוסט הצטרפות להסרה.";
+    const accountLine = r.purgeable
+      ? "החשבון לא נמחק. הוא ריק, ולכן ייאסף בהמשך על ידי ניקוי החשבונות הנטושים."
+      : "החשבון לא נמחק והוא יישאר קיים - מי שהתחיל להירשם יכול להיכנס אליו ולהתחיל מחדש עם קוד חדש.";
+    return `<div class="chart-card" style="margin-bottom:10px;border:1px solid var(--brass);" data-reclaim-result="1" role="status">
+      <div class="field-label" style="margin-bottom:6px;">${bidiText(`ההזמנה של ${r.name} שוחררה`)}</div>
+      <div style="color:var(--steel);font-size:12.5px;line-height:1.7;">
+        <div>${bidiText(releasedLine)}</div>
+        <div>${bidiText(postsLine)}</div>
+        <div>${bidiText(accountLine)}</div>
+      </div>
+      <div class="chip-row" style="margin-top:8px;"><button class="link-btn" data-community-action="reclaim-result-close">סגירה</button></div>
+    </div>`;
+  }
+  function renderIncompleteSignups() {
+    if (!isStaff()) return "";
+    const g = state.admin.incompleteSignups;
+    let body;
+    if (g.loading && !g.items.length) {
+      const skRow = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:55%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
+      body = `<div class="log-list" aria-busy="true" data-incomplete-signups-skeleton="1">${skRow.repeat(3)}</div>`;
+    } else if (g.error) {
+      body = `<div class="empty">לא ניתן היה לטעון את ההרשמות שלא הושלמו.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="ghosts-retry">ניסיון חוזר</button></div></div>`;
+    } else if (!g.items.length) {
+      // A real empty state, not a blank area. This is the GOOD outcome and it
+      // should read like one - an admin who finds nothing here has learned
+      // something, and the screen should say what.
+      body = `<div class="empty">אין הרשמות שלא הושלמו<div style="color:var(--steel);font-size:12px;line-height:1.6;margin-top:6px;">${bidiText("כל מי שהזין קוד הזמנה גם השלים פרופיל. אין כרגע הזמנה תקועה אצל אף אחד.")}</div></div>`;
+    } else {
+      const admin = isAdmin();
+      body = `${g.items.map((row) => ghostRowHtml(row, admin)).join("")}${g.end ? "" : `<div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="ghosts-more"${g.loadingMore ? " disabled" : ""}>${g.loadingMore ? "טוען…" : "טעינת עוד"}</button></div>`}`;
+    }
+    return `<div class="ach-section" style="margin-top:18px;" data-incomplete-signups-section="1">${sectionHead("var(--yellow)", "הרשמות שלא הושלמו", true)}${ghostExplainerHtml()}${ghostReclaimResultHtml()}${body}</div>`;
   }
   // COMM-321 Club Modules. Same gating idiom the other four admin-only
   // account sections already use (renderModeration, renderMemberManagement,
@@ -6549,7 +7598,7 @@
     const canPin = hasPerm(PERM.CONTENT_PIN);
     if (!state.admin.pins.length && !state.admin.pinError) return "";
     const chips = state.admin.pins.slice(0, 3).map((p) => `<div class="chip-btn" style="cursor:default;gap:6px;align-items:center;">
-      📌 <span>${esc(p.note || pinTargetLabel(p.target_type))}</span>
+      📌 <span>${bidiText(p.note || pinTargetLabel(p.target_type))}</span>
       ${canPin ? `<button class="link-btn" data-community-action="unpin" data-type="${esc(p.target_type)}" data-id="${esc(p.target_id)}" aria-label="ביטול הצמדה" style="margin:0;padding:0 4px;">✕</button>` : ""}
     </div>`).join("");
     return `<div class="chart-card" id="communityPinnedStrip" style="margin-bottom:12px;">
@@ -6643,6 +7692,10 @@
       `<button class="post-menu-item${danger ? " danger" : ""}" role="menuitem" data-community-action="${action}" data-id="${esc(dataId)}">${esc(label)}</button>`;
     let items = "";
     if (own) {
+      // Five-persona UX audit, outward sharing. Own posts only, and only the
+      // three types whose content is the member's OWN result - see
+      // outwardSubjectFromPost() for why the other nine are out.
+      if (OUTWARD_SHAREABLE_POST_TYPES.indexOf(post.post_type) >= 0) items += mi("outward-post", "שיתוף מחוץ לאפליקציה", post.id);
       items += mi("post-edit-caption", "עריכת כיתוב", post.id);
       items += mi("post-change-visibility", "שינוי נראוּת", post.id);
       items += mi("post-delete", "מחיקה", post.id, true);
@@ -6674,7 +7727,7 @@
   function postBodyHtml(post) {
     const body = post && post.body;
     if (!body) return "";
-    return `<div class="post-body" style="white-space:pre-wrap;line-height:1.6;">${esc(String(body).slice(0, POST_BODY_MAX))}</div>`;
+    return `<div class="post-body" style="white-space:pre-wrap;line-height:1.6;">${bidiText(String(body).slice(0, POST_BODY_MAX))}</div>`;
   }
   function postMediaHtml(post) {
     const media = (post && post.media) || [];
@@ -6736,11 +7789,11 @@
     const effortLabel = effort === "rx" ? "Rx" : effort === "scaled" ? "מותאם" : effort === "level" ? ("רמה " + (m.level || "")) : "";
     const isPr = !!(m.is_pr || post.is_pr);
     const prBadge = isPr ? ` <span class="pr-badge badge-tag">PR</span>` : "";
-    const detail = `<div class="post-title">${esc(name)}${prBadge}</div>
+    const detail = `<div class="post-title">${bidiText(name)}${prBadge}</div>
       ${when ? `<div style="color:var(--steel);font-size:12px;">${esc(String(when).slice(0, 10))}</div>` : ""}
       ${result ? `<div class="mono post-result">${esc(result)}</div>` : ""}
       ${(scoreType || effortLabel) ? `<div style="color:var(--steel);font-size:12px;">${[scoreType, effortLabel].filter(Boolean).map(esc).join(" · ")}</div>` : ""}`;
-    const caption = post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : "";
+    const caption = post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${bidiText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : "";
     const src = m.source_id || post.source_id || post.source_record_id;
     const extra = src ? `<button class="chip-btn" data-community-action="open-source" data-source-type="${esc(m.source_type || post.source_type || "workout")}" data-source-id="${esc(src)}">פתיחת האימון</button>` : "";
     return postCardShell(post, detail + caption + postMediaHtml(post), { extra });
@@ -6755,9 +7808,9 @@
       ["שיפור", m.improvement],
       ["תאריך", (m.achieved_on || post.occurred_on) ? String(m.achieved_on || post.occurred_on).slice(0, 10) : ""],
     ].filter((r) => r[1] != null && r[1] !== "");
-    const inner = `<div class="post-title">${esc(movement)} <span class="pr-badge badge-tag">PR</span></div>
+    const inner = `<div class="post-title">${bidiText(movement)} <span class="pr-badge badge-tag">PR</span></div>
       <div class="log-list" style="margin-top:6px;">${rows.map((r) => `<div class="log-row"><span>${esc(r[0])}</span><span class="mono" style="color:var(--brass);">${esc(r[1])}</span></div>`).join("")}</div>
-      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
+      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${bidiText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
     return postCardShell(post, inner + postMediaHtml(post));
   }
 
@@ -6769,10 +7822,10 @@
     const why = m.explanation || post.result_text || "";
     const inner = `<div class="flex gap-10" style="align-items:center;">
         <span aria-hidden="true" style="font-size:26px;">${esc(icon)}</span>
-        <div><div class="post-title" style="margin:0;">${esc(title)}</div>${when ? `<div style="color:var(--steel);font-size:12px;">${esc(String(when).slice(0, 10))}</div>` : ""}</div>
+        <div><div class="post-title" style="margin:0;">${bidiText(title)}</div>${when ? `<div style="color:var(--steel);font-size:12px;">${esc(String(when).slice(0, 10))}</div>` : ""}</div>
       </div>
-      ${why ? `<div style="color:var(--steel);font-size:13px;margin-top:6px;">${esc(why)}</div>` : ""}
-      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
+      ${why ? `<div style="color:var(--steel);font-size:13px;margin-top:6px;">${bidiText(why)}</div>` : ""}
+      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${bidiText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
     return postCardShell(post, inner + postMediaHtml(post));
   }
 
@@ -6782,7 +7835,7 @@
   function renderAttendanceMilestonePostCard(post) {
     const m = post.metadata || {};
     const label = m.milestone_label || post.title || "אבן דרך בנוכחות";
-    const inner = `<div class="post-title">🎯 ${esc(label)}</div>${m.count != null ? `<div class="mono post-result">${esc(m.count)}</div>` : ""}${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
+    const inner = `<div class="post-title">🎯 ${bidiText(label)}</div>${m.count != null ? `<div class="mono post-result">${esc(m.count)}</div>` : ""}${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${bidiText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
     return postCardShell(post, inner);
   }
 
@@ -6804,9 +7857,9 @@
       rows.push(`<div class="mono post-result" style="color:var(--brass);">${esc(m.my_progress)}${m.target_value != null ? ` / ${esc(m.target_value)}` : ""}</div>`);
       if (pct != null) rows.push(`<div class="progress-track"><div style="width:${pct}%;"></div></div>`);
     }
-    const inner = `<div class="post-title">🏆 ${esc(m.challenge_title || post.title || "אתגר")}</div>
+    const inner = `<div class="post-title">🏆 ${bidiText(m.challenge_title || post.title || "אתגר")}</div>
       ${rows.join("")}
-      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:4px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
+      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:4px;">${bidiText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
       <div class="chip-row"><button class="chip-btn" data-community-action="open-challenge" data-id="${esc(m.challenge_id || post.source_id || "")}">פתיחת האתגר</button></div>`;
     return postCardShell(post, inner, { authorless: !postAuthorName(post) });
   }
@@ -6826,17 +7879,17 @@
       meta.push(`${going} משתתפים`);
       if (ev.status === "cancelled") meta.push("בוטל");
       const image = ev.image_url ? `<img src="${esc(ev.image_url)}" alt="" style="width:100%;max-height:160px;object-fit:cover;border-radius:10px;margin-top:6px;"/>` : "";
-      const inner = `<div class="post-title">📅 ${esc(ev.title)}</div>
-        <div style="color:var(--steel);font-size:12px;">${meta.map(esc).join(" · ")}</div>
+      const inner = `<div class="post-title">📅 ${bidiText(ev.title)}</div>
+        <div style="color:var(--steel);font-size:12px;">${meta.map(bidiText).join(" · ")}</div>
         ${image}
-        ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
+        ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${bidiText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
         <div class="chip-row"><button class="chip-btn" data-community-action="open-event" data-id="${esc(ev.id)}">פתיחת האירוע</button></div>`;
       return postCardShell(post, inner, { authorless: !postAuthorName(post) });
     }
     const when = m.starts_at ? String(m.starts_at).slice(0, 16).replace("T", " ") : "";
-    const inner = `<div class="post-title">📅 ${esc(m.event_title || post.title || "אירוע")}</div>
+    const inner = `<div class="post-title">📅 ${bidiText(m.event_title || post.title || "אירוע")}</div>
       ${when ? `<div style="color:var(--steel);font-size:12px;">${esc(when)}</div>` : ""}
-      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:4px;">${esc(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
+      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:4px;">${bidiText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
       <div class="chip-row"><button class="chip-btn" data-community-action="open-event" data-id="${esc(m.event_id || post.source_id || "")}">פתיחת האירוע</button></div>`;
     return postCardShell(post, inner, { authorless: !postAuthorName(post) });
   }
@@ -6844,7 +7897,7 @@
   function renderAnnouncementPostCard(post) {
     const m = post.metadata || {};
     const title = m.title || post.title || "";
-    const inner = `${title ? `<div class="post-title" style="color:var(--brass);">📣 ${esc(title)}</div>` : ""}${postBodyHtml(post)}${postMediaHtml(post)}`;
+    const inner = `${title ? `<div class="post-title" style="color:var(--brass);">📣 ${bidiText(title)}</div>` : ""}${postBodyHtml(post)}${postMediaHtml(post)}`;
     return postCardShell(post, inner, { badge: "הודעת מועדון", authorless: !postAuthorName(post) });
   }
   function renderCoachPostCard(post) {
@@ -7792,7 +8845,7 @@
       <div class="flex gap-10" style="align-items:flex-start;">
         ${image}
         <div style="flex:1;min-width:0;">
-          <button class="link-btn" data-community-action="open-challenge" data-id="${esc(c.id)}" data-source="boards" style="padding:0;text-align:right;font-weight:800;font-size:15px;color:inherit;display:block;">${esc(c.title)}</button>
+          <button class="link-btn" data-community-action="open-challenge" data-id="${esc(c.id)}" data-source="boards" style="padding:0;text-align:right;font-weight:800;font-size:15px;color:inherit;display:block;">${bidiText(c.title)}</button>
           <div style="color:var(--steel);font-size:11.5px;margin-top:2px;">${meta.map(esc).join(" · ")}</div>
           ${myChallengeCardProgressHtml(c)}
         </div>
@@ -7865,9 +8918,22 @@
     return `<div class="ach-section">${sectionHead("var(--energy)", "לחגוג")}${body}</div>`;
   }
   function renderCoachWelcomeRow(m) {
-    const days = Math.max(0, Math.floor((Date.now() - new Date(m.created_at).getTime()) / 86400000));
-    const streakRow = state.club.streaks.find((s) => s.user_id === m.id);
-    const streakCount = streakRow ? Number(streakRow.current_streak) : 0;
+    // days_since_join is computed server-side against the real join date now,
+    // so this no longer parses a timestamp in the browser's timezone to
+    // answer a question about a calendar day.
+    const days = Number.isFinite(Number(m.days_since_join))
+      ? Number(m.days_since_join)
+      : Math.max(0, Math.floor((Date.now() - new Date(m.created_at).getTime()) / 86400000));
+    // WAS: `רצף נוכחי` read off state.club.streaks, i.e.
+    // community_streaks.current_streak - which counts CONSECUTIVE DAYS THE
+    // MEMBER OPENED THE APP. Shown beside a brand-new member's name, a coach
+    // reads that as training. It never was. COMM-224 asked for "sessions
+    // attended" and the read-path note above this file's loader recorded that
+    // no coach-readable session count existed; 202609060020 added one, as an
+    // aggregate count on coach_new_members() (a coach still cannot read the
+    // attendance rows themselves - 202609060013 keeps those at admin rank).
+    const sessions = Number(m.sessions_logged) || 0;
+    const trained = sessions ? `${sessions} אימונים באפליקציה` : "לא רשמו אימון באפליקציה";
     const contacted = !!state.coach.welcome.contactedIds[m.id];
     const busy = state.coach.welcome.busy === m.id;
     const assignDraft = (state.coach.welcome.assignDrafts || {})[m.id] || "";
@@ -7877,7 +8943,8 @@
         ${avatarHtml(m.display_name || m.handle, 32, m.avatar_url)}
         <div>
           <div style="font-weight:700;">${nameHtml(m.display_name, m.handle)}</div>
-          <div style="color:var(--steel);font-size:12px;">${days === 0 ? "הצטרפ/ה היום" : `לפני ${days} ימים`} · רצף נוכחי: ${streakCount} · ${contacted ? "נוצר קשר" : "טרם נוצר קשר"}</div>
+          <div style="color:var(--steel);font-size:12px;">${bidiText(`${days === 0 ? "הצטרפ/ה היום" : `לפני ${days} ימים`} · ${trained} · ${contacted ? "נוצר קשר" : "טרם נוצר קשר"}`)}</div>
+          ${m.has_opened_app === false ? `<div style="color:var(--brass);font-size:12px;">${bidiText("עדיין לא נכנס/ה לאפליקציה")}</div>` : ""}
         </div>
       </div>
       <div class="chip-row">
@@ -8338,7 +9405,7 @@
     const myTeamId = v.myParticipant && v.myParticipant.team_id;
     const canPick = v.myParticipant && !myTeamId;
     const cols = teams.map((t) => `<div class="chart-card" style="flex:1;min-width:130px;${t.team_id === myTeamId ? "border-color:var(--energy);" : ""}">
-        <div style="font-weight:800;font-size:13px;">${esc(t.name)}${t.team_id === myTeamId ? " · הקבוצה שלי" : ""}</div>
+        <div style="font-weight:800;font-size:13px;">${bidiText(t.name)}${t.team_id === myTeamId ? " · הקבוצה שלי" : ""}</div>
         <div class="mono" style="color:var(--brass);font-size:16px;margin-top:4px;">${esc(t.total)}</div>
         ${canPick ? `<button class="chip-btn" data-community-action="challenge-pick-team" data-id="${esc(c.id)}" data-team="${esc(t.team_id)}"${v.teamJoining === t.team_id ? " disabled" : ""} style="margin-top:6px;">${v.teamJoining === t.team_id ? "מצטרפ/ת…" : "הצטרפות לקבוצה"}</button>` : ""}
       </div>`).join("");
@@ -8428,8 +9495,8 @@
     const def = challengeTypeDef(c.challenge_type);
     const staff = hasPerm(PERM.CHALLENGE_CREATE);
     const meta = `<div style="color:var(--steel);font-size:12px;margin-bottom:10px;">${esc(def.label)} · ${formatChallengeDate(c.start_at)}–${formatChallengeDate(c.end_at)} · ${esc(challengeStatusLabel(c))}</div>`;
-    const description = c.description ? `<div style="font-size:13.5px;line-height:1.6;margin-bottom:10px;white-space:pre-wrap;">${esc(c.description)}</div>` : "";
-    const rules = (c.config && c.config.rules_text) ? `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">חוקי האתגר</div><div style="font-size:13px;white-space:pre-wrap;">${esc(c.config.rules_text)}</div></div>` : "";
+    const description = c.description ? `<div style="font-size:13.5px;line-height:1.6;margin-bottom:10px;white-space:pre-wrap;">${bidiText(c.description)}</div>` : "";
+    const rules = (c.config && c.config.rules_text) ? `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">חוקי האתגר</div><div style="font-size:13px;white-space:pre-wrap;">${bidiText(c.config.rules_text)}</div></div>` : "";
     const staffToolbar = staff ? `<div class="chip-row" style="margin-bottom:10px;"><button class="chip-btn" data-community-action="challenge-edit" data-id="${esc(c.id)}">עריכה</button></div>` : "";
     const myProgress = renderMyChallengeProgress(v);
     const typePanel = c.challenge_type === "cooperative" ? renderCooperativePanel(v)
@@ -8461,7 +9528,7 @@
       <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:560px;">
         <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
           <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:12px;">
-            <h2 id="challengeViewTitle" style="margin-top:0;font-weight:800;font-size:17px;margin-bottom:0;">${v.challenge ? esc(v.challenge.title) : "אתגר"}</h2>
+            <h2 id="challengeViewTitle" style="margin-top:0;font-weight:800;font-size:17px;margin-bottom:0;">${v.challenge ? bidiText(v.challenge.title) : "אתגר"}</h2>
             <button class="chip-btn" data-community-action="close-challenge-view" aria-label="סגירה">✕</button>
           </div>
           ${bodyHtml}
@@ -8585,7 +9652,7 @@
       <div class="flex gap-10" style="align-items:flex-start;">
         ${eventCardImageHtml(e)}
         <div style="flex:1;min-width:0;">
-          <button class="link-btn" data-community-action="open-event" data-id="${esc(e.id)}" data-source="boards" style="padding:0;text-align:right;font-weight:800;font-size:15px;color:inherit;display:block;">${esc(e.title)}</button>
+          <button class="link-btn" data-community-action="open-event" data-id="${esc(e.id)}" data-source="boards" style="padding:0;text-align:right;font-weight:800;font-size:15px;color:inherit;display:block;">${bidiText(e.title)}</button>
           <div style="color:var(--steel);font-size:11.5px;margin-top:2px;">${meta.map(esc).join(" · ")}</div>
         </div>
       </div>
@@ -9008,8 +10075,8 @@
     if (statusLabel) meta.push(statusLabel);
     const metaHtml = `<div style="color:var(--steel);font-size:12px;margin-bottom:10px;">${meta.map(esc).join(" · ")}</div>`;
     const image = e.image_url ? `<img src="${esc(e.image_url)}" alt="" style="width:100%;max-height:200px;object-fit:cover;border-radius:12px;margin-bottom:10px;"/>` : "";
-    const description = e.description ? `<div style="font-size:13.5px;line-height:1.6;margin-bottom:10px;white-space:pre-wrap;">${esc(e.description)}</div>` : "";
-    const locationHtml = e.location ? `<div style="font-size:13px;color:var(--steel);margin-bottom:4px;">📍 ${esc(e.location)}${e.map_link ? ` · <a class="link-btn" href="${esc(e.map_link)}" target="_blank" rel="noopener noreferrer">מפה</a>` : ""}</div>` : "";
+    const description = e.description ? `<div style="font-size:13.5px;line-height:1.6;margin-bottom:10px;white-space:pre-wrap;">${bidiText(e.description)}</div>` : "";
+    const locationHtml = e.location ? `<div style="font-size:13px;color:var(--steel);margin-bottom:4px;">📍 ${bidiText(e.location)}${e.map_link ? ` · <a class="link-btn" href="${esc(e.map_link)}" target="_blank" rel="noopener noreferrer">מפה</a>` : ""}</div>` : "";
     const going = eventGoingCount(e.id);
     const capacityHtml = `<div style="font-size:13px;color:var(--steel);margin-bottom:4px;">${e.capacity != null ? `${going} / ${e.capacity} משתתפים` : `${going} משתתפים`}</div>`;
     const deadlineHtml = e.registration_deadline ? `<div style="font-size:12px;color:var(--steel);margin-bottom:4px;">מועד אחרון להרשמה: ${esc(formatEventDate(e.registration_deadline))} ${esc(formatEventTime(e.registration_deadline))}</div>` : "";
@@ -9048,7 +10115,7 @@
       <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:560px;">
         <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
           <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:12px;">
-            <h2 id="eventViewTitle" style="margin-top:0;font-weight:800;font-size:17px;margin-bottom:0;">${v.event ? esc(v.event.title) : "אירוע"}</h2>
+            <h2 id="eventViewTitle" style="margin-top:0;font-weight:800;font-size:17px;margin-bottom:0;">${v.event ? bidiText(v.event.title) : "אירוע"}</h2>
             <button class="chip-btn" data-community-action="close-event-view" aria-label="סגירה">✕</button>
           </div>
           ${bodyHtml}
@@ -9106,7 +10173,7 @@
     const full = eventIsFull(e);
     return `<div class="chart-card" style="margin-top:10px;" data-event-id="${esc(e.id)}">
       <button class="link-btn" data-community-action="open-event" data-id="${esc(e.id)}" data-source="club_top" style="padding:0;text-align:right;display:block;width:100%;">
-        <div style="font-weight:800;font-size:14px;">📅 ${esc(e.title)}</div>
+        <div style="font-weight:800;font-size:14px;">📅 ${bidiText(e.title)}</div>
         <div style="color:var(--steel);font-size:12px;margin-top:2px;">${esc(formatEventDate(e.start_at))} ${esc(formatEventTime(e.start_at))} · ${going} משתתפים</div>
       </button>
       <div class="chip-row" style="margin-top:8px;">
@@ -9383,7 +10450,7 @@
       ? `<div class="log-list">${row.achievements.map((a) => `<div class="log-row"><span>${esc(a.badge_icon || "🏅")} ${esc(a.title)}</span></div>`).join("")}</div>`
       : `<div class="empty">אין הישגים חדשים השבוע</div>`;
     const challengeHtml = Array.isArray(row.challenge_progress) && row.challenge_progress.length
-      ? `<div class="log-list">${row.challenge_progress.map((c) => `<div class="log-row"><span>${esc(c.title)}</span><span class="mono" style="color:var(--brass);">${esc(c.progress)}${c.target != null ? ` / ${esc(c.target)}` : ""}</span></div>`).join("")}</div>`
+      ? `<div class="log-list">${row.challenge_progress.map((c) => `<div class="log-row"><span>${bidiText(c.title)}</span><span class="mono" style="color:var(--brass);">${esc(c.progress)}${c.target != null ? ` / ${esc(c.target)}` : ""}</span></div>`).join("")}</div>`
       : `<div class="empty">לא נרשמה השתתפות באתגר השבוע</div>`;
     // COMM-316 (closing COMM-P06). weekly_recaps.classmates is up to 5
     // {user_id, display_name, handle, avatar_url} objects, already fully
@@ -9943,7 +11010,8 @@
           ${p.showNote ? `<label class="field" style="margin-top:8px;"><span class="field-label">הערה</span><textarea class="text-input" data-pr-note maxlength="${POST_BODY_MAX}" rows="3">${esc(p.note || "")}</textarea></label>` : ""}
           ${p.error ? `<div class="field-error" role="alert" style="margin-top:8px;">${esc(p.error)}</div>` : ""}
           <div class="chip-row" style="margin-top:14px;">
-            <button class="chip-btn primary" data-community-action="pr-share"${p.publishing || (p.photo && p.photo.status === "processing") ? " disabled" : ""}>${p.publishing ? "משתף…" : "שיתוף"}</button>
+            <button class="chip-btn primary" data-community-action="pr-share"${p.publishing || (p.photo && p.photo.status === "processing") ? " disabled" : ""}>${p.publishing ? "משתף…" : "שיתוף למועדון"}</button>
+            <button class="chip-btn" data-community-action="outward-pr">שיתוף מחוץ לאפליקציה</button>
             ${p.photo ? "" : `<label class="chip-btn" style="cursor:pointer;">הוספת תמונה<input type="file" accept="image/*" data-pr-file style="display:none;"/></label>`}
             ${p.showNote ? "" : `<button class="chip-btn" data-community-action="pr-add-note">הוספת הערה</button>`}
             <button class="chip-btn" data-community-action="pr-not-now">לא עכשיו</button>
@@ -10140,6 +11208,16 @@
           ${a.error ? `<div class="field-error" role="alert" style="margin-top:8px;">${esc(a.error)}</div>` : ""}
           <div class="chip-row" style="margin-top:14px;justify-content:center;">
             ${canShare ? `<button class="chip-btn primary" data-community-action="ach-share"${a.sharing ? " disabled" : ""}>${a.sharing ? "משתף…" : "שיתוף למועדון"}</button>` : ""}
+            ${/* Five-persona UX audit, outward sharing. Gated on the SAME
+                  canShare as the club share, which is false for
+                  visibility === "only_me". Unlike the profile-wide privacy
+                  toggles - which are about what OTHER members may read and
+                  are deliberately not consulted for an outward share - this
+                  is an item-level flag the member set on this exact
+                  decoration to mean "private". It defaults to "club", so
+                  honouring it costs the feature nothing and is the reading
+                  the audit's privacy note asks for. */ ""}
+            ${canShare ? `<button class="chip-btn" data-community-action="outward-ach">שיתוף מחוץ לאפליקציה</button>` : ""}
             ${canShare && !a.showNote ? `<button class="chip-btn" data-community-action="ach-add-note">הוספת הערה</button>` : ""}
             <button class="chip-btn" data-community-action="ach-not-now">לא עכשיו</button>
           </div>
@@ -10167,6 +11245,13 @@
         : r.visibility === "only_me"
           ? ""
           : `<button class="chip-btn" data-community-action="ach-share-later" data-id="${esc(r.id)}" data-code="${esc(code)}">שיתוף</button>`;
+      // Five-persona UX audit, outward sharing. Offered even once the
+      // decoration has already been shared to the club - the two are
+      // different audiences and sharing to one is not sharing to the other -
+      // and withheld for only_me, matching the club control beside it.
+      const outward = r.visibility === "only_me"
+        ? ""
+        : `<button class="chip-btn" data-community-action="outward-ach-earned" data-id="${esc(r.id)}" data-code="${esc(code)}" aria-label="שיתוף העיטור מחוץ לאפליקציה">↗</button>`;
       // data-achievement-id: the anchor a `target.achievement` notification
       // tap (navigateToNotifTarget) scrolls to and briefly highlights - the
       // same scrollIntoView pattern the `target.post` branch already uses
@@ -10174,10 +11259,915 @@
       // notif_on_achievement's own deep link carries (`?ma=<member_
       // achievements.id>`), so the notification's target and this row's
       // anchor always agree.
-      return `<div class="log-row" data-achievement-id="${esc(r.id)}"><span>${esc(meta.icon)} ${esc(meta.title)}</span>${share}</div>`;
+      return `<div class="log-row" data-achievement-id="${esc(r.id)}"><span>${esc(meta.icon)} ${esc(meta.title)}</span><span class="chip-row" style="margin:0;">${share}${outward}</span></div>`;
     }).join("");
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--brass)", "ההישגים שלי")}${list.length ? `<div class="log-list">${rowsHtml}</div>` : `<div class="empty">אין עדיין הישגים במועדון</div>`}</div>`;
   }
+
+  // ==========================================================================
+  // OUTWARD SHARING - this app to the world outside it
+  // ==========================================================================
+  // The five-persona UX audit's most socially-engaged persona ranked this
+  // above wearable sync and called the product "a closed silo with its one
+  // internal door locked": zero navigator.share, zero WhatsApp/Instagram, no
+  // image export. Everything a member could show anybody lived behind a login
+  // the recipient does not have. This block is the outward door.
+  //
+  // Four rules shape all of it.
+  //
+  // 1. NOTHING LEAVES THE DEVICE WITHOUT A TAP. The sheet is opened by an
+  //    explicit control; the image is rendered locally on a canvas; and
+  //    navigator.share() is only ever reached from the share button's own
+  //    click. Nothing is auto-shared, nothing is pre-uploaded, and the card
+  //    image is NEVER sent to Supabase - it is a Blob that lives in this tab
+  //    until the sheet closes and is revoked on the way out. That also means
+  //    an outward share leaves no server-side trace at all, which is the
+  //    correct privacy posture and also why there is no analytics call here
+  //    (see the note on OUTWARD_SHARE_RESULTS).
+  //
+  // 2. THE CARD CARRIES THE MEMBER'S OWN DATA AND NOTHING ELSE. The spec is
+  //    BUILT from a named allow-list per subject kind (OUTWARD_CARD_FIELDS)
+  //    rather than filtered after the fact, so a field nobody thought about
+  //    cannot reach the canvas just by being present on the source row.
+  //    OUTWARD_CARD_NEVER is the written-down reverse of that - the things
+  //    that are out unconditionally because they are about the CLUB or about
+  //    OTHER PEOPLE, and an image that has left this app has no RLS behind it
+  //    any more.
+  //
+  //    Deliberately NOT gated on show_prs / show_workout_results: those
+  //    toggles govern what other club members may read off this profile
+  //    (can_view_profile_field), they are not a statement about what the
+  //    owner may do with their own record, and both default FALSE
+  //    (202608280003) - gating on them would ship a feature that is dead on
+  //    arrival for every member who never opened the privacy panel. The one
+  //    toggle that IS consulted is visible_to_club, because that one is
+  //    specifically about showing this member's identity, and it only sets
+  //    the DEFAULT of a per-share name switch the member can flip either way
+  //    before sharing.
+  //
+  // 3. NO URL. V1 has no public web view of a post, so a link on the card or
+  //    in the share text would be a link to a login wall - or, worse, an
+  //    invitation to build one later and quietly turn every past share into a
+  //    public page. navigator.share() is called without `url` on purpose.
+  //
+  // 4. MIXED SCRIPT IS THE COMMON CASE, NOT THE EDGE CASE. A real card reads
+  //    "21-15-9 Thrusters" beside Hebrew - the exact hazard bidiText() exists
+  //    for. Canvas has no <bdi>, so bidiIsolate() below wraps every run that
+  //    is not certainly Hebrew in U+2068 FSI ... U+2069 PDI, the Unicode
+  //    control-character equivalent of the same isolation, and the context's
+  //    base direction is set to "rtl" explicitly (a canvas that is not in the
+  //    document otherwise resolves its direction to ltr and paints a Hebrew
+  //    line in the wrong order).
+
+  // Geometry and palette. 1080x1350 is the 4:5 portrait both Instagram feed
+  // and a WhatsApp status accept without recropping.
+  const OUTWARD_CARD = Object.freeze({
+    WIDTH: 1080,
+    HEIGHT: 1350,
+    PAD: 84,
+    MIME: "image/png",
+    FILE_NAME: "haimunia.png",
+    WORDMARK: "האימוניה",
+    // The dark theme's own tokens (index.html, :root[data-theme="dark"]),
+    // written out rather than read through getComputedStyle: the card is the
+    // brand's ground and must not flip to the light palette just because the
+    // member happens to be running the app in light mode today.
+    INK: "#152342",
+    SURFACE: "#1F3057",
+    BORDER: "#425481",
+    CHALK: "#F2ECE1",
+    STEEL: "#A8B3C9",
+    ENERGY: "#E85D3D",
+    BRASS: "#E8B98A",
+    SANS: "Rubik, sans-serif",
+    MONO: "'JetBrains Mono', Rubik, monospace",
+  });
+  const OUTWARD_TEXT_MAX = 280;
+  const OUTWARD_CAPTION_MAX = 140;
+
+  // Rule 2, the allow-list. Nothing outside these lists is ever read off a
+  // subject, so adding a column to private_records or to post.metadata cannot
+  // widen what an outward card discloses.
+  const OUTWARD_CARD_FIELDS = Object.freeze({
+    pr: Object.freeze(["title", "newResult", "previousResult", "improvement", "dateText"]),
+    achievement: Object.freeze(["title", "explanation", "dateText"]),
+    workout: Object.freeze(["title", "result", "scoreType", "effortLabel", "dateText"]),
+  });
+  // Rule 2, written in reverse so the reason survives. Every name here is a
+  // field that exists somewhere on a feed row, a profile or a recap and is
+  // deliberately absent from the lists above. The list is the fixture the
+  // outward-share test builds its adversarial subject from - if a future
+  // ticket adds one of these to a card, that test fails first.
+  const OUTWARD_CARD_NEVER = Object.freeze([
+    // About the club, not the member.
+    "clubName", "club_id", "clubId", "club",
+    // About other members.
+    "handle", "authorHandle", "classmates", "attendees", "otherMembers",
+    "memberCount", "followers", "following",
+    // A position is a statement about everybody else's results.
+    "leaderboardRank", "rank", "position", "percentile",
+    // Server-enforced-private by default, and never the subject of a share.
+    "attendance", "upcomingBooking", "bookings",
+    // Engagement is other people's behaviour, and a count on an exported
+    // image is a number nobody can verify and nobody asked to publish.
+    "reactionCount", "commentCount",
+    // Rule 3.
+    "url", "postUrl", "link",
+    // In-club audience, meaningless outside it and misleading on an image.
+    "visibility",
+  ]);
+
+  // The bumper-plate medal idiom, matching assets/medal-*.png exactly (the
+  // colours are sampled from those files, the weights are the labels printed
+  // on them). Drawn procedurally rather than by loading the PNG: the card is
+  // 1080px wide and the assets are 320px, this keeps it crisp, it needs no
+  // decode step in the middle of an already-async render, and it cannot fail
+  // offline.
+  const OUTWARD_PLATES = Object.freeze({
+    bronze: Object.freeze({ color: "#727272", weight: "5 KG" }),
+    silver: Object.freeze({ color: "#00903C", weight: "10 KG" }),
+    gold: Object.freeze({ color: "#002E84", weight: "20 KG" }),
+  });
+  // Which plate an achievement earns. Explicit rather than derived from the
+  // emoji in COMMUNITY_ACHIEVEMENT_META: that map is display copy and its
+  // icons change, and a silently re-tiered medal is a worse bug than a
+  // missing one. Anything not listed is bronze, which is the truthful
+  // default - every code here is a real unlock.
+  const OUTWARD_ACHIEVEMENT_TIER = Object.freeze({
+    sessions_50: "silver", sessions_100: "gold", sessions_250: "gold",
+    pr_25: "silver", pr_50: "gold", pr_100: "gold",
+    consistency_weeks_12: "silver", consistency_weeks_26: "gold", consistency_weeks_52: "gold",
+    attendance_25_classes: "silver", attendance_100_classes: "gold", attendance_weekly_streak: "silver",
+    anniversary_year_2: "silver", anniversary_year_3: "gold", anniversary_year_5: "gold",
+    well_rounded: "silver", supportive_10: "silver",
+    challenge_finisher: "silver", challenge_winner: "gold",
+  });
+  function outwardPlateTier(code) {
+    return Object.prototype.hasOwnProperty.call(OUTWARD_ACHIEVEMENT_TIER, code) ? OUTWARD_ACHIEVEMENT_TIER[code] : "bronze";
+  }
+
+  // The headline over each kind of card, and the one-word chip beside it.
+  const OUTWARD_KIND_COPY = Object.freeze({
+    pr: Object.freeze({ headline: "שיא אישי חדש", chip: "PR" }),
+    achievement: Object.freeze({ headline: "עיטור חדש", chip: "הישג" }),
+    workout: Object.freeze({ headline: "אימון הושלם", chip: "אימון" }),
+  });
+
+  // Canvas has no <bdi>. FSI ... PDI is the same thing in control characters:
+  // the run takes its base direction from its own first strong character and
+  // cannot reorder against the paragraph around it. Applied to every value
+  // that is not certainly Hebrew - movement names, results, weights, dates,
+  // rep schemes - and it survives into the plain-text share too, where
+  // WhatsApp and every other modern target honour it.
+  function bidiIsolate(value) {
+    const s = String(value == null ? "" : value);
+    return s ? "⁨" + s + "⁩" : "";
+  }
+  const OUTWARD_HEBREW_RE = /[֐-׿יִ-ﭏ]/;
+  // FSI's first-strong rule is right for an ATOMIC value - "180 ק\"ג",
+  // "8:42", "Rx" - where the whole run is one thing and its own first strong
+  // character is the honest answer.
+  //
+  // It is wrong for PROSE that merely STARTS with a Latin word. A caption
+  // reading
+  //
+  //     Rx 43/30 ק"ג. נשבר לי הראש בסיבוב האחרון.
+  //
+  // resolves to an LTR base off that leading "Rx", which puts the whole
+  // Hebrew remainder in one reversed run and leaves the ק"ג at the far end of
+  // the line from the 43/30 it belongs to - the exact second symptom two
+  // personas reported (see bidiText's own header). A sentence containing any
+  // Hebrew is a Hebrew sentence in a Hebrew-first app, so it gets U+2067 RLI:
+  // an explicit RTL base inside an isolate, which keeps the weight next to
+  // its unit and still renders the Latin run itself left-to-right. A run with
+  // no Hebrew in it at all falls back to FSI and behaves exactly as before.
+  //
+  // Only the card does this. bidiText() keeps <bdi>'s first-strong rule, both
+  // because that is the whole point of <bdi> and because a card is a fixed,
+  // known-width composition where the base direction is a design decision
+  // rather than a guess.
+  function bidiIsolateProse(value) {
+    const s = String(value == null ? "" : value);
+    if (!s) return "";
+    return (OUTWARD_HEBREW_RE.test(s) ? "⁧" : "⁨") + s + "⁩";
+  }
+  // Strip the isolates back out. Used only for assertions and for the
+  // clipboard fallback's own length maths, never for anything that paints.
+  function stripBidiIsolates(value) { return String(value == null ? "" : value).replace(/[⁦-⁩]/g, ""); }
+
+  function outwardDateText(value) {
+    const s = String(value == null ? "" : value).trim();
+    if (!s) return "";
+    return s.slice(0, 10);
+  }
+  function outwardClean(value, max) {
+    return String(value == null ? "" : value)
+      .replace(/\r\n?/g, "\n")
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "")
+      .replace(/\s*\n\s*/g, " ")
+      .trim()
+      .slice(0, max || 120);
+  }
+
+  // ---- Subject -> spec ---------------------------------------------------
+  // A "subject" is whatever the caller has in hand (a PR record off the event
+  // bus, a member_achievements row, a feed post). buildOutwardShareSpec() is
+  // the ONLY way a subject becomes something paintable, and it reads exactly
+  // the fields OUTWARD_CARD_FIELDS names for that kind. Pure: no state, no
+  // DOM, no canvas - which is what makes rule 2 testable.
+  function buildOutwardShareSpec(subject, opts) {
+    const o = opts || {};
+    const kind = subject && OUTWARD_CARD_FIELDS[subject.kind] ? subject.kind : null;
+    if (!kind) return null;
+    const allowed = OUTWARD_CARD_FIELDS[kind];
+    const read = (field, max) => (allowed.indexOf(field) >= 0 ? outwardClean(subject[field], max) : "");
+    const title = read("title", 80);
+    if (!title) return null;
+    const rows = [];
+    const push = (label, field) => { const v = read(field, 60); if (v) rows.push({ label, value: v }); };
+    if (kind === "pr") {
+      push("תוצאה חדשה", "newResult");
+      push("תוצאה קודמת", "previousResult");
+      push("שיפור", "improvement");
+    } else if (kind === "workout") {
+      push("תוצאה", "result");
+      push("סוג ניקוד", "scoreType");
+      push("רמה", "effortLabel");
+    }
+    const copy = OUTWARD_KIND_COPY[kind];
+    return {
+      kind,
+      headline: copy.headline,
+      chip: copy.chip,
+      title,
+      // The single big number the card is built around, when there is one.
+      hero: rows.length ? rows[0].value : "",
+      rows,
+      explanation: kind === "achievement" ? read("explanation", 90) : "",
+      dateText: allowed.indexOf("dateText") >= 0 ? outwardDateText(subject.dateText) : "",
+      plate: kind === "achievement" ? outwardPlateTier(String(subject.code || "")) : null,
+      // Never read off the subject: the name comes from the signed-in
+      // member's own profile through openOutwardShare(), and only when the
+      // name switch is on. A subject cannot smuggle a display name onto a
+      // card by carrying one.
+      name: o.name ? outwardClean(o.name, 40) : "",
+      caption: outwardClean(o.caption, OUTWARD_CAPTION_MAX),
+      wordmark: OUTWARD_CARD.WORDMARK,
+    };
+  }
+
+  // The three adapters. Each one names the fields it lifts, so the mapping
+  // from a wire row to a card is readable in one place per source.
+  function outwardSubjectFromPrRecord(record) {
+    if (!record) return null;
+    return {
+      kind: "pr",
+      title: record.movement || record.movement_name || "",
+      newResult: record.new_result || record.new_value || "",
+      previousResult: record.previous_result || record.previous_value || "",
+      improvement: record.improvement || "",
+      dateText: record.achieved_on || record.occurred_on || "",
+    };
+  }
+  function outwardSubjectFromAchievement(meta, code, earnedOn) {
+    if (!meta || !meta.title) return null;
+    return { kind: "achievement", code: code || "", title: meta.title, explanation: meta.explanation || "", dateText: earnedOn || "" };
+  }
+  // A feed post the member owns. POST_PR / POST_WORKOUT / POST_ACHIEVEMENT
+  // only: the other nine types are either about the club (announcement,
+  // system, new member), about somebody else's content, or a link card whose
+  // whole point is a destination the recipient cannot reach.
+  function outwardSubjectFromPost(post) {
+    if (!post || !postIsOwn(post)) return null;
+    const m = post.metadata || {};
+    if (post.post_type === "POST_PR") {
+      return outwardSubjectFromPrRecord({
+        movement: m.movement || m.movement_name || post.title,
+        new_result: m.new_result || m.new_value,
+        previous_result: m.previous_result || m.previous_value,
+        improvement: m.improvement,
+        achieved_on: m.achieved_on || post.occurred_on,
+      });
+    }
+    if (post.post_type === "POST_ACHIEVEMENT") {
+      return { kind: "achievement", code: m.code || "", title: m.title || post.title || "", explanation: m.explanation || "", dateText: m.earned_on || post.occurred_on || "" };
+    }
+    if (post.post_type === "POST_WORKOUT") {
+      const effort = m.effort || (post.rx === true ? "rx" : post.rx === false ? "scaled" : m.level ? "level" : "");
+      return {
+        kind: "workout",
+        title: m.workout_name || post.title || "",
+        result: m.result_text || post.result_text || "",
+        scoreType: m.score_type || post.score_type || "",
+        effortLabel: effort === "rx" ? "Rx" : effort === "scaled" ? "מותאם" : effort === "level" ? ("רמה " + (m.level || "")).trim() : "",
+        dateText: m.workout_date || post.occurred_on || "",
+      };
+    }
+    return null;
+  }
+  // Which own posts get the outward control at all.
+  const OUTWARD_SHAREABLE_POST_TYPES = Object.freeze(["POST_PR", "POST_ACHIEVEMENT", "POST_WORKOUT"]);
+
+  // ---- The share text ----------------------------------------------------
+  // Short on purpose. The image is what gets looked at; this is the line that
+  // sits above it in WhatsApp and the whole payload in the clipboard
+  // fallback. No URL (rule 3), no club name, no other member (rule 2).
+  function outwardShareText(spec) {
+    if (!spec) return "";
+    const lines = [];
+    lines.push(spec.headline + (spec.title ? " · " + bidiIsolateProse(spec.title) : ""));
+    if (spec.hero) lines.push(bidiIsolate(spec.hero));
+    if (spec.caption) lines.push(bidiIsolateProse(spec.caption));
+    lines.push("— " + spec.wordmark);
+    return balanceBidiIsolates(lines.join("\n").slice(0, OUTWARD_TEXT_MAX));
+  }
+  // A hard slice can cut between an opening isolate and its PDI, and an
+  // unterminated FSI/RLI does not stop at the end of the string - it swallows
+  // whatever the receiving app pastes after it. So the cap is applied first
+  // and the isolates are then closed off, which is a visible truncation
+  // rather than a control character leaking into somebody's WhatsApp message.
+  function balanceBidiIsolates(text) {
+    const opens = (text.match(/[⁦⁧⁨]/g) || []).length;
+    const closes = (text.match(/⁩/g) || []).length;
+    return opens > closes ? text + "⁩".repeat(opens - closes) : text;
+  }
+
+  // ---- Painting ----------------------------------------------------------
+  // paintOutwardShareCard() takes a 2D context and never creates one, for the
+  // same reason src/image.js splits its sizing maths from its browser
+  // backend: the layout is then exercisable against a recording context with
+  // no canvas implementation in the room.
+  function outwardRoundRect(ctx, x, y, w, h, r) {
+    const rad = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rad, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rad);
+    ctx.arcTo(x + w, y + h, x, y + h, rad);
+    ctx.arcTo(x, y + h, x, y, rad);
+    ctx.arcTo(x, y, x + w, y, rad);
+    ctx.closePath();
+  }
+  // Greedy wrap on spaces. Hebrew and Latin both break on spaces here, and a
+  // card line is short enough that a smarter algorithm would only change
+  // where the ragged edge falls.
+  function wrapOutwardText(ctx, text, maxWidth, maxLines) {
+    const words = String(text || "").split(/\s+/).filter(Boolean);
+    const lines = [];
+    let current = "";
+    for (const word of words) {
+      const candidate = current ? current + " " + word : word;
+      if (current && ctx.measureText(candidate).width > maxWidth) {
+        lines.push(current);
+        current = word;
+        if (maxLines && lines.length >= maxLines) { current = ""; break; }
+      } else {
+        current = candidate;
+      }
+    }
+    if (current) lines.push(current);
+    return maxLines ? lines.slice(0, maxLines) : lines;
+  }
+  // The bumper plate: a filled disc, the outer white ring, four spokes, the
+  // hub, and the printed weight - the same five elements assets/medal-*.png
+  // is made of.
+  function paintOutwardPlate(ctx, cx, cy, radius, tier) {
+    const plate = OUTWARD_PLATES[tier] || OUTWARD_PLATES.bronze;
+    ctx.save();
+    ctx.fillStyle = plate.color;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#FFFFFF";
+    ctx.lineCap = "round";
+    ctx.lineWidth = radius * 0.045;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius * 0.84, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.lineWidth = radius * 0.055;
+    for (let i = 0; i < 4; i++) {
+      const angle = Math.PI / 4 + (i * Math.PI) / 2;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(angle) * radius * 0.32, cy + Math.sin(angle) * radius * 0.32);
+      ctx.lineTo(cx + Math.cos(angle) * radius * 0.70, cy + Math.sin(angle) * radius * 0.70);
+      ctx.stroke();
+    }
+    ctx.lineWidth = radius * 0.05;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius * 0.40, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = "#FFFFFF";
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius * 0.16, 0, Math.PI * 2);
+    ctx.fill();
+    // The printed weight. LTR by construction ("20 KG"), so it is isolated
+    // and drawn centre-aligned rather than inheriting the card's rtl base.
+    ctx.direction = "ltr";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = `800 ${Math.round(radius * 0.20)}px ${OUTWARD_CARD.SANS}`;
+    ctx.fillText(bidiIsolate(plate.weight), cx, cy - radius * 0.58);
+    ctx.restore();
+  }
+  // The body of the card, laid out from `top` downwards, returning the y it
+  // finished at. Called TWICE per card: once with draw=false to find out how
+  // tall this particular subject is, and once with draw=true at the offset
+  // that centres it between the header and the footer rule. A single pass
+  // cannot do that - the height depends on how many rows the subject has, on
+  // whether there is a plate, and on how many lines the title and the caption
+  // wrap to, which is only knowable after measureText. The dry pass runs the
+  // identical arithmetic and simply skips the paint calls, so the two passes
+  // can never disagree about where anything goes.
+  function outwardCardBody(ctx, spec, W, top, draw) {
+    const PAD = OUTWARD_CARD.PAD;
+    let y = top;
+    const line = (text, x) => { if (draw) ctx.fillText(text, x, y); };
+
+    // The plate, when this is an achievement. It is the subject of the card,
+    // so it sits above the words rather than beside them.
+    if (spec.plate) {
+      const radius = 190;
+      if (draw) {
+        paintOutwardPlate(ctx, W / 2, y + radius, radius, spec.plate);
+        ctx.direction = "rtl";
+        ctx.textBaseline = "alphabetic";
+      }
+      y += radius * 2 + 72;
+    }
+
+    ctx.textAlign = "right";
+    ctx.fillStyle = OUTWARD_CARD.STEEL;
+    ctx.font = `600 34px ${OUTWARD_CARD.SANS}`;
+    line(spec.headline, W - PAD);
+    y += 74;
+
+    ctx.fillStyle = OUTWARD_CARD.CHALK;
+    ctx.font = `800 66px ${OUTWARD_CARD.SANS}`;
+    // Wrap the RAW text and isolate each resulting LINE, never the other way
+    // round: wrapping an already-isolated string splits the FSI/RLI from its
+    // PDI across two lines, leaving line one with an opening control it never
+    // closes and line two with a stray close. Per-line isolation is also what
+    // bidiText() does in the DOM, and for the same reason - a two-line title
+    // can legitimately want two different base directions.
+    for (const l of wrapOutwardText(ctx, spec.title, W - PAD * 2, 2)) {
+      line(bidiIsolateProse(l), W - PAD);
+      y += 82;
+    }
+
+    if (spec.explanation) {
+      ctx.fillStyle = OUTWARD_CARD.STEEL;
+      ctx.font = `400 32px ${OUTWARD_CARD.SANS}`;
+      y += 8;
+      for (const l of wrapOutwardText(ctx, spec.explanation, W - PAD * 2, 2)) {
+        line(bidiIsolateProse(l), W - PAD);
+        y += 44;
+      }
+    }
+
+    // The hero figure, when the card has one. Mono and energy, the same
+    // pairing .mono + var(--energy) has everywhere in the app.
+    if (spec.hero) {
+      y += 44;
+      ctx.fillStyle = OUTWARD_CARD.ENERGY;
+      ctx.font = `700 112px ${OUTWARD_CARD.MONO}`;
+      y += 92;
+      line(bidiIsolate(spec.hero), W - PAD);
+      y += 62;
+    }
+
+    // The remaining rows, in a surface panel. Label on the RTL start edge,
+    // value isolated on the other.
+    const detailRows = spec.rows.slice(spec.hero ? 1 : 0);
+    if (detailRows.length) {
+      y += 24;
+      const rowH = 68;
+      const panelH = detailRows.length * rowH + 28;
+      if (draw) {
+        ctx.fillStyle = OUTWARD_CARD.SURFACE;
+        outwardRoundRect(ctx, PAD, y, W - PAD * 2, panelH, 26);
+        ctx.fill();
+        ctx.strokeStyle = OUTWARD_CARD.BORDER;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        let rowY = y + 60;
+        for (const row of detailRows) {
+          ctx.textAlign = "right";
+          ctx.fillStyle = OUTWARD_CARD.STEEL;
+          ctx.font = `600 30px ${OUTWARD_CARD.SANS}`;
+          ctx.fillText(row.label, W - PAD - 28, rowY);
+          ctx.textAlign = "left";
+          ctx.fillStyle = OUTWARD_CARD.BRASS;
+          ctx.font = `700 34px ${OUTWARD_CARD.MONO}`;
+          ctx.fillText(bidiIsolate(row.value), PAD + 28, rowY);
+          rowY += rowH;
+        }
+      }
+      y += panelH;
+    }
+
+    if (spec.caption) {
+      y += 72;
+      ctx.textAlign = "right";
+      ctx.fillStyle = OUTWARD_CARD.CHALK;
+      ctx.font = `400 34px ${OUTWARD_CARD.SANS}`;
+      for (const l of wrapOutwardText(ctx, spec.caption, W - PAD * 2, 3)) {
+        line(bidiIsolateProse(l), W - PAD);
+        y += 50;
+      }
+    }
+    return y;
+  }
+
+  function paintOutwardShareCard(ctx, spec, dims) {
+    const W = (dims && dims.width) || OUTWARD_CARD.WIDTH;
+    const H = (dims && dims.height) || OUTWARD_CARD.HEIGHT;
+    const PAD = OUTWARD_CARD.PAD;
+    // Rule 4: the whole card is an RTL paragraph. Every LTR run inside it is
+    // isolated at the value level, never by flipping this back to ltr.
+    ctx.direction = "rtl";
+    ctx.textBaseline = "alphabetic";
+
+    ctx.fillStyle = OUTWARD_CARD.INK;
+    ctx.fillRect(0, 0, W, H);
+    // The energy rule along the top edge - the app's own accent, the one
+    // thing that makes the card recognisable at thumbnail size.
+    ctx.fillStyle = OUTWARD_CARD.ENERGY;
+    ctx.fillRect(0, 0, W, 14);
+
+    // Header: wordmark on the right (the RTL start edge), kind chip on the left.
+    ctx.textAlign = "right";
+    ctx.fillStyle = OUTWARD_CARD.BRASS;
+    ctx.font = `800 40px ${OUTWARD_CARD.SANS}`;
+    ctx.fillText(spec.wordmark, W - PAD, 112);
+
+    ctx.font = `800 30px ${OUTWARD_CARD.SANS}`;
+    const chipText = bidiIsolate(spec.chip);
+    const chipW = ctx.measureText(chipText).width + 52;
+    ctx.fillStyle = OUTWARD_CARD.ENERGY;
+    outwardRoundRect(ctx, PAD, 74, chipW, 52, 26);
+    ctx.fill();
+    ctx.fillStyle = "#1A0D08";
+    ctx.textAlign = "center";
+    ctx.fillText(chipText, PAD + chipW / 2, 111);
+
+    // Centre the body in the space between the header and the footer rule.
+    // A short PR card and a long achievement card then both sit balanced,
+    // instead of every card hugging the top edge with a third of the frame
+    // left empty underneath.
+    const bandTop = 200;
+    const bandBottom = H - 200;
+    const bodyTop = 214;
+    const bodyHeight = outwardCardBody(ctx, spec, W, bodyTop, false) - bodyTop;
+    const slack = (bandBottom - bandTop) - bodyHeight;
+    outwardCardBody(ctx, spec, W, bandTop + Math.max(0, slack / 2), true);
+
+    // Footer: name (only when the switch is on) and date, on one baseline.
+    ctx.fillStyle = OUTWARD_CARD.ENERGY;
+    ctx.fillRect(PAD, H - 158, W - PAD * 2, 3);
+    ctx.textAlign = "right";
+    ctx.fillStyle = OUTWARD_CARD.STEEL;
+    ctx.font = `600 30px ${OUTWARD_CARD.SANS}`;
+    if (spec.name) ctx.fillText(bidiIsolate(spec.name), W - PAD, H - 96);
+    if (spec.dateText) {
+      ctx.textAlign = "left";
+      ctx.font = `500 28px ${OUTWARD_CARD.MONO}`;
+      ctx.fillText(bidiIsolate(spec.dateText), PAD, H - 96);
+    }
+    return spec;
+  }
+
+  // ---- Canvas backend ----------------------------------------------------
+  // Same split as src/image.js: the pure layout above, the browser-only bits
+  // here. A context that cannot be had is a failed render with a message, not
+  // a throw - the sheet stays usable and the text share still works.
+  function outwardCreateCanvas(width, height) {
+    if (typeof OffscreenCanvas === "function") {
+      try { return new OffscreenCanvas(width, height); } catch (e) { /* fall through */ }
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    return canvas;
+  }
+  async function outwardCanvasToBlob(canvas) {
+    if (typeof canvas.convertToBlob === "function") return await canvas.convertToBlob({ type: OUTWARD_CARD.MIME });
+    return await new Promise((resolve, reject) => {
+      if (typeof canvas.toBlob !== "function") return reject(new Error("no_canvas"));
+      canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("no_canvas"))), OUTWARD_CARD.MIME);
+    });
+  }
+  // The webfonts are loaded by index.html's own @font-face rules (font-src
+  // 'self', self-hosted under assets/fonts). A canvas draws with whatever is
+  // ALREADY loaded, so a cold card would otherwise paint in the fallback
+  // sans. document.fonts.load() only warms what the page already declares -
+  // it fetches nothing new and needs no CSP change - and a browser without
+  // the API just paints a beat later in the fallback face.
+  async function outwardEnsureFonts() {
+    if (!document.fonts || typeof document.fonts.load !== "function") return;
+    const faces = [`800 66px Rubik`, `600 34px Rubik`, `400 32px Rubik`, `700 104px "JetBrains Mono"`, `500 28px "JetBrains Mono"`];
+    try {
+      await Promise.all(faces.map((f) => document.fonts.load(f, "אב0123")));
+    } catch (e) { /* paint in the fallback face rather than not at all */ }
+  }
+  async function renderOutwardShareBlob(spec) {
+    await outwardEnsureFonts();
+    const canvas = outwardCreateCanvas(OUTWARD_CARD.WIDTH, OUTWARD_CARD.HEIGHT);
+    const ctx = canvas.getContext ? canvas.getContext("2d") : null;
+    if (!ctx) throw new Error("no_canvas");
+    paintOutwardShareCard(ctx, spec, { width: OUTWARD_CARD.WIDTH, height: OUTWARD_CARD.HEIGHT });
+    const blob = await outwardCanvasToBlob(canvas);
+    if (!blob) throw new Error("no_canvas");
+    return blob;
+  }
+
+  // ---- The Web Share API, feature-detected -------------------------------
+  // Three tiers, best first. Every one of them is reached from a click, and
+  // the File is prepared when the SHEET opens rather than when the button is
+  // pressed - iOS in particular drops the transient user activation
+  // navigator.share() requires if an await sits between the tap and the call.
+  const OUTWARD_SHARE_RESULTS = Object.freeze({
+    SHARED_IMAGE: "shared_image",
+    SHARED_TEXT: "shared_text",
+    COPIED: "copied",
+    CANCELLED: "cancelled",
+    FAILED: "failed",
+  });
+  function outwardShareFile(blob) {
+    if (!blob || typeof File !== "function") return null;
+    try { return new File([blob], OUTWARD_CARD.FILE_NAME, { type: OUTWARD_CARD.MIME }); } catch (e) { return null; }
+  }
+  // canShare({files}) is the only honest test: Chrome on desktop Linux has
+  // navigator.share and refuses files, Firefox has neither, and a browser
+  // that has share() but not canShare() predates file sharing entirely.
+  function outwardCanShareFile(file) {
+    if (!file) return false;
+    if (typeof navigator === "undefined") return false;
+    if (typeof navigator.share !== "function" || typeof navigator.canShare !== "function") return false;
+    try { return !!navigator.canShare({ files: [file] }); } catch (e) { return false; }
+  }
+  function outwardCanShareText() {
+    return typeof navigator !== "undefined" && typeof navigator.share === "function";
+  }
+  function outwardCanCopy() {
+    return typeof navigator !== "undefined" && !!navigator.clipboard && typeof navigator.clipboard.writeText === "function";
+  }
+  async function performOutwardShare(spec, file) {
+    const text = outwardShareText(spec);
+    // No `url`. See rule 3.
+    if (outwardCanShareFile(file)) {
+      try {
+        await navigator.share({ files: [file], text, title: spec.wordmark });
+        return OUTWARD_SHARE_RESULTS.SHARED_IMAGE;
+      } catch (err) {
+        if (err && err.name === "AbortError") return OUTWARD_SHARE_RESULTS.CANCELLED;
+        // A target that accepted canShare and then threw (an Android share
+        // sheet with no app able to take a PNG) still deserves the text.
+      }
+    }
+    if (outwardCanShareText()) {
+      try {
+        await navigator.share({ text, title: spec.wordmark });
+        return OUTWARD_SHARE_RESULTS.SHARED_TEXT;
+      } catch (err) {
+        if (err && err.name === "AbortError") return OUTWARD_SHARE_RESULTS.CANCELLED;
+      }
+    }
+    if (outwardCanCopy()) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return OUTWARD_SHARE_RESULTS.COPIED;
+      } catch (err) { /* fall through to the honest failure below */ }
+    }
+    return OUTWARD_SHARE_RESULTS.FAILED;
+  }
+  // What the member is told afterwards. Flat lookup, what-happened plus
+  // what-to-do, and nothing says "try again" where a retry cannot succeed -
+  // the same shape as serverErrorText(). FAILED is the one case where the
+  // device genuinely cannot share OR copy, so it points at the download,
+  // which is the only remaining way out.
+  const OUTWARD_SHARE_RESULT_TEXT = Object.freeze({
+    shared_image: "התמונה נשלחה לאפליקציה שבחרתם.",
+    shared_text: "הטקסט נשלח. המכשיר הזה לא תומך בשיתוף תמונה, אפשר להוריד אותה ולצרף ידנית.",
+    copied: "הטקסט הועתק. הדפדפן הזה לא תומך בשיתוף ישיר - אפשר להדביק, ולהוריד את התמונה בנפרד.",
+    cancelled: "השיתוף בוטל. שום דבר לא יצא מהמכשיר.",
+    failed: "הדפדפן הזה לא תומך בשיתוף ולא בהעתקה. אפשר להוריד את התמונה ולשתף אותה ידנית.",
+  });
+  function outwardShareResultText(result) {
+    return OUTWARD_SHARE_RESULT_TEXT[result] || OUTWARD_SHARE_RESULT_TEXT.failed;
+  }
+
+  // ---- The sheet ---------------------------------------------------------
+  function outwardRevokePreview() {
+    const s = state.posts.outwardShare;
+    if (s && s.previewUrl && typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
+      try { URL.revokeObjectURL(s.previewUrl); } catch (e) {}
+    }
+  }
+  function closeOutwardShare() {
+    outwardRevokePreview();
+    state.posts.outwardShare = null;
+    rerender();
+  }
+  // Rule 2: the default of the name switch is the member's own
+  // visible_to_club, and the switch itself is always there. A member who has
+  // hidden their profile from the club does not get their name pre-loaded
+  // onto an image that is about to leave the app.
+  function outwardDefaultShowName() {
+    return !!(state.profile && state.profile.visible_to_club !== false && (state.profile.display_name || "").trim());
+  }
+  function openOutwardShare(subject, opts) {
+    if (!subject) return;
+    const o = opts || {};
+    outwardRevokePreview();
+    const showName = outwardDefaultShowName();
+    state.posts.outwardShare = {
+      subject,
+      caption: outwardClean(o.caption, OUTWARD_CAPTION_MAX),
+      showName,
+      spec: null,
+      status: "rendering",
+      previewUrl: null,
+      blob: null,
+      sharing: false,
+      result: "",
+    };
+    state.posts.openMenu = null;
+    rerender();
+    refreshOutwardShareCard();
+  }
+  // Rebuilds the spec and repaints. Called on open and whenever the name
+  // switch flips - the card is the payload, so it always shows exactly what
+  // would be sent.
+  async function refreshOutwardShareCard() {
+    const s = state.posts.outwardShare;
+    if (!s) return;
+    const spec = buildOutwardShareSpec(s.subject, {
+      name: s.showName ? (state.profile && state.profile.display_name) || "" : "",
+      caption: s.caption,
+    });
+    if (!spec) { s.status = "failed"; return rerender(); }
+    s.spec = spec;
+    s.status = "rendering";
+    rerender();
+    let blob = null;
+    try {
+      blob = await renderOutwardShareBlob(spec);
+    } catch (err) {
+      if (state.posts.outwardShare !== s) return;
+      s.status = "failed";
+      s.blob = null;
+      return rerender();
+    }
+    if (state.posts.outwardShare !== s) return; // closed mid-render
+    outwardRevokePreview();
+    s.blob = blob;
+    s.previewUrl = (typeof URL !== "undefined" && typeof URL.createObjectURL === "function") ? URL.createObjectURL(blob) : null;
+    s.status = "ready";
+    rerender();
+  }
+  function setOutwardShareName(on) {
+    const s = state.posts.outwardShare;
+    if (!s || s.showName === !!on) return;
+    s.showName = !!on;
+    refreshOutwardShareCard();
+  }
+  async function outwardShareNow() {
+    const s = state.posts.outwardShare;
+    if (!s || !s.spec || s.sharing) return;
+    s.sharing = true;
+    s.result = "";
+    rerender();
+    const result = await performOutwardShare(s.spec, outwardShareFile(s.blob));
+    if (state.posts.outwardShare !== s) return;
+    s.sharing = false;
+    s.result = result;
+    setMessage(outwardShareResultText(result));
+    if (typeof window.showToast === "function") window.showToast(outwardShareResultText(result));
+    rerender();
+  }
+  async function outwardCopyText() {
+    const s = state.posts.outwardShare;
+    if (!s || !s.spec) return;
+    let ok = false;
+    if (outwardCanCopy()) {
+      try { await navigator.clipboard.writeText(outwardShareText(s.spec)); ok = true; } catch (e) { ok = false; }
+    }
+    if (state.posts.outwardShare !== s) return;
+    s.result = ok ? OUTWARD_SHARE_RESULTS.COPIED : OUTWARD_SHARE_RESULTS.FAILED;
+    const text = ok ? "הטקסט הועתק." : OUTWARD_SHARE_RESULT_TEXT.failed;
+    setMessage(text);
+    if (typeof window.showToast === "function") window.showToast(text);
+    rerender();
+  }
+  // The last resort, and the one path that works on any browser with a
+  // canvas: save the PNG and attach it by hand. An <a download> rather than
+  // a navigation - the object URL is same-origin and img-src already allows
+  // blob:, and nothing here opens a window.
+  function outwardDownloadImage() {
+    const s = state.posts.outwardShare;
+    if (!s || !s.previewUrl) return;
+    const a = document.createElement("a");
+    a.href = s.previewUrl;
+    a.download = OUTWARD_CARD.FILE_NAME;
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setMessage("התמונה נשמרה במכשיר.");
+  }
+
+  // The disclosure line. Written out rather than implied, because "what is
+  // on this image" is the only question a member has at the moment of the
+  // tap, and the answer is short.
+  const OUTWARD_PRIVACY_NOTE = "על התמונה מופיעים רק הנתונים שלכם. שמות של חברי מועדון אחרים, שם המועדון, מיקום בטבלאות ונוכחות - לא מופיעים, וקישור אין.";
+
+  function renderOutwardShareSheet() {
+    const s = state.posts.outwardShare;
+    if (!s) return "";
+    const spec = s.spec;
+    const canShare = outwardCanShareText();
+    const ready = s.status === "ready";
+    const preview = s.status === "rendering"
+      ? `<div class="empty" aria-busy="true" style="height:220px;display:flex;align-items:center;justify-content:center;">מכין את התמונה…</div>`
+      : s.status === "failed"
+        ? `<div class="empty" data-outward-preview="failed">לא ניתן היה להכין את התמונה במכשיר הזה. אפשר עדיין לשתף או להעתיק את הטקסט.<div class="chip-row" style="justify-content:center;"><button class="chip-btn" data-community-action="outward-retry">ניסיון חוזר</button></div></div>`
+        : s.previewUrl
+          ? `<img data-outward-preview="ready" src="${esc(s.previewUrl)}" alt="${esc(outwardPreviewAltText(spec))}" style="width:100%;max-width:320px;display:block;margin:0 auto;border-radius:16px;border:1px solid var(--border);"/>`
+          : `<div class="empty" data-outward-preview="ready">התמונה מוכנה.</div>`;
+    const nameRow = `<label class="log-row" style="justify-content:space-between;gap:12px;cursor:pointer;margin-top:10px;">
+      <span style="font-size:13px;">הצגת השם שלי על התמונה</span>
+      <input type="checkbox" data-outward-name${s.showName ? " checked" : ""} aria-label="הצגת השם שלי על התמונה"/>
+    </label>`;
+    const textPreview = spec ? `<div class="field-label" style="margin:12px 0 4px;">הטקסט שילווה את התמונה</div>
+      <div style="background:var(--surface2);border-radius:12px;padding:10px 12px;font-size:13px;white-space:pre-wrap;">${bidiText(stripBidiIsolates(outwardShareText(spec)))}</div>` : "";
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="outwardShareTitle" data-cloud-dialog="outwardShare" style="align-items:center;padding:0 16px;">
+      <div class="modal-sheet" id="outwardShare" style="border-radius:22px;max-height:90vh;overflow:auto;">
+        <div style="padding:22px 20px calc(env(safe-area-inset-bottom,0px) + 18px);">
+          <h2 id="outwardShareTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:10px;">שיתוף מחוץ לאפליקציה</h2>
+          ${preview}
+          ${nameRow}
+          ${textPreview}
+          <div class="footer-note" style="margin-top:10px;">${esc(OUTWARD_PRIVACY_NOTE)}</div>
+          ${s.result ? `<div class="footer-note" role="status" data-outward-result="${esc(s.result)}" style="color:var(--steel);">${esc(outwardShareResultText(s.result))}</div>` : ""}
+          <div class="chip-row" style="margin-top:14px;flex-wrap:wrap;">
+            <button class="chip-btn primary" data-community-action="outward-go"${s.sharing || !spec ? " disabled" : ""}>${s.sharing ? "משתף…" : canShare ? "שיתוף" : "העתקת הטקסט"}</button>
+            ${canShare ? `<button class="chip-btn" data-community-action="outward-copy"${spec ? "" : " disabled"}>העתקת הטקסט</button>` : ""}
+            <button class="chip-btn" data-community-action="outward-download"${ready && s.previewUrl ? "" : " disabled"}>הורדת התמונה</button>
+            <button class="chip-btn" data-community-action="outward-close">סגירה</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+  // The preview <img> is a real image of real content, so it gets a real
+  // alt - the same facts the card paints, in the same order. A decorative
+  // alt="" would hide the entire subject of this dialog from a screen reader.
+  function outwardPreviewAltText(spec) {
+    if (!spec) return "תצוגה מקדימה של תמונת השיתוף";
+    const bits = [spec.headline, spec.title];
+    if (spec.hero) bits.push(spec.hero);
+    for (const row of spec.rows.slice(spec.hero ? 1 : 0)) bits.push(row.label + " " + row.value);
+    if (spec.dateText) bits.push(spec.dateText);
+    return "תצוגה מקדימה של תמונת השיתוף: " + bits.filter(Boolean).join(", ");
+  }
+
+  // ---- Entry points ------------------------------------------------------
+  function outwardShareCurrentPr() {
+    const p = state.posts.prPrompt;
+    if (!p) return;
+    openOutwardShare(outwardSubjectFromPrRecord(p.record), { caption: p.note });
+  }
+  function outwardShareCurrentAchievement() {
+    const a = state.achievements.unlock;
+    if (!a) return;
+    openOutwardShare(outwardSubjectFromAchievement({ title: a.title, explanation: a.explanation }, a.code, ""), { caption: a.note });
+  }
+  function outwardShareEarnedAchievement(memberAchievementId, code) {
+    const row = (state.achievements.mine || []).find((r) => r.id === memberAchievementId);
+    const achCode = code || achCodeOf(row);
+    const meta = achMeta(achCode, row);
+    openOutwardShare(outwardSubjectFromAchievement(meta, achCode, row ? outwardDateText(row.unlocked_at) : ""));
+  }
+  function outwardSharePost(postId) {
+    const post = findFeedPost(postId);
+    const subject = outwardSubjectFromPost(post);
+    if (!subject) { state.posts.openMenu = null; setMessage("לא ניתן לשתף את הפוסט הזה מחוץ לאפליקציה"); return rerender(); }
+    openOutwardShare(subject, { caption: post.body });
+  }
+
+  // Exposed so app.js's own Progress/Calendar share controls can reuse the
+  // same card and the same guarantees rather than growing a second one.
+  window.communityOutwardShare = {
+    CARD: OUTWARD_CARD,
+    FIELDS: OUTWARD_CARD_FIELDS,
+    NEVER: OUTWARD_CARD_NEVER,
+    RESULTS: OUTWARD_SHARE_RESULTS,
+    buildSpec: buildOutwardShareSpec,
+    paint: paintOutwardShareCard,
+    text: outwardShareText,
+    open: openOutwardShare,
+    subjectFromPost: outwardSubjectFromPost,
+    subjectFromPrRecord: outwardSubjectFromPrRecord,
+  };
 
   // ---- Member profile community section (COMM-180) --------------------
   async function viewCommunityProfile(userId) {
@@ -10392,7 +12382,7 @@
       if (d.recent_achievement) rows.push(["הישג אחרון", d.recent_achievement.title || d.recent_achievement]);
       const recent = Array.isArray(d.recent_workouts) ? d.recent_workouts : [];
       const rowsHtml = rows.length ? `<div class="log-list">${rows.map(([k, v]) => `<div class="log-row"><span>${esc(k)}</span><span class="mono" style="color:var(--brass);">${esc(v)}</span></div>`).join("")}</div>` : "";
-      const recentHtml = recent.length ? `<div class="log-list" style="margin-top:8px;">${recent.map((w) => `<div class="log-row"><span>${esc(w.title || w.name || "")}</span><span style="color:var(--steel);font-size:12px;">${esc(String(w.date || w.occurred_on || "").slice(0, 10))}</span></div>`).join("")}</div>` : "";
+      const recentHtml = recent.length ? `<div class="log-list" style="margin-top:8px;">${recent.map((w) => `<div class="log-row"><span>${bidiText(w.title || w.name || "")}</span><span style="color:var(--steel);font-size:12px;">${esc(String(w.date || w.occurred_on || "").slice(0, 10))}</span></div>`).join("")}</div>` : "";
       bodyHtml = (rowsHtml + recentHtml) || `<div class="empty">אין מידע להצגה</div>`;
     } else if (active === "progress") {
       const prs = Array.isArray(d.prs) ? d.prs : null;
@@ -11417,7 +13407,12 @@
   // this state). See scripts/browser-check/community-challenge-lifecycle.mjs.
   function renderConfirmDialog() {
     return renderPostComposer() + renderPrSharePrompt() + renderAchievementUnlockCelebration() + renderCommunityProfileOverlay() + renderNotificationCenter()
-      + renderReportSheet() + renderModActionSheet() + renderModContextOverlay() + renderChallengeViewOverlay() + renderEventViewOverlay() + renderRecapViewOverlay()
+      + renderReportSheet() + renderModActionSheet() + renderGhostReclaimSheet() + renderModContextOverlay() + renderChallengeViewOverlay() + renderEventViewOverlay() + renderRecapViewOverlay()
+      // Second-to-last, immediately under the confirm sheet: the outward
+      // share sheet is opened FROM the PR prompt and the achievement
+      // celebration, so it stacks on top of them and must paint after them
+      // for the same z-order reason renderConfirmSheet() paints last.
+      + renderOutwardShareSheet()
       + renderConfirmSheet();
   }
   // COMM-151. The report reason sheet. Reasons are a fixed list, an optional
@@ -11469,6 +13464,7 @@
       <div class="modal-sheet" style="border-radius:22px;max-height:none;">
         <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
           <h2 id="modActionTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">${esc(def.label)}</h2>
+          ${def.effect ? `<div style="color:var(--steel);font-size:12.5px;line-height:1.6;margin-bottom:10px;" data-mod-action-subject="1">${subjectSentenceHtml(def.effect, a.subjectName || MOD_UNKNOWN_AUTHOR_TEXT)}</div>` : ""}
           ${days}
           <label class="field" style="margin-top:10px;"><span class="field-label">הערה (רשות)</span>
             <textarea class="text-input" data-mod-note maxlength="500" placeholder="נרשמת ביומן">${esc(a.note || "")}</textarea></label>
@@ -11476,6 +13472,43 @@
           <div class="chip-row" style="margin-top:12px;">
             <button class="chip-btn" data-community-action="mod-action-cancel">ביטול</button>
             <button class="chip-btn primary${def.destructive ? " danger" : ""}" data-community-action="mod-action-run"${a.saving ? " disabled" : ""}>${a.saving ? "מבצע…" : "אישור"}</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+  // Five-persona UX audit, defect 3. The reclaim confirmation - the one
+  // confirmation in this app that names its subject. Structure follows
+  // renderModActionSheet above (title, body, optional note, error line, two
+  // buttons), with the subject card added at the top: an admin about to
+  // release someone's invite must be able to see WHOSE without leaving the
+  // sheet, and for a ghost that never set credentials the invite's own label
+  // is the only string that can identify them at all.
+  function renderGhostReclaimSheet() {
+    const a = state.admin.reclaim;
+    if (!a) return "";
+    const g = a.item;
+    const meta = [ghostSourceLabel(g.invite_source), ghostStalledText(g.stalled_days)];
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="ghostReclaimTitle" data-cloud-dialog="reclaimInvite" style="align-items:center;padding:0 20px;">
+      <div class="modal-sheet" style="border-radius:22px;max-height:none;">
+        <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
+          <h2 id="ghostReclaimTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">שחרור ההזמנה</h2>
+          <div class="chart-card" style="margin-bottom:10px;" data-reclaim-subject="1">
+            <div style="font-weight:800;">${bidiText(ghostDisplayName(g))}</div>
+            <div style="color:var(--steel);font-size:12px;margin-top:4px;">${meta.map(bidiText).join(" · ")}</div>
+          </div>
+          <div style="color:var(--steel);font-size:12.5px;line-height:1.7;margin-bottom:10px;">
+            <div>${bidiText(g.invite_source === "person_invite" ? "ההזמנה האישית תחזור להמתנה, ואפשר יהיה להשתמש שוב באותו קוד." : "שימוש אחד יוחזר לקוד ההצטרפות המשותף.")}</div>
+            <div>${bidiText("אם נוצר בפיד פוסט על הצטרפות למועדון, הוא יוסר.")}</div>
+            <div style="margin-top:6px;">${bidiText("החשבון לא יימחק ולא תישלח שום הודעה. מי שהתחיל להירשם פשוט יחזור למסך קוד ההזמנה.")}</div>
+            <div style="margin-top:6px;">${bidiText(ghostAfterwardsText(g))}</div>
+          </div>
+          <label class="field" style="margin-top:10px;"><span class="field-label">הערה (רשות)</span>
+            <textarea class="text-input" data-reclaim-note maxlength="500" placeholder="נרשמת ביומן הניהול">${esc(a.note || "")}</textarea></label>
+          ${a.error ? `<div class="footer-note" role="alert" style="color:var(--red-text);">${esc(a.error)}</div>` : ""}
+          <div class="chip-row" style="margin-top:12px;">
+            <button class="chip-btn" data-community-action="reclaim-cancel">ביטול</button>
+            <button class="chip-btn primary danger" data-community-action="reclaim-run"${a.saving ? " disabled" : ""}>${a.saving ? "משחרר…" : "שחרור ההזמנה"}</button>
           </div>
         </div>
       </div>
@@ -11491,8 +13524,8 @@
       <div class="modal-sheet" style="border-radius:22px;max-height:none;">
         <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
           <h2 id="modContextTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">הקשר הדיווח</h2>
-          <div style="color:var(--steel);font-size:12.5px;">${esc(MOD_TARGET_LABEL[c.target_type] || "פוסט")} מאת ${esc(c.content_author_name || "חבר/ה שהוסר/ה")}</div>
-          <div class="chart-card" style="margin-top:8px;white-space:pre-wrap;">${esc(String(c.content_excerpt || "התוכן הוסר"))}</div>
+          <div style="color:var(--steel);font-size:12.5px;">${esc(MOD_TARGET_LABEL[c.target_type] || "פוסט")} מאת ${bidiText(c.content_author_name || MOD_UNKNOWN_AUTHOR_TEXT)}</div>
+          <div class="chart-card" style="margin-top:8px;white-space:pre-wrap;">${bidiText(String(c.content_excerpt || "התוכן הוסר"))}</div>
           ${Array.isArray(c.reporters) && c.reporters.length ? `<div style="color:var(--steel);font-size:12px;margin-top:8px;">דווח ע״י: ${c.reporters.map((r) => esc(r.name || r.id)).join(", ")}</div>` : ""}
           <div class="chip-row" style="margin-top:12px;">
             <button class="chip-btn" data-community-action="mod-context-close">סגירה</button>
@@ -11501,6 +13534,134 @@
         </div>
       </div>
     </div>`;
+  }
+
+  // ==========================================================================
+  // The two Account-tab coach lists (202609060020).
+  //
+  // WHAT WAS WRONG, because it is not visible from the code that replaced it.
+  // Both lists were one-liners built on `activity_pings`, whose only writer
+  // anywhere in this app is pingActivity() above - today only, from a live
+  // browser session. There is no trigger, no backfill and no server-side
+  // producer, and 202609060002 states what a row in it means: one row per day
+  // the member OPENED THE APP.
+  //
+  // Measured against a seeded, visibly active club - 41 posts, reactions,
+  // comments, several members posting - the inactive list returned 8 of 8
+  // members as never active, INCLUDING THE COACH WHO HAD POSTED MOMENTS
+  // EARLIER, each rendered with the literal string "מעולם לא" ("never"). That
+  // string was an assertion about a person manufactured out of an absence of
+  // data, and it is the single reason this section could not be shown to a
+  // club: software that is confidently wrong in front of staff is worse than
+  // software that does nothing.
+  //
+  // Three rules the two functions below exist to hold, none of them optional:
+  //
+  //   1. NEVER present missing data as a finding. A member we have recorded
+  //      nothing about ('no_data') and a member who was active and stopped
+  //      ('lapsed') are different facts and must not render identically.
+  //   2. NEVER claim the club is fine when the signal is empty. "No lapsed
+  //      members" and "no data at all" are different answers.
+  //   3. NEVER describe app activity as training. The label says what is
+  //      actually measured, and names Arbox as where class attendance lives.
+  //
+  // Kept as separate functions rather than inline template literals so the
+  // branching above is readable, and defined OUTSIDE renderCommunityApp() so
+  // its staff-gate count (asserted at exactly 5 in community-coach-tier
+  // .test.mjs) is unchanged - the two `staff ?` ternaries still live there
+  // and now call these.
+
+  // The permanent sub-note under the section head. Not conditional on
+  // anything: a coach reading a list of names needs to know what the list
+  // measures every single time they read it, not only when it is empty.
+  // Arbox is named explicitly because a coach's default assumption for any
+  // list like this is class attendance, and this product cannot see it -
+  // scheduling and rosters are deliberately out of scope.
+  function coachAppSignalNote() {
+    return `<div style="color:var(--steel);font-size:12px;line-height:1.6;margin:-2px 0 10px;">${bidiText("מבוסס על כניסות לאפליקציה בלבד, לא על נוכחות בשיעורים. נוכחות בשיעורים מנוהלת ב-Arbox.")}</div>`;
+  }
+
+  function renderCoachNewMembersSection() {
+    // "חברים חדשים" - the exact phrase COMM-107's welcome post and the
+    // coach-tools Welcome section already use for the same concept.
+    const rows = state.club.newMembers || [];
+    const body = rows.length
+      ? `<div class="log-list">${rows.map((m) => {
+          const days = Number(m.days_since_join);
+          const joined = !Number.isFinite(days) ? "" : days === 0 ? "הצטרפ/ה היום" : `לפני ${days} ימים`;
+          const sessions = Number(m.sessions_logged) || 0;
+          // Says what the number IS. A count of workouts logged in the app is
+          // not a count of classes attended, and a coach must not read it as
+          // one.
+          const trained = sessions ? `${sessions} אימונים באפליקציה` : "לא רשמו אימון באפליקציה";
+          const contacted = m.contacted ? "נוצר קשר" : "טרם נוצר קשר";
+          // THE MEMBER THIS WHOLE FIX EXISTS FOR. Before 202609060020
+          // coach_new_members() INNER JOINed activity_pings, so someone who
+          // registered and never opened the app again had no row to join to
+          // and could not appear in this list at all - the one person day-0
+          // retention outreach is actually for.
+          const never = m.has_opened_app === false
+            ? `<div style="color:var(--brass);font-size:12px;margin-top:2px;">${bidiText("עדיין לא נכנס/ה לאפליקציה")}</div>`
+            : "";
+          return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:2px;">
+            <span style="font-weight:700;">${nameHtml(m.display_name, m.handle)}</span>
+            <span style="color:var(--steel);font-size:12px;">${bidiText([joined, trained, contacted].filter(Boolean).join(" · "))}</span>
+            ${never}
+          </div>`;
+        }).join("")}</div>`
+      : `<div class="empty">אין חברים חדשים לאחרונה</div>`;
+    return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "חברים חדשים", true)}${body}</div>`;
+  }
+
+  function renderCoachAppActivitySection() {
+    const all = state.club.inactiveMembers || [];
+    const lapsed = all.filter((m) => m.state === "lapsed");
+    const unknown = all.filter((m) => m.state === "no_data");
+    const sig = state.club.activitySignal;
+
+    // Rule 2. The honest empty state, and the highest-priority branch: if no
+    // member in the club has ever produced a single ping, this section knows
+    // nothing and says so. It does NOT say everyone is fine, and it does not
+    // list anybody - on an empty signal every member would qualify as
+    // "no recent activity", which is exactly the 8-of-8 failure.
+    if (sig && Number(sig.members_with_app_activity) === 0) {
+      return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--steel)", "לא נכנסו לאפליקציה לאחרונה", true)}${coachAppSignalNote()}<div class="empty">${bidiText("אין עדיין נתוני פעילות")}<div style="color:var(--steel);font-size:12px;line-height:1.6;margin-top:6px;">${bidiText("הנתונים מתחילים להצטבר כשחברים נכנסים לאפליקציה. עד אז אין כאן מה להציג.")}</div></div></div>`;
+    }
+
+    // Rule 1, first half: the actionable list. Only members we have real
+    // evidence about, each with the date that evidence ran out.
+    const lapsedHtml = lapsed.length
+      ? `<div class="log-list">${lapsed.map((m) => {
+          const days = Number(m.days_since_activity);
+          const gap = Number.isFinite(days) ? `כניסה אחרונה: לפני ${days} ימים` : "כניסה אחרונה";
+          return `<div class="log-row">
+            <span>${nameHtml(m.display_name, m.handle)}</span>
+            <span style="color:var(--steel);font-size:12px;">${bidiText(`${gap} · ${m.last_activity_on || ""}`)}</span>
+          </div>`;
+        }).join("")}</div>`
+      // Now a true statement rather than a guess: we reach here only when the
+      // club HAS activity data and nobody in it has gone quiet.
+      : `<div class="empty">${bidiText("כולם נכנסו לאפליקציה לאחרונה ✓")}</div>`;
+
+    // Rule 1, second half. A separate group, a neutral colour and no date.
+    // "אין נתונים" is a statement about our records; "מעולם לא" was a
+    // statement about the member, and it was frequently false.
+    const unknownHtml = unknown.length
+      ? `<div style="margin-top:14px;">
+          <div style="font-weight:700;font-size:13px;color:var(--steel);margin-bottom:4px;">${bidiText("אין לנו מספיק מידע")}</div>
+          <div style="color:var(--steel);font-size:12px;line-height:1.6;margin-bottom:8px;">${bidiText("לא רשומות אצלנו כניסות לאפליקציה עבור החברים האלה. זה לא אומר שהם לא מתאמנים.")}</div>
+          <div class="log-list">${unknown.map((m) => `<div class="log-row">
+            <span>${nameHtml(m.display_name, m.handle)}</span>
+            <span style="color:var(--steel);font-size:12px;">${bidiText("אין נתונים")}</span>
+          </div>`).join("")}</div>
+        </div>`
+      : "";
+
+    // Red only when there is something to act on. A club whose only entries
+    // are members we know nothing about is not a club in trouble, and
+    // colouring it as one is the same overclaim in a different medium.
+    const accent = lapsed.length ? "var(--red)" : "var(--steel)";
+    return `<div class="ach-section" style="margin-top:18px;">${sectionHead(accent, "לא נכנסו לאפליקציה לאחרונה", true)}${coachAppSignalNote()}${lapsedHtml}${unknownHtml}</div>`;
   }
 
   window.renderCommunityApp = function () {
@@ -11518,7 +13679,7 @@
       // skipping straight to "enter your invite code" as if they had
       // clicked start-signup — ensureAnonymousSession() below still
       // no-ops for them since a session already exists.
-      if (!state.signupStarted) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">כניסה לקהילה</div><div style="color:var(--steel);font-size:12.5px;line-height:1.7;margin-bottom:14px;">התחברות עם שם המשתמש והסיסמה משחזרת את הפרופיל, העוקבים, הסנכרון הפרטי והרשאות הצוות — גם ממכשיר חדש או אחרי מחיקת נתונים.</div><form id="communityLogin">${field("communityLogin", "username", "שם משתמש", `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="שם משתמש" required/>`)}${field("communityLogin", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="current-password" placeholder="סיסמה" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">התחברות ושחזור החשבון</button></form><button class="link-btn" data-community-action="start-signup" style="display:block;margin:18px auto 0;">חבר/ה חדש/ה? התחלת הרשמה עם קוד הזמנה</button>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
+      if (!state.signupStarted) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">כניסה לקהילה</div><div style="color:var(--steel);font-size:12.5px;line-height:1.7;margin-bottom:14px;">התחברות עם שם הכניסה והסיסמה משחזרת את הפרופיל, העוקבים, הסנכרון הפרטי והרשאות הצוות — גם ממכשיר חדש או אחרי מחיקת נתונים.</div><form id="communityLogin">${field("communityLogin", "username", LOGIN_NAME_LABEL, `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="${esc(LOGIN_NAME_LABEL)}" required/>`)}${field("communityLogin", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="current-password" placeholder="סיסמה" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">התחברות ושחזור החשבון</button></form><button class="link-btn" data-community-action="start-signup" style="display:block;margin:18px auto 0;">חבר/ה חדש/ה? התחלת הרשמה עם קוד הזמנה</button>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
       ensureAnonymousSession();
       return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">מתחברים לקהילה…</div><div style="color:var(--steel);font-size:13px;">שנייה אחת.</div>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     }
@@ -11536,7 +13697,7 @@
     // account. state.user.is_anonymous flips to false the moment
     // setCredentials() succeeds, so a returning user (who logged in with
     // real credentials to begin with) never sees this screen at all.
-    if (state.user.is_anonymous) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">יצירת חשבון</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">שם משתמש וסיסמה — כדי שתוכלו להתחבר שוב מכל מכשיר.</div><form id="communityCredentials">${field("communityCredentials", "username", "שם משתמש", `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="אותיות אנגליות, ספרות או קו תחתון" required/>`)}${field("communityCredentials", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="new-password" placeholder="לפחות 8 תווים" required/>`)}${field("communityCredentials", "passwordConfirm", "אימות סיסמה", `<input class="text-input" name="passwordConfirm" type="password" dir="ltr" autocomplete="new-password" placeholder="הקלידו שוב" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">יצירת חשבון</button></form>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
+    if (state.user.is_anonymous) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">יצירת חשבון</div><div style="color:var(--steel);font-size:13px;line-height:1.7;margin-bottom:14px;">${CREDENTIALS_INTRO_TEXT}</div><form id="communityCredentials">${field("communityCredentials", "username", LOGIN_NAME_LABEL, `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="${esc(USERNAME_RULE_TEXT)}" data-live-validate="username" data-live-validate-form="communityCredentials" required/>`)}${field("communityCredentials", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="new-password" placeholder="${esc(PASSWORD_RULE_TEXT)}" data-live-validate="password" data-live-validate-form="communityCredentials" required/>`)}${field("communityCredentials", "passwordConfirm", "אימות סיסמה", `<input class="text-input" name="passwordConfirm" type="password" dir="ltr" autocomplete="new-password" placeholder="הקלידו שוב" data-live-validate="passwordConfirm" data-live-validate-form="communityCredentials" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">יצירת חשבון</button></form>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     // Redesign, Phase 3. Three purely informational screens, shown once per
     // device, right where the mockup's own new-member flow put them: after
     // credentials exist (so is_anonymous is already false and this gate is
@@ -11567,7 +13728,7 @@
     // gates above it: this screen is all there is until a profile exists,
     // and the whole screen changing to the real tabbed UI afterward is the
     // confirmation, not just a toast that's easy to miss.
-    if (!state.profile) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">השלמת פרופיל</div><div style="color:var(--steel);font-size:13px;margin-bottom:14px;">כמעט סיימתם — עוד רגע אחד ותהיו בפנים.</div><form id="communityProfile">${field("communityProfile", "handle", "שם משתמש (handle)", `<input class="text-input" name="handle" dir="auto" placeholder="למשל דנה_כהן" required/>`)}<label class="field"><span class="field-label">שם תצוגה</span><input class="text-input" name="displayName" placeholder="שם תצוגה"/></label><label class="field"><span class="field-label">קצת עליי</span><textarea class="text-input" name="bio" maxlength="160" placeholder="כמה מילים עליי"></textarea></label><button class="save-btn" type="submit" style="margin-top:12px;">שמירת פרופיל</button></form>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
+    if (!state.profile) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">השלמת פרופיל</div><div style="color:var(--steel);font-size:13px;line-height:1.7;margin-bottom:14px;">כמעט סיימתם — עוד רגע אחד ותהיו בפנים. ${CLUB_NAME_HINT_TEXT}</div><form id="communityProfile">${field("communityProfile", "handle", CLUB_NAME_LABEL, `<input class="text-input" name="handle" dir="auto" placeholder="למשל דנה_כהן" required/>`)}<label class="field"><span class="field-label">שם תצוגה</span><input class="text-input" name="displayName" placeholder="שם תצוגה"/></label><label class="field"><span class="field-label">קצת עליי</span><textarea class="text-input" name="bio" maxlength="160" placeholder="כמה מילים עליי"></textarea></label><button class="save-btn" type="submit" style="margin-top:12px;">שמירת פרופיל</button></form>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     // COMM-016. Credentials are set and the profile row exists, but the
     // account has not been stamped recoverable yet, so is_community_member()
     // still blocks every write. Try once automatically (guarded inside
@@ -11577,8 +13738,23 @@
     // sign in again later on any device.
     if (!state.profile.recovery_verified_at) {
       verifyRecovery();
+      // "עד להשלמת האימות אפשר לצפות בקהילה בלבד" - what this sentence used
+      // to promise - is not what happens. is_community_member() gates the
+      // READS too: with recovery_verified_at unset, feed_page,
+      // community_search and announcements_read all refuse with 'recovery
+      // method required', exactly as post_create does. Checked against the
+      // real stack, not inferred: signed in as a member whose stamp was
+      // cleared, all four calls came back 400 with that same message.
+      //
+      // So the screen was describing a browse-only state that does not
+      // exist, to the one member who is standing in it and can see for
+      // themselves that the feed is empty. Replaced with what is actually
+      // true, plus the bound that matters most here - this gate is the
+      // COMMUNITY's, and the workout log it sits next to never depended on
+      // it. That pairing is the invite-code screen's own shape: say what
+      // the thing is, then say what it does not touch.
       return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">אבטחת החשבון</div>
-        <div style="color:var(--steel);font-size:13px;line-height:1.7;margin-bottom:14px;">כדי להשתתף בקהילה — לפרסם, להגיב, לעודד ולהצטרף לאתגרים — נדרש חשבון שאפשר לשחזר. שם המשתמש והסיסמה שהגדרתם הם דרך השחזור: הם מאפשרים להתחבר לאותו פרופיל מכל מכשיר, גם אחרי החלפת טלפון או מחיקת נתונים. עד להשלמת האימות אפשר לצפות בקהילה בלבד.</div>
+        <div style="color:var(--steel);font-size:13px;line-height:1.7;margin-bottom:14px;">כדי להשתתף בקהילה — לפרסם, להגיב, לעודד ולהצטרף לאתגרים — נדרש חשבון שאפשר לשחזר. שם המשתמש והסיסמה שהגדרתם הם דרך השחזור: הם מאפשרים להתחבר לאותו פרופיל מכל מכשיר, גם אחרי החלפת טלפון או מחיקת נתונים. עד להשלמת האימות הקהילה כולה סגורה — גם הפיד וגם הפרסום — ולכן כדאי להשלים אותו עכשיו; רישום האימונים והגיבוי הפרטי לא מושפעים וממשיכים לעבוד כרגיל.</div>
         <button class="save-btn" data-community-action="verify-recovery" style="margin-top:2px;">אימות והמשך</button>
         ${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     }
@@ -11599,7 +13775,7 @@
     // data-post-id already gives the `target.post` branch. Without it, a
     // tap on an announcement notification switched to the Feed tab (via
     // setCommunityTab) and did nothing further.
-    const pinnedHtml = pinnedToday ? `<div class="chart-card admin-card" data-announcement-id="${esc(pinnedToday.id)}" style="margin-bottom:12px;${announcementAccentStyle(pinnedToday)}"><div style="font-weight:800;margin-bottom:6px;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">📌 הערת האימון להיום${announcementPriorityBadge(pinnedToday)}</div><div style="font-weight:700;">${esc(pinnedToday.title)}</div><div style="color:var(--steel);font-size:13px;margin-top:4px;">${esc(pinnedToday.body)}</div></div>` : "";
+    const pinnedHtml = pinnedToday ? `<div class="chart-card admin-card" data-announcement-id="${esc(pinnedToday.id)}" style="margin-bottom:12px;${announcementAccentStyle(pinnedToday)}"><div style="font-weight:800;margin-bottom:6px;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">📌 הערת האימון להיום${announcementPriorityBadge(pinnedToday)}</div><div style="font-weight:700;">${bidiText(pinnedToday.title)}</div><div style="color:var(--steel);font-size:13px;margin-top:4px;">${bidiText(pinnedToday.body)}</div></div>` : "";
     // COMM-321. announcements_read already empties liveAnnouncements above
     // once the module is off; the composer form has no data of its own to
     // fall silent through, so it needs its own explicit gate.
@@ -11611,7 +13787,7 @@
     // control render for every one of the four target types.
     const canPinContent = hasPerm(PERM.CONTENT_PIN);
     const isPinned = (type, id) => state.admin.pins.some((p) => p.target_type === type && p.target_id === id);
-    const announcementsList = otherAnnouncements.length ? `<div class="log-list">${otherAnnouncements.map((a) => `<div class="log-row" data-announcement-id="${esc(a.id)}" style="align-items:flex-start;flex-direction:column;gap:4px;${announcementAccentStyle(a)}"><div style="font-weight:700;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">${esc(a.title)}${announcementPriorityBadge(a)}</div><div style="color:var(--steel);font-size:13px;">${esc(a.body)}</div><div style="color:var(--steel);font-size:11px;">${esc(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div>${canPinContent ? `<button class="link-btn" data-community-action="${isPinned("announcement", a.id) ? "unpin" : "pin"}" data-type="announcement" data-id="${esc(a.id)}" data-note="${esc(a.title)}" style="margin:2px 0 0;">${isPinned("announcement", a.id) ? "ביטול הצמדה" : "הצמדה למעלה"}</button>` : ""}</div>`).join("")}</div>` : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
+    const announcementsList = otherAnnouncements.length ? `<div class="log-list">${otherAnnouncements.map((a) => `<div class="log-row" data-announcement-id="${esc(a.id)}" style="align-items:flex-start;flex-direction:column;gap:4px;${announcementAccentStyle(a)}"><div style="font-weight:700;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">${bidiText(a.title)}${announcementPriorityBadge(a)}</div><div style="color:var(--steel);font-size:13px;">${bidiText(a.body)}</div><div style="color:var(--steel);font-size:11px;">${esc(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div>${canPinContent ? `<button class="link-btn" data-community-action="${isPinned("announcement", a.id) ? "unpin" : "pin"}" data-type="announcement" data-id="${esc(a.id)}" data-note="${esc(a.title)}" style="margin:2px 0 0;">${isPinned("announcement", a.id) ? "ביטול הצמדה" : "הצמדה למעלה"}</button>` : ""}</div>`).join("")}</div>` : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
     const announcementsHtml = `<div class="ach-section">${sectionHead("var(--brass)", "הודעות מהמועדון")}${pinnedHtml}${announcementsList}${announceComposer}</div>`;
 
     // Sharing itself no longer lives here - it was a standing list of the
@@ -11629,19 +13805,41 @@
     const clubMark = club && club.image_url
       ? `<img src="${esc(club.image_url)}" alt="" style="width:44px;height:44px;border-radius:14px;object-fit:cover;"/>`
       : avatarHtml((club && club.name) || "המועדון", 44);
-    const activeChallenge = club && club.active_challenge ? club.active_challenge : null;
+    // club_summary() returns whichever challenge is active, from either of two
+    // sources: a real Phase 2 `challenges` row (source "challenge") or, as the
+    // fallback that actually fires today, a weekly_challenges row (source
+    // "weekly"). Both used to render the same bright orange hero button, and
+    // both were wrong in their own way:
+    //
+    //  - A weekly one is not a `challenges` row, so tapping it sent
+    //    openChallenge() after an id that table does not have. It 400'd and
+    //    showed the member nothing at all.
+    //  - A weekly one whose comparison key is malformed can never match a
+    //    single post, so the club home advertised a challenge as its
+    //    front-page call to action while the Boards tab - the place you would
+    //    go to join it - said "אין אתגר פעיל כרגע". A coach's typo became the
+    //    club's headline.
+    //
+    // So the hero renders only for something a member can actually open and
+    // actually join: a real challenge row, or a weekly one that passed
+    // activeWeeklyChallenge()'s validity check.
+    const summaryChallenge = club && club.active_challenge ? club.active_challenge : null;
+    const weeklyHero = summaryChallenge && summaryChallenge.source === "weekly";
+    const activeChallenge = !summaryChallenge ? null
+      : weeklyHero ? (activeWeeklyChallenge() ? summaryChallenge : null)
+      : summaryChallenge;
     const clubTopHtml = club ? `<div class="chart-card" id="communityClubTop" style="margin-bottom:12px;">
       <div class="flex" style="justify-content:space-between;align-items:center;gap:10px;">
         <div class="flex gap-10" style="align-items:center;min-width:0;">
           ${clubMark}
           <div style="min-width:0;">
-            <div style="font-weight:800;font-size:16px;">${esc(club.name || "המועדון")}</div>
+            <div style="font-weight:800;font-size:16px;">${bidiText(club.name || "המועדון")}</div>
             <div style="color:var(--steel);font-size:12px;">${Number(club.member_count || 0)} חברי מועדון</div>
           </div>
         </div>
         ${renderNotificationBell()}
       </div>
-      ${activeChallenge ? `<div class="chip-row" style="margin-top:10px;"><button class="chip-btn primary" data-community-action="open-active-challenge" data-id="${esc(activeChallenge.id || "")}">🏆 ${esc(activeChallenge.title || "אתגר פעיל")}</button></div>` : ""}
+      ${activeChallenge ? `<div class="chip-row" style="margin-top:10px;"><button class="chip-btn primary" data-community-action="open-active-challenge"${weeklyHero ? "" : ` data-id="${esc(activeChallenge.id || "")}"`}>🏆 ${bidiText(activeChallenge.title || "אתגר פעיל")}</button></div>` : ""}
     </div>` : "";
     // COMM-217: the soonest published, non-cancelled upcoming event, or
     // nothing at all - never an empty placeholder.
@@ -11676,7 +13874,7 @@
       ? `<div class="empty">לא ניתן לטעון את פיד המועדון.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="feed-retry">ניסיון חוזר</button></div></div>`
       : state.feed.items.length ? `<div class="log-list" id="communityFeedList">${state.feed.items.map((post) => post && post.post_type ? renderPostCard(post) : `<article class="chart-card post-card">
       <div class="post-head">${avatarHtml(post.display_name || post.handle, 36, (post.author && post.author.avatar_url) || post.avatar_url)}<div class="post-head-text"><div class="post-author">${nameHtml(post.display_name, post.handle)}</div><div class="post-time">${relativeTime(post.published_at)}</div></div></div>
-      <div class="post-title">${esc(post.title)}</div>
+      <div class="post-title">${bidiText(post.title)}</div>
       <div class="mono post-result">${esc(post.result_text)}</div>
       ${post.photo_path && signedCacheGet(photoUrlCache, post.photo_path) ? `<img src="${signedCacheGet(photoUrlCache, post.photo_path)}" alt="" class="post-photo" onerror="window.__haimuniaEvictSignedUrl&&window.__haimuniaEvictSignedUrl('photo',this.dataset.k)" data-k="${esc(post.photo_path)}"/>` : ""}
       <div class="chip-row post-actions">
@@ -11703,8 +13901,20 @@
     const feedTab = renderPinnedStrip() + renderOnboardingStep() + clubTopHtml + announcementsHtml + feedHtml;
 
     // ---- Boards tab: weekly challenge + streaks, top-3-plus-your-rank ----
-    const challengeSetter = staff ? `<form id="communityWeeklyChallenge" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">קביעת אתגר שבועי<span class="admin-tag">ניהול</span></div>${field("communityWeeklyChallenge", "title", "שם האתגר", `<input class="text-input" name="title" placeholder="שם האתגר" required/>`)}${field("communityWeeklyChallenge", "comparisonKey", "מפתח השוואה", `<input class="text-input" name="comparisonKey" dir="ltr" placeholder="movement:back-squat:est1rm" required/>`)}<div style="color:var(--steel);font-size:11px;margin:-6px 0 10px;">חייב להתחיל ב-movement: (תרגיל) או wod: (אימון) — בדיוק כמו שהוא נשמר בשיתופים, למשל movement:back-squat:est1rm או wod:fran:time:rx</div><div class="flex gap-16 field">${field("communityWeeklyChallenge", "startsOn", "תאריך התחלה", `<input class="text-input" name="startsOn" type="date" required/>`)}${field("communityWeeklyChallenge", "endsOn", "תאריך סיום", `<input class="text-input" name="endsOn" type="date" required/>`)}</div><button class="chip-btn primary" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
-    const weeklyLeaderboardList = state.club.weeklyChallenge ? renderRankedList(state.club.weeklyLeaderboard, (it) => it.author_id, (it) => esc(it.result_text)) : `<div class="empty">אין אתגר פעיל כרגע</div>`;
+    const challengeSetter = staff ? `<form id="communityWeeklyChallenge" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">קביעת אתגר שבועי<span class="admin-tag">ניהול</span></div>${field("communityWeeklyChallenge", "title", "שם האתגר", `<input class="text-input" name="title" placeholder="שם האתגר" required/>`)}${field("communityWeeklyChallenge", "comparisonKey", "על מה מתחרים", renderChallengeKeyPicker())}<div style="color:var(--steel);font-size:11px;margin:-6px 0 10px;">רק תרגילים ואימונים שקיימים באפליקציה — כך התוצאות שחברי המועדון משתפים נספרות לאתגר מעצמן.</div><div class="flex gap-16 field">${field("communityWeeklyChallenge", "startsOn", "תאריך התחלה", `<input class="text-input" name="startsOn" type="date" required/>`)}${field("communityWeeklyChallenge", "endsOn", "תאריך סיום", `<input class="text-input" name="endsOn" type="date" required/>`)}</div><button class="chip-btn primary" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
+    // Three states, not two. state.club.weeklyChallenge comes from the
+    // leaderboard VIEW, which is empty until someone posts a matching result,
+    // so treating "no rows" as "no challenge" told every member there was
+    // nothing on while the club home was advertising a hero button for it.
+    // activeWeeklyChallenge() answers the question the heading is actually
+    // asking - is a challenge running - and the ranked list answers the
+    // separate one, who is on it yet.
+    const runningChallenge = activeWeeklyChallenge();
+    const weeklyLeaderboardList = state.club.weeklyChallenge
+      ? renderRankedList(state.club.weeklyLeaderboard, (it) => it.author_id, (it) => esc(it.result_text))
+      : runningChallenge
+        ? `<div class="empty">האתגר פתוח ועדיין אין תוצאות. תוצאה שתשתפו מהאימון תיכנס לטבלה מעצמה.</div>`
+        : `<div class="empty">אין אתגר פעיל כרגע</div>`;
     // COMM-018. A quick "hide my result" affordance right on the board.
     // It flips in_leaderboards, the same column the Privacy panel toggles;
     // full removal from the ranked views is enforced server-side once the
@@ -11712,7 +13922,15 @@
     const hideMyResult = state.profile && state.profile.in_leaderboards
       ? `<button class="link-btn" data-community-action="hide-my-leaderboard-result" style="display:block;margin:8px auto 0;">הסתרת התוצאה שלי מהטבלאות</button>`
       : (state.profile ? `<div class="footer-note" style="margin:8px 0 0;">התוצאה שלך מוסתרת מהטבלאות. אפשר להחזיר אותה בהגדרות הפרטיות.</div>` : "");
-    const weeklyChallengeHtml = `<div class="ach-section">${sectionHead("var(--teal)", state.club.weeklyChallenge ? `אתגר השבוע: ${esc(state.club.weeklyChallenge.title)}` : "אתגר השבוע")}${weeklyLeaderboardList}${hideMyResult}${challengeSetter}</div>`;
+    // A coach who typo'd a key before this shipped still has that challenge
+    // sitting active in the table, invisible to everyone. Staff - and only
+    // staff - get told why their challenge is not on any screen, since they
+    // are the only ones who can fix it by setting a new one.
+    const brokenChallenge = staff && state.club.weeklyChallengeRow && !weeklyChallengeIsValid(state.club.weeklyChallengeRow) ? state.club.weeklyChallengeRow : null;
+    const brokenChallengeNote = brokenChallenge
+      ? `<div class="footer-note" style="margin:0 0 10px;color:var(--brass);">האתגר „${bidiText(brokenChallenge.title || "")}" לא מוצג לחברי המועדון: הוא מצביע על ${bidiText(brokenChallenge.comparisonKey || "")}, שלא קיים באפליקציה, ולכן אף תוצאה לא יכולה להיספר אליו. קבעו אתגר חדש מהרשימה למטה.</div>`
+      : "";
+    const weeklyChallengeHtml = `<div class="ach-section">${sectionHead("var(--teal)", state.club.weeklyChallenge ? `אתגר השבוע: ${bidiText(state.club.weeklyChallenge.title)}` : "אתגר השבוע")}${brokenChallengeNote}${weeklyLeaderboardList}${hideMyResult}${challengeSetter}</div>`;
 
     // COMM-210/212. The consistency board, server-ranked through
     // feed_leaderboard, replaces the old community_streaks strip that used to
@@ -11750,7 +13968,8 @@
     ${au.error ? `<div class="field-error" role="alert" style="margin-bottom:10px;">${esc(au.error)}</div>` : ""}`;
     const account = `<form id="communityProfile" class="chart-card"><div style="font-weight:800;font-size:16px;margin-bottom:12px;">הפרופיל שלי</div>
       ${avatarControl}
-      ${field("communityProfile", "handle", "שם משתמש (handle)", `<input class="text-input" name="handle" dir="auto" value="${esc(p.handle || "")}" placeholder="למשל דנה_כהן" required/>`)}
+      ${field("communityProfile", "handle", CLUB_NAME_LABEL, `<input class="text-input" name="handle" dir="auto" value="${esc(p.handle || "")}" placeholder="למשל דנה_כהן" required/>`)}
+      <div class="footer-note" style="margin:-6px 0 12px;">${CLUB_NAME_HINT_TEXT}</div>
       <label class="field"><span class="field-label">שם תצוגה</span><input class="text-input" name="displayName" value="${esc(p.display_name || "")}" placeholder="שם תצוגה"/></label>
       <label class="field"><span class="field-label">קצת עליי</span><textarea class="text-input" name="bio" maxlength="160" placeholder="כמה מילים עליי">${esc(p.bio || "")}</textarea></label>
       <div class="chip-row"><button class="chip-btn primary" type="submit">שמירת פרופיל</button><button class="chip-btn" type="button" data-community-action="migrate">סנכרון היסטוריה פרטית</button></div>
@@ -11784,8 +14003,8 @@
     // Post-Phase-3 Hebrew copy fix: "חברים חדשים" - the exact phrase COMM-107's
     // welcome post and the coach-tools "Welcome" section already use for the
     // same concept (מתאמנים was this list's own one-off).
-    const newMembersHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--green)", "חברים חדשים", true)}${state.club.newMembers.length ? `<div class="log-list">${state.club.newMembers.map((m) => `<div class="log-row"><span>${nameHtml(m.display_name, m.handle)}</span><span style="color:var(--steel);font-size:12px;">${esc(m.first_activity_on)}</span></div>`).join("")}</div>` : `<div class="empty">אין חברים חדשים לאחרונה</div>`}</div>` : "";
-    const inactiveHtml = staff ? `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--red)", "מי לא התאמן לאחרונה", true)}${state.club.inactiveMembers.length ? `<div class="log-list">${state.club.inactiveMembers.map((m) => `<div class="log-row"><span>${nameHtml(m.display_name, m.handle)}</span><span style="color:var(--steel);font-size:12px;">${m.last_activity_on ? esc(m.last_activity_on) : "מעולם לא"}</span></div>`).join("")}</div>` : `<div class="empty">כולם פעילים</div>`}</div>` : "";
+    const newMembersHtml = staff ? renderCoachNewMembersSection() : "";
+    const inactiveHtml = staff ? renderCoachAppActivitySection() : "";
 
     // Redesign (Manage tab): moderation, member/role management, invites,
     // onboarding-content editing, the feature-flag panel, and every
@@ -11793,8 +14012,11 @@
     // another on this one scrolling tab. They now live in their own "ניהול"
     // bottom-tab (renderManageApp, staff-only) instead - moved verbatim,
     // same functions, same permission gates, just a different mount point.
-    // newMembersHtml/inactiveHtml stay here on purpose (out of this phase's
-    // scope) and staff still sees a pointer to where the rest went.
+    // newMembersHtml/inactiveHtml stay here on purpose (out of that phase's
+    // scope) and staff still sees a pointer to where the rest went. Both are
+    // now one call each - see renderCoachNewMembersSection() and
+    // renderCoachAppActivitySection() above, which are defined outside this
+    // function so its staff-gate count stays at the asserted 5.
     const movedToManageNote = staff ? `<div class="footer-note" style="color:var(--steel);text-align:center;margin:16px 0 4px;">כלי ניהול עברו ל"ניהול" בתפריט התחתון</div>` : "";
     const accountTab = account + recapEntry + monthlyRecapEntry + privacyPanel + people + newMembersHtml + inactiveHtml + renderMyAchievements() + renderNotifPrefsPanel() + movedToManageNote
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
@@ -11894,7 +14116,14 @@
       toggle_reaction: "לייק",
       event_rsvp: "הרשמה לאירוע",
       chal_record_progress: "עדכון התקדמות",
-    }[action] || action;
+      // The queue's own actions are the five above, but a row queued by an
+      // OLDER build can name an action this table has never heard of - the
+      // same case outbox.js reports as "unsupported action". The fallback
+      // used to be `action` itself, so that row labelled itself to the
+      // member with a raw English identifier ("chal_record_progress"). A
+      // generic Hebrew noun says no less: serverErrorText() on the line
+      // below already explains that the op is from a retired version.
+    }[action] || "פעולה";
   }
   function renderOutboxBanner() {
     const pending = state.outbox.pending || 0;
@@ -11910,12 +14139,12 @@
     if (failed.length) {
       html += `<div class="chart-card" role="alert" style="margin-bottom:10px;border-color:var(--red);">
         <div style="font-weight:800;font-size:13.5px;color:var(--red-text);">${failed.length} ${failed.length === 1 ? "פעולה נכשלה" : "פעולות נכשלו"}</div>
-        <div style="color:var(--steel);font-size:12.5px;margin:4px 0 8px;">אפשר לנסות שוב או להסיר מהתור.</div>
+        <div style="color:var(--steel);font-size:12.5px;margin:4px 0 8px;">${failed.some((r) => serverErrorIsRetryable(r.lastError)) ? "אפשר לנסות שוב או להסיר מהתור." : "אף אחת מהן לא תעבור בניסיון חוזר — הסבר לכל פעולה למטה."}</div>
         ${failed.map((r) => `<div style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px;">
-          <div style="font-weight:700;font-size:12.5px;">${esc(outboxActionLabel(r.action))}</div>
-          <div style="color:var(--steel);font-size:12px;margin-top:2px;">${esc(String(r.lastError || "").slice(0, 160))}</div>
+          <div style="font-weight:700;font-size:12.5px;">${bidiText(outboxActionLabel(r.action))}</div>
+          <div style="color:var(--steel);font-size:12px;margin-top:2px;">${bidiText(serverErrorText(r.lastError))}</div>
           <div class="chip-row" style="margin-top:6px;">
-            <button class="chip-btn" data-community-action="outbox-retry" data-id="${esc(r.id)}">ניסיון חוזר</button>
+            ${serverErrorIsRetryable(r.lastError) ? `<button class="chip-btn" data-community-action="outbox-retry" data-id="${esc(r.id)}">ניסיון חוזר</button>` : ""}
             <button class="chip-btn danger" data-community-action="outbox-discard" data-id="${esc(r.id)}">הסרה</button>
           </div>
         </div>`).join("")}
@@ -11947,13 +14176,18 @@
     // on the real count now, same shape as the inactiveCount row right
     // after it.
     const pendingReports = pendingModerationCount();
-    const inactiveCount = state.club.inactiveMembers.length;
+    // Only the members we have real evidence about. This row used to count
+    // the whole result set, which included every member the club had never
+    // recorded anything for - so a club with no activity data at all was told
+    // on its own landing screen that every one of its members was inactive.
+    // A 'no_data' member is not an alert; they are the absence of one.
+    const inactiveCount = state.club.inactiveMembers.filter((m) => m.state === "lapsed").length;
     const attentionRows = [
       pendingReports ? `<button class="log-row" data-community-action="set-manage-tab" data-tab="moderation" style="width:100%;text-align:right;border:1px solid var(--red);border-radius:10px;padding:10px 12px;background:transparent;cursor:pointer;">
           <span>${pendingReports} דיווחים ממתינים למודרציה</span><span aria-hidden="true">‹</span>
         </button>` : "",
       inactiveCount ? `<button class="log-row" data-community-action="set-manage-tab" data-tab="members" style="width:100%;text-align:right;border:1px solid var(--yellow);border-radius:10px;padding:10px 12px;background:transparent;cursor:pointer;">
-          <span>${inactiveCount} חברים לא פעילים</span><span aria-hidden="true">‹</span>
+          <span>${bidiText(`${inactiveCount} חברים לא נכנסו לאפליקציה לאחרונה`)}</span><span aria-hidden="true">‹</span>
         </button>` : "",
     ].filter(Boolean);
     const attentionHtml = attentionRows.length
@@ -11972,7 +14206,11 @@
     if (!isStaff()) return `<h1 class="page-title">ניהול</h1><div class="empty">אין הרשאה לצפות בעמוד זה.</div>`;
     const manageTabs = [
       { id: "dashboard", label: "דשבורד", html: renderManageDashboard() },
-      { id: "members", label: "חברים", html: renderMemberManagement() + renderMemberRoster() },
+      // Five-persona UX audit, defect 3: the unfinished signups sit directly
+      // under the roster, because "who is in the club" and "who tried to join
+      // and did not finish" are the same question asked twice, and the second
+      // one is only findable from where the first is already being read.
+      { id: "members", label: "חברים", html: renderMemberManagement() + renderMemberRoster() + renderIncompleteSignups() },
       { id: "onboarding", label: "קליטה", html: renderOnboardingContentEditor() + renderIntroCarouselContentEditor() },
       { id: "moderation", label: "מודרציה", html: renderModeration() + renderAuditLog(), badge: pendingModerationCount() },
       // Redesign, Phase 3 fix: a coach who is staff-enough to see this whole
@@ -12027,18 +14265,50 @@
   // recovery verification) never has to be reached just to keep a private
   // backup running. "join community" stays a fully separate, later,
   // optional decision on the Community tab, never blended into this one.
+  // ---- Five-persona UX audit: two cards, one word, one contradiction -----
+  //
+  // Three personas flagged this panel, and two separate defects were tangled
+  // together in it.
+  //
+  // ONE: "מתחילים להתגבות" is not Hebrew. There is no verb להתגבות - the
+  // reflexive of לגבות does not exist in this sense - so the single sentence
+  // introducing the whole backup feature was built on a made-up word. Now
+  // "מתחילים להיות מגובים".
+  //
+  // TWO: this is the CLOUD card and app.js's export reminder is the LOCAL
+  // FILE card, and both used to call themselves just "גיבוי". A member who
+  // had cloud backup running was told a few lines away that they had never
+  // backed up - two true statements about two different things, reading as
+  // one self-contradicting screen. app.js has since taken the file side of
+  // the split ("קובץ גיבוי להורדה" / "לא הורדתם קובץ גיבוי"); this is the
+  // cloud side of the same split. Every branch below now opens with the
+  // feature's full name, says the sync is automatic and runs in the
+  // background, and names the OTHER card explicitly so a member who reads
+  // both knows they are looking at two mechanisms and not one broken one.
+  // The other card is referenced by its title rather than its position on
+  // the screen, so re-ordering the settings pane cannot make this a lie.
+  const BACKUP_PANEL_TITLE = `<div style="font-weight:800;font-size:13.5px;margin-bottom:4px;">גיבוי אוטומטי לענן</div>`;
+  // The two facts a member switching this off almost certainly believes it
+  // does, and does not. Both are stated plainly in PRIVACY.md ("כיבוי לא
+  // מוחק... מהענן מה שכבר הועלה", and the anonymous account keeps existing
+  // under its own 30-day rule), so leaving them out of the UI would leave
+  // the screen quietly contradicting the policy. Shown on the opted-out
+  // card, which is where the member lands the instant they tap - a durable
+  // surface they can re-read, rather than a toast that is gone in five
+  // seconds.
+  const BACKUP_OPTOUT_TRUTHS = `<div class="footer-note" style="margin-bottom:8px;">הכיבוי עוצר העלאות מכאן והלאה בלבד: הוא לא מוחק מהענן את מה שכבר הועלה, ולא סוגר את החשבון שנפתח לגיבוי. למחיקת מה שכבר בענן צריך לבקש מחיקת חשבון.</div>`;
   window.renderBackupSettingsPanel = function () {
     if (!configured) return "";
     if (backupOptedOut()) {
-      return `<div class="footer-note" style="margin-bottom:8px;">גיבוי אוטומטי לענן כבוי — האימונים נשמרים במכשיר הזה בלבד.</div><button class="link-btn" data-community-action="backup-enable">הפעלת גיבוי אוטומטי</button>`;
+      return `${BACKUP_PANEL_TITLE}<div class="footer-note" style="margin-bottom:8px;">כבוי. מהשמירה הבאה האימונים נשמרים במכשיר הזה בלבד.</div>${BACKUP_OPTOUT_TRUTHS}<button class="link-btn" data-community-action="backup-enable">הפעלת גיבוי אוטומטי</button>`;
     }
     if (!state.user) {
-      return `<div class="footer-note" style="margin-bottom:8px;">האימונים שלכם מתחילים להתגבות אוטומטית ופרטית לענן מהשמירה הראשונה — רק אתם רואים אותם. אפשר לכבות בכל שלב.</div><button class="link-btn" data-community-action="backup-optout">כיבוי גיבוי אוטומטי</button>`;
+      return `${BACKUP_PANEL_TITLE}<div class="footer-note" style="margin-bottom:8px;">מהשמירה הראשונה האימונים שלכם מתחילים להיות מגובים לענן ברקע, אוטומטית ופרטית — רק אתם רואים אותם. הסנכרון קורה מעצמו ואין כאן קובץ להוריד; „קובץ גיבוי להורדה" הוא דבר נפרד במסך הזה. אפשר לכבות בכל שלב.</div><button class="link-btn" data-community-action="backup-optout">כיבוי גיבוי אוטומטי</button>`;
     }
     const credentialsCta = state.user.is_anonymous
-      ? `<div style="margin-top:12px;"><div class="footer-note" style="margin-bottom:6px;">גישה לאותם נתונים ממכשיר אחר דורשת שם משתמש וסיסמה.</div><form id="backupCredentials">${field("backupCredentials", "username", "שם משתמש", `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="אותיות אנגליות, ספרות או קו תחתון" required/>`)}${field("backupCredentials", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="new-password" placeholder="לפחות 8 תווים" required/>`)}${field("backupCredentials", "passwordConfirm", "אימות סיסמה", `<input class="text-input" name="passwordConfirm" type="password" dir="ltr" autocomplete="new-password" placeholder="הקלידו שוב" required/>`)}<button class="chip-btn primary" type="submit" style="margin-top:6px;">שמירת גישה ממכשיר אחר</button></form></div>`
+      ? `<div style="margin-top:12px;"><div class="footer-note" style="margin-bottom:6px;">גישה לאותם נתונים ממכשיר אחר דורשת שם לכניסה וסיסמה.</div><form id="backupCredentials">${field("backupCredentials", "username", LOGIN_NAME_LABEL, `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="${esc(USERNAME_RULE_TEXT)}" data-live-validate="username" data-live-validate-form="backupCredentials" required/>`)}${field("backupCredentials", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="new-password" placeholder="${esc(PASSWORD_RULE_TEXT)}" data-live-validate="password" data-live-validate-form="backupCredentials" required/>`)}${field("backupCredentials", "passwordConfirm", "אימות סיסמה", `<input class="text-input" name="passwordConfirm" type="password" dir="ltr" autocomplete="new-password" placeholder="הקלידו שוב" data-live-validate="passwordConfirm" data-live-validate-form="backupCredentials" required/>`)}<button class="chip-btn primary" type="submit" style="margin-top:6px;">שמירת גישה ממכשיר אחר</button></form></div>`
       : "";
-    return `<div class="footer-note" style="margin-bottom:8px;">${esc(state.syncEnabled ? "האימונים שלכם מגובים אוטומטית ופרטית לענן — רק אתם רואים אותם." : "גיבוי מוגדר אך טרם הופעל.")}</div><button class="link-btn" data-community-action="backup-optout">כיבוי גיבוי אוטומטי</button>${credentialsCta}${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}`;
+    return `${BACKUP_PANEL_TITLE}<div class="footer-note" style="margin-bottom:8px;">${esc(state.syncEnabled ? "פעיל. האימונים שלכם מגובים לענן ברקע, אוטומטית ופרטית — רק אתם רואים אותם. הסנכרון קורה מעצמו ואין כאן קובץ להוריד; „קובץ גיבוי להורדה\" הוא דבר נפרד במסך הזה." : "מוגדר אך טרם הופעל.")}</div><button class="link-btn" data-community-action="backup-optout">כיבוי גיבוי אוטומטי</button>${credentialsCta}${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}`;
   };
   // ---- Shared Phase 1 dialog focus + keyboard management (COMM-190) -----
   // Every Phase 1 overlay dialog behaves the same way: focus moves in on
@@ -12072,8 +14342,15 @@
     // this registry, the Tab trap and the Escape chain - reachable by mouse
     // only, gating ~19 destructive actions including delete-account.
     { key: "confirmSheet", isOpen: () => state.ui.confirmDialog, close: function () { closeConfirm(); } },
+    // Five-persona UX audit, outward sharing. SECOND for the same reason the
+    // confirm sheet is first: this sheet is opened from inside the PR prompt
+    // and the achievement celebration and renders on top of them, so it has
+    // to be checked before either or the Tab trap locks focus into the
+    // covered dialog underneath and Escape closes the wrong one.
+    { key: "outwardShare", isOpen: () => state.posts.outwardShare, close: function () { closeOutwardShare(); } },
     { key: "reportSheet", isOpen: () => state.admin.reportSheet, close: function () { closeReportSheet(); } },
     { key: "modAction", isOpen: () => state.admin.modAction, close: function () { closeModAction(); } },
+    { key: "reclaimInvite", isOpen: () => state.admin.reclaim, close: function () { closeGhostReclaim(); } },
     { key: "modContext", isOpen: () => state.admin.modContext, close: function () { closeModContext(); } },
     { key: "notifCenter", isOpen: () => state.notif.center, close: function () { closeNotifCenter(); } },
     { key: "achUnlock", isOpen: () => state.achievements.unlock, close: function () { dismissAchievementUnlock(); } },
@@ -12436,6 +14713,11 @@
     if (mt === "invites" && (hasPerm(PERM.MEMBER_INVITE) || isAdmin()) && !state.admin.invites.loaded && !state.admin.invites.loading) loadInvites(true);
     // COMM-377. is_staff(), matching admin_member_roster's own looser AUTH.
     if (mt === "members" && isStaff() && !state.admin.roster.loaded && !state.admin.roster.loading) loadRoster(true);
+    // Five-persona UX audit, defect 3. Same lazy pattern, same is_staff()
+    // gate as the roster above - admin_incomplete_signups shares that AUTH
+    // exactly, so a coach triggers this load and simply gets no reclaim
+    // controls in the rows it renders.
+    if (mt === "members" && isStaff() && !state.admin.incompleteSignups.loaded && !state.admin.incompleteSignups.loading) loadIncompleteSignups(true);
   };
   window.handleCommunityClick = function (el) {
     const action = el.dataset.communityAction;
@@ -12453,11 +14735,56 @@
       localStorage.removeItem(BACKUP_OPTOUT_KEY);
       if (!state.user) ensureAnonymousSession();
       else enableSyncIfAllowed();
+      // Mirror of the opt-out toast below - same reason, same placement
+      // before rerender(). Confirming only one direction of a toggle would
+      // leave the ON tap with exactly the silence that got the OFF tap
+      // reported as broken. Worded as a promise about the NEXT save, because
+      // that is when the first upload actually happens; enabling does not
+      // retroactively push what was logged while it was off.
+      if (typeof window.showToast === "function") window.showToast("גיבוי אוטומטי לענן הופעל. האימונים יגובו מהשמירה הבאה.");
       rerender();
     }
     else if (action === "backup-optout") {
       localStorage.setItem(BACKUP_OPTOUT_KEY, "1");
       if (state.syncEnabled) { state.syncEnabled = false; localStorage.setItem("haimunia-demo:cloudSyncEnabled", "0"); }
+      // Five-persona UX audit: an admin reported that turning cloud backup
+      // off "didn't appear to take effect". It always did - the flag flips,
+      // it persists, and the panel re-renders to the opted-out state - but
+      // the tap produced NO acknowledgement of any kind. The panel is three
+      // lines of small grey text near the bottom of a long settings screen,
+      // so the one thing that changed was the thing least likely to be in
+      // view at the moment of the tap. The member is left tapping a control
+      // that answers by rearranging text they cannot see.
+      //
+      // showToast() is app.js's existing rail (bottom-anchored, role=status,
+      // 5s), reached through window the same cross-file way this file
+      // already calls renderTabHeader() and communityShareCandidateFor().
+      // Guarded on typeof because cloud.js is loaded BEFORE app.js and a
+      // handler that fires before app.js has executed must not throw.
+      //
+      // Short by design: the toast confirms the STATE CHANGE and the one
+      // fact that answers "so where are my workouts now". The two things a
+      // member wrongly assumes an opt-out also does - deleting what is
+      // already uploaded, closing the account - are in BACKUP_OPTOUT_TRUTHS
+      // on the card itself, because those need to outlive five seconds and
+      // be re-readable. A toast is the wrong place to disclose something
+      // someone may want to act on.
+      //
+      // This button was inert from 8ab7ca6 until ffb786e: app.js's delegation
+      // only dispatched [data-community-action] when the click had no
+      // [data-action] ancestor, and #settingsOverlay carries
+      // data-action="close-settings", so every community control inside
+      // Settings was dropped before reaching this handler. It now dispatches
+      // unconditionally. test/community-error-copy.test.mjs covers it with a
+      // real DOM click.
+      //
+      // Set BEFORE rerender(), not after: showToast() only stores the
+      // pending toast and schedules its expiry - it never paints on its own,
+      // and app.js composes renderToastBar() during render(). Called after
+      // the rerender below, the confirmation would sit invisible until some
+      // unrelated event happened to trigger the next paint, which is the
+      // same "no feedback at the moment of the tap" this is fixing.
+      if (typeof window.showToast === "function") window.showToast("גיבוי אוטומטי לענן כובה. האימונים ממשיכים להישמר במכשיר הזה.");
       rerender();
     }
     else if (action === "avatar-remove") removeAvatarPhoto();
@@ -12475,7 +14802,7 @@
     // COMM-231 members directory.
     else if (action === "directory-retry") loadDirectory(true);
     else if (action === "directory-more") loadDirectory(false);
-    else if (action === "block") askConfirm({ title: "חסימת משתמש", message: "לחסום את המשתמש? לא תראו זה את זה בקהילה.", confirmLabel: "חסימה", destructive: true, action: "block", payload: { userId: el.dataset.id } });
+    else if (action === "block") askConfirm({ title: "חסימת משתמש", message: "לחסום את {subject}? לא תראו זה את זה בקהילה.", subject: subjectNameFor(el.dataset.id), confirmLabel: "חסימה", destructive: true, action: "block", payload: { userId: el.dataset.id } });
     else if (action === "delete-post") askConfirm({ title: "הסרת שיתוף", message: "להסיר את השיתוף מהפיד? הפעולה לא ניתנת לביטול.", confirmLabel: "הסרה", destructive: true, action: "delete-post", payload: { postId: el.dataset.id } });
     else if (action === "compare") compare(el.dataset.key, el.dataset.id);
     else if (action === "delete-account") askConfirm({ title: "מחיקת חשבון", message: "הפרופיל והשיתופים יוסרו מיד. המחיקה הסופית תתבצע לאחר 30 יום. להמשיך?", confirmLabel: "מחיקה", destructive: true, action: "delete-account" });
@@ -12565,10 +14892,19 @@
     else if (action === "invite-status-filter") setInviteStatusFilter(el.dataset.status);
     else if (action === "invite-list-retry") loadInvites(true);
     else if (action === "invite-list-more") loadInvites(false);
-    else if (action === "invite-revoke") askConfirm({ title: "ביטול הזמנה", message: "ההזמנה תבוטל ולא תהיה ניתנת עוד למימוש. להמשיך?", confirmLabel: "ביטול ההזמנה", destructive: true, action: "admin-invite-revoke", payload: { inviteId: el.dataset.id } });
+    else if (action === "invite-revoke") askConfirm({ title: "ביטול הזמנה", message: "לבטל את ההזמנה של {subject}? היא לא תהיה ניתנת עוד למימוש.", subject: inviteSubjectName(el.dataset.id), confirmLabel: "ביטול ההזמנה", destructive: true, action: "admin-invite-revoke", payload: { inviteId: el.dataset.id } });
     // COMM-377 member roster.
     else if (action === "roster-retry") loadRoster(true);
     else if (action === "roster-more") loadRoster(false);
+    // Five-persona UX audit, defect 3. ghost-reclaim opens the sheet rather
+    // than acting: it is the only control here that changes anything, and it
+    // is the one that has to name its subject first.
+    else if (action === "ghosts-retry") loadIncompleteSignups(true);
+    else if (action === "ghosts-more") loadIncompleteSignups(false);
+    else if (action === "ghost-reclaim") openGhostReclaim(el.dataset.id);
+    else if (action === "reclaim-cancel") closeGhostReclaim();
+    else if (action === "reclaim-run") runGhostReclaim();
+    else if (action === "reclaim-result-close") { state.admin.reclaimResult = null; rerender(); }
     // COMM-155 pins.
     else if (action === "unpin") unpinTarget(el.dataset.type, el.dataset.id);
     else if (action === "pin") pinTarget(el.dataset.type, el.dataset.id, el.dataset.note || "");
@@ -12576,13 +14912,20 @@
     else if (action === "admin-set-role") {
       const role = el.dataset.role;
       const label = { member: "חבר/ה", coach: "מאמן/ת", head_coach: "מאמן/ת ראשי/ת" }[role] || role;
-      if (role === "member") adminRevokeCoach(el.dataset.id);
-      else askConfirm({ title: "שינוי הרשאה", message: `להעניק הרשאת ${label} למשתמש/ת זה/ו?`, confirmLabel: "הענקה", action: "admin-set-role", payload: { userId: el.dataset.id, role } });
+      // Defect 1, second asymmetry in the same control set: head_coach ->
+      // coach is a DOWNGRADE, and it used to open the same "להעניק הרשאת…"
+      // ("grant") dialog as a promotion, non-destructive styling included.
+      // The current role decides which sentence and which styling is shown.
+      const current = (subjectRecordFor(el.dataset.id) || {}).role || memberRole(el.dataset.id) || "member";
+      const isDowngrade = role === "coach" && current === "head_coach";
+      if (role === "member") askRevokeCoachConfirm(el.dataset.id);
+      else if (isDowngrade) askConfirm({ title: "הורדת הרשאה", message: "להוריד את {subject} ממאמן/ת ראשי/ת למאמן/ת?", subject: subjectNameFor(el.dataset.id), confirmLabel: "הורדה", destructive: true, action: "admin-set-role", payload: { userId: el.dataset.id, role } });
+      else askConfirm({ title: "שינוי הרשאה", message: `להעניק ל{subject} הרשאת ${label}?`, subject: subjectNameFor(el.dataset.id), confirmLabel: "הענקה", action: "admin-set-role", payload: { userId: el.dataset.id, role } });
     }
-    else if (action === "admin-grant-coach") askConfirm({ title: "הענקת הרשאת מאמן/ת", message: "להעניק הרשאת מאמן/ת למשתמש/ת זה/ו?", confirmLabel: "הענקה", action: "admin-grant-coach", payload: { userId: el.dataset.id } });
-    else if (action === "admin-revoke-coach") adminRevokeCoach(el.dataset.id);
-    else if (action === "admin-remove-member") askConfirm({ title: "הסרת חבר/ה", message: "הפרופיל והשיתופים של המשתמש/ת יוסרו מיד. המחיקה הסופית תתבצע לאחר 30 יום. להמשיך?", confirmLabel: "הסרה", destructive: true, action: "admin-remove-member", payload: { userId: el.dataset.id } });
-    else if (action === "admin-reset-password") askConfirm({ title: "איפוס סיסמה", message: "ייווצרו סיסמה זמנית חדשה שתוצג פעם אחת בלבד. יש למסור אותה לחבר/ה ישירות (לא דרך האפליקציה).", confirmLabel: "איפוס", action: "admin-reset-password", payload: { userId: el.dataset.id } });
+    else if (action === "admin-grant-coach") askConfirm({ title: "הענקת הרשאת מאמן/ת", message: "להעניק ל{subject} הרשאת מאמן/ת?", subject: subjectNameFor(el.dataset.id), confirmLabel: "הענקה", action: "admin-grant-coach", payload: { userId: el.dataset.id } });
+    else if (action === "admin-revoke-coach") askRevokeCoachConfirm(el.dataset.id);
+    else if (action === "admin-remove-member") askConfirm({ title: "הסרת חבר/ה", message: "להסיר את {subject} מהמועדון? הפרופיל והשיתופים יוסרו מיד, והמחיקה הסופית תתבצע לאחר 30 יום.", subject: subjectNameFor(el.dataset.id), confirmLabel: "הסרה", destructive: true, action: "admin-remove-member", payload: { userId: el.dataset.id } });
+    else if (action === "admin-reset-password") askConfirm({ title: "איפוס סיסמה", message: "לאפס את הסיסמה של {subject}? הסיסמה הנוכחית תפסיק לעבוד מיד, ותיווצר סיסמה זמנית שתוצג פעם אחת בלבד - יש למסור אותה לחבר/ה ישירות (לא דרך האפליקציה).", subject: subjectNameFor(el.dataset.id), confirmLabel: "איפוס", destructive: true, action: "admin-reset-password", payload: { userId: el.dataset.id } });
     else if (action === "close-password-reset-result") { state.admin.passwordResetResult = null; rerender(); }
     else if (action === "toggle-share") toggleShare(el.dataset.type, el.dataset.id);
     else if (action === "open-composer") openComposer(el);
@@ -12615,6 +14958,18 @@
     else if (action === "ach-not-now") dismissAchievementUnlock();
     else if (action === "ach-add-note") { if (state.achievements.unlock) { state.achievements.unlock.showNote = true; rerender(); } }
     else if (action === "ach-share-later") shareEarnedAchievement(el.dataset.id, el.dataset.code);
+    // Five-persona UX audit, outward sharing. Four openers and five sheet
+    // controls. Every one of them is a tap - nothing on this list runs
+    // without one, and nothing on it writes to the server.
+    else if (action === "outward-pr") outwardShareCurrentPr();
+    else if (action === "outward-ach") outwardShareCurrentAchievement();
+    else if (action === "outward-ach-earned") outwardShareEarnedAchievement(el.dataset.id, el.dataset.code);
+    else if (action === "outward-post") outwardSharePost(el.dataset.id);
+    else if (action === "outward-go") outwardShareNow();
+    else if (action === "outward-copy") outwardCopyText();
+    else if (action === "outward-download") outwardDownloadImage();
+    else if (action === "outward-retry") refreshOutwardShareCard();
+    else if (action === "outward-close") closeOutwardShare();
     else if (action === "feed-scope") setFeedScope(el.dataset.scope);
     else if (action === "feed-load-more") loadMoreFeed();
     else if (action === "feed-retry") { state.feed.pagesLoaded = 0; loadFeed().then(rerender); rerender(); }
@@ -12633,6 +14988,10 @@
     // when club_summary handed back an id; a missing id (an older/failed
     // club_summary read) still lands the member on the Boards sub-tab
     // rather than a broken dialog.
+    // No data-id means a WEEKLY challenge, which lives on the Boards tab and
+    // has no `challenges` row for openChallenge() to fetch - sending one there
+    // is what produced the 400 with nothing on screen. See the club-strip
+    // comment in renderCommunityFeed for why the attribute is omitted.
     else if (action === "open-active-challenge") { if (el.dataset.id) openChallenge(el.dataset.id, "club_top"); else setCommunityTab("boards"); }
     // COMM-201/207. openChallenge() itself records CHALLENGE_VIEWED, so the
     // POST_CHALLENGE link card's own tap passes "post_card" through.
@@ -12740,6 +15099,16 @@
   // renderManageApp() itself re-checks internally (defense in depth against
   // a forced ?tab=manage), just exposed for the nav-item decision.
   window.communityIsStaff = function () { return isStaff(); };
+  // The club WOD catalogue's write surface. publishClubWod is what app.js's
+  // staff affordance calls; the other three are the correction paths, exposed
+  // the same way so the catalogue has one callable API rather than three
+  // functions only reachable from inside this closure. All four are
+  // staff-gated here and permission-gated again in the database, which is the
+  // boundary that actually counts.
+  window.publishClubWod = publishClubWod;
+  window.editClubWod = editClubWod;
+  window.retireClubWod = retireClubWod;
+  window.restoreClubWod = restoreClubWod;
   // Redesign, Phase 3 fix: app.js's getNavItems() needs this to badge the
   // Manage bottom-tab nav item - see pendingModerationCount()'s own comment.
   window.communityPendingModerationCount = function () { return pendingModerationCount(); };
@@ -12878,6 +15247,11 @@
         state.posts.openShare = {}; state.posts.comparisonForPostId = null; state.posts.comparison = [];
         state.posts.composer = null; state.posts.composerTrigger = null; state.posts.openMenu = null; state.posts.savedIds = {};
         state.posts.captionEdit = null; state.posts.visibilityEdit = null; state.posts.prPrompt = null;
+        // Five-persona UX audit, outward sharing. Through the closer rather
+        // than a bare null: the sheet owns an object URL over a Blob, and a
+        // sign-out that only dropped the reference would leak it for the life
+        // of the document.
+        outwardRevokePreview(); state.posts.outwardShare = null;
         state.engagement.comments = {}; state.engagement.openComments = {}; state.engagement.commentDrafts = {};
         state.engagement.commentErrors = {}; state.engagement.commentSending = null; state.engagement.commentEdit = null;
         state.engagement.openReplies = {}; state.engagement.replyTo = {}; state.engagement.reactions = {};
@@ -12889,7 +15263,7 @@
         state.members.classmatesToday = { items: [], loading: false, loaded: false, error: false };
         state.club.streaks = []; state.club.announcements = []; state.club.announcementSaving = false;
         state.club.weeklyChallenge = null; state.club.weeklyLeaderboard = []; state.club.inactiveMembers = [];
-        state.club.newMembers = []; state.club.moduleBusy = null; state.club.features = {}; state.club.featuresLoaded = false;
+        state.club.newMembers = []; state.club.activitySignal = null; state.club.moduleBusy = null; state.club.features = {}; state.club.featuresLoaded = false;
         state.admin.reports = []; state.admin.modQueue = []; state.admin.modQueueLoaded = false;
         state.admin.modQueueStatus = "open"; state.admin.modQueueLoading = false; state.admin.modQueueError = false;
         state.admin.modAction = null; state.admin.modContext = null; state.admin.reportSheet = null; state.admin.pins = [];
@@ -12902,6 +15276,12 @@
         state.admin.invites = { items: [], status: "all", cursor: null, loading: false, loadingMore: false, loaded: false, error: false, end: false, created: null, revoking: null };
         state.admin.inviteCodes = { items: [], loading: false, loaded: false, error: false, created: null, busy: null };
         state.admin.roster = { items: [], cursor: null, loading: false, loadingMore: false, loaded: false, error: false, end: false };
+        // Five-persona UX audit, defect 3. Same reason as the two panels
+        // above, and one more: reclaimResult names a specific person, and it
+        // must not still be on screen for whoever signs in next on this
+        // device.
+        state.admin.incompleteSignups = { items: [], cursor: null, loading: false, loadingMore: false, loaded: false, error: false, end: false };
+        state.admin.reclaim = null; state.admin.reclaimResult = null;
         state.challenges.items = []; state.challenges.loaded = false; state.challenges.loading = false;
         state.challenges.error = false; state.challenges.participation = {}; state.challenges.aggregates = {};
         state.challenges.view = null; state.challenges.form = null; state.challenges._rtId = null;
@@ -12960,6 +15340,11 @@
     const t = e.target;
     if (!t || !t.dataset) return;
     if ("inviteCode" in t.dataset) { state.ui.inviteCodeDraft = t.value; return; }
+    // Credential fields check themselves as the member types, so the rule is
+    // learned while there is still something to fix rather than announced
+    // after a rejected submit. liveValidateCredentialField() patches the field
+    // in place and never rerenders - see its header for why.
+    if ("liveValidate" in t.dataset) { liveValidateCredentialField(t); return; }
     if ("composerBody" in t.dataset) composerSetBody(t.value);
     else if ("commentInput" in t.dataset) onCommentInput(t);
     else if ("commentEditInput" in t.dataset && state.engagement.commentEdit) state.engagement.commentEdit.body = t.value;
@@ -12973,6 +15358,11 @@
     // never drops what was typed.
     else if ("reportNote" in t.dataset && state.admin.reportSheet) state.admin.reportSheet.note = t.value;
     else if ("modNote" in t.dataset && state.admin.modAction) state.admin.modAction.note = t.value;
+    // Five-persona UX audit, defect 3. Same reasoning as modNote above, and
+    // it matters more here: admin_reclaim_invite writes this note into the
+    // admin_actions row, so anything a rerender drops is lost from the audit
+    // log rather than just from the screen.
+    else if ("reclaimNote" in t.dataset && state.admin.reclaim) state.admin.reclaim.note = t.value;
     // COMM-378. onboardingEditorDraft() lazily seeds the draft the first
     // time either field is touched, same "kept in state, not read off the
     // DOM at submit" reasoning as every note/body field above - a rerender
@@ -13018,7 +15408,14 @@
     else if ("avatarFile" in t.dataset) { const f = t.files && t.files[0]; if (f) avatarPhotoSelected(f); try { t.value = ""; } catch (err) {} }
     else if ("composerDecorative" in t.dataset) composerToggleDecorative(t.dataset.composerDecorative, t.checked);
     else if ("composerVisibility" in t.dataset) composerSetVisibility(t.value);
+    // The weekly-challenge picker, kept in state so a rejected submit (missing
+    // title or dates) re-renders the form with the coach's choice still made.
+    else if ("challengeKey" in t.dataset) state.club.challengeKeyDraft = t.value;
     else if ("prFile" in t.dataset) { const f = t.files && t.files[0]; if (f) prPromptAddPhoto(f); }
+    // Five-persona UX audit, outward sharing. The name switch repaints the
+    // card rather than only remembering the choice, because the preview IS
+    // the payload - a member must be able to see that the name is gone.
+    else if ("outwardName" in t.dataset) setOutwardShareName(t.checked);
     // COMM-151. The report reason radio.
     else if ("reportReason" in t.dataset && t.checked) setReportReason(t.dataset.reportReason);
     // COMM-308. The captain and reassign <select>s act immediately on
@@ -13063,8 +15460,12 @@
     // CLOUD_DIALOGS position above: askConfirm() renders on top of whatever
     // triggered it, so Escape must close IT, not the dialog underneath.
     if (state.ui.confirmDialog) { e.preventDefault(); closeConfirm(); return; }
+    // Same position, same reason, as its CLOUD_DIALOGS entry: stacked over
+    // the PR prompt and the achievement celebration below.
+    if (state.posts.outwardShare) { e.preventDefault(); closeOutwardShare(); return; }
     if (state.admin.reportSheet) { e.preventDefault(); closeReportSheet(); return; }
     if (state.admin.modAction) { e.preventDefault(); closeModAction(); return; }
+    if (state.admin.reclaim) { e.preventDefault(); closeGhostReclaim(); return; }
     if (state.admin.modContext) { e.preventDefault(); closeModContext(); return; }
     if (state.notif.center) { e.preventDefault(); closeNotifCenter(); return; }
     if (state.achievements.unlock) { e.preventDefault(); dismissAchievementUnlock(); return; }

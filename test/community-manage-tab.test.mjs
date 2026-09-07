@@ -129,18 +129,101 @@ test("dashboard: a moderator with zero open reports sees the green all-clear emp
 
 test("dashboard: an inactive-members shortcut navigates to Members", async () => {
   const mock = seeded(null, "admin");
-  mock.onRpc("coach_inactive_members", () => ({ data: [{ display_name: "מישהו", handle: "someone", last_activity_on: null }], error: null }));
+  // A GENUINELY lapsed member: someone we have recorded activity for, whose
+  // most recent activity is old. The fixture used to be
+  // `{ last_activity_on: null }` with no state at all, which is the "we have
+  // never recorded anything about this person" case - and asserting that it
+  // produced an attention row was asserting the defect 202609060020 fixed.
+  // The attention row counts state === 'lapsed' only; a no_data member is
+  // not something to alarm a coach with, and the assertion that they are
+  // excluded lands with the client half of that change.
+  mock.onRpc("coach_inactive_members", () => ({ data: [{ user_id: "u-someone", display_name: "מישהו", handle: "someone", last_activity_on: "2026-08-01", state: "lapsed", days_since_activity: 37, joined_on: "2026-05-01" }], error: null }));
   const window = await bootCommunity(mock, { syncEnabled: false });
   window.document.getElementById("tabManageBtn").click();
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
-  await waitFor(() => window.document.body.textContent.includes("חברים לא פעילים"), 3000);
+  // Waits on the shortcut itself rather than on its Hebrew label: this test
+  // is about the row navigating to Members, and pinning the copy here made
+  // it a second, accidental owner of a string it does not assert anything
+  // about.
+  //
+  // `button.log-row` is load-bearing, not decoration. The bare
+  // [data-community-action="set-manage-tab"][data-tab="members"] selector
+  // ALSO matches the sub-tab bar pill, which exists from the first paint -
+  // so waiting on it resolves before any data has loaded, and clicking it
+  // clicks the nav pill rather than the attention shortcut this test is
+  // named after. The attention row is the only .log-row of the pair.
+  const shortcut = 'button.log-row[data-community-action="set-manage-tab"][data-tab="members"]';
+  await waitFor(() => !!window.document.querySelector(shortcut), 3000);
 
-  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="members"]').click();
+  window.document.querySelector(shortcut).click();
   await waitFor(() => {
     const active = window.document.querySelector(".subtabbtn.active");
     return !!active && active.dataset.tab === "members";
   }, 3000);
   assert.ok(window.document.body.textContent.includes("ניהול חברים"), "the shortcut lands on the real member-management sub-tab");
+});
+
+// The other half of the same rule, and the reason the attention row exists
+// at all. Before 202609060020 this row counted every row the RPC returned,
+// including every member the club had simply never recorded anything for -
+// so a club whose members had not yet produced a single activity ping was
+// told on its own landing screen that all of them were inactive. That is the
+// 8-of-8 failure, on the first screen a box owner sees.
+test("dashboard: members we have NO data about never produce an attention row", async () => {
+  const mock = seeded(null, "admin");
+  mock.onRpc("coach_inactive_members", () => ({
+    data: [
+      { user_id: "u-a", display_name: "אלף", handle: "alef", last_activity_on: null, state: "no_data", days_since_activity: null, joined_on: "2026-01-01" },
+      { user_id: "u-b", display_name: "בית", handle: "bet", last_activity_on: null, state: "no_data", days_since_activity: null, joined_on: "2026-01-02" },
+      { user_id: "u-c", display_name: "גימל", handle: "gimel", last_activity_on: null, state: "no_data", days_since_activity: null, joined_on: "2026-01-03" },
+    ],
+    error: null,
+  }));
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabManageBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  // Wait on the RPC having actually been answered, not on a DOM node. The
+  // dashboard renders its green all-clear immediately, before any data
+  // arrives, so asserting the all-clear on its own would pass even if the
+  // three rows were later counted - the assertion has to run AFTER the
+  // three no_data rows are in state.
+  await waitFor(() => mock.callsTo("coach_inactive_members").length > 0, 3000);
+  await waitFor(() => window.document.body.textContent.includes("אין דבר שדורש תשומת לב כרגע"), 3000);
+  assert.equal(
+    window.document.querySelector('button.log-row[data-community-action="set-manage-tab"][data-tab="members"]'),
+    null,
+    "three members we know nothing about must produce NO attention shortcut - an absence of data is not an alert",
+  );
+  assert.doesNotMatch(
+    window.document.body.textContent,
+    /\d+ חברים לא נכנסו לאפליקציה לאחרונה/,
+    "and no count row of any size",
+  );
+});
+
+test("dashboard: the attention row counts only genuinely lapsed members, not the whole list", async () => {
+  const mock = seeded(null, "admin");
+  mock.onRpc("coach_inactive_members", () => ({
+    data: [
+      { user_id: "u-a", display_name: "אלף", handle: "alef", last_activity_on: "2026-08-01", state: "lapsed", days_since_activity: 37, joined_on: "2026-01-01" },
+      { user_id: "u-b", display_name: "בית", handle: "bet", last_activity_on: null, state: "no_data", days_since_activity: null, joined_on: "2026-01-02" },
+      { user_id: "u-c", display_name: "גימל", handle: "gimel", last_activity_on: null, state: "no_data", days_since_activity: null, joined_on: "2026-01-03" },
+    ],
+    error: null,
+  }));
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabManageBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  // `button.log-row` and not the bare attribute pair - see the note in the
+  // shortcut test above: the sub-tab BAR pill carries the same two
+  // attributes and exists from the first paint, so the bare selector
+  // resolves before any data has loaded and races the assertion.
+  await waitFor(() => !!window.document.querySelector('button.log-row[data-community-action="set-manage-tab"][data-tab="members"]'), 3000);
+  assert.match(
+    window.document.body.textContent,
+    /1 חברים לא נכנסו לאפליקציה לאחרונה/,
+    "one lapsed member out of three rows - the two no_data members are not counted",
+  );
 });
 
 // ===== P2: booting straight into Manage triggers ensureCommunityDataLoaded() =

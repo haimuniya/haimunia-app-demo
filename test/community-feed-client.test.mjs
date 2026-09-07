@@ -354,9 +354,15 @@ test("a profile opened from member search records nothing, it is not a feed card
 
 // --- COMM-115 club top area ----------------------------------------------
 
+const TODAY = new Date().toISOString().slice(0, 10);
+
 test("the club strip shows name, member count, the challenge shortcut and the bell", async () => {
   const mock = seeded([row(1)], {
-    clubs: [{ id: "club-1", name: "חיימוניה", active_challenge: { id: "ch-1", title: "אתגר השבוע", source: "weekly" } }],
+    clubs: [{ id: "club-1", name: "חיימוניה", active_challenge: { id: "wc-1", title: "אתגר השבוע", source: "weekly" } }],
+    // The weekly row behind the summary. A weekly hero is only rendered when
+    // one exists AND its comparison key names something real - see the
+    // club-strip comment in cloud.js and community-weekly-challenge.test.mjs.
+    weekly_challenges: [{ id: "wc-1", title: "אתגר השבוע", comparison_key: "movement:back-squat:est1rm", starts_on: TODAY, ends_on: TODAY, created_by: "u1" }],
     notifications: [{ user_id: "u1", read_at: null }, { user_id: "u1", read_at: null }],
   });
   const window = await bootCommunity(mock, { syncEnabled: false });
@@ -365,7 +371,12 @@ test("the club strip shows name, member count, the challenge shortcut and the be
   assert.ok(top, "the club strip renders");
   assert.match(top.textContent, /חיימוניה/);
   assert.match(top.textContent, /1 חברי מועדון/, "member count comes from club_summary");
-  assert.ok(top.querySelector('[data-community-action="open-active-challenge"][data-id="ch-1"]'));
+  const shortcut = top.querySelector('[data-community-action="open-active-challenge"]');
+  assert.ok(shortcut, "the active-challenge shortcut renders");
+  // No data-id on a WEEKLY challenge: it has no `challenges` row, so
+  // openChallenge() would 400 on it. The handler routes a shortcut with no id
+  // to the Boards tab, which is where a weekly challenge actually lives.
+  assert.equal(shortcut.dataset.id, undefined, "a weekly challenge must not be sent to openChallenge()");
   const bell = top.querySelector('[data-community-action="feed-notifications"]');
   assert.ok(bell, "the notification icon is present");
   assert.match(bell.getAttribute("aria-label"), /2 חדשות/);

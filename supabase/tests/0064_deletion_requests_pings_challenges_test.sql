@@ -302,10 +302,63 @@ select tests.set_auth(tests.uid('coach'));
 select is_empty(
   $$ select user_id from public.coach_inactive_members() where user_id = tests.uid('m2') $$,
   'a coach can run it, and a member who pinged today is not on the list');
+
+-- REWRITTEN for 202609060020. This block used to assert only that a member
+-- with no ping at all was ON the list, with a count of 1. Both halves of
+-- that changed, and both changes are the point of that migration:
+--
+--   * A member with no ping is still surfaced, but as state = 'no_data',
+--     which is a fact about our DATA. The old code merged it with 'lapsed'
+--     - a fact about a PERSON - and the client rendered the merged row as
+--     "מעולם לא" ("never"). On a club whose members had not yet produced
+--     pings that reported every member, staff included, as never active.
+--   * Eligibility now requires having been a member since before the
+--     window. The fixture coach redeemed `now()`, so under the new rule
+--     they are a NEW member rather than a lapsed one and are correctly
+--     absent. Tenure is backdated here so the no-data case still has a
+--     subject; the new-member exclusion gets its own assertion below.
+select tests.clear_auth();
+update public.invite_redemptions set redeemed_at = now() - interval '60 days'
+ where user_id = tests.uid('coach');
+update public.profiles set created_at = now() - interval '60 days'
+ where id = tests.uid('coach');
+select tests.set_auth(tests.uid('coach'));
+
 select is(
   (select count(*)::int from public.coach_inactive_members() where user_id = tests.uid('coach')),
   1,
-  'while a member with no ping at all is - null last activity sorts first, which is the point of the report');
+  'a member of 60 days standing with no ping at all is still surfaced to the coach - the report did not simply stop reporting them');
+select is(
+  (select state from public.coach_inactive_members() where user_id = tests.uid('coach')),
+  'no_data',
+  '...but as no_data, NOT lapsed: we have recorded nothing about them, which is a fact about our data and not about the member');
+select is(
+  (select last_activity_on from public.coach_inactive_members() where user_id = tests.uid('coach')),
+  null::date,
+  '...with a null date rather than a fabricated one');
+select is(
+  (select days_since_activity from public.coach_inactive_members() where user_id = tests.uid('coach')),
+  null::integer,
+  '...and a null gap: there is no "days since" a thing that never happened');
+
+-- The other half of the same rule, asserted positively rather than left as
+-- the reason a row went missing. `owner` redeemed at now() and has no
+-- pings; hours into a membership there has not been time to lapse, and the
+-- actions for this member live in the new-member list, not in the alarming
+-- one.
+--
+-- `owner` and not `norec`, which is the obvious pick and is wrong: the
+-- deletion-request block above soft-deletes norec through
+-- admin_remove_member(), so a "should be listed" assertion about them would
+-- fail for a reason that has nothing to do with this rule. `owner` is the
+-- one fixture member this file does not touch before here.
+select is_empty(
+  $$ select user_id from public.coach_inactive_members() where user_id = tests.uid('owner') $$,
+  'a member who joined inside the window is never reported as inactive - they are new, and coach_new_members() is where they belong');
+select is(
+  (select count(*)::int from public.coach_new_members() where user_id = tests.uid('owner')),
+  1,
+  '...and they are genuinely there, so the exclusion above moves the member between lists rather than hiding them from the coach entirely');
 select results_eq(
   $$ select last_activity_on from public.coach_inactive_members(current_date + 1) where user_id = tests.uid('m2') $$,
   $$ select current_date $$,

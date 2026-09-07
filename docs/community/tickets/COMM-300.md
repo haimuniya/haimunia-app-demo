@@ -143,3 +143,18 @@ This is the accepted shape of the 2026-08-30 resolution ("self-reported...
 not a dedicated check-in flow"), not a gap this ticket leaves open. Worth
 confirming with the user that "verified" in the later ticket titles is not
 read as stronger than this.
+
+**Settled, and the answer was no — 202609060024.** "Verified" was read as
+stronger than this, twice, and both times it shipped. `attendance_log`'s own
+table comment opened with "Verified class attendance" and three function
+comments repeated "verified attendance"; that framing produced a privacy
+policy telling members their class attendance was recorded when no such
+record exists, and a coach dashboard that reported a box owner's most loyal
+members as never having trained. All four comments are corrected. The table
+is **self-reported training days**, one row per member per day, written only
+by the `private_records_attendance_log` trigger from the member's own logged
+`strength_entry`/`wod_entry` rows. **"Class" never belonged in the phrase at
+all**: class scheduling and check-in are Arbox's, which this app reads from
+and does not manage, so there is nothing in this product that could verify
+anything. Ticket titles are left as shipped because they are identifiers;
+this paragraph is what they mean.

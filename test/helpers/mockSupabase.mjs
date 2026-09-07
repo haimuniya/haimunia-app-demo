@@ -380,6 +380,68 @@ export function createMockSupabase(seedTables = {}) {
             .map((r) => ({ user_id: r.user_id, role: r.role }));
           return Promise.resolve({ data, error: null });
         }
+        // coach_new_members / coach_activity_signal_status (202609060020).
+        //
+        // loadCoachWelcome() used to read public.profiles directly and join
+        // member_contact_log in a second query. It cannot any more: the
+        // "sessions logged" figure comes from attendance_log, whose staff
+        // read is admin-rank only (202609060013), so the count has to be
+        // handed over by a SECURITY DEFINER function. Same reasoning as
+        // member_roles above - this mock has no RLS to get wrong, so it
+        // answers from the seeded tables directly, and the real boundary is
+        // asserted in pgTAP rather than here.
+        //
+        // Derived rather than a fixed fixture so that every existing test
+        // seeding `profiles` + `invite_redemptions` keeps describing the
+        // club the same way it always did, and does not have to learn a new
+        // table to say "this member joined three days ago".
+        if (name === "coach_new_members") {
+          const within = Math.min(Math.max(Number((args && args.p_within_days) || 14), 1), 365);
+          const dayMs = 86400000;
+          const contacted = rows("member_contact_log");
+          const data = rows("profiles")
+            .filter((p) => !p.deleted_at)
+            .map((p) => {
+              const red = rows("invite_redemptions").find((r) => String(r.user_id) === String(p.id));
+              // The function's own coalesce(redeemed_at, created_at).
+              const joinedAt = new Date(red && red.redeemed_at ? red.redeemed_at : (p.created_at || Date.now()));
+              const days = Math.max(0, Math.floor((Date.now() - joinedAt.getTime()) / dayMs));
+              const mine = contacted.filter((c) => String(c.user_id) === String(p.id));
+              const pings = rows("activity_pings").filter((a) => String(a.user_id) === String(p.id));
+              return {
+                user_id: p.id,
+                handle: p.handle,
+                display_name: p.display_name || p.handle,
+                avatar_url: p.avatar_url || null,
+                joined_on: joinedAt.toISOString().slice(0, 10),
+                days_since_join: days,
+                sessions_logged: rows("attendance_log").filter((a) => String(a.user_id) === String(p.id)).length,
+                has_opened_app: pings.length > 0,
+                last_seen_on: pings.length ? pings.map((a) => a.activity_date).sort().slice(-1)[0] : null,
+                contacted: mine.length > 0,
+                contacted_at: mine.length ? mine.map((c) => c.contacted_at).sort().slice(-1)[0] || null : null,
+                assigned_coach_id: p.assigned_coach_id || null,
+              };
+            })
+            .filter((r) => r.days_since_join <= within)
+            .sort((a, b) => (a.joined_on < b.joined_on ? 1 : a.joined_on > b.joined_on ? -1 : 0));
+          return Promise.resolve({ data, error: null });
+        }
+        if (name === "coach_activity_signal_status") {
+          const live = rows("profiles").filter((p) => !p.deleted_at);
+          const withPing = live.filter((p) => rows("activity_pings").some((a) => String(a.user_id) === String(p.id)));
+          const withSession = live.filter((p) => rows("attendance_log").some((a) => String(a.user_id) === String(p.id)));
+          return Promise.resolve({
+            data: [{
+              members_total: live.length,
+              members_with_app_activity: withPing.length,
+              members_with_logged_sessions: withSession.length,
+              last_app_activity_on: null,
+              last_logged_session_on: null,
+            }],
+            error: null,
+          });
+        }
         if (name === "feed_page") {
           const all = rows("feed_page_rows").length ? rows("feed_page_rows") : rows("community_feed");
           const scope = (args && args.p_scope) || "for_you";

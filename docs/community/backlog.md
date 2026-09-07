@@ -363,7 +363,9 @@ mirror so no other Phase 1 trigger needs an edit beyond
 admin-moderation (Phase 2)" and "Needs from schema, notifications (Phase 2)".
 COMM-220 needs a new `weekly_recaps` table, COMM-222 a new
 `onboarding_progress` table, both own-row RLS, see "Needs from schema,
-recaps". COMM-222's steps tied to first and third class attendance are not
+recaps". COMM-222's steps tied to the member's first and third logged training day
+(the columns are named `first_class_shown_at`/`third_class_shown_at`; the
+clock is `attendance_log`, not a class roster — 202609060024) are not
 built, carrying a TODO to COMM-P07 and COMM-316.
 
 ### coach-tools
@@ -713,7 +715,13 @@ downstream ticket below does that. See COMM-300's own "Note on what
 'verified' means here": every later ticket titled "verified attendance"
 means "derived server-side from the member's own private training log," the
 same trust boundary `private_records` already has today, not a physical or
-staff-confirmed check-in.
+staff-confirmed check-in. **202609060024 settled that in the schema**: the
+table comment said "Verified class attendance" and three function comments
+said "verified attendance"; all four now say self-reported training days.
+"Class" never belonged in the phrase — class scheduling and check-in are
+Arbox's, which this app reads from and does not manage. The misnomer had
+already produced a privacy policy claiming class attendance was recorded and
+a coach dashboard reporting the most loyal members as never having trained.
 
 ### feed
 
@@ -3848,3 +3856,60 @@ after the fix, 17 failing before it.
 Verified: `npm test` 1035/1036 (1 pre-existing skip, 0 fail, clean run with
 no flaky timeouts this pass), `run-all.mjs` 28/28. No schema change, no
 migration - this is client-only.
+
+## Five-persona UX audit (202609060019–202609060024)
+
+Not filed as COMM tickets; each migration closes one audited defect. Recorded
+here so the board is not the only place a status lives. Full contracts for
+every function named below are in `contracts.md` under **"Five-persona UX
+audit (202609060019–202609060024)"**, **Posts**, **Achievements** and
+**Moderation and admin**.
+
+| migration | defect | status |
+|---|---|---|
+| 202609060019 | `pr_share` / `ach_share` had no server definition at all | shipped |
+| 202609060020 | coach activity signals reported absence of data as fact | shipped |
+| 202609060022 | audit log could not answer "who did what" | shipped |
+| 202609060023 | abandoned signups hold invites and are invisible to every roster | shipped, **no client surface** |
+| 202609060024 | `attendance_log` described as "Verified class attendance" | shipped (comment-only) |
+
+There is no `202609060021`; the number was not used.
+
+**Defect 1 and the contract trap it left behind.** `pr_share` and `ach_share`
+were the only 2 of the client's 63 RPC names with no definition in any
+migration. Both were fully wired in `cloud.js` and both answered PGRST202
+from the day they shipped, so sharing a PR and sharing an achievement — the
+two moments the whole community layer is built around — had never worked
+once. `contracts.md` published `pr_share(record_id uuid, ...)`; the value the
+client sends is `entry.id` from the offline log (`uid("set")` →
+`"set-" + crypto.randomUUID()`), which never casts to `uuid`. The schema
+engineer recognised the type was wrong and shipped `text`; had they followed
+the published line they would have shipped a **second** outage on top of the
+one they were fixing. That line is now corrected, along with COMM-105's own
+"Client calls and contracts" section, which carried it too.
+
+**Defect 1's one accepted limitation, on COMM-105.** `metadata.movement`
+resolves only for a CUSTOM movement — built-in movement names are never
+synced to the server, so those cards publish their numbers and fall back to
+`שיא אישי`. Closing it needs a signature change carrying the name, or a
+server-side catalogue of built-in movements. Neither was smuggled into
+202609060019; it is written into COMM-105's acceptance criteria as a known
+limitation so nobody chases it as a bug.
+
+**Defect 3 has no UI, and that is the flagged gap.** Neither
+`admin_incomplete_signups()` nor `admin_reclaim_invite()` is called from
+`cloud.js`. The functions make ghost accounts findable and their invites
+reclaimable; nothing yet renders them. Note the permission split any surface
+must honour: **listing is `is_staff()`, reclaiming is real `is_admin()`**, and
+`admin_reclaim_invite` raises four named errors (`member has a profile`,
+`signup is still in progress`, `no invite to reclaim`, `cannot reclaim your
+own invite`) that a UI has to surface by name, because each one means the
+admin is looking at a different situation than they think.
+
+**Two doc-level consequences worth knowing before reading anything older.**
+`log_admin_action`'s five-argument form was **dropped**, not kept alongside
+the new eight-argument one — `contracts.md` published the old signature until
+this pass. And 202609060020 replaced `coach_inactive_members()` and
+`coach_new_members()` with different `returns table(...)` shapes (DROP and
+CREATE, not `create or replace`), neither of which had ever had a contract
+entry; both are documented now, `state = 'no_data' | 'lapsed'` included.
