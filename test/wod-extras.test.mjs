@@ -3,7 +3,7 @@
 // enforced — see sanitizeCustomWod/sanitizeWodEntry and CHANGES.md.
 import { test } from "node:test";
 import assert from "node:assert";
-import { bootApp } from "./helpers/boot.mjs";
+import { bootApp, answerWodRx } from "./helpers/boot.mjs";
 
 test("sanitizeCustomWod: a well-formed time cap round-trips; absent/zero clamps to null (no cap)", async () => {
   const window = await bootApp();
@@ -61,6 +61,7 @@ test("saveWod: persists the partner tag and startEditWodEntry restores it; clear
   const partnerInput = window.document.getElementById("wodPartnerTagInput");
   partnerInput.value = "עם דנה";
   partnerInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+  answerWodRx(window);
   await window.saveWod();
 
   const dbEntries = await window.dbLoadWodEntries();

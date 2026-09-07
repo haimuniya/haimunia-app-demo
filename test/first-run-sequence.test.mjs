@@ -14,7 +14,8 @@
 // whether an answer they gave is remembered.
 import { test } from "node:test";
 import assert from "node:assert";
-import { bootApp } from "./helpers/boot.mjs";
+import { bootApp, bootCommunity } from "./helpers/boot.mjs";
+import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
 function openOverlayIds(window) {
   return [...window.document.querySelectorAll(".modal-overlay.open")].map((el) => el.id);
@@ -184,6 +185,77 @@ test("no anonymous cloud account may be created before the member has been asked
 
   window.setBackupConsent("later");
   assert.equal(window.haimuniaBackupConsentPending(), false, "answered is answered, either way");
+});
+
+// THE REGRESSION THIS FILE EXISTS TO PREVENT A SECOND TIME.
+//
+// S5's ordering was originally gated on celebrationIsOpen() — "does the
+// arrival overlay carry .open at this instant". That is not the claim S5
+// makes. The claim is "the member has answered the arrival card", and the
+// two come apart the moment anything reshuffles the microtask order of the
+// first save: the consent card is evaluated by the render() INSIDE
+// saveSet(), which runs before celebrateFirstLog() opens anything. Adding
+// cloud.js's consent guard removed an async hop from that path and the card
+// duly appeared underneath the arrival card, in front of a member who had
+// not answered it yet.
+//
+// So this drives the real DOM, through the real cloud.js, and asserts the
+// two states separately: owed-and-unanswered, then answered. It needs the
+// community layer booted because the consent card only renders where a
+// backend is actually configured to consent TO.
+test("the consent card does not appear until the arrival card has been ANSWERED, not merely closed-looking", async () => {
+  const mock = createMockSupabase();
+  const window = await bootCommunity(mock);
+  const d = window.document;
+  const consentCard = () => d.querySelector('#content [data-action="backup-consent-yes"]');
+
+  window.saveWelcomeForm("רונית");
+  await window.addMovement("Race Squat", "Squat");
+  window.applyFieldValue("step", "weight", 40);
+  window.applyFieldValue("step", "reps", 5);
+  window.applyFieldValue("step", "sets", 1);
+
+  await window.saveSet();
+
+  // The window in which the bug was visible: the save has fully resolved and
+  // rendered, and the arrival card is up and unanswered.
+  assert.equal(d.getElementById("celebrationOverlay").classList.contains("open"), true,
+    "the arrival card should be up at this point");
+  assert.equal(window.shouldShowBackupConsent(), false,
+    "an unanswered arrival card is a debt; S5 may not ask over the top of it");
+  assert.equal(consentCard(), null,
+    "this is the exact assertion that failed in the browser: the consent card rendered underneath the arrival card");
+
+  // Extra renders must not shake it loose either — the whole point is that
+  // the answer, not the timing, is what moves this.
+  window.render();
+  assert.equal(consentCard(), null, "re-rendering is not an answer");
+
+  window.closeCelebration();
+  assert.equal(window.shouldShowBackupConsent(), true, "answered — now S5 may ask");
+  assert.ok(consentCard(), "and the card is on the screen the member is looking at");
+});
+
+test("closing an ordinary celebration cannot discharge the arrival card's debt", async () => {
+  const mock = createMockSupabase();
+  const window = await bootCommunity(mock);
+  window.saveWelcomeForm("רונית");
+  await window.addMovement("Debt Squat", "Squat");
+  window.applyFieldValue("step", "weight", 40);
+  window.applyFieldValue("step", "reps", 5);
+  window.applyFieldValue("step", "sets", 1);
+  await window.saveSet();
+  assert.equal(window.shouldShowBackupConsent(), false, "the arrival card is owed an answer");
+
+  // An ordinary badge celebration opens and closes while the arrival card is
+  // still owed (reachable only if the arrival was deferred behind another
+  // dialog). Its dismissal is not an answer to a different card, so the debt
+  // must survive it — which is why the flag records WHICH card is showing
+  // rather than just that one is.
+  window.showCelebration("Something Else — 60 ק\"ג × 5", []);
+  window.closeCelebration();
+  assert.equal(window.shouldShowBackupConsent(), false,
+    "only the arrival card's own dismissal may clear what the arrival card owes");
 });
 
 test("the consent card is not asked before there is anything to back up", async () => {

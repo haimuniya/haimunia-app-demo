@@ -368,7 +368,18 @@ let wodMinutes = 3, wodSeconds = 0, wodRounds = 5, wodReps = 0, wodWeight = 20;
 // index-aligned with its emomMovements — kept in sync with that WOD's own
 // movement count by renderWodLogSection whenever it renders.
 let wodEmomReps = [];
-let wodRx = true;
+// Design spec §3.6. THIS WAS `= true`, AND THAT WAS A DATA-INTEGRITY BUG,
+// not a copy one. Rx means "as prescribed, at the full prescribed weights".
+// A beginner is almost always scaled. Defaulting the toggle to Rx meant the
+// app silently recorded her session as harder than it actually was — into a
+// history she then cannot audit, because neither word is defined anywhere in
+// the product. Every "Rx — <benchmark>" badge sat on the same false premise.
+//
+// null is a third state and it is the point: nothing is chosen yet, the save
+// CTA is disabled, and the member has to say which it was. Read `=== false`
+// rather than `!wodRx` everywhere it gates the scaled-weight inputs, because
+// null is not "scaled" — it is "unanswered".
+let wodRx = null;
 let wodScaledWeight = 20;
 let wodNotes = "";
 // Free-text tag for a partner WOD ("with Dana", a team name, ...) — per
@@ -909,6 +920,7 @@ function celebrateFirstLog(label) {
   syncCommunityMilestones();
   const badges = claimNewlyEarned();
   showCelebration(label, badges, {
+    arrival: true,
     title: "הרישום הראשון שלך נשמר",
     sub: "מכאן זה מצטבר. כל אימון שתרשמו יופיע ביומן ובגרפים.",
   });
@@ -995,6 +1007,10 @@ function showCelebration(prLabel, badges, opts) {
   }
   document.body.style.overflow = "hidden";
   celebrationOpenerEl = document.activeElement;
+  // Recorded as the card opens, and carried through the deferral queue by
+  // opts, so closeCelebration() below can tell an arrival card from an
+  // ordinary badge one without asking the DOM what it looks like.
+  celebrationShowingArrival = !!(opts && opts.arrival);
   document.getElementById("celebrationOverlay").classList.add("open");
   setTimeout(() => focusFirstAppDialogEl("celebrationOverlay"), 50);
 }
@@ -1003,10 +1019,18 @@ function closeCelebration() {
   document.getElementById("celebrationOverlay").classList.remove("open");
   if (celebrationOpenerEl && typeof celebrationOpenerEl.focus === "function") celebrationOpenerEl.focus();
   celebrationOpenerEl = null;
-  // S5's consent card is suppressed while this overlay is up (one surface at
-  // a time), so the screen underneath is a render behind by the time the
-  // member closes it. This is what makes "celebration closed -> the card is
-  // there" true rather than "there on the next thing that happens to render".
+  // THE moment S5 has been waiting for: not "the overlay stopped being
+  // visible" but "the member answered the arrival card". Clearing the debt
+  // here, and only for the card that actually owed it, is what makes S5's
+  // ordering a fact rather than a race - see shouldShowBackupConsent().
+  if (celebrationShowingArrival) {
+    celebrationShowingArrival = false;
+    firstLogArrivalPending = false;
+  }
+  // The consent card was suppressed on the render that ran during the save,
+  // so the screen underneath is a render behind. This is what makes
+  // "arrival answered -> the card is there" true rather than "there on the
+  // next thing that happens to render".
   render();
 }
 
@@ -1267,6 +1291,22 @@ async function loadFirstLogCelebrated() {
   try { firstLogCelebrated = (await dbGetSetting(FIRST_LOG_CELEBRATED_KEY)) === true; }
   catch (e) { firstLogCelebrated = true; }
 }
+// "The arrival card is owed and has not been answered yet." Distinct from
+// firstLogCelebrated, which means "the arrival card has been SHOWN, ever" -
+// the sequencing question S5 asks is about the answer, not the showing.
+//
+// Deliberately in-memory only, and deliberately NOT persisted. A member who
+// reloads while the card is up will never dismiss that card - it is not
+// coming back, since firstLogCelebrated is on disk and true - so on the next
+// boot nothing is owed and the consent question is free to be asked. A
+// persisted flag would strand it forever.
+let firstLogArrivalPending = false;
+// Which card the celebration overlay is currently showing, so closing an
+// ordinary badge celebration cannot clear a debt owed by the arrival card.
+// (Reachable only if the arrival card is deferred behind another dialog and
+// something else celebrates first - vanishingly unlikely through the UI, but
+// "unlikely" is exactly what the bug above was too.)
+let celebrationShowingArrival = false;
 
 function totalLoggedEntries() { return entries.length + wodEntries.length; }
 
@@ -1291,12 +1331,24 @@ function cloudBackupConfigured() {
 function shouldShowBackupConsent() {
   if (backupConsent !== null) return false;
   if (totalLoggedEntries() < 1) return false;
-  if (celebrationIsOpen()) return false; // S4 owns the screen while it is up
+  // S4 is owed an answer before S5 may ask its own question.
+  //
+  // THIS USED TO READ `celebrationIsOpen()` AND THAT WAS A BUG, exposed when
+  // cloud.js's consent guard removed an async hop from the first-save path.
+  // "The arrival overlay has the .open class at this instant" and "the member
+  // has dismissed the arrival card" are different claims, and only the second
+  // is what S5 means. The first is a race: the consent card is evaluated by
+  // the render() inside saveSet(), which runs BEFORE celebrateFirstLog() —
+  // so whether it saw an open overlay depended entirely on how many
+  // microtasks happened to sit between the two, and an unrelated change in
+  // cloud.js was enough to flip it.
+  //
+  // firstLogArrivalPending is set synchronously at the moment the save
+  // decides it owes an arrival card, before that render can run, and cleared
+  // when the card is actually dismissed. No amount of re-interleaving can
+  // move it, because nothing observes the DOM to compute it.
+  if (firstLogArrivalPending) return false;
   return cloudBackupConfigured();
-}
-function celebrationIsOpen() {
-  const el = document.getElementById("celebrationOverlay");
-  return !!(el && el.classList.contains("open"));
 }
 
 // The backup consent card's two buttons live in app.js's own markup, but the
@@ -1520,6 +1572,12 @@ async function saveSet(sanityConfirmed) {
   // ladder logged for a past date.
   if (!ladderMode) logDate = todayISO();
   if (celebratePR) flashPR();
+  // Decided HERE, before the render below, not after it. That render is what
+  // evaluates S5's consent card, so the debt has to already exist by the time
+  // it runs — computing it afterwards is what made the ordering depend on
+  // microtask interleaving instead of on a fact.
+  const isFirstLogArrival = !ladderMode && !firstLogCelebrated && totalLoggedEntries() === 1;
+  if (isFirstLogArrival) firstLogArrivalPending = true;
   render();
   // The full-screen popup is disruptive mid-ladder — an ascending ladder's
   // rungs routinely all beat the previous best est1RM, which would otherwise
@@ -1529,8 +1587,12 @@ async function saveSet(sanityConfirmed) {
   if (!ladderMode) {
     const mov = movementById(entry.exerciseId);
     // The arrival card (§1.2 S4) replaces the ordinary post-save path for
-    // exactly one save in a member's life, so the two can never stack.
-    if (!firstLogCelebrated && totalLoggedEntries() === 1) {
+    // exactly one save in a member's life, so the two can never stack. The
+    // condition was evaluated above, before render(), and is reused rather
+    // than recomputed — recomputing it here would work today and would put
+    // the "decided before the render" property back at the mercy of whatever
+    // runs in between.
+    if (isFirstLogArrival) {
       celebrateFirstLog(mov ? `${mov.name} — ${celebrationLabel}` : celebrationLabel);
     } else {
       celebrateAfterSave(celebratePR && mov ? `${mov.name} — ${celebrationLabel}` : null);
@@ -2107,6 +2169,28 @@ function saveWelcomeForm(name) {
   render();
 }
 
+// Design spec §3.6: "after the first explicit choice, that choice becomes
+// THIS MEMBER'S remembered default for the next WOD. Not a global Rx
+// default." So the app stops guessing and starts remembering: unanswered
+// until they answer once, then pre-filled with their own answer — which for
+// most members is scaled, and for a competitor is Rx, without either being
+// imposed on the other.
+const WOD_RX_DEFAULT_KEY = "haimunia-demo:wodRxDefault";
+let wodRxDefault = null;
+async function loadWodRxDefault() {
+  try {
+    const v = await dbGetSetting(WOD_RX_DEFAULT_KEY);
+    wodRxDefault = (v === true || v === false) ? v : null;
+  } catch (e) { wodRxDefault = null; }
+  // A remembered answer pre-selects the toggle; no answer leaves it unset.
+  wodRx = wodRxDefault;
+}
+function setWodRx(rx) {
+  wodRx = rx;
+  wodRxDefault = rx;
+  dbSetSetting(WOD_RX_DEFAULT_KEY, rx).catch(noteStorageError);
+}
+
 const BAR_WEIGHT_KEY = "haimunia-demo:barWeight";
 async function loadBarWeight() {
   try {
@@ -2408,6 +2492,8 @@ async function clearAllData() {
     // the §1 work and was already wrong; it is fixed here with the rest.)
     hasOnboarded = false;
     firstLogCelebrated = false;
+    firstLogArrivalPending = false;
+    celebrationShowingArrival = false;
     backupConsent = null;
     firstOpenDate = todayISO();
     await dbSetSetting(FIRST_OPEN_DATE_KEY, firstOpenDate).catch(() => {});
@@ -2425,6 +2511,11 @@ async function clearAllData() {
   wodHistoryId = null;
   bwWeight = 70;
   barWeight = 20;
+  // dbClearSettings() above wiped the remembered Rx choice on disk; this is
+  // the in-memory half. Back to unanswered, which is what a member with no
+  // history is - the whole point of §3.6 is that the app must not guess.
+  wodRx = null;
+  wodRxDefault = null;
   measureExpandedId = null;
   measureAddOpen = false;
   logDate = todayISO();
@@ -2857,6 +2948,11 @@ async function saveWod() {
   // COMM-360: no WOD chosen yet (selectedWodId now defaults to null, not a
   // real WOD) - the empty state has no save button, but defend anyway.
   if (!w) return;
+  // Design spec §3.6: no default, so there is a real state in which this form
+  // is not answered yet. The CTA is disabled in that state (see render()),
+  // and this is the guard behind it - a WOD may not be filed as Rx or as
+  // scaled because of what the app assumed.
+  if (wodRx !== true && wodRx !== false) return;
   if (!isFinite(wodMinutes) || !isFinite(wodSeconds) || !isFinite(wodRounds) || !isFinite(wodReps) || !isFinite(wodWeight) || !isFinite(wodScaledWeight)) return;
   if (w.scoreType === "emom" && !wodEmomReps.every((r) => isFinite(r))) return;
   const editId = editingWodEntryId;
@@ -2875,7 +2971,7 @@ async function saveWod() {
   else if (w.scoreType === "emom") entry.emomReps = wodEmomReps.slice();
   else entry.weight = wodWeight;
   entry.notes = wodNotes.trim() || null;
-  entry.scaledWeight = !wodRx ? wodScaledWeight : null;
+  entry.scaledWeight = wodRx === false ? wodScaledWeight : null;
   entry.partnerTag = cleanStr(wodPartnerTag, LIMITS.partnerTag) || null;
 
   // EMOM has no cross-attempt scoring (yet) — see bestWodScore/scoreValue.
@@ -2892,10 +2988,14 @@ async function saveWod() {
   editingWodEntryId = null;
   wodLogDate = todayISO();
   if (isPR) flashWodPR();
+  // Same ordering rule as saveSet(): the debt is claimed before the render
+  // that evaluates S5's consent card, never after it.
+  const isFirstLogArrival = !firstLogCelebrated && totalLoggedEntries() === 1;
+  if (isFirstLogArrival) firstLogArrivalPending = true;
   render();
   // A logged WOD is just as much a first entry as a logged set - a member
   // who starts on the אימונים tab gets the same arrival moment (§1.2 S4).
-  if (!firstLogCelebrated && totalLoggedEntries() === 1) {
+  if (isFirstLogArrival) {
     celebrateFirstLog(`${w.name} — ${formatWodEntry(entry)}`);
   } else {
     celebrateAfterSave(isPR ? `${w.name} — ${formatWodEntry(entry)}` : null);
@@ -3672,7 +3772,7 @@ function renderCalDetail() {
             <div class="flex items-center gap-8">
               ${e.isPR ? ICONS.flame : ""}
               <span style="font-weight:700; font-size:14px;">${bidiText(w ? w.name : "?")}</span>
-              <span style="color:var(--steel); font-size:11px;">${e.rx ? "Rx" : "Scaled"}${e.partnerTag ? ` · ${bidiText(e.partnerTag)}` : ""}</span>
+              <span style="color:var(--steel); font-size:11px;">${e.rx ? "מלא (Rx)" : "מותאם (Scaled)"}${e.partnerTag ? ` · ${bidiText(e.partnerTag)}` : ""}</span>
             </div>
             <div class="flex items-center gap-10">
               <span class="mono" style="color:var(--steel); font-size:13px;">${formatWodEntry(e)}</span>
@@ -4223,18 +4323,7 @@ function render() {
       content = renderCalendarTab();
     } else if (tab === "wod") {
       content = renderWodTab();
-      const w = wodSubTab === "log" ? wodById(selectedWodId) : null;
-      if (w) {
-        document.getElementById("bottomBarBtn").dataset.action = "save-wod";
-        document.getElementById("saveBtnLabel").textContent = `${editingWodEntryId ? "עדכון" : "רישום"} אימון — ${w.name}`;
-      } else if (wodSubTab === "log") {
-        // Same stale-label problem as the Log tab's else branch above, and
-        // the one the audit actually saw: אימונים › רישום with nothing
-        // chosen showed a CTA reading "רישום סט", an action belonging to a
-        // different screen entirely.
-        document.getElementById("bottomBarBtn").dataset.action = "open-wod-picker";
-        document.getElementById("saveBtnLabel").textContent = "בחירת אימון";
-      }
+      syncWodSaveCta(wodSubTab === "log" ? wodById(selectedWodId) : null);
     } else if (tab === "manage") {
       content = typeof renderManageApp === "function" ? renderManageApp() : `<div class="empty">בטעינה</div>`;
     } else {
@@ -4351,6 +4440,65 @@ function renderClubPublishAffordance(w) {
       <div style="color:var(--steel); font-size:12px; line-height:1.5;">כל חברי המועדון יוכלו לרשום את האימון הזה, ואפשר יהיה לקבוע עליו אתגר שבועי.</div>
     </div>`;
 }
+// The אימונים save CTA, in one place. Two call sites set it - the full
+// render() and renderWodContent()'s partial sub-tab update - and they had
+// drifted into two copies of the same three lines. Design spec §3.6 adds a
+// third state to it (unanswered -> disabled), and a rule with three states
+// is one copy too many to keep in two places.
+//
+// Disabled rather than hidden: the member should see that filing this WOD is
+// the next thing, and why it is not available yet. The reason is stated on
+// screen by the helper line under the toggle, not left to be inferred from a
+// greyed-out button - a disabled control with no explanation is the thing
+// this spec section is complaining about elsewhere.
+function syncWodSaveCta(w) {
+  const btn = document.getElementById("bottomBarBtn");
+  const label = document.getElementById("saveBtnLabel");
+  if (!btn || !label) return;
+  if (w) {
+    btn.dataset.action = "save-wod";
+    label.textContent = `${editingWodEntryId ? "עדכון" : "רישום"} אימון — ${w.name}`;
+    const unanswered = wodRx !== true && wodRx !== false;
+    btn.disabled = unanswered;
+    btn.setAttribute("aria-disabled", String(unanswered));
+    btn.style.opacity = unanswered ? ".45" : "";
+  } else if (wodSubTab === "log") {
+    // The label is a long-lived node and must not keep advertising another
+    // screen's action just because the bar happens to be hidden right now -
+    // the audit caught אימונים › רישום showing a CTA reading "רישום סט".
+    btn.dataset.action = "open-wod-picker";
+    label.textContent = "בחירת אימון";
+    btn.disabled = false;
+    btn.setAttribute("aria-disabled", "false");
+    btn.style.opacity = "";
+  }
+}
+
+// Design spec §3.6's last bullet: "סוג ניקוד: For Time" -> "איך מודדים: זמן"
+// with a .term-sub gloss. Same treatment, and for the same reason, as the
+// Rx/Scaled toggle three rows below it - a stat card that answers "how is
+// this workout scored?" in an English term the member has never been given a
+// definition for is not an answer. Hebrew leads, the English stays in
+// parentheses so it remains learnable off the whiteboard at the box.
+//
+// The gloss strings are deliberately the SAME sentences the WOD builder's
+// format chips already carry, so a member meets one explanation of AMRAP,
+// not two slightly different ones. Those chips live in index.html's markup,
+// so this is currently a second copy of that copy - noted for whoever owns
+// that file; unifying it needs one of the two to move.
+const SCORE_TYPE_LABELS = {
+  time: "זמן (For Time)",
+  amrap: "סבבים (AMRAP)",
+  emom: "כל דקה (EMOM)",
+  load: "משקל (Load)",
+};
+const SCORE_TYPE_GLOSS = {
+  time: "כמה מהר סיימתם",
+  amrap: "כמה סיבובים הספקתם",
+  emom: "תרגיל חדש כל דקה",
+  load: "המשקל הכי כבד שהרמתם",
+};
+
 function renderWodLogSection() {
   const w = wodById(selectedWodId);
   // UX audit: the default sub-tab of the אימונים tab used to be one grey
@@ -4455,13 +4603,13 @@ function renderWodLogSection() {
         </div>
         <div style="text-align:left;">
           <div class="stat-label">אחרון (${fmtDate(history[0].date)})</div>
-          <div class="mono" style="font-weight:700; font-size:16px;">${formatWodEntry(history[0])} ${history[0].rx ? "" : "· Scaled"}</div>
+          <div class="mono" style="font-weight:700; font-size:16px;">${formatWodEntry(history[0])} ${history[0].rx ? "" : "· מותאם"}</div>
         </div>
       </div>
     </div>` : `
     <div class="stat-row">
       <div class="stat-card"><div class="stat-label">שיא</div><div class="stat-value mono" style="color:var(--brass);">${best}</div></div>
-      <div class="stat-card"><div class="stat-label">סוג ניקוד</div><div class="stat-value" style="font-size:14px;">${w.scoreType === "time" ? "For Time" : w.scoreType === "amrap" ? "AMRAP" : w.scoreType === "emom" ? "EMOM" : "Load"}</div></div>
+      <div class="stat-card"><div class="stat-label">איך מודדים</div><div class="stat-value" style="font-size:14px;">${esc(SCORE_TYPE_LABELS[w.scoreType] || "")}<span class="term-sub">${esc(SCORE_TYPE_GLOSS[w.scoreType] || "")}</span></div></div>
     </div>`}
 
     ${(() => {
@@ -4471,21 +4619,35 @@ function renderWodLogSection() {
       <div style="margin-bottom:16px;">
         <div style="color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; margin-bottom:6px;">ב-14 הימים האחרונים</div>
         <div class="flex wrap gap-8">
-          ${recent.map((e) => `<span class="mono" style="background:var(--surface2); border-radius:10px; padding:6px 10px; font-size:12.5px; font-weight:700; color:var(--steel);">${esc(fmtDate(e.date))}: <span style="color:var(--chalk);">${esc(formatWodEntry(e))}</span>${e.rx ? "" : " · Scaled"}</span>`).join("")}
+          ${recent.map((e) => `<span class="mono" style="background:var(--surface2); border-radius:10px; padding:6px 10px; font-size:12.5px; font-weight:700; color:var(--steel);">${esc(fmtDate(e.date))}: <span style="color:var(--chalk);">${esc(formatWodEntry(e))}</span>${e.rx ? "" : " · מותאם"}</span>`).join("")}
         </div>
       </div>`;
     })()}
 
     <div id="wodFlashBox" class="flex items-center justify-center" style="display:none; gap:6px; color:#fff; font-weight:800; font-size:14px; background-image:var(--stripe); border-radius:14px; padding:10px 0; margin-bottom:16px; text-shadow:0 1px 3px rgba(0,0,0,.5);">${ICONS.flame}<span>שיא חדש!</span></div>
 
-    <div class="rx-toggle" role="radiogroup" aria-label="Rx או Scaled">
-      <button class="rx-btn ${wodRx ? "active-rx" : ""}" data-action="set-rx" data-rx="1" role="radio" aria-checked="${wodRx}">Rx</button>
-      <button class="rx-btn ${!wodRx ? "active-scaled" : ""}" data-action="set-rx" data-rx="0" role="radio" aria-checked="${!wodRx}">Scaled</button>
+    <!-- Design spec §3.6. Hebrew-first with the English kept in parentheses,
+         so Rx and Scaled stay LEARNABLE rather than disappearing - the member
+         will meet both words on the whiteboard at the box, and an app that
+         hides them leaves her unable to read it. The .term-sub gloss under
+         each is tier-1 permanent disclosure: it is the answer to "which one
+         was I?", which is the actual question, and it never has to be tapped
+         for. The heading asks the question in words instead of leaving two
+         bare nouns to be interpreted.
+         .rx-toggle.unset draws the dashed "nothing chosen yet" frame - an
+         unmade choice must not look like a made one, which is precisely how
+         the old pre-selected Rx read. All of this CSS already shipped in
+         index.html and was inert until these labels existed. -->
+    <div style="color:var(--chalk); font-weight:700; font-size:13px; margin-bottom:6px;">איך ביצעתם את האימון?</div>
+    <div class="rx-toggle ${wodRx === null ? "unset" : ""}" role="radiogroup" aria-label="איך ביצעתם את האימון">
+      <button class="rx-btn ${wodRx === true ? "active-rx" : ""}" data-action="set-rx" data-rx="1" role="radio" aria-checked="${wodRx === true}">מלא (Rx)<span class="term-sub">בדיוק כפי שנכתב</span></button>
+      <button class="rx-btn ${wodRx === false ? "active-scaled" : ""}" data-action="set-rx" data-rx="0" role="radio" aria-checked="${wodRx === false}">מותאם (Scaled)<span class="term-sub">במשקלים שמתאימים לי</span></button>
     </div>
+    ${wodRx === null ? `<div class="footer-note" role="status" style="color:var(--brass); margin-top:-10px; margin-bottom:16px;">בחרו איך ביצעתם את האימון</div>` : ""}
 
     <input id="wodPartnerTagInput" class="text-input" dir="auto" maxlength="${LIMITS.partnerTag}" style="margin-bottom:16px;" placeholder="עם פרטנר? (אופציונלי, לדוגמה עם דנה)" aria-label="שם הפרטנר (אופציונלי)" value="${esc(wodPartnerTag)}" />
 
-    ${!wodRx ? `
+    ${wodRx === false ? `
     <div class="steppers" style="margin-bottom:16px;">
       ${renderStepper("wodScaledWeight", "משקל מותאם (ק\"ג)", wodScaledWeight, 2.5, 0, "wod-step")}
     </div>
@@ -4502,7 +4664,7 @@ function renderWodLogSection() {
       <div class="flex items-center gap-8">
         ${dayWods[0].isPR ? ICONS.flame : ""}
         <div style="text-align:right;">
-          <div style="font-weight:700; font-size:13px;">אחרון: ${bidiText(wodById(dayWods[0].wodId) ? wodById(dayWods[0].wodId).name : "?")} — ${formatWodEntry(dayWods[0])} (${dayWods[0].rx ? "Rx" : "Scaled"})</div>
+          <div style="font-weight:700; font-size:13px;">אחרון: ${bidiText(wodById(dayWods[0].wodId) ? wodById(dayWods[0].wodId).name : "?")} — ${formatWodEntry(dayWods[0])} (${dayWods[0].rx ? "מלא (Rx)" : "מותאם (Scaled)"})</div>
           <div style="color:var(--steel); font-size:11px;">${dayWods.length} אימון${dayWods.length === 1 ? "" : "ים"} נרשמו ${isToday ? "היום" : `ב-${esc(dayLabel)}`}</div>
         </div>
       </div>
@@ -4546,7 +4708,7 @@ function renderWodDetailCard(w) {
               <div class="flex items-center gap-8">
                 ${e.isPR ? ICONS.flame : ""}
                 <span style="color:var(--steel); font-size:12px;">${fmtDate(e.date)}</span>
-                <span style="color:var(--steel); font-size:11px;">${e.rx ? "Rx" : "Scaled"}${e.partnerTag ? ` · ${bidiText(e.partnerTag)}` : ""}</span>
+                <span style="color:var(--steel); font-size:11px;">${e.rx ? "מלא (Rx)" : "מותאם (Scaled)"}${e.partnerTag ? ` · ${bidiText(e.partnerTag)}` : ""}</span>
               </div>
               <span class="flex items-center gap-6">
                 <span class="mono" style="font-size:13px;">${formatWodEntry(e)}</span>
@@ -4829,10 +4991,34 @@ registerAppDialog("navMenu", { overlayId: "navMenuOverlay", isOpen: () => navMen
 
 let settingsOpen = false;
 let settingsOpenerEl = null;
+// #settingsBody is repopulated on EVERY render() regardless of whether this
+// overlay is open (see renderSettingsBody and closeSettings for why that is
+// deliberate). The cost of that is a real defect: from the moment any
+// anonymous backup session exists, cloud.js's backupCredentials form sits in
+// the document permanently, and its `input[name="username"]
+// autocomplete="username"` collides with the identical field on the
+// Community login screen. Two same-named credential fields in one document
+// is how a password manager fills the wrong one.
+//
+// `inert` is the fix, rather than skipping the render: it takes the whole
+// closed overlay out of the accessibility tree, out of the tab order and out
+// of hit-testing in one attribute, without changing when the body is built -
+// several checks legitimately read #settingsBody while the sheet is closed
+// (the storage-quota error surfaces there, for one), and they should keep
+// being able to.
+function setSettingsInert(inert) {
+  const overlay = document.getElementById("settingsOverlay");
+  if (!overlay) return;
+  if (inert) overlay.setAttribute("inert", "");
+  else overlay.removeAttribute("inert");
+}
 function openSettings() {
   settingsOpen = true;
   settingsOpenerEl = document.activeElement;
   document.body.style.overflow = "hidden";
+  // Before .open and before the focus call below: focus cannot land inside
+  // an inert subtree, so lifting it has to happen first.
+  setSettingsInert(false);
   document.getElementById("settingsOverlay").classList.add("open");
   setTimeout(() => focusFirstAppDialogEl("settingsOverlay"), 50);
 }
@@ -4853,6 +5039,10 @@ function closeSettings() {
   if (overlay) overlay.classList.remove("open");
   if (settingsOpenerEl && typeof settingsOpenerEl.focus === "function") settingsOpenerEl.focus();
   settingsOpenerEl = null;
+  // AFTER focus has been returned to the opener: setting inert while focus is
+  // still inside the subtree would blur it to <body> and lose the member's
+  // place on the screen behind.
+  setSettingsInert(true);
 }
 registerAppDialog("settings", { overlayId: "settingsOverlay", isOpen: () => settingsOpen, close: closeSettings });
 // COMM-328. The remaining 8 dialogs (picker/wodPicker/wodBuilder use their
@@ -5297,16 +5487,7 @@ document.addEventListener("click", (e) => {
     // pinned for a WOD you're no longer even looking at.
     const w = wodSubTab === "log" ? wodById(selectedWodId) : null;
     document.getElementById("bottomBar").style.display = w ? "flex" : "none";
-    if (w) {
-      document.getElementById("bottomBarBtn").dataset.action = "save-wod";
-      document.getElementById("saveBtnLabel").textContent = `${editingWodEntryId ? "עדכון" : "רישום"} אימון — ${w.name}`;
-    } else if (wodSubTab === "log") {
-      // Mirrors render()'s own else branch for this state - the label is a
-      // long-lived node and must not keep advertising another screen's
-      // action just because the bar happens to be hidden right now.
-      document.getElementById("bottomBarBtn").dataset.action = "open-wod-picker";
-      document.getElementById("saveBtnLabel").textContent = "בחירת אימון";
-    }
+    syncWodSaveCta(w);
   }
   else if (action === "open-wod-picker") { openWodPicker(); }
   else if (action === "close-wod-picker") {
@@ -5449,8 +5630,11 @@ document.addEventListener("click", (e) => {
     closeOnboarding();
   }
   else if (action === "set-rx") {
-    wodRx = el.dataset.rx === "1";
-    renderWodContent();
+    // setWodRx, not a bare assignment: the choice is also remembered as this
+    // member's own default for the next WOD (design spec §3.6), which is what
+    // replaces the global Rx default rather than merely removing it.
+    setWodRx(el.dataset.rx === "1");
+    render();
   }
   else if (action === "copy-last-scaled") {
     const last = lastScaledAttempt(selectedWodId);
@@ -5559,6 +5743,7 @@ async function init() {
   await loadUserName();
   await loadLastExport();
   await loadBarWeight();
+  await loadWodRxDefault();
   await loadBoxStartDate();
   await loadSeenAchievements();
   await loadCommunityClaimed();
@@ -5614,6 +5799,10 @@ async function init() {
 
   document.getElementById("loading").style.display = "none";
   document.getElementById("app").style.display = "block";
+  // The settings sheet starts closed, so it starts inert - established before
+  // the first render() populates #settingsBody, so there is no window in
+  // which a duplicate credential field is live in the document.
+  setSettingsInert(true);
   renderUserGreeting();
   render();
   maybeShowIOSInstallBanner();

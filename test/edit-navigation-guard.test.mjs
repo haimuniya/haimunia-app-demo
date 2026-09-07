@@ -20,7 +20,7 @@
 // way a user would, rather than reading internal state directly.
 import { test } from "node:test";
 import assert from "node:assert";
-import { bootApp } from "./helpers/boot.mjs";
+import { bootApp, answerWodRx } from "./helpers/boot.mjs";
 
 test("picking a different exercise mid-edit does not overwrite the original entry", async () => {
   const window = await bootApp();
@@ -66,6 +66,7 @@ test("picking a different WOD mid-edit does not overwrite the original WOD entry
   const original = window.allWods().find((w) => w.name === "Test Original WOD");
 
   window.applyFieldValue("wod-step", "wodWeight", 100);
+  answerWodRx(window);
   await window.saveWod();
   const [originalEntry] = window.wodEntriesFor(original.id);
   assert.ok(originalEntry, "original WOD entry should exist");
@@ -87,6 +88,7 @@ test("picking a different WOD mid-edit does not overwrite the original WOD entry
 
   window.applyFieldValue("wod-step", "wodMinutes", 5);
   window.applyFieldValue("wod-step", "wodSeconds", 30);
+  answerWodRx(window);
   await window.saveWod();
 
   const originalAfter = window.wodEntriesFor(original.id);

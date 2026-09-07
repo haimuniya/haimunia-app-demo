@@ -18,7 +18,7 @@
 // is an invariant that loop depends on.
 import { test } from "node:test";
 import assert from "node:assert";
-import { bootApp, bootCommunity, waitFor } from "./helpers/boot.mjs";
+import { bootApp, bootCommunity, waitFor, answerWodRx } from "./helpers/boot.mjs";
 import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
 const VERIFIED = "2026-08-01T00:00:00.000Z";
@@ -232,6 +232,7 @@ test("a coach publishes their own custom WOD, sets a challenge on it, and a DIFF
   member.choosePickedWod(local.id); member.render();
   member.applyFieldValue("wod-step", "wodMinutes", 12);
   member.applyFieldValue("wod-step", "wodSeconds", 30);
+  answerWodRx(member);
   await member.saveWod();
   const entry = member.wodEntriesFor(local.id)[0];
   assert.ok(entry, "the member logged the coach's workout on their own device");
@@ -333,6 +334,7 @@ test("a member who logged a club WOD and opens the app offline still resolves it
   window.document.getElementById("tabWodBtn").click();
   window.choosePickedWod(CLUB_ID); window.render();
   window.applyFieldValue("wod-step", "wodMinutes", 14);
+  answerWodRx(window);
   await window.saveWod();
   const entry = window.wodEntriesFor(CLUB_ID)[0];
   assert.ok(entry, "the member has a real result against the box's programming");
@@ -416,6 +418,7 @@ test("a retired club WOD leaves the picker, unless this member actually logged i
   window.setClubWods([clubWodRow()]);
   window.choosePickedWod(CLUB_ID); window.render();
   window.applyFieldValue("wod-step", "wodMinutes", 11);
+  answerWodRx(window);
   await window.saveWod();
   window.setClubWods([clubWodRow({ retiredAt: "2026-09-07T00:00:00.000Z" })]);
   window.openWodPicker();

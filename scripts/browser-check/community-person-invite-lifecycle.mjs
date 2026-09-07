@@ -224,6 +224,11 @@ await page.waitForSelector(".subtabbar", { timeout: 5000 });
 await page.click('[data-community-action="set-tab"][data-tab="account"]');
 await page.waitForSelector('[data-community-action="sign-out"]', { timeout: 5000 });
 await page.click('[data-community-action="sign-out"]');
+// Design spec section 7: the gate opens on the neutral choice screen and the
+// login form is a screen of its own, one deliberate tap behind it - so a
+// returning admin now opens it the same way any returning member does.
+await page.waitForSelector('[data-community-action="show-login"]', { timeout: 5000 });
+await page.click('[data-community-action="show-login"]');
 await page.waitForSelector("#communityLogin", { timeout: 5000 });
 await page.fill('#communityLogin input[name="username"]', "roi");
 await page.fill('#communityLogin input[name="password"]', ADMIN_PASSWORD);

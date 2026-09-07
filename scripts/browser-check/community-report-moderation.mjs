@@ -81,7 +81,10 @@ await page.evaluate(() => {
   window.__mock.seedCredentials("mod-1", "mod@members.haimuniya.invalid", "modpass123");
 });
 await page.evaluate(() => window.__mock.client.auth.signOut());
-await page.waitForFunction(() => !!document.getElementById("communityLogin"), { timeout: 5000 });
+// Design spec section 7: the signed-out gate is now the neutral choice
+// screen, not the login form. This step only needs "we are back on the gate"
+// before signing in programmatically below, so it waits for the gate itself.
+await page.waitForFunction(() => !!document.querySelector('#content [data-community-action="start-signup"]'), { timeout: 5000 });
 await page.evaluate(() => window.__mock.client.auth.signInWithPassword({ email: "mod@members.haimuniya.invalid", password: "modpass123" }));
 await page.waitForFunction(() => !!document.querySelector(".subtabbar"), { timeout: 5000 });
 

@@ -306,15 +306,32 @@ test("MEASURED: the duplicate input[name=username] - what the split fixed, and t
 
   d.querySelector('#content [data-community-action="show-login"]').click();
   await waitFor(() => !!d.getElementById("communityLogin"), 3000);
-  assert.equal(creds().length, 2,
-    "the collision still happens on the login screen: this is the half app.js owns, and it is reported, not fixed here");
 
-  // The real fix is app.js's, and it is one of two one-liners: set `inert` on
-  // #settingsOverlay while it is closed, or skip populating #settingsBody
-  // until it opens. Pinned as absent so this test starts failing - usefully -
-  // the day someone lands it.
-  assert.equal(d.getElementById("settingsOverlay").hasAttribute("inert"), false,
-    "when app.js makes the closed settings overlay inert, update this test: the duplicate is then genuinely gone");
+  // LANDED. app.js now marks #settingsOverlay inert while it is closed, which
+  // is the fix this test was written to wait for.
+  //
+  // Two credential fields still EXIST in the document - #settingsBody is
+  // still populated on every render, deliberately, because several checks
+  // legitimately read it while the sheet is closed. What has changed is that
+  // only one of them is real: `inert` takes the closed sheet out of the
+  // accessibility tree, out of the tab order and out of hit-testing, so a
+  // screen reader announces one username field, Tab reaches one, and a
+  // password manager has one to fill. That is what "the duplicate is gone"
+  // has to mean here, and it is asserted as such rather than by counting
+  // nodes, which would only be measuring where the markup happens to live.
+  const settingsOverlay = d.getElementById("settingsOverlay");
+  assert.equal(settingsOverlay.hasAttribute("inert"), true,
+    "the closed settings sheet must be inert, or its backup form is a second live username field");
+  const live = creds().filter((el) => !el.closest("[inert]"));
+  assert.equal(live.length, 1, "exactly one credential field is reachable at a time");
+  assert.ok(live[0].closest("#communityLogin"),
+    "and it is the login form the member is actually looking at, not the one behind a closed sheet");
+
+  // ...and it lifts when the sheet is opened, or Settings would be unusable.
+  window.openSettings();
+  assert.equal(settingsOverlay.hasAttribute("inert"), false, "an open sheet must not be inert");
+  window.closeSettings();
+  assert.equal(settingsOverlay.hasAttribute("inert"), true, "and it goes back when the sheet closes");
 });
 
 test("signing out returns a member to the choice screen, not to a bare login form", async () => {

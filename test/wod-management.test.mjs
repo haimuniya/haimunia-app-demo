@@ -7,7 +7,7 @@
 // never someone's actual training data.
 import { test } from "node:test";
 import assert from "node:assert";
-import { bootApp } from "./helpers/boot.mjs";
+import { bootApp, answerWodRx } from "./helpers/boot.mjs";
 
 test("a custom WOD with zero logged entries can be deleted from the picker", async () => {
   const window = await bootApp();
@@ -30,6 +30,7 @@ test("a custom WOD with logged entries offers no delete button, and deleteCustom
   await window.addCustomWod("Test Keep Me", "load", "");
   const wod = window.allWods().find((w) => w.name === "Test Keep Me");
   window.applyFieldValue("wod-step", "wodWeight", 60);
+  answerWodRx(window);
   await window.saveWod();
 
   window.openWodPicker();

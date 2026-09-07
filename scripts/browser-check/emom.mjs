@@ -93,6 +93,13 @@ await page.fill("[data-action='wod-emom-step'][data-field='0'].stepper-val", "15
 await page.dispatchEvent("[data-action='wod-emom-step'][data-field='0'].stepper-val", "change");
 await page.fill("[data-action='wod-emom-step'][data-field='1'].stepper-val", "7");
 await page.dispatchEvent("[data-action='wod-emom-step'][data-field='1'].stepper-val", "change");
+// Design spec §3.6: the Rx/Scaled question has no default any more, and the
+// save CTA stays disabled until it is answered - so a member logging a WOD
+// answers it, and so does this scenario. Answering "מלא (Rx)" keeps the
+// entry identical to what this check asserted when Rx was the silent
+// default, so everything below still describes the same data.
+await page.click('[data-action="set-rx"][data-rx="1"]');
+await page.waitForFunction(() => document.getElementById("bottomBarBtn")?.disabled === false, { timeout: 5000 });
 await page.click("[data-action='save-wod']");
 await page.waitForTimeout(300);
 

@@ -183,6 +183,24 @@ export async function openCommunityLogin(window) {
   return window.document.getElementById("communityLogin");
 }
 
+// Design spec §3.6 removed the Rx default: `let wodRx = true` silently filed
+// a beginner's session as "at the full prescribed weights", which is a
+// data-integrity bug rather than a copy one. There is now a real third state
+// - unanswered - and saveWod() refuses it outright, the same way saveSet()
+// refuses a set with no movement chosen.
+//
+// Scenarios whose subject is something else entirely (EMOM shapes, the
+// edit-navigation guard, the club catalogue) answer the question the way a
+// member would and carry on. Rx=true is deliberate: it is what the removed
+// default used to record, so every assertion those scenarios make about the
+// stored entry keeps describing exactly the same data as before.
+//
+// A test that is ABOUT the choice itself should not use this - see
+// test/wod-rx-choice.test.mjs, which drives the real toggle.
+export function answerWodRx(window, rx = true) {
+  window.setWodRx(rx);
+}
+
 export function waitFor(check, timeoutMs = 2000, intervalMs = 5) {
   const start = Date.now();
   return new Promise((resolve, reject) => {
