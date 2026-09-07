@@ -881,6 +881,38 @@ function celebrateAfterSave(prLabel) {
   if (!prLabel && !newBadges.length) return;
   showCelebration(prLabel, newBadges);
 }
+// Design spec §1.2 S4 / §5.2 tier A, entry 1: the member's first-ever saved
+// entry, framed as ARRIVAL rather than as a record.
+//
+// Two things this deliberately is not. It is not a medal - with no history
+// every set is trivially a personal best, and a card that says שיא אישי on
+// day one is precisely how a member learns the phrase means nothing (which
+// is what the beginner persona concluded, in those words). And it is not an
+// extra interruption: before this, the first save produced no acknowledgment
+// at all, because §5.3's PR gates correctly withhold one. The app's single
+// most important moment had no response to it. This is that response, and
+// it is the only full-screen card a member can receive on day one.
+//
+// It also earns the right to ask the next question: S5's backup-consent card
+// renders on the screen behind this one, so the app has given something
+// before it asks for anything.
+function celebrateFirstLog(label) {
+  firstLogCelebrated = true;
+  dbSetSetting(FIRST_LOG_CELEBRATED_KEY, true).catch(noteStorageError);
+  // Claimed, not skipped: claimNewlyEarned() is what marks a badge seen, so
+  // routing around it would silently swallow anything that legitimately
+  // unlocked on this same save. In practice nothing does on entry one (the
+  // lowest rung of every family needs 3+), and then badges is empty and no
+  // medal is drawn - which is the outcome the spec asks for. If something
+  // ever does unlock here it rides along inside this one card rather than
+  // queueing a second one behind it.
+  syncCommunityMilestones();
+  const badges = claimNewlyEarned();
+  showCelebration(label, badges, {
+    title: "הרישום הראשון שלך נשמר",
+    sub: "מכאן זה מצטבר. כל אימון שתרשמו יופיע ביומן ובגרפים.",
+  });
+}
 let celebrationOpenerEl = null;
 // UX audit: a celebration rendered on top of the 5-screen onboarding
 // explainer and hid it — both are .modal-overlay at the same z-index:50, so
@@ -919,20 +951,24 @@ function flushDeferredCelebration() {
   if (!deferredCelebration || blockingDialogOpen()) return;
   const held = deferredCelebration;
   deferredCelebration = null;
-  showCelebration(held.prLabel, held.badges);
+  showCelebration(held.prLabel, held.badges, held.opts);
 }
-function showCelebration(prLabel, badges) {
+// opts, when given, overrides the two lines of framing this card writes
+// about itself: { title, sub }. Only the arrival card (§5.2 tier A #1) uses
+// it, and it exists because that card must NOT say שיא אישי - see
+// celebrateFirstLog() for why that distinction is the whole point.
+function showCelebration(prLabel, badges, opts) {
   if (blockingDialogOpen()) {
     // Merge rather than replace: the welcome form can fire more than one of
     // these before it closes, and one popup covering both is the same rule
     // celebrateAfterSave() already follows for a PR that also lands a badge.
     const held = deferredCelebration || { prLabel: null, badges: [] };
     const ids = new Set(held.badges.map((a) => a.id));
-    deferredCelebration = { prLabel: prLabel || held.prLabel, badges: held.badges.concat(badges.filter((a) => !ids.has(a.id))) };
+    deferredCelebration = { prLabel: prLabel || held.prLabel, badges: held.badges.concat(badges.filter((a) => !ids.has(a.id))), opts: opts || held.opts };
     return;
   }
   const title = document.getElementById("celebrationTitle");
-  if (title) title.textContent = badges.length ? "כל הכבוד!" : "שיא אישי חדש!";
+  if (title) title.textContent = (opts && opts.title) ? opts.title : (badges.length ? "כל הכבוד!" : "שיא אישי חדש!");
   const prLine = document.getElementById("celebrationPrLine");
   if (prLine) {
     prLine.textContent = prLabel || "";
@@ -953,9 +989,9 @@ function showCelebration(prLabel, badges) {
   }
   const sub = document.getElementById("celebrationSub");
   if (sub) {
-    sub.textContent = badges.length
+    sub.textContent = (opts && opts.sub) ? opts.sub : (badges.length
       ? (badges.length > 1 ? `${badges.length} עיטורים חדשים נפתחו — תמשיכו ככה!` : "עיטור חדש נפתח — תמשיכו ככה!")
-      : "תמשיכו ככה!";
+      : "תמשיכו ככה!");
   }
   document.body.style.overflow = "hidden";
   celebrationOpenerEl = document.activeElement;
@@ -967,6 +1003,11 @@ function closeCelebration() {
   document.getElementById("celebrationOverlay").classList.remove("open");
   if (celebrationOpenerEl && typeof celebrationOpenerEl.focus === "function") celebrationOpenerEl.focus();
   celebrationOpenerEl = null;
+  // S5's consent card is suppressed while this overlay is up (one surface at
+  // a time), so the screen underneath is a render behind by the time the
+  // member closes it. This is what makes "celebration closed -> the card is
+  // there" true rather than "there on the next thing that happens to render".
+  render();
 }
 
 // ---------- Update notifications ----------
@@ -1102,8 +1143,35 @@ async function loadOnboardedFlag() {
   } catch (e) { hasOnboarded = true; }
 }
 let onboardingOpenerEl = null;
+// Design spec §1.2 S3. The explainer's CONTENT is untouched - it is one of
+// the best-written things in the product and two personas said so. What
+// changes is that it is no longer a gate (nothing opens it but a tap), its
+// primary button no longer duplicates the welcome sheet's label, and it now
+// says out loud that it can be reached again. That last line is the whole
+// reason a member can afford to skip it.
+//
+// Both are applied here rather than in index.html because index.html is
+// owned by another pass right now; they are also the kind of thing that
+// belongs in the markup, and the handoff notes says so.
+function applyOnboardingCopy() {
+  const overlay = document.getElementById("onboardingOverlay");
+  if (!overlay) return;
+  const primary = overlay.querySelector("[data-action='close-onboarding'].save-btn");
+  if (primary) primary.textContent = "הבנתי, קדימה";
+  if (primary && !document.getElementById("onboardingReopenNote")) {
+    // createElement/textContent rather than insertAdjacentHTML: this is a
+    // fixed Hebrew sentence with no interpolation, and building it as DOM
+    // keeps it out of the innerHTML sink census entirely.
+    const note = document.createElement("div");
+    note.id = "onboardingReopenNote";
+    note.style.cssText = "color:var(--steel); font-size:12.5px; text-align:center; margin-top:10px;";
+    note.textContent = "אפשר לחזור לזה מתי שרוצים — בהגדרות.";
+    primary.insertAdjacentElement("afterend", note);
+  }
+}
 function openOnboarding() {
   onboardingOpenerEl = document.activeElement;
+  applyOnboardingCopy();
   document.body.style.overflow = "hidden";
   document.getElementById("onboardingOverlay").classList.add("open");
   setTimeout(() => focusFirstAppDialogEl("onboardingOverlay"), 50);
@@ -1117,6 +1185,137 @@ function closeOnboarding() {
   if (onboardingOpenerEl && typeof onboardingOpenerEl.focus === "function") onboardingOpenerEl.focus();
   onboardingOpenerEl = null;
   flushDeferredCelebration();
+  // The tour card on רישום disappears the moment the tour has been taken,
+  // and the settings row that replaces it is already rendered - so the
+  // screen behind this overlay is stale by the time we get here.
+  render();
+}
+
+// ---------- First-run sequencing (design spec §1) ----------
+//
+// THE FINDING. A new member's first load used to stack four surfaces that
+// each wanted something before the app had given them anything: the welcome
+// sheet (name AND box-start date), the five-screen explainer as a gate, an
+// achievement celebration, and the install banner. Two of those carried a
+// primary button reading the identical string בואו נתחיל, which is why the
+// flow read as "not progressing" rather than as two steps. The stacking half
+// of that was fixed in 8afbc57 (one modal queue); this is the SEQUENCE half.
+//
+// THE RULE, and it is the only rule here: one surface at a time, and nothing
+// costs the member anything until the app has given them something. Concretely
+// that means each ask is deferred to the moment the member can actually answer
+// it from experience rather than on faith:
+//
+//   name          -> S1, the one blocking sheet, one field, skippable
+//   the tour      -> S2, a card on the logging screen, never a gate, and
+//                    permanently re-openable from Settings
+//   box-start date-> off first run entirely (Settings + the achievements
+//                    screen's own prompt card, which is where a member is
+//                    actually looking at the tenure badges it unlocks)
+//   cloud backup  -> S5, after the first entry exists, because "back up your
+//                    workouts" is a meaningless question to someone who has
+//                    no workouts
+//   install       -> S6, day two, because "keep this app" is a meaningless
+//                    question on the first minute of the first day
+//
+// Everything below is bookkeeping for those five deferrals.
+
+// The calendar date of the very first open. S6 needs it to answer "is this a
+// different day from the day they installed", which is not the same question
+// as "has time passed" and cannot be reconstructed from the entry log (a
+// member can log a set dated last week on their first day).
+const FIRST_OPEN_DATE_KEY = "haimunia-demo:firstOpenDate";
+let firstOpenDate = null;
+async function loadFirstOpenDate() {
+  try {
+    const v = await dbGetSetting(FIRST_OPEN_DATE_KEY);
+    firstOpenDate = v ? cleanISODate(v) : null;
+  } catch (e) { /* treated as "unknown" - see maybeShowInstallBanner() */ }
+}
+
+// Cloud-backup consent (S5). null means never asked; "yes"/"later" are the
+// member's own answer; "grandfathered" is a device that predates this
+// sequence and must never be interrogated about a decision it already made
+// implicitly - the same bootstrap rule hasOnboarded and lastSeenVersion
+// follow at the bottom of init().
+const BACKUP_CONSENT_KEY = "haimunia-demo:backupConsent";
+let backupConsent = null;
+async function loadBackupConsent() {
+  try {
+    const v = await dbGetSetting(BACKUP_CONSENT_KEY);
+    backupConsent = (v === "yes" || v === "later" || v === "grandfathered") ? v : null;
+  } catch (e) { backupConsent = "grandfathered"; }
+}
+function setBackupConsent(choice) {
+  backupConsent = choice;
+  dbSetSetting(BACKUP_CONSENT_KEY, choice).catch(noteStorageError);
+}
+// Read by cloud.js's maybeAutoStartBackup(): while this is true the member
+// has data worth backing up but has not yet been asked, so no anonymous
+// account may be created on their behalf. Exposed as a window function
+// rather than a variable because cloud.js is a separate script with no
+// import relationship to this one - the same shape every other cross-file
+// hook in this pair uses (window.cloudSyncActive, window.isCommunitySignedIn).
+window.haimuniaBackupConsentPending = function () { return backupConsent === null; };
+
+// One Tier-A celebration exists on day one and this is it (§5.2). Keyed by
+// its own flag rather than by entries.length === 1, so deleting that first
+// entry and logging another does not re-run the arrival moment.
+const FIRST_LOG_CELEBRATED_KEY = "haimunia-demo:firstLogCelebrated";
+let firstLogCelebrated = false;
+async function loadFirstLogCelebrated() {
+  try { firstLogCelebrated = (await dbGetSetting(FIRST_LOG_CELEBRATED_KEY)) === true; }
+  catch (e) { firstLogCelebrated = true; }
+}
+
+function totalLoggedEntries() { return entries.length + wodEntries.length; }
+
+// S2. The tour card retires itself two ways - the member took the tour, or
+// they have logged three entries and demonstrably do not need it. After that
+// the explainer lives only behind Settings › סיור באפליקציה, which is the
+// actual fix: the audit's complaint was never that the explainer is bad (two
+// personas praised the copy) but that it showed exactly once, as a gate,
+// with no way back to it.
+function shouldShowTourCard() { return !hasOnboarded && totalLoggedEntries() < 3; }
+
+// S5. Asked once, only after there is something to back up, and only where
+// there is a backend configured to back up TO - renderBackupSettingsPanel()
+// returns "" when cloud-config.js is unset, and asking for consent to a
+// feature that cannot run would be a question with no true answer.
+// (cloud.js exposing a cheap boolean would be better than building a panel
+// to test it for emptiness - noted in the handoff, not worth blocking on.)
+function cloudBackupConfigured() {
+  if (typeof window.renderBackupSettingsPanel !== "function") return false;
+  try { return window.renderBackupSettingsPanel() !== ""; } catch (e) { return false; }
+}
+function shouldShowBackupConsent() {
+  if (backupConsent !== null) return false;
+  if (totalLoggedEntries() < 1) return false;
+  if (celebrationIsOpen()) return false; // S4 owns the screen while it is up
+  return cloudBackupConfigured();
+}
+function celebrationIsOpen() {
+  const el = document.getElementById("celebrationOverlay");
+  return !!(el && el.classList.contains("open"));
+}
+
+// The backup consent card's two buttons live in app.js's own markup, but the
+// thing they control lives in cloud.js, reachable only through its
+// data-community-action vocabulary. Rather than hang both attributes on one
+// button - the document click handler's comment states as an invariant that
+// no element carries both, and it is right to - this hands cloud.js a
+// detached element carrying exactly the attribute it reads. Its own
+// trackFeedClick() no-ops on an action that is not a feed action, which
+// backup-enable/backup-optout are not.
+//
+// Inert when the community layer never loaded (cloud-config.js unset), which
+// is the same state that makes cloudBackupConfigured() false, so the card
+// this serves is not on screen in the first place.
+function dispatchCommunityAction(name) {
+  if (typeof handleCommunityClick !== "function") return;
+  const proxy = document.createElement("button");
+  proxy.dataset.communityAction = name;
+  handleCommunityClick(proxy);
 }
 
 async function addMovement(name, category) {
@@ -1329,7 +1528,13 @@ async function saveSet(sanityConfirmed) {
   // off), that celebration still fires normally then.
   if (!ladderMode) {
     const mov = movementById(entry.exerciseId);
-    celebrateAfterSave(celebratePR && mov ? `${mov.name} — ${celebrationLabel}` : null);
+    // The arrival card (§1.2 S4) replaces the ordinary post-save path for
+    // exactly one save in a member's life, so the two can never stack.
+    if (!firstLogCelebrated && totalLoggedEntries() === 1) {
+      celebrateFirstLog(mov ? `${mov.name} — ${celebrationLabel}` : celebrationLabel);
+    } else {
+      celebrateAfterSave(celebratePR && mov ? `${mov.name} — ${celebrationLabel}` : null);
+    }
     if (emitPR && prDetail) emitCommunityPrCreated(entry, mov, prDetail);
   }
 }
@@ -1809,20 +2014,42 @@ function openWelcomeModal(editing) {
   const subtitle = document.getElementById("welcomeSubtitle");
   const saveLabel = document.getElementById("welcomeSaveLabel");
   const skipBtn = document.getElementById("welcomeSkipBtn");
-  if (title) title.textContent = welcomeEditing ? "עריכת פרופיל" : "ברוכים הבאים!";
+  if (title) title.textContent = welcomeEditing ? "עריכת פרופיל" : "ברוכים הבאים לאימוניה";
   if (subtitle) subtitle.textContent = "איך נקרא לך?";
-  if (saveLabel) saveLabel.textContent = welcomeEditing ? "שמירה" : "בואו נתחיל";
+  // Design spec §1.2 S1. The rule this enforces: no two consecutive primary
+  // buttons in a flow may carry the same label. The explainer's primary
+  // (set in openOnboarding()) used to read the identical בואו נתחיל, and
+  // tapping through two identical buttons in a row is why the first run read
+  // as a screen that had not advanced rather than as two separate steps.
+  if (saveLabel) saveLabel.textContent = welcomeEditing ? "שמירה" : "יאללה, נתחיל";
   if (skipBtn) {
-    skipBtn.textContent = welcomeEditing ? "ביטול" : "דלג";
+    skipBtn.textContent = welcomeEditing ? "ביטול" : "דילוג";
     skipBtn.dataset.action = welcomeEditing ? "cancel-welcome-name" : "skip-user-name";
+    // .link-btn is sized for a line of text inside a paragraph; this one is
+    // the only exit from a focus-trapping sheet on the first screen a member
+    // ever sees, so it gets a real 44px target regardless of its font size.
+    skipBtn.style.minHeight = "44px";
+    skipBtn.style.padding = "10px 16px";
   }
   const input = document.getElementById("welcomeNameInput");
   if (input) {
     input.value = welcomeEditing ? (userName || "") : "";
     setTimeout(() => input.focus(), 50);
   }
+  // The box-start date leaves first run entirely (§1.4). It exists only to
+  // unlock the three tenure badges, and asking a brand-new member for it
+  // before they have trained even once is what produced the audit's
+  // hollow-praise finding: two badges awarded for typing a date, which
+  // taught the beginner persona that praise from this app means nothing.
+  // It stays here in EDIT mode, because this same sheet is the profile
+  // editor reached from Settings and from the achievements screen's own
+  // prompt card - which is the right place to ask, since the member is
+  // looking at the tenure badges it unlocks when they see it.
+  const boxLabel = document.getElementById("welcomeBoxStartLabel");
   const boxInput = document.getElementById("welcomeBoxStartInput");
+  if (boxLabel) boxLabel.style.display = welcomeEditing ? "" : "none";
   if (boxInput) {
+    boxInput.style.display = welcomeEditing ? "" : "none";
     boxInput.max = todayISO();
     boxInput.value = welcomeEditing ? (boxStartDate || "") : "";
   }
@@ -1852,25 +2079,32 @@ function saveBoxStartDate(v) {
 // field or skipping the name doesn't discard a box-start-date the user
 // already picked.
 function saveWelcomeForm(name) {
-  const wasFirstTimeWelcome = !welcomeEditing;
   const boxInput = document.getElementById("welcomeBoxStartInput");
+  // In first-run mode the date field is hidden (see openWelcomeModal), so
+  // this reads the empty string and saveBoxStartDate() nulls it - the same
+  // no-op it performs for anyone who leaves the field blank while editing.
+  // Reading it unconditionally is deliberate: it keeps ONE save path, so
+  // editing the profile can never silently discard a date the member typed.
   saveBoxStartDate(boxInput ? boxInput.value : "");
   saveUserName(name);
-  // Only the very first welcome (not "edit profile" later) triggers the
-  // onboarding walkthrough — openOnboarding() itself no-ops via
-  // hasOnboarded for anyone who's already seen it.
+  // Design spec §1.2. This function used to open the five-screen explainer
+  // straight after the welcome sheet - a second full-screen gate whose
+  // primary button carried the same label as the one just tapped. The
+  // explainer is now pulled by the member from the tour card on רישום
+  // (shouldShowTourCard) or from Settings, and nothing at all opens between
+  // the welcome sheet and the logging screen.
   //
-  // Deliberately BEFORE the achievement check below, which used to run
-  // first: a celebration fired from here rendered on top of the 5-screen
-  // explainer and hid it (both are .modal-overlay at the same z-index).
-  // With the walkthrough already open, showCelebration() holds the popup
-  // and closeOnboarding() replays it — see deferredCelebration.
-  if (wasFirstTimeWelcome && !hasOnboarded) openOnboarding();
-  // After the modal has closed, in case a box-start-date typed in for the
-  // first time (member since before they ever opened this app) qualifies
-  // for tenure badges — which, since the audit, also needs at least one
-  // logged session behind it (tenureMilestoneEarned).
+  // The celebration ordering this comment used to explain is now moot from
+  // here (there is no second overlay to stack against), but the deferral
+  // machinery it describes is unchanged and still governs every other
+  // dialog - see showCelebration()'s blockingDialogOpen() gate.
+  //
+  // Still checked here, because "edit profile" is the surface where a
+  // box-start date is actually entered, and a date entered by a member who
+  // already has sessions on file can legitimately qualify for tenure badges
+  // (which, since the audit, are silent anyway - §5.2 tier C).
   checkForNewAchievements();
+  render();
 }
 
 const BAR_WEIGHT_KEY = "haimunia-demo:barWeight";
@@ -2164,6 +2398,23 @@ async function clearAllData() {
     boxStartDate = null;
     seenAchievementIds = new Set();
     lastExportAt = null;
+    // dbClearSettings() above has already wiped these on disk; this is the
+    // in-memory half, and without it the flags survive the wipe and the
+    // member is dropped back at the welcome sheet with a first run that has
+    // already been marked as spent — no tour card, no arrival card, and an
+    // install banner eligible immediately. A device that has just been
+    // returned to empty is a first run by every definition the sequence
+    // uses, so say so. (hasOnboarded was already in this position before
+    // the §1 work and was already wrong; it is fixed here with the rest.)
+    hasOnboarded = false;
+    firstLogCelebrated = false;
+    backupConsent = null;
+    firstOpenDate = todayISO();
+    await dbSetSetting(FIRST_OPEN_DATE_KEY, firstOpenDate).catch(() => {});
+    // The install dismissal is deliberately NOT cleared here, for the same
+    // reason the theme preference is not: it is a standing answer about this
+    // browser, not training data, and "delete my workouts" is not permission
+    // to re-ask a question the member already declined.
   } catch (e) {
     noteStorageError(e);
   }
@@ -2642,7 +2893,13 @@ async function saveWod() {
   wodLogDate = todayISO();
   if (isPR) flashWodPR();
   render();
-  celebrateAfterSave(isPR ? `${w.name} — ${formatWodEntry(entry)}` : null);
+  // A logged WOD is just as much a first entry as a logged set - a member
+  // who starts on the אימונים tab gets the same arrival moment (§1.2 S4).
+  if (!firstLogCelebrated && totalLoggedEntries() === 1) {
+    celebrateFirstLog(`${w.name} — ${formatWodEntry(entry)}`);
+  } else {
+    celebrateAfterSave(isPR ? `${w.name} — ${formatWodEntry(entry)}` : null);
+  }
 }
 function startEditWodEntry(id) {
   const entry = wodEntries.find((e) => e.id === id);
@@ -2874,6 +3131,60 @@ function ladderRoundSummary(r, showExercise) {
   return `${prefix}${r.reps}×${r.weight}`;
 }
 
+// Design spec §1.2 S2. The five-screen explainer, demoted from a gate to a
+// pull. A gate is answered by whoever is in a hurry with a dismissal; a card
+// on an otherwise empty screen is answered by whoever actually wants it, and
+// it is still there tomorrow for whoever did not.
+//
+// PLACEMENT NOTE, and it is a deliberate departure from the spec's wording.
+// §1.2 S2 says "directly under the page title, above מה עשינו היום?". That
+// puts a tour advertisement above the app's primary control on the first
+// screen a member ever sees, which is the same mistake the install banner
+// makes, one size smaller - and it contradicts the spec's own next sentence,
+// which describes this as "the second-most prominent thing after the
+// exercise picker". It renders directly BELOW the picker instead: on a
+// first-run screen that is otherwise a paragraph of grey text and a large
+// void, nothing above the fold competes with it, and the app's whole job
+// stays the first thing on the page.
+function renderTourCard() {
+  if (!shouldShowTourCard()) return "";
+  return `
+    <button class="exercise-row" data-action="open-onboarding" style="border-color:var(--brass); min-height:64px; margin-bottom:12px;">
+      <div style="text-align:right;">
+        <div style="font-weight:700; font-size:14px; color:var(--chalk);">סיור קצר במסכים</div>
+        <!-- "חמשת" is a claim about the explainer's contents, so it is pinned
+             rather than trusted: scripts/browser-check/first-run-sequence.mjs
+             asserts the overlay still has exactly five rows. -->
+        <div style="color:var(--steel); font-size:12.5px; margin-top:2px;">דקה, ומכירים את חמשת המסכים</div>
+      </div>
+      <span style="color:var(--steel); flex-shrink:0;">${ICONS.chevronsLeft}</span>
+    </button>`;
+}
+
+// Design spec §1.2 S5. Its own moment, after the app has proved it is worth
+// backing anything up to, and phrased as a question with two real answers.
+//
+// The two buttons are deliberately identical in size, weight and contrast -
+// same class, same flex basis, neither one styled as the recommended path.
+// Consent where the accept button is large and orange and the decline is a
+// grey line of text is not consent, and every persona flagged that this
+// decision was currently being made silently on the member's behalf.
+//
+// Not a modal, and it renders below the day's entries: an unanswered
+// question must never be in front of the member's way to log a set.
+function renderBackupConsentCard() {
+  if (!shouldShowBackupConsent()) return "";
+  return `
+    <div class="card" style="margin-top:12px;">
+      <div style="font-weight:700; font-size:14px; color:var(--chalk); margin-bottom:4px;">לגבות את האימונים לענן?</div>
+      <div style="color:var(--steel); font-size:12.5px; margin-bottom:12px;">הגיבוי פרטי — רק את/ה רואה אותו — ומאפשר לשחזר הכול אם מחליפים מכשיר.</div>
+      <div class="flex items-center gap-10">
+        <button class="chip-btn" data-action="backup-consent-yes" style="flex:1; min-height:44px;">כן, לגבות</button>
+        <button class="chip-btn" data-action="backup-consent-no" style="flex:1; min-height:44px;">לא עכשיו</button>
+      </div>
+    </div>`;
+}
+
 function renderLogTab() {
   const selected = movementById(selectedId);
   const isDuration = logEntryType === "duration";
@@ -2906,6 +3217,8 @@ function renderLogTab() {
       <span style="font-weight:800; font-size:16px;">מה עשינו היום?</span>
       <span class="flex items-center gap-6" style="color:var(--steel); font-size:12px; font-weight:600;">בחירת תרגיל${ICONS.chevronsLeft}</span>`}
     </button>
+
+    ${renderTourCard()}
 
     ${!movementExplicitlyChosen ? `<div class="empty">בחרו תרגיל כדי להתחיל</div>` : `
 
@@ -3019,6 +3332,8 @@ function renderLogTab() {
       </div>
       <span class="flex items-center gap-6" style="color:var(--steel); font-size:12px; font-weight:600;">צפייה ביום${ICONS.chevronsLeft}</span>
     </button>`}
+
+    ${renderBackupConsentCard()}
   `;
 }
 
@@ -3633,6 +3948,33 @@ function renderSettingsBody() {
         ${renderTextScaleRow()}
       </div>
 
+      <!-- Design spec §1.5. Every surface the first-run sequence defers has
+           to have somewhere to live, or deferring it is just deleting it.
+           This card is that somewhere: the explainer that is no longer a
+           gate, the install prompt that no longer fires on load, and the
+           box-start date that no longer appears on the welcome sheet. Each
+           row is the permanent home of exactly one thing §1.2 moved out of
+           the member's first minute. -->
+      <div class="settings-block">
+        <div class="settings-block-title">עזרה והתאמה</div>
+        <button class="exercise-row" data-action="open-onboarding" style="margin-bottom:8px;">
+          <span style="font-weight:700; font-size:13.5px;">סיור באפליקציה</span>
+          <span style="color:var(--steel); flex-shrink:0;">${ICONS.chevronsLeft}</span>
+        </button>
+        ${isStandalone() ? "" : `
+        <button class="exercise-row" data-action="show-install-hint" style="margin-bottom:8px;">
+          <span style="font-weight:700; font-size:13.5px;">התקנה במסך הבית</span>
+          <span style="color:var(--steel); flex-shrink:0;">${ICONS.chevronsLeft}</span>
+        </button>`}
+        <button class="exercise-row" data-action="edit-box-start-date" style="margin-bottom:0;">
+          <div style="text-align:right;">
+            <div style="font-weight:700; font-size:13.5px;">מתי התחלתי להתאמן בבוקס</div>
+            <div style="color:var(--steel); font-size:12px; margin-top:2px;">${boxStartDate ? esc(fmtDate(boxStartDate)) : "לא הוגדר — פותח את עיטורי הוותק"}</div>
+          </div>
+          <span style="color:var(--steel); flex-shrink:0;">${ICONS.chevronsLeft}</span>
+        </button>
+      </div>
+
       ${backupSettingsPanel ? `<div class="settings-block">
         <div class="settings-block-title">הגנה על הנתונים שלי</div>
         ${backupSettingsPanel}
@@ -3934,6 +4276,10 @@ function render() {
   // COMM-360: the save action only appears once something is actually
   // chosen on either tab - same rule, applied symmetrically.
   document.getElementById("bottomBar").style.display = ((tab === "add" && movementExplicitlyChosen) || (tab === "wod" && wodSubTab === "log" && wodById(selectedWodId))) ? "flex" : "none";
+  // §1.2 S6: the install prompt is a deferred question, so its gate has to
+  // be re-checked as the member's situation changes rather than once at the
+  // moment the browser offered it. No-op unless all four conditions hold.
+  maybeShowInstallBanner();
   updateStreakLabel();
   // Rendered after every tab's own content, not just Community's, so a
   // share triggered from Calendar/Progress can still show its confirm
@@ -4689,9 +5035,59 @@ function isStandalone() {
   return (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true;
 }
 
+function installDismissed() {
+  // localStorage, not sessionStorage. The old key was session-scoped, so a
+  // banner the member had explicitly dismissed came back on the very next
+  // cold open, forever - persona finding B10. "No" now means no.
+  try { return !!localStorage.getItem(INSTALL_DISMISS_KEY); } catch (e) { return false; }
+}
+
+// Design spec §1.2 S6. WHERE this banner lives was fixed in 53d6230 (out of
+// position:fixed, so it can no longer cover the bottom nav or the save CTA).
+// WHEN it appears is what is fixed here.
+//
+// It used to appear the instant Chrome fired beforeinstallprompt, which is
+// during the first load - so on a brand-new profile with an empty log, on an
+// otherwise near-empty screen, the largest and most colourful block in the
+// app was an advertisement for itself, shown before the app had done
+// anything for the member at all. Measured on a fresh profile: it was on
+// screen at the logging step of the very first run, above the fold.
+//
+// All four conditions must hold, and each answers a real question:
+//   1. the browser has actually offered an install (or iOS, handled by its
+//      own separate banner) - otherwise the button would do nothing;
+//   2. there is at least one saved entry - "keep this app" is not a question
+//      a member can answer before the app holds anything of theirs;
+//   3. today is a different calendar date from the first open - one session
+//      is not enough evidence to ask someone to commit, and a member who
+//      never comes back is never asked at all;
+//   4. they have never dismissed it.
+function installGateOpen() {
+  if (isStandalone()) return false;
+  if (installDismissed()) return false;
+  if (totalLoggedEntries() < 1) return false;
+  // An unknown first-open date means a device that predates this key, i.e.
+  // an existing member - they are long past day one, so the day-two rule is
+  // satisfied rather than blocked by the missing value.
+  if (firstOpenDate && todayISO() === firstOpenDate) return false;
+  return true;
+}
+
+// The gated entry point. Safe to call on every render: it is four cheap
+// comparisons and a style write, and calling it from render() is what lets
+// the banner appear on the day-two visit that qualifies rather than only at
+// the moment beforeinstallprompt happens to fire (which is once, on load,
+// before any of the other three conditions can possibly be true).
+function maybeShowInstallBanner() {
+  if (!deferredInstallPrompt) return;
+  if (!installGateOpen()) return;
+  showInstallBanner();
+}
+
+// Unconditional - the deliberate path, used by Settings › התקנה במסך הבית,
+// where the member asked for it and the gate above is not the question.
 function showInstallBanner() {
   if (isStandalone()) return;
-  try { if (sessionStorage.getItem(INSTALL_DISMISS_KEY)) return; } catch (e) {}
   const updateEl = document.getElementById("updateBanner");
   if (updateEl && updateEl.style.display === "block") return;
   const el = document.getElementById("installBanner");
@@ -4701,7 +5097,7 @@ function showInstallBanner() {
 function dismissInstallBanner() {
   const el = document.getElementById("installBanner");
   if (el) el.style.display = "none";
-  try { sessionStorage.setItem(INSTALL_DISMISS_KEY, "1"); } catch (e) {}
+  try { localStorage.setItem(INSTALL_DISMISS_KEY, "1"); } catch (e) {}
 }
 
 async function installApp() {
@@ -4718,7 +5114,11 @@ async function installApp() {
 window.addEventListener("beforeinstallprompt", (e) => {
   e.preventDefault();
   deferredInstallPrompt = e;
-  showInstallBanner();
+  // Held, not shown. Chrome fires this once, early, during the first load -
+  // which is the single worst moment to ask (see installGateOpen). Keeping
+  // the event is the whole point of preventDefault() here; the banner goes
+  // up on the first render that qualifies, which may be days later.
+  maybeShowInstallBanner();
 });
 window.addEventListener("appinstalled", () => {
   deferredInstallPrompt = null;
@@ -4740,6 +5140,15 @@ function isIOSDevice() {
 function maybeShowIOSInstallBanner() {
   if (!isIOSDevice() || isStandalone()) return;
   try { if (localStorage.getItem(IOS_INSTALL_DISMISS_KEY)) return; } catch (e) {}
+  // §1.2 S6 applies here too, and more sharply. This banner's argument is
+  // "install it or iOS will evict your data" — an argument that is empty on
+  // day one, when there is no data to evict, and which lands on a member who
+  // has not yet seen the app do anything. Same two conditions as the
+  // Chrome/Android gate: something saved, and not on the first day. (The
+  // held-prompt condition has no analogue here; iOS never offers one, which
+  // is why this banner exists at all.)
+  if (totalLoggedEntries() < 1) return;
+  if (firstOpenDate && todayISO() === firstOpenDate) return;
   const el = document.getElementById("iosInstallBanner");
   if (el) el.style.display = "block";
 }
@@ -4969,6 +5378,55 @@ document.addEventListener("click", (e) => {
   else if (action === "cancel-welcome-name") { closeWelcomeModal(); }
   else if (action === "edit-user-name") { openWelcomeModal(true); }
   else if (action === "open-profile-from-achievements") { closeAchievements(); openWelcomeModal(true); }
+  // §1.4: the box-start date's new homes. Both land on the same profile
+  // sheet in edit mode, where the date field IS shown - the difference is
+  // only which control focuses, so a member who came specifically to answer
+  // "when did I start at the box" is not left hunting for the field.
+  else if (action === "edit-box-start-date") {
+    closeSettings();
+    openWelcomeModal(true);
+    setTimeout(() => {
+      const d = document.getElementById("welcomeBoxStartInput");
+      if (d) d.focus();
+    }, 60);
+  }
+  // §1.2 S3 / §1.5: the explainer is now only ever pulled - from the tour
+  // card on רישום, or from Settings, forever.
+  else if (action === "open-onboarding") { closeSettings(); openOnboarding(); }
+  // §1.2 S5. Both answers are recorded locally either way, so the card is
+  // asked exactly once, and both are forwarded to cloud.js, which owns what
+  // backup actually does. Settings mirrors the result immediately because
+  // renderBackupSettingsPanel() reads the same state cloud.js just changed.
+  else if (action === "backup-consent-yes") {
+    setBackupConsent("yes");
+    dispatchCommunityAction("backup-enable");
+    showToast("הגיבוי לענן פעיל. אפשר לכבות בכל שלב בהגדרות.");
+    render();
+  }
+  else if (action === "backup-consent-no") {
+    setBackupConsent("later");
+    dispatchCommunityAction("backup-optout");
+    showToast("בסדר — האימונים נשמרים במכשיר הזה בלבד. אפשר להפעיל בהגדרות.");
+    render();
+  }
+  // §1.5: permanently available afterwards, which is what makes deferring
+  // the prompt to day two safe - a member who wants it on day one can still
+  // have it, they just are not asked.
+  else if (action === "show-install-hint") {
+    closeSettings();
+    try { localStorage.removeItem(INSTALL_DISMISS_KEY); } catch (e) {}
+    if (isIOSDevice()) {
+      try { localStorage.removeItem(IOS_INSTALL_DISMISS_KEY); } catch (e) {}
+      maybeShowIOSInstallBanner();
+    } else if (deferredInstallPrompt) {
+      showInstallBanner();
+    } else {
+      // No held prompt means the browser will not offer one (already
+      // installed, or an engine that never fires the event). Saying so is
+      // better than a control that visibly does nothing.
+      showToast("הדפדפן הזה לא מציע התקנה כרגע — אפשר להוסיף למסך הבית מתפריט הדפדפן.");
+    }
+  }
   else if (action === "close-celebration") {
     if (el.id === "celebrationOverlay" && e.target !== el) return;
     closeCelebration();
@@ -5106,6 +5564,54 @@ async function init() {
   await loadCommunityClaimed();
   await loadLastSeenVersion();
   await loadOnboardedFlag();
+  await loadFirstOpenDate();
+  await loadBackupConsent();
+  await loadFirstLogCelebrated();
+  // Bootstrap flags that predate this device ever tracking them. A device
+  // with real data/a name already existed before update-notifications and
+  // onboarding shipped — it must never see either retroactively. A device
+  // with nothing at all is a genuinely fresh install: it gets the welcome
+  // sheet (below) and then the tour CARD on the logging screen, and there's
+  // no changelog worth showing someone who's never used the app.
+  //
+  // MOVED ABOVE THE FIRST render(). It used to run after it, which was
+  // harmless while every flag here only gated a modal opened further down.
+  // It is not harmless now: hasOnboarded gates the tour card, which render()
+  // draws — so an existing member whose flag had not been bootstrapped yet
+  // would have been shown a first-run tour card on their own logging screen,
+  // for one frame or until something re-rendered. Establish the facts, then
+  // paint once from them.
+  const isFreshInstall = userName === null && entries.length === 0 && wodEntries.length === 0
+    && customMovements.length === 0 && bodyweightEntries.length === 0 && measureTypes.length === 0;
+  if (lastSeenVersion === null) {
+    lastSeenVersion = isFreshInstall ? APP_VERSION : "0.0.0";
+    dbSetSetting(LAST_SEEN_VERSION_KEY, lastSeenVersion).catch(() => {});
+  }
+  if (!hasOnboarded && !isFreshInstall) {
+    hasOnboarded = true;
+    dbSetSetting(HAS_ONBOARDED_KEY, true).catch(() => {});
+  }
+  // Same rule, for the three flags the first-run sequence adds (§1.2):
+  //  - firstOpenDate: stamped now if this device has never recorded one. On
+  //    an existing device that is a lie about history, so it is stamped only
+  //    for a fresh install; an unknown date is read by installGateOpen() as
+  //    "long past day one", which is true of exactly those devices.
+  //  - backupConsent: an existing member has been running under the opt-out
+  //    default for as long as they have used the app. Asking them to consent
+  //    to something already in flight is not consent, it is a quiz — they
+  //    are grandfathered, and Settings remains where they change it.
+  //  - firstLogCelebrated: a member with a log behind them has long since
+  //    had their first entry; the arrival card is for arrivals.
+  if (firstOpenDate === null && isFreshInstall) {
+    firstOpenDate = todayISO();
+    dbSetSetting(FIRST_OPEN_DATE_KEY, firstOpenDate).catch(() => {});
+  }
+  if (backupConsent === null && !isFreshInstall) setBackupConsent("grandfathered");
+  if (!firstLogCelebrated && !isFreshInstall) {
+    firstLogCelebrated = true;
+    dbSetSetting(FIRST_LOG_CELEBRATED_KEY, true).catch(() => {});
+  }
+
   document.getElementById("loading").style.display = "none";
   document.getElementById("app").style.display = "block";
   renderUserGreeting();
@@ -5119,22 +5625,6 @@ async function init() {
     navigator.storage.persist().catch(() => {});
   }
 
-  // Bootstrap flags that predate this device ever tracking them. A device
-  // with real data/a name already existed before update-notifications and
-  // onboarding shipped — it must never see either retroactively. A device
-  // with nothing at all is a genuinely fresh install: the welcome modal
-  // (below) leads into onboarding on its own, and there's no changelog
-  // worth showing someone who's never used the app.
-  const isFreshInstall = userName === null && entries.length === 0 && wodEntries.length === 0
-    && customMovements.length === 0 && bodyweightEntries.length === 0 && measureTypes.length === 0;
-  if (lastSeenVersion === null) {
-    lastSeenVersion = isFreshInstall ? APP_VERSION : "0.0.0";
-    dbSetSetting(LAST_SEEN_VERSION_KEY, lastSeenVersion).catch(() => {});
-  }
-  if (!hasOnboarded && !isFreshInstall) {
-    hasOnboarded = true;
-    dbSetSetting(HAS_ONBOARDED_KEY, true).catch(() => {});
-  }
   updateNotificationsBadge();
 
   if (userName === null) openWelcomeModal();

@@ -15,28 +15,42 @@ test("compareVersions orders semver-like strings numerically, not lexicographica
   assert.ok(window.compareVersions("2.10.0", "2.9.0") > 0, "10 > 9 numerically, not as strings");
 });
 
-test("a fresh install skips the what's-new popup and shows onboarding only after the first welcome", async () => {
+// REWRITTEN, design spec §1.2. This test used to require the opposite of
+// what it now requires: that the five-screen explainer opened automatically
+// the instant the welcome form was saved. That was the audit's top friction
+// finding — two full-screen gates back to back, both with a primary button
+// reading בואו נתחיל, in front of a member who had not yet logged a rep. The
+// explainer is unchanged and still reachable; what it may no longer be is
+// something a member has to get past. The fresh-install special-casing this
+// test was originally written to protect (no changelog for someone who has
+// never used the app) is untouched and still asserted.
+test("a fresh install skips the what's-new popup, and nothing opens after the welcome sheet", async () => {
   const window = await bootApp();
   // bootApp() starts from a genuinely empty IndexedDB, so this is exactly
   // the fresh-install path init() is meant to special-case.
   assert.equal(window.document.getElementById("welcomeOverlay").classList.contains("open"), true, "welcome modal should be showing");
   assert.equal(window.document.getElementById("notificationsOverlay").classList.contains("open"), false, "no changelog for someone who's never used the app");
-  assert.equal(window.document.getElementById("onboardingOverlay").classList.contains("open"), false, "onboarding waits for the welcome form, not shown yet");
+  assert.equal(window.document.getElementById("onboardingOverlay").classList.contains("open"), false, "the explainer is not a gate, before or after");
 
   window.saveWelcomeForm("בודק");
 
-  assert.equal(window.document.getElementById("onboardingOverlay").classList.contains("open"), true, "onboarding should appear right after the first-ever welcome");
+  const stillOpen = [...window.document.querySelectorAll(".modal-overlay.open")].map((el) => el.id);
+  assert.deepEqual(stillOpen, [], "nothing may stand between the welcome sheet and the logging screen");
+  // Not shown does not mean not offered: the explainer is now pulled from a
+  // card on the logging screen, and §1.5 keeps it in Settings forever after.
+  assert.match(window.renderLogTab(), /data-action="open-onboarding"/);
 });
 
-test("editing the profile later (not the first-time welcome) does not re-trigger onboarding", async () => {
+test("editing the profile later never opens the explainer either", async () => {
   const window = await bootApp();
-  window.saveWelcomeForm("בודק"); // first time — opens onboarding
+  window.saveWelcomeForm("בודק");
+  window.openOnboarding();
   window.closeOnboarding();
   assert.equal(window.document.getElementById("onboardingOverlay").classList.contains("open"), false);
 
   window.openWelcomeModal(true); // "edit profile" flow
   window.saveWelcomeForm("שם חדש");
-  assert.equal(window.document.getElementById("onboardingOverlay").classList.contains("open"), false, "editing the profile afterward must not show onboarding again");
+  assert.equal(window.document.getElementById("onboardingOverlay").classList.contains("open"), false, "editing the profile must not show onboarding");
 });
 
 test("computeCurrentStreak counts consecutive logged days backward; today unlogged doesn't break it", async () => {

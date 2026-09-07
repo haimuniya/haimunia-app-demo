@@ -10,7 +10,7 @@
 //   TARGET_URL=<url> node emom.mjs # a deployed site
 import { chromium } from "playwright";
 import { resolveTarget } from "./lib/target.mjs";
-import { switchTab, dismissWelcomeModal, selectBenchmarkWod, consoleErrorCollector } from "./lib/actions.mjs";
+import { switchTab, dismissWelcomeModal, selectBenchmarkWod, dismissFirstLogArrival, consoleErrorCollector } from "./lib/actions.mjs";
 import { installMockCloud } from "./lib/mockCloud.mjs";
 
 let failed = false;
@@ -98,6 +98,19 @@ await page.waitForTimeout(300);
 
 const noPrFlash = await page.evaluate(() => document.getElementById("wodFlashBox")?.style.display !== "flex");
 check("saving an EMOM attempt never flashes a PR (no cross-attempt scoring)", noPrFlash);
+
+// Design spec §1.2 S4. This is the first entry this fresh context has ever
+// saved, so it gets the arrival card - and clearing it is not optional
+// housekeeping: it is a .modal-overlay and it intercepted the tab switch
+// below, which is how the sequence change first showed up in this suite.
+//
+// Asserted rather than merely clicked away, because the same claim this
+// scenario already makes about the PR flash has to hold for the card too:
+// an EMOM has no cross-attempt scoring, so nothing about this save is a
+// record, and the card must not imply one.
+const arrivalText = await dismissFirstLogArrival(page);
+check("the first-ever saved entry is answered as arrival", !!arrivalText && arrivalText.includes("הרישום הראשון שלך נשמר"), arrivalText || "no card");
+check("...and says nothing about a personal record", !!arrivalText && !arrivalText.includes("שיא"), arrivalText || "");
 
 await switchTab(page, "tabCalendarBtn");
 await page.waitForTimeout(200);
