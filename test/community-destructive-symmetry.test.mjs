@@ -295,9 +295,33 @@ test("subjectSentenceHtml escapes both halves and isolates only the name, and no
   // place to put any of that. Assert the exact set rather than only the
   // count, so a NEW dialog still trips this even if one is removed in the
   // same change.
+  //
+  // "termSheet" is the fifteenth, added by design spec section 3 (jargon
+  // disclosure). Treated as the review trigger this pin is meant to be:
+  //
+  //   WHY A DIALOG AND NOT A REUSE. The candidates were askConfirm and the
+  //   report sheet. askConfirm is a title + message + confirm + cancel and
+  //   its whole shape is "make a decision" - but a term sheet asks for NO
+  //   decision, has no destructive counterpart, and must be dismissible by
+  //   tapping outside without anything happening. Bending askConfirm to
+  //   carry a term, a gloss, a body, an optional worked example and a
+  //   second page (the full glossary) would have turned it into a general
+  //   dialog framework, which is precisely what this pin exists to prevent.
+  //
+  //   WHY IT IS THIRD. Same stacking rule as confirmSheet and outwardShare
+  //   above it, applied in the other direction: a `?` marker can be rendered
+  //   inside the challenge, event, recap and profile overlays' own content,
+  //   so the term sheet paints on top of those and must be matched before
+  //   them. It stays BELOW confirmSheet and outwardShare because neither of
+  //   those can contain a term marker, so nothing can stack on top of it.
+  //
+  //   WHY IT IS ONE ENTRY AND NOT TWO. The full glossary is a second PAGE of
+  //   this same sheet (state.ui.termGlossaryOpen), not a second dialog, so
+  //   both pages share one focus trap, one Escape binding and one backdrop
+  //   click instead of duplicating all three.
   const dialogs = src.slice(src.indexOf("const CLOUD_DIALOGS = ["), src.indexOf("];", src.indexOf("const CLOUD_DIALOGS = [")));
   assert.deepEqual([...dialogs.matchAll(/\{ key: "([^"]+)"/g)].map((m) => m[1]), [
-    "confirmSheet", "outwardShare", "reportSheet", "modAction", "reclaimInvite", "modContext",
+    "confirmSheet", "outwardShare", "termSheet", "reportSheet", "modAction", "reclaimInvite", "modContext",
     "notifCenter", "achUnlock", "prPrompt", "composer", "profileView",
     "challengeView", "eventView", "recapView",
   ], "a dialog was added or removed - say why here and update the pin in community-state-namespaces.test.mjs too");

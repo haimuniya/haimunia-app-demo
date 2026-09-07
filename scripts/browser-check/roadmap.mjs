@@ -46,12 +46,48 @@ await installMockCloud(page);
 await page.goto(target.url, { waitUntil: "networkidle" });
 await page.waitForSelector("#app", { state: "visible" });
 
-// --- Onboarding: fresh install shows it right after the welcome form ---
+// --- Onboarding: offered on the logging screen, never as a second gate ---
+//
+// REWRITTEN, design spec §1.2. This used to assert the opposite - that the
+// five-screen explainer opened automatically the instant the welcome form
+// was saved - which is precisely the behaviour the audit's top friction
+// finding was about: two full-screen gates in a row, whose primary buttons
+// both read בואו נתחיל, in front of a member who had not yet logged a rep.
+// The explainer's CONTENT is unchanged and still good; what it may no
+// longer be is something the member has to get past. So the assertion
+// flips: after the welcome sheet, nothing opens on its own, and the tour is
+// reachable by choice - which is a stronger guarantee than the old one,
+// because "it opens by itself" was never something a member wanted.
 await page.fill("#welcomeNameInput", "בודק סבב");
 await page.click("[data-action='save-user-name']");
-await page.waitForTimeout(200);
-const onboardingOpen = await page.evaluate(() => document.getElementById("onboardingOverlay").classList.contains("open"));
-check("onboarding shows after the first-ever welcome", onboardingOpen);
+await page.waitForTimeout(400);
+const overlaysAfterWelcome = await page.evaluate(() =>
+  [...document.querySelectorAll(".modal-overlay.open")].map((el) => el.id));
+check("nothing at all opens after the welcome sheet — the explainer is no longer a gate",
+  overlaysAfterWelcome.length === 0, overlaysAfterWelcome.join(", "));
+
+const tourCard = await page.evaluate(() => {
+  const el = document.querySelector("#content [data-action='open-onboarding']");
+  return el ? el.innerText.replace(/\s+/g, " ").trim() : null;
+});
+check("the logging screen offers the tour instead", !!tourCard, tourCard || "no tour card on screen");
+
+await page.click("#content [data-action='open-onboarding']");
+await page.waitForFunction(() => document.getElementById("onboardingOverlay").classList.contains("open"), { timeout: 5000 });
+check("tapping the tour card opens the explainer", true);
+// The label pass that goes with the sequence: no two consecutive primary
+// buttons in the first run may carry the same string, which is why tapping
+// through them used to feel like a screen that had not advanced.
+const labels = await page.evaluate(() => ({
+  welcome: document.getElementById("welcomeSaveLabel").textContent.trim(),
+  explainer: document.querySelector("#onboardingOverlay [data-action='close-onboarding'].save-btn").textContent.trim(),
+  reopenNote: document.getElementById("onboardingReopenNote")?.textContent.trim() || null,
+}));
+check("the welcome and explainer primaries no longer carry the same label",
+  labels.welcome !== labels.explainer && labels.welcome !== "בואו נתחיל" && labels.explainer !== "בואו נתחיל",
+  `${labels.welcome} / ${labels.explainer}`);
+check("the explainer says it can be reopened, so skipping it costs nothing",
+  !!labels.reopenNote, labels.reopenNote || "missing");
 await page.screenshot({ path: `${outDir}/roadmap-01-onboarding.png` });
 await page.click("[data-action='close-onboarding']");
 await page.waitForTimeout(200);

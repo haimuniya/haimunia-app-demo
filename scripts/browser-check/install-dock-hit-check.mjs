@@ -40,7 +40,7 @@
 //   TARGET_URL=<url> node install-dock-hit-check.mjs # a deployed site
 import { chromium } from "playwright";
 import { resolveTarget } from "./lib/target.mjs";
-import { dismissWelcomeModal, selectMovement, consoleErrorCollector } from "./lib/actions.mjs";
+import { dismissWelcomeModal, selectMovement, dismissFirstLogArrival, consoleErrorCollector } from "./lib/actions.mjs";
 import { installMockCloud } from "./lib/mockCloud.mjs";
 import { hitTest } from "./lib/geometry.mjs";
 
@@ -62,10 +62,31 @@ async function fireBeforeInstallPrompt(page) {
     evt.userChoice = Promise.resolve({ outcome: "dismissed" });
     window.dispatchEvent(evt);
   });
-  await page.waitForFunction(
-    () => document.getElementById("installBanner")?.style.display === "block",
-    { timeout: 5000 },
-  );
+}
+async function waitForDock(page, shown, timeout = 5000) {
+  try {
+    await page.waitForFunction(
+      (want) => (document.getElementById("installBanner")?.style.display === "block") === want,
+      shown,
+      { timeout },
+    );
+    return true;
+  } catch { return false; }
+}
+// Design spec §1.2 S6. The event alone is no longer enough to put the dock
+// on screen — it is held until the member has something saved AND has come
+// back on a later calendar day. This walks the app to the far side of that
+// gate the way a returning member arrives at it: log a real entry, then move
+// the recorded first-open date back a day and let app.js re-read it.
+async function satisfyInstallGate(page) {
+  await page.click("#bottomBarBtn");                 // one saved entry
+  await dismissFirstLogArrival(page);                // §1.2 S4's card
+  await page.evaluate(async () => {
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    await dbSetSetting("haimunia-demo:firstOpenDate", yesterday);
+    await loadFirstOpenDate();
+    render();                                        // the gate is re-checked per render
+  });
 }
 
 // The three things a member must still be able to reach while the dock is
@@ -105,8 +126,26 @@ for (const [label, sel] of CONTROLS) {
   check(`before the banner: ${label} is reachable`, r.reachable === true, r.error || r.topDesc);
 }
 
+// ---- §1.2 S6: the event is held, not obeyed ----
+// This half is new and it is a control in its own right. The dock used to go
+// up the instant the browser offered it, which on a fresh profile is during
+// the first load — so the largest, most colourful block in the app was an
+// advertisement for itself, shown on an empty log before the app had done
+// anything for the member. Firing the event here, with nothing saved and on
+// the first calendar day, must NOT put it on screen.
 await fireBeforeInstallPrompt(page);
-check("beforeinstallprompt actually put the dock on screen", true);
+const deferred = await waitForDock(page, false, 2000);
+check(
+  "the install dock stays down on day one with an empty log, even after beforeinstallprompt",
+  deferred === true,
+  deferred ? "" : "the dock appeared the moment the browser offered it — §1.2 S6's deferral is gone",
+);
+
+// ...and comes up once the member has something to keep and has come back.
+await satisfyInstallGate(page);
+const shown = await waitForDock(page, true, 5000);
+check("the dock does appear once §1.2 S6's conditions are met", shown === true,
+  shown ? "" : "the gate never opens — the prompt would now be unreachable rather than deferred");
 
 // ---- The assertion the fix exists for ----
 for (const [label, sel] of CONTROLS) {
@@ -149,9 +188,11 @@ check(
 // Re-creates the pre-fix geometry on the live page and re-runs the same
 // hit-tests. This is what separates "the fix holds" from "the sample never
 // could have broken". It runs here, while the dock is still up, rather than
-// at the end: dismissInstallBanner() sets a sessionStorage flag and
-// showInstallBanner() honours it for the rest of the session, so there is
-// no second chance to put the dock back on this page.
+// at the end: dismissInstallBanner() records the refusal — in localStorage
+// now, not sessionStorage, because a session-scoped "no" came back on every
+// cold open forever (persona finding B10) — and the §1.2 S6 gate honours it
+// permanently, so there is no second chance to put the dock back on this
+// page, and no longer even on the next one.
 await page.evaluate(() => {
   const b = document.getElementById("installBanner");
   b.style.position = "fixed";

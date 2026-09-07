@@ -11,7 +11,7 @@
 // gates, real async auth handlers.
 import { test } from "node:test";
 import assert from "node:assert";
-import { bootCommunity, waitFor } from "./helpers/boot.mjs";
+import { bootCommunity, waitFor, waitForCommunityGate, openCommunityLogin } from "./helpers/boot.mjs";
 import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
 test("a queued local edit reaches the mock server before a stale remote copy would be pulled back - the exact scenario the sync-ordering bug corrupted", async () => {
@@ -50,7 +50,7 @@ test("full signup lifecycle executes for real: bootstrap -> redeem code -> set c
   const mock = createMockSupabase();
   const window = await bootCommunity(mock, { syncEnabled: false });
   window.document.getElementById("tabCommunityBtn").click();
-  await waitFor(() => !!window.document.getElementById("communityLogin"), 3000);
+  await waitForCommunityGate(window);
 
   window.document.querySelector('[data-community-action="start-signup"]').click();
   await waitFor(() => !!window.document.getElementById("communityInviteCode"), 3000);
@@ -74,10 +74,12 @@ test("full signup lifecycle executes for real: bootstrap -> redeem code -> set c
 
   window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();
   window.document.querySelector('[data-community-action="sign-out"]').click();
-  await waitFor(() => !!window.document.getElementById("communityLogin"), 3000);
-
   // A "different device" logging in with the same credentials - the
-  // thing plain anonymous-only sign-in structurally could not do.
+  // thing plain anonymous-only sign-in structurally could not do. Since
+  // design spec section 7 the login form is a screen of its own, one
+  // deliberate tap behind the gate's choice screen, so this now opens it
+  // the same way a returning member does.
+  await openCommunityLogin(window);
   window.document.querySelector('#communityLogin input[name="username"]').value = "dana";
   window.document.querySelector('#communityLogin input[name="password"]').value = "CorrectHorse9";
   window.document.getElementById("communityLogin").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));

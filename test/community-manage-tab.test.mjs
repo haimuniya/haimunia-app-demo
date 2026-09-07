@@ -9,12 +9,15 @@
 //   on the URL directly, not through the bottom-bar button which is hidden
 //   for them entirely, still gets renderManageApp()'s own internal
 //   isStaff() refusal instead of the real dashboard).
-// - All 7 sub-tabs (dashboard/members/onboarding/moderation/settings/
-//   analytics/invites) render as the active pill with real content.
-// - Both renderManageDashboard() "needs attention" states - the red
+// - All 3 sub-tabs (invites/members/moderation - the operator-depth rework
+//   collapsed the original seven) render as the active pill with real
+//   content, and the four retired ids still land on the tab their content
+//   moved to.
+// - Both renderManageAttention() "needs attention" states - the red
 //   pending-reports row and its green all-clear empty state - the exact
 //   canModerate-vs-pendingReports condition fixed this session (see that
-//   function's own comment in cloud.js).
+//   function's own comment in cloud.js). That strip sits above the sub-tab
+//   bar now, so it is on screen from all three tabs.
 // - The dashboard's two shortcut buttons (pending reports -> moderation,
 //   inactive members -> members).
 // - Booting straight into Manage via ?tab=manage (staff) still triggers
@@ -22,6 +25,7 @@
 //   triggers, without ever visiting the Community tab first.
 import { test } from "node:test";
 import assert from "node:assert";
+import fs from "node:fs";
 import { bootCommunity, waitFor } from "./helpers/boot.mjs";
 import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
@@ -63,15 +67,24 @@ test("a plain member who lands on ?tab=manage directly sees the denial state, no
   assert.ok(!window.document.querySelector(".subtabbar"), "no Manage sub-tab bar renders for the denied caller");
 });
 
-// ===== P2: all 7 sub-tabs render ============================================
+// ===== P2: all 3 sub-tabs render ============================================
 
-test("all 7 Manage sub-tabs render as the active pill with real content", async () => {
+// WAS 7 ("dashboard", "members", "onboarding", "moderation", "settings",
+// "analytics", "invites"). The operator-depth rework collapsed Manage to
+// three tabs ordered by how often a manager does the thing - הוספת חבר/ה,
+// המועדון, ניהול - because the single most common task (add a member) used
+// to sit behind the seventh pill. The three surviving ids are deliberately
+// the OLD invites/members/moderation rather than fresh names matching the new
+// labels, so that every selector in this file, in a dozen sibling test files
+// and in two browser-check scripts keeps resolving. The four retired ids are
+// covered by the alias test below and by MANAGE_TAB_ALIASES in cloud.js.
+test("all 3 Manage sub-tabs render as the active pill with real content", async () => {
   const mock = seeded(null, "admin");
   const window = await bootCommunity(mock, { syncEnabled: false });
   window.document.getElementById("tabManageBtn").click();
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
 
-  const ids = ["dashboard", "members", "onboarding", "moderation", "settings", "analytics", "invites"];
+  const ids = ["invites", "members", "moderation"];
   for (const id of ids) {
     window.document.querySelector(`[data-community-action="set-manage-tab"][data-tab="${id}"]`).click();
     await waitFor(() => {
@@ -86,7 +99,123 @@ test("all 7 Manage sub-tabs render as the active pill with real content", async 
   }
 });
 
-// ===== P2: dashboard "needs attention" states ==============================
+// ===== The collapse: nothing was deleted, everything was re-homed =========
+
+// THE REGRESSION GUARD FOR THE WHOLE REWORK. Seven sub-tabs became three, and
+// the one thing that must not have happened is a section quietly falling off
+// the screen. Every section heading that had a home in the old seven-tab
+// Manage is looked for here, across the three tabs an admin can reach - so
+// deleting or orphaning any one of them fails this test by name.
+test("every section the seven-tab Manage rendered is still reachable from one of the three tabs", async () => {
+  const mock = seeded(null, "admin");
+  mock.onRpc("admin_member_roster", () => ({ data: [], error: null }));
+  mock.onRpc("admin_incomplete_signups", () => ({ data: [], error: null }));
+  mock.onRpc("admin_invite_code_list", () => ({ data: [], error: null }));
+  mock.onRpc("admin_invite_list", () => ({ data: [], error: null }));
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabManageBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+
+  // heading -> the tab it now lives on.
+  const expected = [
+    // 1. הוספת חבר/ה
+    ["invites", "קוד QR להצטרפות"],
+    ["invites", "ניהול הזמנות וקודי הצטרפות"],
+    ["invites", "הרשמות שלא הושלמו"],
+    // 2. המועדון
+    ["members", "ציון בריאות הקהילה (מנהלים בלבד)"],
+    ["members", "ניהול חברים"],
+    ["members", "רשימת חברים"],
+    // 3. ניהול
+    ["moderation", "תור מודרציה"],
+    ["moderation", "יומן פעולות ניהול"],
+    ["moderation", "מודולים למועדון"],
+    ["moderation", "לוח בקרה: אנליטיקת קהילה"],
+    ["moderation", "מתאמי שימור (מנהלים בלבד)"],
+    ["moderation", "עריכת מסך פתיחה לחברים חדשים"],
+    ["moderation", "עריכת תוכן היכרות"],
+  ];
+  const seen = [];
+  for (const tab of ["invites", "members", "moderation"]) {
+    window.document.querySelector(`.subtabbtn[data-community-action="set-manage-tab"][data-tab="${tab}"]`).click();
+    await waitFor(() => {
+      const active = window.document.querySelector(".subtabbtn.active");
+      return !!active && active.dataset.tab === tab;
+    }, 3000);
+    await new Promise((r) => setTimeout(r, 40));
+    const text = window.document.body.textContent;
+    for (const [expectTab, heading] of expected) {
+      if (text.includes(heading)) seen.push([expectTab, heading]);
+    }
+  }
+  for (const [tab, heading] of expected) {
+    assert.ok(seen.some((s) => s[1] === heading), `"${heading}" is not reachable from any Manage tab any more - a section was lost in the collapse`);
+    assert.ok(seen.some((s) => s[0] === tab && s[1] === heading), `"${heading}" rendered, but not on the "${tab}" tab it was re-homed to`);
+  }
+});
+
+test('the "ניהול" tab carries a jump row labelled with the old sub-tab names, so a manager who knows where something was can still find it', async () => {
+  const mock = seeded(null, "admin");
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabManageBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  window.document.querySelector('.subtabbtn[data-community-action="set-manage-tab"][data-tab="moderation"]').click();
+  await waitFor(() => !!window.document.querySelector('[data-manage-jump-row="1"]'), 3000);
+  const labels = [...window.document.querySelectorAll('[data-manage-jump-row="1"] button')].map((b) => b.textContent.trim());
+  assert.deepEqual(labels, ["מודרציה", "יומן פעולות", "הגדרות", "אנליטיקס", "קליטה"],
+    "the jump row must keep the OLD sub-tab wording - that is the whole point of it");
+  // Never a button that goes nowhere: every chip names a section that is
+  // genuinely in the DOM.
+  for (const btn of window.document.querySelectorAll('[data-manage-jump-row="1"] button')) {
+    assert.ok(window.document.getElementById(btn.dataset.scroll), `the "${btn.textContent.trim()}" chip points at #${btn.dataset.scroll}, which does not exist`);
+  }
+});
+
+test("the four retired sub-tab ids are still mapped, so nothing navigating by an old id lands on the wrong tab", () => {
+  // Source-level, because these ids no longer have a control in the markup -
+  // that is exactly why the alias map exists. See MANAGE_TAB_ALIASES.
+  const src = fs.readFileSync(new URL("../cloud.js", import.meta.url), "utf8");
+  const map = src.slice(src.indexOf("const MANAGE_TAB_ALIASES = Object.freeze({"), src.indexOf("// The Manage tab's own sub-tab switch"));
+  for (const [from, to] of [["dashboard", "members"], ["onboarding", "moderation"], ["settings", "moderation"], ["analytics", "moderation"]]) {
+    assert.match(map, new RegExp(`${from}:\\s*"${to}"`), `the retired "${from}" sub-tab must still resolve to "${to}"`);
+  }
+  assert.match(src, /state\.ui\.manageTab = MANAGE_TAB_ALIASES\[tab\] \|\| tab;/, "setManageTab must apply the alias map");
+});
+
+test("each of the three tabs says in one plain line what it is for", async () => {
+  const mock = seeded(null, "admin");
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabManageBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  for (const tab of ["invites", "members", "moderation"]) {
+    window.document.querySelector(`.subtabbtn[data-community-action="set-manage-tab"][data-tab="${tab}"]`).click();
+    await waitFor(() => !!window.document.querySelector(`[data-manage-intro="${tab}"]`), 3000);
+    const intro = window.document.querySelector(`[data-manage-intro="${tab}"]`);
+    assert.ok(intro.textContent.trim().length > 20, `the "${tab}" tab must explain itself before a manager has to use it`);
+  }
+});
+
+test("the moderation badge survived the move and still draws attention on the tab that now owns the queue", async () => {
+  const mock = seeded({
+    profiles: [
+      { id: "u1", handle: "dana", display_name: "דנה", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true },
+      { id: "author-1", handle: "kobi", display_name: "קובי", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true },
+    ],
+    workout_posts: [{ id: "post-1", author_id: "author-1", post_type: "POST_TEXT", body: "תוכן שדווח", status: "active", created_at: VERIFIED, published_at: VERIFIED }],
+    reports: [{ id: "rep-1", reporter_id: "author-1", target_type: "post", target_id: "post-1", reason: "spam", note: "", status: "open", created_at: VERIFIED }],
+  }, "coach");
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabManageBtn").click();
+  await waitFor(() => !!window.document.querySelector("#manageTab-moderation .tab-badge"), 3000);
+  const badge = window.document.querySelector("#manageTab-moderation .tab-badge");
+  assert.equal(badge.textContent.trim(), "1");
+  // And it is visible from the tab a manager actually lands on, which is not
+  // the moderation tab.
+  assert.equal(window.document.querySelector(".subtabbtn.active").dataset.tab, "invites",
+    "Manage opens on the weekly job - adding a member - not on the moderation queue");
+});
+
+// ===== P2: attention-strip states ==========================================
 
 test("dashboard: a moderator with genuinely open reports sees the red attention row, and its shortcut opens Moderation", async () => {
   const mock = seeded({

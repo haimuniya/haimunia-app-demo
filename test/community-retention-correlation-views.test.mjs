@@ -60,7 +60,12 @@ function seeded(extra, role, opts) {
 async function openAccountTab(window) {
   window.document.getElementById("tabManageBtn").click();
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
-  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="analytics"]').click();
+  // "analytics" is no longer a sub-tab id. The operator-depth rework
+  // collapsed Manage's seven sub-tabs into three; analytics is now an area
+  // stacked inside the "ניהול" tab (id "moderation"), which also carries a
+  // jump row labelled with the old sub-tab names. Same sections, same
+  // permission gates.
+  window.document.querySelector('.subtabbtn[data-community-action="set-manage-tab"][data-tab="moderation"]').click();
 }
 
 // analytics_dashboard()/member_segments() are exercised elsewhere - a

@@ -97,14 +97,23 @@ test("staff preview error state shows COMM-309's own copy with a working retry",
   await openCoachTab(window);
   await waitFor(() => window.document.body.textContent.includes("לא ניתן היה לטעון את התקציר לתצוגה מקדימה."), 3000);
   window.document.querySelector('[data-community-action="coach-monthly-recap-retry"]').click();
-  await waitFor(() => window.document.body.textContent.includes("עדיין לא נוצר תקציר חודשי."), 3000);
+  await waitFor(() => !!window.document.querySelector('[data-empty-state="coach-monthly-recap"]'), 3000);
 });
 
-test("staff preview shows an honest empty state when no month has ever been generated (no scheduler is built)", async () => {
+// Retitled: this state was a bare one-liner ("עדיין לא נוצר תקציר חודשי."),
+// and its old title said "no scheduler is built" - which stopped being true
+// when 202609050005 scheduled the recap_monthly job for 04:41 on the 1st. It
+// is now on the shared four-slot pattern, and its fourth slot is a when-line
+// naming that schedule. See audit-followup-cloud-restriction-datetime.test.mjs
+// for the slot-by-slot assertions.
+test("staff preview shows an honest empty state, on the four-slot pattern, when no month has been generated yet", async () => {
   const mock = seeded({}, "coach");
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openCoachTab(window);
-  await waitFor(() => window.document.body.textContent.includes("עדיין לא נוצר תקציר חודשי."), 3000);
+  await waitFor(() => !!window.document.querySelector('[data-empty-state="coach-monthly-recap"]'), 3000);
+  const el = window.document.querySelector('[data-empty-state="coach-monthly-recap"]');
+  assert.match(el.textContent, /התקציר החודשי של המועדון ייבנה מעצמו/, "a forward-looking headline, not a statement of absence");
+  assert.match(el.textContent, /ב-1 בכל חודש/, "and a when-line naming the real schedule the job runs on");
 });
 
 // --- the preview/publish permission asymmetry --------------------------------

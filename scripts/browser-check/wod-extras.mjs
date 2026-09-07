@@ -63,6 +63,13 @@ check("log view shows the time cap after creating the WOD", capText.includes("מ
 await page.fill("#wodPartnerTagInput", "עם דנה");
 await page.fill("[data-field='wodMinutes'].stepper-val", "18");
 await page.dispatchEvent("[data-field='wodMinutes'].stepper-val", "change");
+// Design spec §3.6: the Rx/Scaled question has no default any more, and the
+// save CTA stays disabled until it is answered - so a member logging a WOD
+// answers it, and so does this scenario. Answering "מלא (Rx)" keeps the
+// entry identical to what this check asserted when Rx was the silent
+// default, so everything below still describes the same data.
+await page.click('[data-action="set-rx"][data-rx="1"]');
+await page.waitForFunction(() => document.getElementById("bottomBarBtn")?.disabled === false, { timeout: 5000 });
 await page.click("[data-action='save-wod']");
 await page.waitForTimeout(300);
 await dismissCelebrationIfOpen(page);

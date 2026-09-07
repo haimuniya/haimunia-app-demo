@@ -59,12 +59,20 @@ function seeded(extra, role, opts) {
 async function openAccountTab(window) {
   window.document.getElementById("tabManageBtn").click();
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
-  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="dashboard"]').click();
+  // "dashboard" is no longer a sub-tab id. The operator-depth rework
+  // collapsed Manage's seven sub-tabs into three and retired that tab: the
+  // health score is the headline of "המועדון" (id "members"), the tab that
+  // answers "how is the club doing", and the dashboard's attention rows moved
+  // above the tab bar where they are visible from all three tabs.
+  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="members"]').click();
 }
 async function openManageAnalytics(window) {
   window.document.getElementById("tabManageBtn").click();
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
-  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="analytics"]').click();
+  // And "analytics" is an area inside the "ניהול" tab now - still a
+  // different surface from the health score, which is what this pair of
+  // helpers exists to keep apart.
+  window.document.querySelector('.subtabbtn[data-community-action="set-manage-tab"][data-tab="moderation"]').click();
 }
 
 // analytics_dashboard()/member_segments()/the three retention RPCs are

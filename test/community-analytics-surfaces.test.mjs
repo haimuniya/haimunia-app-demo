@@ -18,7 +18,7 @@
 // test/platform-analytics.test.mjs.
 import { test } from "node:test";
 import assert from "node:assert";
-import { bootCommunity, waitFor } from "./helpers/boot.mjs";
+import { bootCommunity, waitFor, waitForCommunityGate } from "./helpers/boot.mjs";
 import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
 const VERIFIED = new Date().toISOString();
@@ -104,7 +104,7 @@ test("signing out and back in does not stack a second bus bridge", async () => {
   mock.seedCredentials("u1", "dana@members.haimuniya.invalid", "CorrectHorse9");
 
   await mock.client.auth.signOut();
-  await waitFor(() => !!window.document.getElementById("communityLogin"), 4000);
+  await waitForCommunityGate(window);
   await mock.client.auth.signInWithPassword({ email: "dana@members.haimuniya.invalid", password: "CorrectHorse9" });
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 4000);
 

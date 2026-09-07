@@ -7,7 +7,7 @@
 // a score type it shouldn't.
 import { test } from "node:test";
 import assert from "node:assert";
-import { bootApp } from "./helpers/boot.mjs";
+import { bootApp, answerWodRx } from "./helpers/boot.mjs";
 
 test("an EMOM WOD's history card skips the chart and the best-score line", async () => {
   const window = await bootApp();
@@ -18,6 +18,7 @@ test("an EMOM WOD's history card skips the chart and the best-score line", async
 
   window.applyFieldValue("wod-emom-step", "0", 8);
   window.applyFieldValue("wod-emom-step", "1", 9);
+  answerWodRx(window);
   await window.saveWod();
 
   const html = window.renderWodDetailCard(wod);
@@ -32,6 +33,7 @@ test("a non-EMOM WOD's history card still gets the chart and best-score line", a
   const wod = window.allWods().find((w) => w.name === "Test Chart Load");
 
   window.applyFieldValue("wod-step", "wodWeight", 60);
+  answerWodRx(window);
   await window.saveWod();
 
   const html = window.renderWodDetailCard(wod);

@@ -7,7 +7,7 @@
 // text. Confirmed scope: no cross-attempt scoring yet (see bestWodScore).
 import { test } from "node:test";
 import assert from "node:assert";
-import { bootApp } from "./helpers/boot.mjs";
+import { bootApp, answerWodRx } from "./helpers/boot.mjs";
 
 test("createWodFromBuilder (EMOM): movement rotation order follows selection order, targets carried from the builder steppers", async () => {
   const window = await bootApp();
@@ -70,6 +70,7 @@ test("saveWod (EMOM): persists one rep count per movement, isPR always false, fo
 
   window.applyFieldValue("wod-emom-step", "0", 12);
   window.applyFieldValue("wod-emom-step", "1", 6); // scaled down on burpees
+  answerWodRx(window);
   await window.saveWod();
 
   const dbEntries = await window.dbLoadWodEntries();
@@ -86,8 +87,10 @@ test("bestWodScore/formatWodBest: an EMOM WOD reports no best (—), never a fab
   await window.addCustomWod("Test EMOM NoBest", "emom", "", { emomMinutes: 8, emomMovements: ["Wall Balls"], emomTargetReps: [15] });
   const wod = window.allWods().find((w) => w.name === "Test EMOM NoBest");
   window.applyFieldValue("wod-emom-step", "0", 15);
+  answerWodRx(window);
   await window.saveWod();
   window.applyFieldValue("wod-emom-step", "0", 20); // "better" by any naive numeric read, still not a PR
+  answerWodRx(window);
   await window.saveWod();
 
   assert.equal(window.bestWodScore(wod.id), null);
@@ -102,6 +105,7 @@ test("startEditWodEntry (EMOM): restores the per-movement rep counts for editing
   const wod = window.allWods().find((w) => w.name === "Test EMOM Edit");
   window.applyFieldValue("wod-emom-step", "0", 10);
   window.applyFieldValue("wod-emom-step", "1", 7);
+  answerWodRx(window);
   await window.saveWod();
   const [entry] = window.wodEntriesFor(wod.id);
 
@@ -113,6 +117,7 @@ test("startEditWodEntry (EMOM): restores the per-movement rep counts for editing
   assert.equal(val1, "7");
 
   window.applyFieldValue("wod-emom-step", "0", 11);
+  answerWodRx(window);
   await window.saveWod();
   const rows = window.wodEntriesFor(wod.id);
   assert.equal(rows.length, 1, "editing should overwrite in place");

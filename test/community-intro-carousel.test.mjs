@@ -13,7 +13,7 @@
 // paths.
 import { test } from "node:test";
 import assert from "node:assert";
-import { bootCommunity, waitFor } from "./helpers/boot.mjs";
+import { bootCommunity, waitFor, waitForCommunityGate } from "./helpers/boot.mjs";
 import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
 function submit(window, id) {
@@ -28,7 +28,7 @@ function click(window, selector) {
 // already exercises for the gate right after this one.
 async function signUpToCarousel(window) {
   window.document.getElementById("tabCommunityBtn").click();
-  await waitFor(() => !!window.document.getElementById("communityLogin"), 3000);
+  await waitForCommunityGate(window);
   click(window, '[data-community-action="start-signup"]');
   await waitFor(() => !!window.document.getElementById("communityInviteCode"), 3000);
   window.document.querySelector('#communityInviteCode input[name="code"]').value = "CLUBCODE";
@@ -84,7 +84,7 @@ test("finishing the carousel sets the one-time device flag, so a later render ne
 test("every OTHER test's default boot never sees the carousel - bootCommunity's own default flag is already \"seen\"", async () => {
   const window = await bootCommunity(createMockSupabase(), { syncEnabled: false });
   window.document.getElementById("tabCommunityBtn").click();
-  await waitFor(() => !!window.document.getElementById("communityLogin"), 3000);
+  await waitForCommunityGate(window);
   click(window, '[data-community-action="start-signup"]');
   await waitFor(() => !!window.document.getElementById("communityInviteCode"), 3000);
   window.document.querySelector('#communityInviteCode input[name="code"]').value = "CLUBCODE";
@@ -143,9 +143,12 @@ test("abandoning the carousel and signing out does not start the next member mid
   assert.equal(window.localStorage.getItem("haimunia-demo:seenIntroCarousel"), "0", "abandoned mid-way, so the device flag is still unset");
 
   await mock.client.auth.signOut();
-  await waitFor(() => !!window.document.getElementById("communityLogin"), 3000);
+  await waitForCommunityGate(window);
 
-  window.document.querySelector('#communityLogin input[name="username"]').value = "";
+  // (The login field is no longer on this screen at all since design spec
+  // section 7 - the gate opens on the choice screen - and clearing it was
+  // never what this test was about: it is about the NEXT member starting a
+  // fresh signup, which is the start-signup tap below.)
   click(window, '[data-community-action="start-signup"]');
   await waitFor(() => !!window.document.getElementById("communityInviteCode"), 3000);
   window.document.querySelector('#communityInviteCode input[name="code"]').value = "CLUBCODE";
@@ -188,7 +191,10 @@ function seededStaff(extra, role) {
 async function openManageOnboarding(window) {
   window.document.getElementById("tabManageBtn").click();
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
-  click(window, '[data-community-action="set-manage-tab"][data-tab="onboarding"]');
+  // See community-onboarding-content-editor.test.mjs: "onboarding" stopped
+  // being a sub-tab id when Manage collapsed to three tabs. The carousel
+  // editor is an area inside the "ניהול" tab now, same content, same gate.
+  click(window, '.subtabbtn[data-community-action="set-manage-tab"][data-tab="moderation"]');
 }
 
 test("a plain member never sees the intro-carousel editor entry point", async () => {

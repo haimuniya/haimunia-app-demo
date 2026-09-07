@@ -41,21 +41,35 @@ test("setCredentials() upgrades the anonymous session in place via updateUser, a
 });
 
 test("startSignup() begins the anonymous bootstrap only when explicitly chosen, not automatically on load", () => {
-  assert.match(src, /function startSignup\(\) \{ state\.signupStarted = true; ensureAnonymousSession\(\); rerender\(\); \}/);
+  // gateView is cleared alongside signupStarted since design spec section 7
+  // split the gate into a choice screen and a login screen: backing out of
+  // the invite step later must land on the choice screen, not silently
+  // reopen a login form the member visited earlier in the same session. The
+  // property this test actually guards - that the anonymous bootstrap fires
+  // only from an explicit tap, never on load - is unchanged.
+  assert.match(src, /function startSignup\(\) \{ state\.signupStarted = true; state\.ui\.gateView = ""; ensureAnonymousSession\(\); rerender\(\); \}/);
 });
 
-test("the gate order is: login-or-start -> (bootstrap) -> invite code -> set credentials (only while still anonymous) -> profile -> app", () => {
+test("the gate order is: choice-or-login -> (bootstrap) -> invite code -> set credentials (only while still anonymous) -> profile -> app", () => {
   const start = src.indexOf("window.renderCommunityApp = function ()");
   const end = src.indexOf("const p = state.profile || {};");
   const body = src.slice(start, end);
 
-  const loginGate = body.indexOf('if (!state.signupStarted) return');
+  // Design spec section 7. The pre-session gate used to be ONE screen that
+  // led with the login form; it is now two, and the FIRST one is the neutral
+  // choice screen, because for a club rolling this out every arriving member
+  // is new and a login form was the primary action almost nobody needed.
+  // Both still sit before the bootstrap, which is what this ordering test is
+  // really about.
+  const choiceGate = body.indexOf('if (!state.signupStarted && state.ui.gateView !== "login") {');
+  const loginGate = body.indexOf("if (!state.signupStarted) {");
   const bootstrapGate = body.indexOf("ensureAnonymousSession();");
   const redemptionGate = body.indexOf("if (!state.redemption) return");
   const credentialsGate = body.indexOf("if (state.user.is_anonymous) return");
   const profileGate = body.indexOf("if (!state.profile) return");
 
-  assert.ok(loginGate > -1, "must offer login (or starting signup) before any session exists");
+  assert.ok(choiceGate > -1, "the gate must open on the neutral choice screen before any session exists");
+  assert.ok(loginGate > choiceGate, "and the login form must be a screen of its own, reached from that choice");
   assert.ok(bootstrapGate > loginGate, "anonymous bootstrap must only run after login-or-start, not before");
   assert.ok(redemptionGate > bootstrapGate, "invite code gate comes after the user has some session");
   assert.ok(credentialsGate > redemptionGate, "credentials must be set right after redeeming the code");

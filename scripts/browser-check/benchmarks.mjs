@@ -84,6 +84,37 @@ check(
   `${emptyState.ctaAction} / "${emptyState.ctaLabel}"`,
 );
 
+// ---- The door actually opens, and the words behind it are legible --------
+//
+// "The empty state offers the build-your-own path" (above) is a claim about
+// markup. This is the claim that matters: the builder is the ONLY screen in
+// the app carrying the AMRAP/EMOM glosses, they were written, then buried at
+// 9.5px, then raised to 13px - and none of that reaches a member if the
+// screen holding them cannot be opened. A design review reported the builder
+// as still unreachable behind renderWodLogSection()'s early return; the empty
+// state rewrite (8afbc57) had already given it a door, but nothing asserted
+// that end to end, which is exactly why the report could neither be
+// confirmed nor dismissed by reading the code.
+await page.click("#content [data-action='open-wod-builder']");
+await page.waitForFunction(() => document.getElementById("wodBuilderOverlay")?.classList.contains("open"), { timeout: 5000 });
+check("the build-your-own door actually opens the builder", true);
+const glosses = await page.evaluate(() => {
+  const o = document.getElementById("wodBuilderOverlay");
+  const subs = [...o.querySelectorAll(".format-chip-sub, .term-sub")];
+  return {
+    count: subs.length,
+    minPx: Math.min(...subs.map((s) => parseFloat(getComputedStyle(s).fontSize))),
+    text: subs.map((s) => s.textContent.trim()),
+  };
+});
+check("every workout format carries its gloss", glosses.count >= 4, glosses.text.join(" / "));
+// The one thing a gloss must never be is the smallest type on the screen -
+// which is what 9.5px made the explanations of the two hardest words in the
+// app (AMRAP, EMOM).
+check("...at the spec's 13px, not buried under the body text", glosses.minPx >= 13, `${glosses.minPx}px`);
+await page.evaluate(() => closeWodBuilder());
+await page.waitForFunction(() => !document.getElementById("wodBuilderOverlay")?.classList.contains("open"), { timeout: 5000 });
+
 // Reach the benchmarks subtab via its pill in the subtabbar.
 await page.click("button.subtabbtn[data-subtab='benchmarks']");
 await page.waitForTimeout(200);
@@ -105,6 +136,48 @@ const logActive = await page.evaluate(() => document.querySelector(".subtabbtn[d
 check("picking a benchmark switches to the log subtab", logActive);
 const wodName = await page.evaluate(() => document.querySelector(".exercise-select span")?.textContent || "");
 check("log form shows the picked benchmark", wodName === "Grace", wodName);
+
+// ---- Design spec 3.6: Rx is no longer the default -----------------------
+// Asserted in a real browser because two thirds of this is rendered state:
+// the dashed "nothing chosen yet" frame is a computed border, and the
+// disabled CTA is a computed opacity. index.html shipped both rules ahead of
+// time and they were inert until app.js emitted this markup.
+const rx = await page.evaluate(() => {
+  const t = document.querySelector(".rx-toggle");
+  const full = document.querySelector('[data-action="set-rx"][data-rx="1"]');
+  const scaled = document.querySelector('[data-action="set-rx"][data-rx="0"]');
+  const cta = document.getElementById("bottomBarBtn");
+  return {
+    unset: t?.classList.contains("unset"),
+    borderStyle: t ? getComputedStyle(t).borderTopStyle : "",
+    fullChecked: full?.getAttribute("aria-checked"),
+    scaledChecked: scaled?.getAttribute("aria-checked"),
+    fullText: full?.innerText.replace(/\s+/g, " ").trim(),
+    scaledText: scaled?.innerText.replace(/\s+/g, " ").trim(),
+    glossPx: full ? parseFloat(getComputedStyle(full.querySelector(".term-sub")).fontSize) : 0,
+    ctaDisabled: cta?.disabled,
+    helper: document.getElementById("wodContent").textContent.includes("בחרו איך ביצעתם את האימון"),
+  };
+});
+check("neither Rx nor Scaled is pre-selected", rx.fullChecked === "false" && rx.scaledChecked === "false",
+  `Rx=${rx.fullChecked} Scaled=${rx.scaledChecked}`);
+check("an unmade choice LOOKS unmade (dashed frame)", rx.unset === true && rx.borderStyle === "dashed", rx.borderStyle);
+check("both options are Hebrew-first and keep the English", /^מלא \(Rx\)/.test(rx.fullText) && /^מותאם \(Scaled\)/.test(rx.scaledText),
+  `${rx.fullText} | ${rx.scaledText}`);
+check("each carries a readable gloss", rx.glossPx >= 12, `${rx.glossPx}px`);
+check("the save CTA is disabled until the member answers", rx.ctaDisabled === true);
+check("...and the screen says why", rx.helper === true);
+
+await page.click('[data-action="set-rx"][data-rx="0"]');
+await page.waitForTimeout(250);
+const afterChoice = await page.evaluate(() => ({
+  unset: document.querySelector(".rx-toggle")?.classList.contains("unset"),
+  scaledChecked: document.querySelector('[data-action="set-rx"][data-rx="0"]')?.getAttribute("aria-checked"),
+  ctaDisabled: document.getElementById("bottomBarBtn")?.disabled,
+}));
+check("answering selects the chip, clears the dashed frame and enables the CTA",
+  afterChoice.scaledChecked === "true" && afterChoice.unset === false && afterChoice.ctaDisabled === false,
+  JSON.stringify(afterChoice));
 
 check("no console errors", errors.length === 0, errors.join(" | "));
 

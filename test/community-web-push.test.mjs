@@ -29,7 +29,7 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import fs from "node:fs";
-import { bootCommunity, waitFor } from "./helpers/boot.mjs";
+import { bootCommunity, waitFor, waitForCommunityGate } from "./helpers/boot.mjs";
 import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
 const VERIFIED = new Date().toISOString();
@@ -256,7 +256,7 @@ test("a permission revoked outside the app is detected on the next load and mark
   // community-live-sync-and-auth.test.mjs uses for its own sign-out/back-in
   // cycle.)
   window.document.querySelector('[data-community-action="sign-out"]').click();
-  await waitFor(() => !!window.document.getElementById("communityLogin"), 4000);
+  await waitForCommunityGate(window);
   await mock.client.auth.signInWithPassword({ email: "dana@members.haimuniya.invalid", password: "CorrectHorse9" });
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 4000);
   window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();

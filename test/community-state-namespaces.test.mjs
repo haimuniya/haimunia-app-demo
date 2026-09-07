@@ -60,6 +60,13 @@ test("the state root is the session core plus per-domain namespaces, nothing els
     "ui", "feed", "posts", "engagement", "members", "club", "leaderboard",
     "admin", "analytics", "challenges", "events", "search", "achievements",
     "notif", "onboarding", "intro", "recaps",
+    // COMM-153's member-facing half: the caller's OWN active posting
+    // restriction, feeding the Account-tab panel. A namespace rather than a
+    // root scalar because it groups the lazy-load pair with the row they
+    // gate. Deliberately has no `error` leaf - a failed load and "not
+    // restricted" render identically, so an error flag would be unread state
+    // and the third assertion in this file would (correctly) reject it.
+    "myRestriction",
     // The community write queue's view-model (launch-readiness audit,
     // RELIABILITY): { pending, failed }. A real namespace rather than two
     // root scalars, because it groups two related leaves that are always
@@ -147,7 +154,20 @@ test("the dialog registry keeps DOM keys and state paths separate", () => {
   //   the achievement celebration and renders stacked over them, so - exactly
   //   like confirmSheet above it - it must be matched before the dialog
   //   underneath or the Tab trap and Escape address the covered one.
-  assert.equal(entries.length, 14, "every dialog entry needs a key and an isOpen getter");
+  //
+  // 15 since design spec section 3 (jargon disclosure) added "termSheet", the
+  // bottom sheet behind every `?` marker. Treated as the review trigger this
+  // pin is meant to be — the full reasoning (why a new dialog rather than
+  // askConfirm, why it sits third, and why the glossary is a second PAGE of
+  // this sheet rather than a sixteenth entry) is written out beside the
+  // matching key-order pin in community-destructive-symmetry.test.mjs, so the
+  // two pins do not drift into two different half-explanations.
+  //
+  // The one thing worth repeating HERE, because it is this file's own
+  // assertion: state.ui.termSheet must default to null like every other
+  // dialog flag. It holds a glossary entry id while open, and `null` - not
+  // "" - is what the loop below checks, so a dialog genuinely starts closed.
+  assert.equal(entries.length, 15, "every dialog entry needs a key and an isOpen getter");
   const state = readStateLiteral();
   for (const [, key, path] of entries) {
     const value = path.split(".").slice(1).reduce((o, k) => (o == null ? o : o[k]), state);

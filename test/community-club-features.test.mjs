@@ -44,7 +44,11 @@ async function openAccountTab(window) {
 async function openManageSettings(window) {
   window.document.getElementById("tabManageBtn").click();
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
-  window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="settings"]').click();
+  // "settings" is no longer a sub-tab id. The operator-depth rework collapsed
+  // Manage's seven sub-tabs into three; the club module switches are now an
+  // area inside the "ניהול" tab (id "moderation"). renderClubModulesPanel()
+  // and its community.club.manage_modules gate are untouched.
+  window.document.querySelector('.subtabbtn[data-community-action="set-manage-tab"][data-tab="moderation"]').click();
 }
 
 test("a plain member never sees the club modules panel", async () => {

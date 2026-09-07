@@ -2,10 +2,20 @@
 // each pattern proved necessary (mostly: things a naive selector gets wrong
 // on this app's specific markup — see the comments on each one).
 
-// Completes the whole first-run sequence for a fresh browser context: the
-// welcome/name modal, then the onboarding walkthrough it now triggers right
-// after (added alongside the update-notifications/onboarding roadmap round —
-// every fresh-context check hits this, not just onboarding-specific ones).
+// Completes the blocking part of the first-run sequence for a fresh browser
+// context.
+//
+// WHAT CHANGED (design spec §1.2). This used to have to clear TWO stacked
+// full-screen gates, because saving the welcome form opened the five-screen
+// explainer immediately after it. The explainer is no longer a gate - it is
+// pulled from a card on the logging screen or from Settings - so on a fresh
+// context the welcome sheet is now the only thing this has to get past. The
+// onboarding branch below is kept and is still correct: it fires only if
+// something did open the overlay, which is now only ever a deliberate tap,
+// so this helper stays right for callers that open it themselves.
+//
+// It does NOT dismiss the first-log arrival card (§1.2 S4) - that appears
+// after a save, not at boot. See dismissFirstLogArrival() below.
 // THE FLAKINESS THIS FIXES (launch-readiness audit). This used to sample
 // `welcomeOverlay.open` ONCE and return early if it was false:
 //
@@ -62,6 +72,37 @@ export async function dismissWelcomeModal(page, name = "בדיקה") {
       { timeout: 10000 },
     );
   }
+}
+
+// Design spec §1.2 S4. A member's FIRST-EVER saved entry - set or WOD - now
+// gets one full-screen card, framed as arrival rather than as a record (no
+// medal, and deliberately not the words שיא אישי, because with no history
+// every set is trivially a personal best and saying so on day one is what
+// teaches a member the phrase is noise).
+//
+// Any scenario that starts from a fresh browser context and saves something
+// meets it, whether or not the scenario is about celebrations - it is a
+// .modal-overlay and it will intercept the next click, which is exactly how
+// it surfaced (as a tab-switch timeout in emom.mjs, nowhere near the save).
+// Returns the card's text so a caller can assert on the framing rather than
+// only clearing it out of the way.
+export async function dismissFirstLogArrival(page, { timeout = 8000 } = {}) {
+  try {
+    await page.waitForFunction(
+      () => document.getElementById("celebrationOverlay")?.classList.contains("open"),
+      { timeout },
+    );
+  } catch {
+    return null; // not this scenario's first entry - nothing to clear
+  }
+  const text = await page.evaluate(() =>
+    document.getElementById("celebrationOverlay").innerText.replace(/\s+/g, " ").trim());
+  await page.click("#celebrationOverlay button[data-action='close-celebration']");
+  await page.waitForFunction(
+    () => !document.getElementById("celebrationOverlay")?.classList.contains("open"),
+    { timeout: 5000 },
+  );
+  return text;
 }
 
 // Submit a form the way a member does - by clicking its submit button.
