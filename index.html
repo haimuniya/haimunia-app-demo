@@ -84,7 +84,24 @@
      so the browser only downloads what a given piece of text needs — the
      unicode-range values are copied verbatim from Google's own CSS2 API
      response for these families/weights. No network dependency, no SRI
-     problem, works fully offline once precached (see ASSETS in sw.js). */
+     problem, works fully offline once precached (see ASSETS in sw.js).
+
+     UX audit, defect 2 - WHY EVERY STACK BELOW NAMES 'Rubik' BEFORE THE
+     GENERIC. 'Anton' and 'JetBrains Mono' ship as LATIN-ONLY subsets (see
+     assets/fonts/: anton-400-latin.woff2, jbmono-*-latin.woff2 - there is
+     no Hebrew cut of either family here), and their unicode-range above
+     says so honestly. A Hebrew codepoint therefore never matches them and
+     falls through to the NEXT family in the stack. With the old
+     `'Anton',sans-serif` that next family was the GENERIC - measured
+     identical to plain sans-serif on the Hebrew word "אימונים" (93.7px) -
+     so in a Hebrew-first app the brand display face rendered only the
+     English strings, and every Hebrew heading silently degraded to
+     whatever the device happened to have. Rubik ships with a full Hebrew
+     cut (rubik-*-hebrew.woff2), so naming it BETWEEN the Latin-only face
+     and the generic routes Hebrew back to the app's own typeface while
+     leaving Latin untouched: unicode-range still hands "WOD"/digits to
+     Anton/JetBrains Mono exactly as before. Any future Latin-only face
+     added here needs the same 'Rubik' step. */
   @font-face{ font-family:'Rubik'; font-style:normal; font-weight:400; font-display:swap; src:url('./assets/fonts/rubik-400-latin.woff2') format('woff2'); unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
   @font-face{ font-family:'Rubik'; font-style:normal; font-weight:400; font-display:swap; src:url('./assets/fonts/rubik-400-hebrew.woff2') format('woff2'); unicode-range:U+0307-0308,U+0590-05FF,U+200C-2010,U+20AA,U+25CC,U+FB1D-FB4F; }
   @font-face{ font-family:'Rubik'; font-style:normal; font-weight:600; font-display:swap; src:url('./assets/fonts/rubik-600-latin.woff2') format('woff2'); unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
@@ -140,6 +157,18 @@
        intended value was always 1.2, matching the other app's reference
        value; restored here rather than keeping the smaller regressed one. */
     --text-scale: 1.2;
+    /* How much bottom room #app reserves for the fixed bottom stack
+       (#bottomNavWrap). One token instead of the same literal retyped in
+       every rule that has to clear that stack, so the save button and the
+       tab bar can never end up cleared by one rule and not another.
+       --install-dock-reserve is the EXTRA room the install/iOS dock needs
+       on top of it while it is showing (see .install-dock below). That one
+       is a deliberate slight over-reserve - the dock measures ~163px and
+       its copy could grow - because over-reserving only adds harmless
+       scroll room at the very bottom, while under-reserving would put real
+       content back behind the dock. */
+    --bottom-nav-reserve: 200px;
+    --install-dock-reserve: 190px;
     /* Launch-readiness audit, A5 (axe). --energy and --red are ACCENT
      colours, tuned for fills, borders and the active-tab tint. Used as
      small TEXT they fell below WCAG AA 4.5:1 - the active bottom-tab
@@ -212,7 +241,12 @@
   input{ font-size:16px; }
   html[data-text-scale="large"]{ zoom:var(--text-scale); }
   button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visible, [tabindex]:focus-visible { outline:2px solid var(--brass); outline-offset:2px; }
-  .mono{ font-family:'JetBrains Mono',monospace; direction:ltr; unicode-bidi:isolate; }
+  /* 'Rubik' before the generic for the same reason as .save-btn/.page-title
+     (see the @font-face block's comment). .mono is not digits-only:
+     entrySummary()/ladderRoundSummary() render strings like `100 ק"ג × 5`
+     through it, so the Hebrew unit label was landing on the device's
+     default monospace while the digits used JetBrains Mono. */
+  .mono{ font-family:'JetBrains Mono','Rubik',monospace; direction:ltr; unicode-bidi:isolate; }
   .flex{ display:flex; }
   .col{ flex-direction:column; }
   .items-center{ align-items:center; }
@@ -231,8 +265,10 @@
   /* Bottom padding cleared to 200px (matching Noam) now that #bottomNavWrap
      is a persistent fixed element again (COMM-327) - the save button and
      the tab bar can both be on screen together (Add/WOD-log tabs), and
-     100px only cleared one of them. */
-  #app{ max-width:480px; margin:0 auto; padding: calc(max(env(safe-area-inset-top,0px), 28px) + 20px) 16px calc(env(safe-area-inset-bottom,0px) + 200px); overflow-x:hidden; }
+     100px only cleared one of them. The literal now lives in
+     --bottom-nav-reserve so the install dock's rule below can add to it
+     without restating it. */
+  #app{ max-width:480px; margin:0 auto; padding: calc(max(env(safe-area-inset-top,0px), 28px) + 20px) 16px calc(env(safe-area-inset-bottom,0px) + var(--bottom-nav-reserve)); overflow-x:hidden; }
   /* #app's top padding above only protects the document at scroll offset 0.
      With viewport-fit=cover and apple-mobile-web-app-status-bar-style
      black-translucent, an installed PWA paints UNDER a transparent status
@@ -263,7 +299,14 @@
      the true bottom edge, not a floating pill inset from it - the safe-area
      inset is this bar's OWN bottom padding. */
   .tabbar{ max-width:480px; margin:0 auto; display:flex; background:var(--surface); border-top:1px solid var(--border); padding:8px 10px calc(env(safe-area-inset-bottom,0px) + 8px); gap:2px; box-shadow:0 -4px 16px rgba(0,0,0,.18); }
-  .tabbtn{ position:relative; flex:1; min-width:0; min-height:44px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; padding:10px 2px 8px; border-radius:14px; font-weight:700; font-size:10.5px; color:var(--steel); border:1px solid transparent; transition:background-color .15s, color .15s; white-space:nowrap; }
+  /* font-size raised from 10.5px (UX audit, defect 3): this labels the
+     app's primary navigation and it was the smallest text in the whole
+     product. 12px rather than the 14px content floor - up to six tabs
+     share a 390px bar, so the longest label ("התקדמות") has about 56px to
+     live in and .tabbtn is white-space:nowrap, where 14px overflows the
+     segment. The 44px touch target the accessibility-floor test pins (see
+     test/audit-ux-fixes.test.mjs) is untouched. */
+  .tabbtn{ position:relative; flex:1; min-width:0; min-height:44px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; padding:10px 2px 8px; border-radius:14px; font-weight:700; font-size:12px; color:var(--steel); border:1px solid transparent; transition:background-color .15s, color .15s; white-space:nowrap; }
   .tabbtn.active{ background:color-mix(in srgb, var(--energy) 14%, transparent); color:var(--energy-text); box-shadow:var(--shadow-sm); }
   /* A short energy-colored cap above the active tab: the tinted background
      alone reads as "slightly different" at a glance mid-workout, which is
@@ -283,7 +326,7 @@
      history) - they're the reason this screen exists, not incidental data. */
   .stat-hero{ border-color:var(--brass); background:color-mix(in srgb, var(--brass) 6%, var(--surface)); }
   .stat-hero .stat-value{ font-size:18px; }
-  .stat-label{ color:var(--steel); font-size:11px; font-weight:600; }
+  .stat-label{ color:var(--steel); font-size:12px; font-weight:600; }
   .stat-value{ font-weight:800; font-size:16px; }
   .bar-wrap{ background:var(--surface); border:1px solid var(--border); border-radius:20px; margin-bottom:16px; position:relative; overflow:hidden; transition:border-color .3s; box-shadow:var(--shadow-card); }
   .bar-wrap.pr{ border-color:var(--brass); animation:pop .4s ease; }
@@ -301,26 +344,43 @@
   .collar{ width:10px; height:10px; border-radius:2px; background:#4a4d54; flex-shrink:0; }
   .sleeve{ width:46px; height:8px; background:#5a5e66; border-radius:2px; flex-shrink:0; }
   .bar-center{ width:64px; height:20px; display:flex; align-items:center; justify-content:center; background:var(--surface2); border:1px solid var(--border); border-radius:6px; font-weight:700; font-size:13px; color:var(--brass); flex-shrink:0; direction:ltr; unicode-bidi:isolate; }
-  .bar-caption{ color:var(--steel); font-size:11px; }
+  .bar-caption{ color:var(--steel); font-size:12px; }
   .steppers{ display:flex; gap:8px; margin-bottom:16px; }
   .stepper{ flex:1 1 0; min-width:0; display:flex; flex-direction:column; align-items:center; gap:4px; }
-  .stepper-label{ color:var(--steel); font-size:11px; font-weight:600; white-space:nowrap; }
+  .stepper-label{ color:var(--steel); font-size:12px; font-weight:600; white-space:nowrap; }
   .stepper-box{ width:100%; min-width:0; display:flex; align-items:center; justify-content:space-between; background:var(--surface2); border-radius:14px; border:1px solid var(--border); }
   .stepper-btn{ width:44px; height:44px; flex-shrink:0; display:flex; align-items:center; justify-content:center; transition:opacity .15s; }
   .stepper-btn:active{ opacity:.6; }
-  .stepper-val{ font-weight:700; font-size:16px; min-width:0; text-align:center; background:transparent; border:none; padding:4px 0; flex:1 1 0; color:var(--chalk); }
+  .stepper-val{ min-height:44px; font-weight:700; font-size:16px; min-width:0; text-align:center; background:transparent; border:none; padding:4px 0; flex:1 1 0; color:var(--chalk); }
   .est-line{ text-align:center; color:var(--steel); font-size:12px; margin-bottom:20px; }
   .est-line b{ color:var(--brass); font-weight:700; }
   .section-label{ color:var(--steel); font-size:12px; font-weight:700; margin-bottom:10px; letter-spacing:.5px; }
   .empty{ color:var(--steel); font-size:13px; text-align:center; padding:24px 0; }
   .log-row{ display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:10px 12px; box-shadow:var(--shadow-card); }
+  /* UX audit, defect 3 - THE MOST DANGEROUS PAIR IN THE APP. A logged
+     entry's edit and delete icons measured 23x26 CSS px and sat flush
+     against each other, so the miss-tap for "edit this set" is "delete
+     this set" - a destructive, unconfirmed action - on a screen used with
+     chalky hands mid-workout. app.js renders both with an inline
+     `padding:4px`, which an author-stylesheet padding cannot beat, so the
+     hit area comes from min-width/min-height instead (they compose with
+     the inline padding rather than fight it) and the glyph is re-centred
+     inside the larger box. The extra margin between them is on top of the
+     row's own flex gap, so the two 44px boxes never touch: a tap that
+     misses edit lands on nothing, not on delete.
+     Scoped to .log-row on purpose. The identical data-action pair also
+     renders inside the live ladder/superset chips (a 12px ✕ inside a small
+     inline pill on the log screen), where a 44px box would break the pill
+     layout outright - that one is left for a markup change in app.js. */
+  .log-row [data-action="edit-entry"], .log-row [data-action="delete-entry"]{ min-width:44px; min-height:44px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; border-radius:12px; }
+  .log-row [data-action="edit-entry"] + [data-action="delete-entry"]{ margin-inline-start:6px; }
   .log-list{ display:flex; flex-direction:column; gap:8px; }
-  .exercise-row{ width:100%; display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:12px 14px; text-align:right; transition:all .15s; margin-bottom:8px; box-shadow:var(--shadow-card); }
+  .exercise-row{ width:100%; min-height:44px; display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:12px 14px; text-align:right; transition:all .15s; margin-bottom:8px; box-shadow:var(--shadow-card); }
   .exercise-row.active{ background:var(--surface2); border-color:var(--brass); }
   .chart-card{ background:var(--surface); border:1px solid var(--border); border-radius:20px; padding:16px; margin-bottom:16px; box-shadow:var(--shadow-card); }
   .rep-table{ display:flex; gap:6px; margin-top:14px; padding-top:12px; border-top:1px solid var(--border); }
   .rep-cell{ flex:1; background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:8px 4px; text-align:center; }
-  .rep-cell-label{ color:var(--steel); font-size:10px; font-weight:700; }
+  .rep-cell-label{ color:var(--steel); font-size:11.5px; font-weight:700; }
   .rep-cell-val{ font-weight:700; font-size:13px; }
   /* The save button and the tab bar are ONE fixed-position wrapper
      (#bottomNavWrap, index.html), not two independently-fixed elements -
@@ -329,10 +389,73 @@
      on a device reporting a large inset (Noam's CHANGES.md has the real-
      device repro). Nesting both inside one wrapper and applying the
      safe-area inset exactly once, as .tabbar's own bottom padding, removes
-     the whole class of bug regardless of how large the inset is. */
+     the whole class of bug regardless of how large the inset is.
+
+     UX audit, defect 1: the two install banners are members of this same
+     wrapper now, for exactly the same reason - see .install-dock below. */
   #bottomNavWrap{ position:fixed; left:0; right:0; bottom:0; z-index:30; }
   .bottom-bar{ display:flex; justify-content:center; background:linear-gradient(to top, var(--bg) 70%, transparent); padding:10px 16px 8px; }
-  .save-btn{ width:100%; max-width:448px; background:linear-gradient(180deg, color-mix(in srgb, var(--energy) 78%, white), var(--energy)); color:#1a0d08; font-family:'Anton',sans-serif; font-weight:400; letter-spacing:0.5px; font-size:19px; padding:16px 0; border-radius:16px; display:flex; align-items:center; justify-content:center; gap:8px; box-shadow:0 10px 26px -6px rgba(232,93,61,.5); transition:opacity .15s; }
+  /* ---- The install dock (#installBanner / #iosInstallBanner) ----
+     UX AUDIT, DEFECT 1 - THE LAUNCH BLOCKER. Both banners used to be their
+     own `position:fixed; bottom:0; z-index:59` elements, 163px tall on an
+     844px viewport (y=681->844). .tabbar sits at y=778 and declares no
+     z-index at all, and #bottomBarBtn (the primary "רישום סט" save CTA) at
+     y=701-761 - so on a fresh install the banner covered BOTH. Measured
+     document.elementFromPoint() at each control's own centre returned the
+     banner's install button for #tabAddBtn/#tabHistoryBtn/#tabCalendarBtn/
+     #tabWodBtn, the banner's close icon for #tabCommunityBtn, and the
+     banner's body copy for #bottomBarBtn: someone who had just been offered
+     the install prompt could not navigate and could not save their first
+     set, because every tap aimed at the nav opened an install prompt.
+
+     Raising .tabbar's z-index would have been the wrong fix - it only swaps
+     which of two overlapping things wins, leaving the banner drawn under
+     the nav and the CTA still unusable wherever they overlap. Instead these
+     are now ordinary in-flow children of #bottomNavWrap, stacked ABOVE
+     .bottom-bar and .tabbar inside the one fixed element. Consequences,
+     all of them the point rather than side effects:
+       * Zero overlap is structural, not a z-index race: block layout
+         cannot put two in-flow siblings on top of each other, so this
+         cannot regress by someone adding a z-index elsewhere.
+       * Dismissal needs no cleanup. app.js still only writes
+         style.display, and display:none takes the element out of flow
+         entirely - the stack collapses straight back to save button + tab
+         bar with no dead gap left behind.
+       * The safe-area inset is still applied EXACTLY ONCE, by .tabbar's
+         own bottom padding (see the comment above). The dock's card
+         deliberately does NOT re-add env(safe-area-inset-bottom) the way
+         it did while it was itself the bottom-most element on screen -
+         doing that now would double-count the inset.
+       * z-index 59 goes away with the fixed positioning: the dock inherits
+         the wrapper's 30, so a .modal-overlay (50) now covers it instead
+         of an install prompt floating over an open dialog.
+     The band is opaque --bg so content scrolling underneath cannot show
+     through the gutter around the card. */
+  .install-dock{ background:var(--bg); padding:10px 12px 2px; }
+  .install-dock-card{ max-width:448px; margin:0 auto; background:var(--surface); border:1px solid var(--border); border-radius:18px; padding:16px; box-shadow:0 -10px 30px rgba(0,0,0,.28); }
+  /* ...and the page's own content gets that much more bottom room while a
+     dock is up, so the last card of a log/feed can still be scrolled into
+     view instead of parking permanently behind it. There is no class to
+     key off - app.js toggles style.display directly and app.js is not
+     editable from this pass - so this reads the inline declaration itself:
+     showInstallBanner()/maybeShowIOSInstallBanner() set exactly
+     `display: block`, every hide path sets `display: none`, and the markup
+     ships hidden. A browser without :has() simply drops this rule and
+     keeps the plain --bottom-nav-reserve, which costs some scroll room at
+     the very bottom and nothing else - the blocker itself is fixed
+     structurally above and does not depend on this rule at all. */
+  body:has(#bottomNavWrap .install-dock[style*="block"]) #app{
+    padding-bottom: calc(env(safe-area-inset-bottom,0px) + var(--bottom-nav-reserve) + var(--install-dock-reserve));
+  }
+  /* Icon-only buttons (a dialog's close x, the dock's dismiss) carry no
+     text to give them a hit area, and were rendering 28x31 / 38x41 CSS px.
+     WCAG 2.2 AA 2.5.8 asks 24x24; this app's own tap-target floor is 44x44
+     (.tabbtn, .stepper-btn and .cal-nav-btn all already declare it), so
+     these match the app rather than the legal minimum. The glyph inside is
+     untouched - this only grows the transparent area around it, so nothing
+     moves visually. */
+  .icon-btn{ min-width:44px; min-height:44px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; border-radius:12px; }
+  .save-btn{ width:100%; max-width:448px; background:linear-gradient(180deg, color-mix(in srgb, var(--energy) 78%, white), var(--energy)); color:#1a0d08; font-family:'Anton','Rubik',sans-serif; font-weight:400; letter-spacing:0.5px; font-size:19px; padding:16px 0; border-radius:16px; display:flex; align-items:center; justify-content:center; gap:8px; box-shadow:0 10px 26px -6px rgba(232,93,61,.5); transition:opacity .15s; }
   .save-btn:active{ opacity:.85; }
   /* Shared tinted icon chip, reused by the Phase 2 nav menu and anywhere a
      generic gray icon badge would otherwise be re-derived inline per call
@@ -348,15 +471,83 @@
   .icon-chip-teal{ background:color-mix(in srgb, var(--teal) 16%, transparent); color:var(--teal); }
   .icon-chip-brass{ background:color-mix(in srgb, var(--brass) 20%, transparent); color:var(--brass); }
   .icon-chip-steel{ background:var(--surface2); color:var(--steel); }
+  /* UX audit, defect 3: the header's hamburger and notification bell are
+     .icon-chip instances, so they rendered exactly 30x30 - the two most
+     reachable global controls in the app, both under the 44px floor.
+     .icon-chip is shared with the nav menu's list rows and with cloud.js
+     call sites, so growing the chip itself would resize badges all over
+     Community. These two take the hit area from a transparent ::after
+     instead: the 30px chip still LOOKS like every other chip, while a tap
+     anywhere in the 44x44 box around it resolves to the button (a
+     pseudo-element hit-tests as part of the element that generated it).
+     Safe here specifically because these two sit at opposite ends of the
+     header row with the logo between them - the expanded boxes cannot
+     overlap each other, or any other target, the way they would inside a
+     dense icon cluster. */
+  #navMenuBtn, #notificationsBellBtn{ position:relative; }
+  #navMenuBtn::after, #notificationsBellBtn::after{ content:""; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:44px; height:44px; }
   .footer{ text-align:center; margin-top:28px; }
-  .footer-note{ color:var(--steel); font-size:11px; margin-bottom:8px; }
+  .footer-note{ color:var(--steel); font-size:12px; margin-bottom:8px; }
     /* Launch-readiness audit, A5 (axe, WCAG 2.2 AA 2.5.8 target-size).
      These rendered 42x13 and 92x13 CSS px - well under the 24x24
      minimum - so sign-out and delete-account were genuinely hard to
      hit on a phone. inline-flex + min-height gives a real hit area
-     without changing where the text sits. */
-  .link-btn{ color:var(--steel); font-size:11px; text-decoration:underline;
-    display:inline-flex; align-items:center; min-height:24px; padding:2px 4px; }
+     without changing where the text sits.
+     UX audit, defect 3: 11px/24px was still the floor for about a dozen
+     real actions (export/import backup, privacy/terms, skip, share a
+     medal, save a session note), so it is raised to 13px/36px. NOT to
+     14px/44px: .link-btn is deliberately this app's de-emphasised INLINE
+     link idiom - several call sites render two or three of them on one
+     line separated by a `.`, and one sits inside a .header cell beside the
+     greeting, so at 44px those rows become a wall of buttons and the
+     header reflows. Anything that is a real primary action already uses
+     .chip-btn or .save-btn instead; the two places where a .link-btn was
+     genuinely standing in for a CONTROL (appearance, text size) get the
+     segmented treatment just below. */
+  .link-btn{ color:var(--steel); font-size:13px; text-decoration:underline;
+    display:inline-flex; align-items:center; min-height:36px; padding:4px 6px; }
+  /* UX audit, defect 3 - THE SETTINGS ROWS ARE CONTROLS, NOT LINKS.
+     app.js's renderThemeRow()/renderTextScaleRow() emit each option as an
+     11px underlined .link-btn and mark only the SELECTED one with an
+     inline `text-decoration:none`, which left the underline - the one
+     thing on the row that reads as "special" - sitting on the option that
+     is NOT active. Read literally, both rows advertised the wrong answer.
+     app.js is out of scope for this pass, so this restyles the two rows it
+     already hands us (#themeRow / #textScaleRow, both role="radiogroup")
+     into this app's own segmented-control idiom - the same recessed track
+     and raised active pill .subtabbar/.subtabbtn uses for WOD Rx/Scaled -
+     rather than inventing a third convention. The inline color/font-weight/
+     text-decoration app.js writes on the selected option still win the
+     cascade for those three properties, and now reinforce the pill instead
+     of being the only signal there is. The `.` separators are meaningless
+     inside a segmented track and are already aria-hidden, so they are
+     hidden here too.
+
+     Design spec section 4.1 names this component .segmented/.segmented-opt
+     and says explicitly that it must NOT inherit .link-btn (that class's
+     underline is the whole cause of the inverted state). Both selectors are
+     shipped here on one grouped rule: .segmented-opt is what app.js should
+     emit once it can be edited, and the #themeRow/#textScaleRow selectors
+     make today's .link-btn markup render identically in the meantime, so
+     the migration is a class swap with no visual change and no second copy
+     of these values to keep in sync. .segmented-opt is declared AFTER
+     .link-btn on purpose: equal specificity, later wins, so an element
+     carrying both classes gets the control treatment - no !important.
+     The selected state carries three redundant signals (filled surface,
+     brass rim, heavier weight) so it survives greyscale, colour-blindness
+     and the light theme, per the spec. */
+  .segmented, #themeRow, #textScaleRow{ display:grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:4px; padding:4px; background:var(--surface2); border:1px solid var(--border); border-radius:14px; }
+  #themeRow > [aria-hidden="true"], #textScaleRow > [aria-hidden="true"]{ display:none; }
+  /* Partial mitigation for spec 4.2, which this file cannot finish: the two
+     tracks sit inside one "מראה" card with no visible label of their own
+     (their only labels are aria-label, invisible to a sighted member), so
+     as identical-looking tracks 8px apart they read as one four-option
+     control. The real fix is the visible `ערכת צבעים` / `גודל טקסט`
+     labels + aria-labelledby, which live in app.js's renderThemeRow()/
+     renderTextScaleRow(). Until then, separate them enough to read as two. */
+  #textScaleRow{ margin-top:12px; }
+  .segmented-opt, #themeRow [role="radio"], #textScaleRow [role="radio"]{ min-width:0; min-height:44px; display:flex; align-items:center; justify-content:center; border-radius:10px; font-size:15px; font-weight:600; color:var(--steel); background:transparent; border:1px solid transparent; text-decoration:none; padding:8px 6px; }
+  .segmented-opt[aria-checked="true"], #themeRow [role="radio"][aria-checked="true"], #textScaleRow [role="radio"][aria-checked="true"]{ background:var(--surface); color:var(--chalk); font-weight:800; border-color:var(--brass); box-shadow:var(--shadow-card); }
   /* COMM-323: card-based Settings redesign. Noam's own .settings-* CSS
      wasn't something this workspace could copy verbatim (crossfit-pwa-Noam
      isn't checked out here) - this reuses already-established components
@@ -398,7 +589,7 @@
   .who{ display:flex; align-items:center; gap:12px; background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:14px; margin:4px 0 18px; box-shadow:var(--shadow-card); }
   .who-avatar{ width:42px; height:42px; border-radius:50%; background:linear-gradient(160deg, color-mix(in srgb, var(--brass) 45%, white), var(--brass)); color:#241a0d; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:15px; flex-shrink:0; }
   .who-name{ font-weight:800; font-size:15px; }
-  .who-sub{ color:var(--steel); font-size:11.5px; margin-top:2px; }
+  .who-sub{ color:var(--steel); font-size:12.5px; margin-top:2px; }
   .navrow{ width:100%; display:flex; align-items:center; gap:10px; padding:12px 10px; border-radius:14px; text-align:right; min-height:44px; }
   .navrow.active{ background:color-mix(in srgb, var(--energy) 10%, transparent); }
   .navrow.active .nav-label{ color:var(--energy); }
@@ -418,17 +609,17 @@
      treatment on purpose - a different widget convention, not a nav tab. */
   .navrow.tabbtn.active{ background:color-mix(in srgb, var(--energy) 14%, transparent); border-color:transparent; box-shadow:var(--shadow-sm); }
   .nav-label{ font-weight:700; font-size:15px; flex:1; }
-  .nav-sub{ color:var(--steel); font-size:11px; margin-top:1px; }
+  .nav-sub{ color:var(--steel); font-size:12px; margin-top:1px; }
   .subnav{ padding:0 0 8px 52px; display:flex; flex-direction:column; gap:2px; }
-  .subitem{ width:100%; display:flex; align-items:center; justify-content:space-between; padding:9px 10px; font-size:13px; font-weight:600; color:var(--steel); border-radius:10px; min-height:36px; text-align:right; }
+  .subitem{ width:100%; display:flex; align-items:center; justify-content:space-between; padding:9px 10px; font-size:13.5px; font-weight:600; color:var(--steel); border-radius:10px; min-height:44px; text-align:right; }
   .nav-badge{ display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:18px; padding:0 5px; border-radius:999px; background:var(--energy); color:#fff; font-size:10px; font-weight:800; flex-shrink:0; }
-  .divider-label{ color:var(--steel); font-size:10.5px; font-weight:700; letter-spacing:.5px; padding:16px 10px 6px; }
+  .divider-label{ color:var(--steel); font-size:11.5px; font-weight:700; letter-spacing:.5px; padding:16px 10px 6px; }
   /* Phase 6: each of the 4 solo tabs gets a small page-title at the top of
      its own content, additive above what was already there (the calendar's
      own prev/next-month row, for example, is untouched below this) - the
      only page identity before this was the one global header shared by
      every tab. */
-  .page-title{ font-family:'Anton',sans-serif; font-weight:400; letter-spacing:.3px; font-size:22px; color:var(--chalk); margin-bottom:14px; }
+  .page-title{ font-family:'Anton','Rubik',sans-serif; font-weight:400; letter-spacing:.3px; font-size:22px; color:var(--chalk); margin-bottom:14px; }
   /* Desktop / wide-viewport layout. Everything here lives inside the media
      query on purpose - below 900px .app-shell/.desktop-sidebar have no
      rules at all, so the mobile layout (#app centered, max-width:480px,
@@ -453,11 +644,29 @@
     #bottomNavWrap .tabbar{ display:none; }
     #app{ max-width:560px; margin:0; flex:1; padding-top:0; }
     .app-shell .header{ margin-top:0; }
+    /* The install dock is a mobile bottom SHEET - full-bleed, flat to the
+       screen edge, top corners rounded into the tab bar underneath it. None
+       of that is true here: there is no tab bar at this width (hidden just
+       above), and a 448px sheet centred in a 1440px viewport lands at
+       x=496-944 while the content column it belongs to sits at x=300-860,
+       so it reads as an orphaned mobile artefact rather than part of the
+       page (measured at 1440x900). At this width it becomes what it
+       actually is on a desktop - a corner toast: no full-width band, real
+       margins off the viewport edge so its shadow is not clipped, and
+       pushed to the far side from .desktop-sidebar (which is a sticky card
+       at the top of the inline-start side).
+       The card's own `margin:0 auto` is what centres it on phones, so the
+       desktop placement is expressed as auto on ONE side only - a logical
+       margin rather than a flex justify-content, because in an RTL flex row
+       flex-start/flex-end read backwards to most people and this is exactly
+       the kind of rule that gets "fixed" the wrong way later. */
+    .install-dock{ background:transparent; padding:0 24px 24px; }
+    .install-dock-card{ margin-inline-start:auto; margin-inline-end:0; max-width:420px; box-shadow:0 18px 44px rgba(0,0,0,.38); }
   }
   .cat-group{ margin-bottom:14px; }
   .cat-head{ display:flex; align-items:center; gap:6px; margin-bottom:6px; }
-  .cat-name{ color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; }
-  .movement-btn{ width:100%; display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 14px; text-align:right; margin-bottom:6px; box-shadow:var(--shadow-card); }
+  .cat-name{ color:var(--steel); font-size:12px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; }
+  .movement-btn{ width:100%; min-height:44px; display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 14px; text-align:right; margin-bottom:6px; box-shadow:var(--shadow-card); }
   .movement-btn.active{ background:var(--surface2); border-color:var(--brass); }
   @media (prefers-reduced-motion: reduce){ *{ transition:none !important; animation:none !important; } }
 
@@ -468,26 +677,31 @@
      surface (.card/.chart-card) in this app. */
   .cal-panel{ background:var(--surface); border:1px solid var(--border); border-radius:20px; padding:16px; box-shadow:var(--shadow-card); margin-bottom:16px; overflow:hidden; }
   .cal-legend{ display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-top:4px; }
-  .cal-legend-item{ display:flex; align-items:center; gap:6px; color:var(--steel); font-size:11px; }
+  .cal-legend-item{ display:flex; align-items:center; gap:6px; color:var(--steel); font-size:12px; }
   .cal-month-stats{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:14px; }
   .cal-month-stat{ text-align:center; background:var(--surface2); border-radius:12px; padding:10px 6px; }
   .cal-month-stat-value{ font-weight:800; font-size:18px; color:var(--chalk); }
-  .cal-month-stat-label{ color:var(--steel); font-size:10.5px; margin-top:2px; }
+  .cal-month-stat-label{ color:var(--steel); font-size:12px; margin-top:2px; }
   .cal-header{ display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
   .cal-nav-btn{ width:44px; height:44px; display:flex; align-items:center; justify-content:center; background:var(--surface); border:1px solid var(--border); border-radius:10px; }
   .cal-month-label{ font-weight:800; font-size:15px; }
   .cal-weekdays{ display:grid; grid-template-columns:repeat(7,1fr); gap:4px; margin-bottom:6px; }
-  .cal-weekday{ text-align:center; color:var(--steel); font-size:10px; font-weight:700; }
+  .cal-weekday{ text-align:center; color:var(--steel); font-size:12px; font-weight:700; }
   .cal-grid{ display:grid; grid-template-columns:repeat(7,1fr); gap:4px; margin-bottom:18px; }
-  .cal-cell{ aspect-ratio:1; min-width:0; display:flex; flex-direction:column; align-items:center; justify-content:center; border-radius:10px; background:var(--surface); border:1px solid var(--border); position:relative; gap:2px; }
+  /* UX audit, defect 3: seven cells share a ~326px row inside
+     .cal-panel, which fixes their WIDTH at about 43px - there is no width
+     left to give without overflowing the panel horizontally. min-height
+     takes the one axis that is free up to the 44px floor (aspect-ratio
+     still sets the width; min-height wins over it for the height). */
+  .cal-cell{ aspect-ratio:1; min-height:44px; min-width:0; display:flex; flex-direction:column; align-items:center; justify-content:center; border-radius:10px; background:var(--surface); border:1px solid var(--border); position:relative; gap:2px; }
   .cal-cell.empty{ background:transparent; border-color:transparent; }
   .cal-cell.today{ border-color:var(--chalk); }
   .cal-cell.selected{ background:var(--surface2); border-color:var(--brass); }
-  .cal-daynum{ font-size:12px; font-weight:600; color:var(--chalk); }
+  .cal-daynum{ font-size:13px; font-weight:600; color:var(--chalk); }
   .cal-dot{ width:5px; height:5px; border-radius:999px; background:var(--steel); }
   .cal-dot.pr{ background:var(--brass); }
   .report-row{ display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:10px 12px; margin-bottom:8px; box-shadow:var(--shadow-card); }
-  .report-flag{ font-size:11px; font-weight:700; padding:2px 8px; border-radius:999px; }
+  .report-flag{ font-size:12px; font-weight:700; padding:2px 8px; border-radius:999px; }
   .subtabbar{ display:flex; background:var(--surface2); border-radius:12px; padding:3px; margin-bottom:16px; border:1px solid var(--border); }
   .subtabbtn{ flex:1; min-height:44px; padding:8px 0; border-radius:9px; font-weight:700; font-size:13px; color:var(--steel); }
   .subtabbtn.active{ background:var(--surface); color:var(--chalk); box-shadow:var(--shadow-sm); }
@@ -504,13 +718,32 @@
     :root:not([data-theme="light"]) input[type="date"]::-webkit-calendar-picker-indicator{ filter:invert(1) brightness(1.4); }
   }
   :root[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator{ filter:invert(1) brightness(1.4); }
-  .format-chip{ padding:10px 6px; border-radius:12px; border:1px solid var(--border); background:var(--surface); font-weight:700; font-size:13px; color:var(--steel); text-align:center; flex:1; }
+  .format-chip{ min-height:44px; padding:10px 6px; border-radius:12px; border:1px solid var(--border); background:var(--surface); font-weight:700; font-size:13px; color:var(--steel); text-align:center; flex:1; }
   .format-chip.active{ background:rgba(232,93,61,.15); border-color:var(--energy); color:var(--energy); }
   /* COMM-324: a one-line description under each format's name (e.g. "זמן" /
      "כמה מהר סיימתם") - lost somewhere along the way even though the chip
-     already had room for it. */
-  .format-chip-sub{ display:block; font-weight:600; font-size:9.5px; color:var(--steel); margin-top:2px; line-height:1.25; }
+     already had room for it.
+     Design spec section 3 (jargon), TIER 1 - PERMANENT INLINE GLOSS. COMM-324
+     shipped the right copy and then buried it: 9.5px made the explanation of
+     the hardest words in the app (AMRAP, EMOM) the SMALLEST type in the app,
+     which is the one thing a gloss must never be. Raised to the spec's 13px.
+     .term-sub is the spec's own name for this component so that the other
+     glosses it lists (Rx/Scaled, the score-type row) can reuse one rule
+     instead of re-deriving it; .format-chip-sub is kept as the selector the
+     existing markup already uses, sharing the identical declaration rather
+     than being a second, drifting copy of it. */
+  .format-chip-sub, .term-sub{ display:block; font-weight:600; font-size:13px; color:var(--steel); margin-top:3px; line-height:1.3; }
   .format-chip.active .format-chip-sub{ color:var(--energy); opacity:.85; }
+  /* ...and the format row becomes 2x2 rather than 4-across. At 390px, four
+     flex:1 chips are ~85px wide, where a 13px gloss like "כמה סיבובים
+     הספקתם" wraps to four ragged lines - the spec's rule is "shorten the
+     gloss, don't shrink the type", and the copy is explicitly to be kept
+     verbatim, so the row is what gives. Two columns put each gloss on one
+     or two lines at the same 13px. Keyed on the id because the markup's
+     .flex class is shared app-wide; the row is a role="radiogroup" whose
+     options carry no meaningful DOM order beyond reading order, so a grid
+     changes nothing for assistive tech. */
+  #wodBuilderFormats{ display:grid; grid-template-columns:1fr 1fr; }
   /* COMM-324: WOD Builder's two-card layout (details, then optional
      movements) with the create button pinned to a footer instead of sitting
      mid-form - Noam's own code comment says it fixed this exact placement
@@ -520,7 +753,7 @@
      position, the same structural trick #bottomNavWrap already uses. */
   .wodbuild-card-details, .wodbuild-card-moves{ background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:14px 16px; box-shadow:var(--shadow-card); margin-bottom:14px; }
   .wodbuild-foot{ flex-shrink:0; padding:12px 16px calc(env(safe-area-inset-bottom,0px) + 16px); border-top:1px solid var(--border); background:var(--bg); }
-  .movecheck-row{ width:100%; display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:11px 14px; margin-bottom:6px; text-align:right; }
+  .movecheck-row{ width:100%; min-height:44px; display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:11px 14px; margin-bottom:6px; text-align:right; }
   .movecheck-row.checked{ background:var(--surface2); border-color:var(--brass); }
   .movecheck-box{ width:18px; height:18px; border-radius:5px; border:1.5px solid var(--border); flex-shrink:0; display:flex; align-items:center; justify-content:center; }
   .movecheck-row.checked .movecheck-box{ background:var(--brass); border-color:var(--brass); }
@@ -572,9 +805,16 @@
     .capstone-badge.earned .medal-shape{ animation:medalGlowBig 2.6s ease-in-out infinite; }
   }
   @keyframes medalGlowBig{ 0%,100%{ filter:drop-shadow(0 0 8px var(--glow-color)); } 50%{ filter:drop-shadow(0 0 18px var(--glow-color)); } }
-  .medal-name{ font-size:10.5px; font-weight:700; color:var(--chalk); margin-top:6px; line-height:1.3; }
+  .medal-name{ font-size:12px; font-weight:700; color:var(--chalk); margin-top:6px; line-height:1.3; }
   .medal-badge.locked .medal-name{ color:var(--steel); }
-  .medal-rule{ font-size:9px; color:var(--steel); margin-top:2px; line-height:1.3; opacity:.85; }
+  /* UX audit, defect 3: 9px was the smallest text in the app after the
+     nav labels, and it is real content - the criteria that explain how a
+     medal is earned. 11px is as far as it goes here: .ach-grid columns are
+     minmax(72px,1fr), so a rule like "רישום ראשון של Filthy Fifty כ-Rx"
+     already wraps to three lines at this width. A genuine 14px floor for
+     this string needs the badge grid itself to become wider cells or list
+     rows - a markup change in app.js, not a font-size here. */
+  .medal-rule{ font-size:11px; color:var(--steel); margin-top:2px; line-height:1.3; opacity:.85; }
   .medal-badge.locked .medal-shape{ filter:grayscale(1) brightness(.55); opacity:.4; }
   .medal-badge.earned .medal-shape{ filter:drop-shadow(0 0 5px var(--glow-color)) drop-shadow(0 0 13px var(--glow-color)); }
   @media (prefers-reduced-motion: no-preference){
@@ -700,7 +940,7 @@
     .cstar{ animation:starTwinkle 1.8s ease-in-out infinite; }
   }
   @keyframes starTwinkle{ 0%,100%{ opacity:.3; transform:scale(.8) rotate(0deg); } 50%{ opacity:1; transform:scale(1.2) rotate(15deg); } }
-  .celebration-title{ font-family:'Anton',sans-serif; font-weight:400; font-size:30px; color:var(--brass); margin-bottom:6px; letter-spacing:.5px; }
+  .celebration-title{ font-family:'Anton','Rubik',sans-serif; font-weight:400; font-size:30px; color:var(--brass); margin-bottom:6px; letter-spacing:.5px; }
   .celebration-pr-line{ font-size:15px; font-weight:700; color:var(--chalk); margin-bottom:6px; }
   .celebration-sub{ color:var(--steel); font-size:14px; margin-bottom:20px; }
   .celebration-medals{ display:flex; justify-content:center; gap:16px; flex-wrap:wrap; }
@@ -721,60 +961,10 @@
   <div style="font-weight:600; font-size:13px; opacity:.85;">סגרו את האפליקציה ופתחו אותה מחדש כדי לעדכן</div>
 </button>
 
-<!-- Custom "add to home screen" banner. Chrome/Android defer their native
-     install prompt to us via beforeinstallprompt (see app.js); iOS Safari
-     never fires that event, so this banner just never shows there. Shares
-     the update banner's fixed-top slot and visual weight, distinguished by
-     the brand stripe instead of the solid energy color, and steps aside if
-     an update banner is showing (see showUpdateBanner in app.js). -->
-<!-- Bottom-sheet presentation (was a fixed-top colored strip). Same id and
-     the same two data-action hooks on the same two buttons - all of
-     showInstallBanner()/dismissInstallBanner()/installApp() (app.js) and
-     the beforeinstallprompt/appinstalled listeners are untouched; they
-     only ever read/write banner.style.display, which still means
-     "block" = shown here exactly as before. -->
-<div id="installBanner" role="status" style="display:none; position:fixed; left:0; right:0; bottom:0; z-index:59; width:100%;">
-  <div style="max-width:448px; margin:0 auto; background:var(--surface); border:1px solid var(--border); border-top-left-radius:22px; border-top-right-radius:22px; padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 18px); box-shadow:0 -16px 40px rgba(0,0,0,.3);">
-    <div class="flex items-center gap-10" style="margin-bottom:14px;">
-      <div style="width:52px; height:52px; border-radius:16px; background:var(--surface2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; flex-shrink:0; overflow:hidden; box-shadow:var(--shadow-card);">
-        <img src="./assets/mark.png" alt="" style="width:30px; height:auto;" />
-      </div>
-      <div>
-        <div style="font-weight:800; font-size:14px; color:var(--chalk);">התקינו את האימוניה</div>
-        <div style="font-weight:600; font-size:12px; color:var(--steel);">גישה מהירה ישירות ממסך הבית</div>
-      </div>
-    </div>
-    <div class="brand-stripe" style="height:4px; margin-bottom:14px;"></div>
-    <div class="flex items-center gap-10">
-      <button data-action="install-app" class="save-btn" style="flex:1; max-width:none; font-family:inherit; font-weight:800; font-size:14px; padding:12px 0; box-shadow:none;">התקנה</button>
-      <button data-action="dismiss-install-hint" aria-label="סגירה" style="color:var(--steel); padding:10px; flex-shrink:0;">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
-      </button>
-    </div>
-  </div>
-</div>
-<!-- iOS Safari never fires beforeinstallprompt, so #installBanner above
-     never appears there — this is a separate banner (own show/dismiss,
-     see maybeShowIOSInstallBanner()/dismissIOSInstallBanner() in app.js)
-     with instructions instead of a native install button, since there is
-     no deferred prompt to trigger on iOS. -->
-<div id="iosInstallBanner" role="status" style="display:none; position:fixed; left:0; right:0; bottom:0; z-index:59; width:100%;">
-  <div style="max-width:448px; margin:0 auto; background:var(--surface); border:1px solid var(--border); border-top-left-radius:22px; border-top-right-radius:22px; padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 18px); box-shadow:0 -16px 40px rgba(0,0,0,.3);">
-    <div class="flex items-center gap-10" style="margin-bottom:12px;">
-      <div style="width:52px; height:52px; border-radius:16px; background:var(--surface2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; flex-shrink:0; overflow:hidden; box-shadow:var(--shadow-card);">
-        <img src="./assets/mark.png" alt="" style="width:30px; height:auto;" />
-      </div>
-      <div>
-        <div style="font-weight:800; font-size:14px; color:var(--chalk);">כדי שהנתונים לא יימחקו</div>
-        <div style="font-weight:600; font-size:12px; color:var(--steel);">הוסיפו למסך הבית: שיתוף ← הוספה למסך הבית</div>
-      </div>
-    </div>
-    <div class="brand-stripe" style="height:4px; margin-bottom:12px;"></div>
-    <div class="flex items-center gap-10">
-      <button data-action="dismiss-ios-install-hint" class="save-btn" style="flex:1; max-width:none; font-family:inherit; font-weight:800; font-size:14px; padding:12px 0; box-shadow:none;">הבנתי</button>
-    </div>
-  </div>
-</div>
+<!-- The two "add to home screen" banners used to live here, as their own
+     position:fixed;bottom:0 elements. They are children of #bottomNavWrap
+     now, docked just above .bottom-bar - see the UX-audit comment on
+     .install-dock in the stylesheet for why. -->
 <div id="loading" role="status" aria-live="polite" style="min-height:100dvh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;">
   <img src="./assets/mark.png" alt="" width="40" height="46" style="opacity:.85;" />
   <div style="color:var(--steel); font-size:13px; font-weight:700;">טוען את היומן שלך…</div>
@@ -839,7 +1029,7 @@
   <div class="modal-sheet" id="navMenuSheet" style="max-height:none; height:100%; border-radius:0; border:none;">
     <div class="modal-head">
       <span class="modal-title" id="navMenuTitle">תפריט</span>
-      <button data-action="close-nav-menu" aria-label="סגירה" style="color:var(--steel); padding:4px;">
+      <button data-action="close-nav-menu" class="icon-btn" aria-label="סגירה" style="color:var(--steel);">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
       </button>
     </div>
@@ -856,7 +1046,7 @@
   <div class="modal-sheet" id="settingsSheet" style="max-height:none; height:100%; border-radius:0; border:none;">
     <div class="modal-head">
       <span class="modal-title" id="settingsTitle">הגדרות</span>
-      <button data-action="close-settings" aria-label="סגירה" style="color:var(--steel); padding:4px;">
+      <button data-action="close-settings" class="icon-btn" aria-label="סגירה" style="color:var(--steel);">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
       </button>
     </div>
@@ -865,6 +1055,63 @@
 </div>
 
 <div id="bottomNavWrap">
+  <!-- Custom "add to home screen" banner. Chrome/Android defer their native
+       install prompt to us via beforeinstallprompt (see app.js); iOS Safari
+       never fires that event, so this banner just never shows there.
+       Distinguished from #updateBanner by the brand stripe instead of the
+       solid energy color, and steps aside if an update banner is showing
+       (see showUpdateBanner in app.js).
+
+       Same id and the same two data-action hooks on the same two buttons -
+       showInstallBanner()/dismissInstallBanner()/installApp() (app.js) and
+       the beforeinstallprompt/appinstalled listeners are untouched; they
+       only ever read/write banner.style.display, and "block" still means
+       shown here exactly as before. What changed is WHERE this lives: an
+       ordinary in-flow child of #bottomNavWrap rather than a position:fixed
+       element of its own. See .install-dock in the stylesheet. -->
+  <div id="installBanner" class="install-dock" role="status" style="display:none;">
+    <div class="install-dock-card">
+      <div class="flex items-center gap-10" style="margin-bottom:14px;">
+        <div style="width:52px; height:52px; border-radius:16px; background:var(--surface2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; flex-shrink:0; overflow:hidden; box-shadow:var(--shadow-card);">
+          <img src="./assets/mark.png" alt="" style="width:30px; height:auto;" />
+        </div>
+        <div>
+          <div style="font-weight:800; font-size:15px; color:var(--chalk);">התקינו את האימוניה</div>
+          <div style="font-weight:600; font-size:14px; color:var(--steel);">גישה מהירה ישירות ממסך הבית</div>
+        </div>
+      </div>
+      <div class="brand-stripe" style="height:4px; margin-bottom:14px;"></div>
+      <div class="flex items-center gap-10">
+        <button data-action="install-app" class="save-btn" style="flex:1; max-width:none; font-family:inherit; font-weight:800; font-size:15px; padding:12px 0; box-shadow:none;">התקנה</button>
+        <button data-action="dismiss-install-hint" class="icon-btn" aria-label="סגירה" style="color:var(--steel);">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+  <!-- iOS Safari never fires beforeinstallprompt, so #installBanner above
+       never appears there — this is a separate banner (own show/dismiss,
+       see maybeShowIOSInstallBanner()/dismissIOSInstallBanner() in app.js)
+       with instructions instead of a native install button, since there is
+       no deferred prompt to trigger on iOS. Same .install-dock treatment,
+       for the same reason. -->
+  <div id="iosInstallBanner" class="install-dock" role="status" style="display:none;">
+    <div class="install-dock-card">
+      <div class="flex items-center gap-10" style="margin-bottom:12px;">
+        <div style="width:52px; height:52px; border-radius:16px; background:var(--surface2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; flex-shrink:0; overflow:hidden; box-shadow:var(--shadow-card);">
+          <img src="./assets/mark.png" alt="" style="width:30px; height:auto;" />
+        </div>
+        <div>
+          <div style="font-weight:800; font-size:15px; color:var(--chalk);">כדי שהנתונים לא יימחקו</div>
+          <div style="font-weight:600; font-size:14px; color:var(--steel);">הוסיפו למסך הבית: שיתוף ← הוספה למסך הבית</div>
+        </div>
+      </div>
+      <div class="brand-stripe" style="height:4px; margin-bottom:12px;"></div>
+      <div class="flex items-center gap-10">
+        <button data-action="dismiss-ios-install-hint" class="save-btn" style="flex:1; max-width:none; font-family:inherit; font-weight:800; font-size:15px; padding:12px 0; box-shadow:none;">הבנתי</button>
+      </div>
+    </div>
+  </div>
   <div class="bottom-bar" id="bottomBar" style="display:none;">
     <button class="save-btn" id="bottomBarBtn" data-action="save-set">
       <img src="./assets/icon-barbell.png" alt="" width="22" height="7" style="filter:brightness(0); opacity:.75;" />
@@ -878,7 +1125,7 @@
   <div class="modal-sheet">
     <div class="modal-head">
       <span class="modal-title" id="pickerTitle">בחירת תרגיל</span>
-      <button data-action="close-picker" aria-label="סגירה" style="color:var(--steel); padding:4px;">
+      <button data-action="close-picker" class="icon-btn" aria-label="סגירה" style="color:var(--steel);">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
       </button>
     </div>
@@ -894,7 +1141,7 @@
   <div class="modal-sheet">
     <div class="modal-head">
       <span class="modal-title" id="wodPickerTitle">בחירת אימון</span>
-      <button data-action="close-wod-picker" aria-label="סגירה" style="color:var(--steel); padding:4px;">
+      <button data-action="close-wod-picker" class="icon-btn" aria-label="סגירה" style="color:var(--steel);">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
       </button>
     </div>
@@ -910,7 +1157,7 @@
   <div class="modal-sheet">
     <div class="modal-head">
       <span class="modal-title" id="wodBuilderTitle">בניית אימון</span>
-      <button data-action="close-wod-builder" aria-label="סגירה" style="color:var(--steel); padding:4px;">
+      <button data-action="close-wod-builder" class="icon-btn" aria-label="סגירה" style="color:var(--steel);">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
       </button>
     </div>
@@ -1019,7 +1266,7 @@
   <div class="modal-sheet">
     <div class="modal-head">
       <span class="modal-title" id="achievementsTitle">עיטורים</span>
-      <button data-action="close-achievements" aria-label="סגירה" style="color:var(--steel); padding:4px;">
+      <button data-action="close-achievements" class="icon-btn" aria-label="סגירה" style="color:var(--steel);">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
       </button>
     </div>
@@ -1031,7 +1278,7 @@
   <div class="modal-sheet">
     <div class="modal-head">
       <span class="modal-title" id="notificationsTitle">מה חדש</span>
-      <button data-action="close-notifications" aria-label="סגירה" style="color:var(--steel); padding:4px;">
+      <button data-action="close-notifications" class="icon-btn" aria-label="סגירה" style="color:var(--steel);">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
       </button>
     </div>
