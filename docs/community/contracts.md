@@ -1072,35 +1072,89 @@ should read those entries instead.
   `post_create` takes, so the `cloud.js` owner can route the call through
   `communityRpc()`/`OUTBOX_ACTIONS` later with no signature change); and,
   with no key at all, the natural unique
-  `workout_posts(author_id, source_type, source_record_id)`. Both functions
-  look for their own prior post first and **return its id**, so a double tap
-  on "שיתוף" or a retry after a dropped response converges on one post
-  rather than raising 23505 the client would render as a failure. The
-  natural check runs ahead of the rate limit, so a double tap costs no
-  budget. Soft-deleted posts are included deliberately — the constraint does
-  not exclude them, so re-inserting would fail.
-- **FLAGGED, not yet resolved — the natural key collides with the legacy
-  workout share.** `publishWorkout()` (cloud.js) upserts `workout_posts` with
+  `workout_posts(author_id, source_type, source_record_id)`. A repeat share
+  finds the record's existing **POST_PR**, returns its id and writes nothing,
+  so a double tap on "שיתוף" or a retry after a dropped response converges on
+  one post rather than raising 23505 the client would render as a failure.
+  The already-POST_PR check runs ahead of the rate limit, so a double tap
+  costs no budget, and it cannot overwrite the note that was published first.
+- **RESOLVED in 202609060025 — the natural key collided with the legacy
+  workout share, and `pr_share` reported a success it had not performed.**
+  `publishWorkout()` (cloud.js) upserts `workout_posts` with
   `source_type = item.type` (`strength_entry`/`wod_entry`) and
   `source_record_id = item.id`, i.e. **the same `entry.id`** `pr_share` is
-  keyed on, `on conflict author_id,source_type,source_record_id`. So a member
-  who already shared that workout as a POST_WORKOUT and then taps "שיתוף" on
-  the PR prompt for the same entry hits `pr_share`'s prior-post lookup, gets
-  the POST_WORKOUT's id back, and sees `השיא שותף לקהילה` for a POST_PR that
-  was never created — `sharePrPrompt()` then emits `POST_CREATED` with
-  `post_type: "POST_PR"` for a post that is not one. The unique constraint is
-  per `(author_id, source_type, source_record_id)` and does not include
-  `post_type`, so the two share one slot per record. This is a **code**
-  question, not a doc one: it needs either `post_type` in the lookup
-  predicate, a distinct `source_type` for a PR share, or a deliberate
-  decision that one record yields one post of either kind. Raised against
-  202609060019 rather than fixed here.
-- Side effects: one `workout_posts` row (`POST_PR`, visibility `club`,
+  keyed on, `on conflict author_id,source_type,source_record_id`. The unique
+  constraint does not include `post_type`, so one logged record owns one slot.
+  As shipped in 202609060019 the prior-post probe did not filter on
+  `post_type` either: a member who had already shared that workout and then
+  tapped "שיתוף" on the PR prompt got the POST_WORKOUT's id back, no POST_PR
+  was created, the note and photo were discarded, and `sharePrPrompt()` still
+  showed `השיא שותף לקהילה` and emitted `POST_CREATED` with
+  `post_type: "POST_PR"` for a post that was not one. Four ordinary taps.
+  - **The resolution: one record yields one post, and a prior POST_WORKOUT
+    for that record is UPGRADED IN PLACE into the POST_PR.** `post_type`,
+    `source_type`, `title`, `result_text`, `occurred_on`,
+    `score_value`/`score_direction` (server-recomputed, replacing
+    `publishWorkout`'s client-supplied score), `metadata` and `body` are set;
+    `deleted_at` is cleared; supplied media replaces the card's `post_media`.
+    `sharePrPrompt()`'s existing message and event become true with **no
+    client change**.
+  - The other two candidates were rejected. Adding `post_type` to the unique
+    constraint means dropping the three-column one, which is
+    `publishWorkout()`'s `on conflict` arbiter — Postgres would raise 42P10
+    on that upsert and break the legacy workout share for every member the
+    moment the migration deployed. A distinct `source_type` for a PR share is
+    landable alone but still ships two cards for one logged set, and it
+    destroys what `source_type` is for on these rows: the card's
+    "פתיחת האימון" deep link emits
+    `data-source-type="${m.source_type || post.source_type || "workout"}"`,
+    so a literal `pr` would reach the client's open-source handler as a value
+    it has never seen.
+  - Two cards for one set is also the wrong product answer, and this feed's
+    own ranking amplifies it rather than absorbing it: `feed_page` classes
+    `POST_WORKOUT` as diversity class `workout` and `POST_PR` as `boost`, and
+    the diversity pass explicitly **prefers** a boost card once a workout run
+    reaches its threshold — so two near-identical cards from one member about
+    one set are actively steered adjacent. The repetition penalty (−6 per
+    extra post by one author inside 24h, capped at −18) does not undo that; it
+    just also penalises the member's genuinely separate posts that day.
+  - **No constraint or index changed, so there is no migration cost on
+    existing rows**: nothing is dropped, nothing is rebuilt, no row is
+    rewritten, and `publishWorkout`'s on-conflict target keeps its arbiter.
+- **What the upgrade deliberately does not move.** `visibility` — promoting an
+  already-published `followers` post to `club` would widen its audience
+  without the member asking (an `identity-privacy` boundary; the upgraded post
+  keeps the visibility it was published with, the same principle `ach_share`
+  applies by inheriting the achievement's). `published_at` — `pr_share` is
+  reachable directly over PostgREST for any of the caller's own record ids, so
+  bumping it would let a member re-float an arbitrarily old post to the top of
+  every feed. `comparison_key` — the leaderboard key belongs to the workout
+  share that computed it. Reactions and comments survive the upgrade: it is
+  still the card for that set.
+- A prior post whose `status` is `hidden` or `removed` is **refused** with
+  `post is not available` rather than revived — a moderator acted on that
+  card, and re-publishing the same content under a new `post_type` would be
+  moderation evasion. A merely soft-deleted prior post **is** revived, because
+  the member is at that moment explicitly asking to publish the record. A
+  prior post that is neither `POST_WORKOUT` nor `POST_PR` raises
+  `this record already has a post`; it is unreachable from any shipped writer
+  (`post_create` never sets `source_record_id`) and refusing loudly beats
+  rewriting a row of unknown shape.
+- The upgrade's `UPDATE` runs inside the transaction-local
+  `app.allow_moderation_write` pin, because `deleted_at`, `score_value` and
+  `score_direction` are guarded by `workout_posts_guard_moderated_fields`
+  (202609060011). Same mechanism `post_delete()`,
+  `request_account_deletion()` and `admin_remove_member()` already use; set
+  and cleared around that one statement.
+- Side effects: one `workout_posts` row created **or one upgraded** (`POST_PR`;
+  visibility `club` on the insert path, preserved on the upgrade path;
   `source_type` the record's own type, `source_record_id` the text id), up
-  to 4 `post_media` rows, one `post_create` rate-limit token. The
-  post-type privilege guard (202609060004) needs nothing added and is not
-  weakened: `POST_PR` is outside its four staff-only labels, and this
-  function takes no `post_type` from the caller at all. Returns the post id.
+  to 4 `post_media` rows (replacing any existing set when media is supplied),
+  one `post_create` rate-limit token. The post-type privilege guard
+  (202609060004) needs nothing added and is not weakened: `POST_PR` is outside
+  its four staff-only labels, and this function takes no `post_type` from the
+  caller at all. Returns the post id, which is now always the id of a
+  `POST_PR`.
 
 ### community_profile(user_id uuid) returns jsonb
 
@@ -1268,6 +1322,27 @@ Markup feed and engagement can rely on:
   **not** rewrite an existing `shared_at` — `shared_at` is stamped only when
   it was null, so a re-share does not overwrite the date it was first
   shared.
+- **Sibling risk checked and cleared while resolving `pr_share`'s collision
+  (202609060025), because the two paths share one unique slot and nobody had
+  verified it.** `publishAchievement()` (cloud.js) writes the same
+  `source_type = 'achievement'` with `source_record_id = achievementId`, where
+  `achievementId` is app.js's own local badge id. Those ids are slugs —
+  `capstone`, `well-rounded`, `pr-<category>-<tier>`, `streak-<tier>`,
+  `sessions-<n>`, `tenure-<id>`, `rx-<wodId>` — while `ach_share` writes
+  `member_achievements.id::text`, a column typed `uuid` with a
+  `gen_random_uuid()` default. **No slug is uuid-shaped, so the two id spaces
+  are disjoint and cannot collide**; asserted in
+  `supabase/tests/0087_pr_share_workout_collision_test.sql`. The server
+  `achievement_definitions.code` namespace is separate again
+  (`sessions_10`, `well_rounded` — underscores, and never written into
+  `source_record_id` by either path).
+  - What remains is **duplicate content, not a false success**: a member can
+    share the same milestone from the app.js celebration sheet and from the
+    community unlock sheet and get two `POST_ACHIEVEMENT` cards. Both writes
+    genuinely land, each returns a real post, and neither reports something it
+    did not do — so this is not `pr_share`'s defect class and it is recorded
+    here rather than silently "fixed" by a migration. Collapsing the two is a
+    client-side question about which sheet should offer the share at all.
 - Side effects: one `workout_posts` row, up to 4 `post_media` rows,
   `member_achievements.shared_at`, one `post_create` rate-limit token.
   Returns the post id.
