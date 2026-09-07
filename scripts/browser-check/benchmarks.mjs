@@ -41,10 +41,48 @@ await page.waitForTimeout(200);
 
 // COMM-360: selectedWodId now defaults to null (not WOD_LIBRARY[0]/"Fran")
 // so a fresh load lands on the log subtab's empty state, not a pre-filled
-// form - a user must explicitly pick a WOD (from here, via benchmarks
-// below) before any log form appears.
-const emptyStateVisible = await page.evaluate(() => (document.getElementById("wodContent")?.textContent || "").includes("בחרו אימון כדי להתחיל"));
-check("the log subtab shows the pick-a-WOD empty state on a fresh load, not a pre-filled form", emptyStateVisible);
+// form - a user must explicitly pick a WOD before any log form appears.
+//
+// That empty state was rewritten (8afbc57) and this assertion moved with
+// it. The old copy was "בחרו אימון כדי להתחיל" on a screen with ZERO
+// interactive elements outside the three subtab pills - a dead end two
+// audit personas escaped only by guessing that "benchmarks" must be where
+// workouts live. The copy is now "בחרו אימון ונרשום אותו" and the state
+// carries a real door out of it. Both halves are asserted below, because
+// the copy alone was never the fix: an empty state that names itself but
+// still offers no action is the same dead end with better wording.
+const emptyState = await page.evaluate(() => {
+  const c = document.getElementById("wodContent");
+  return {
+    text: c?.textContent || "",
+    hasPicker: !!c?.querySelector("[data-action='open-wod-picker']"),
+    hasBuilder: !!c?.querySelector("[data-action='open-wod-builder']"),
+    // #wodLogDateInput is rendered only by the branch that dereferences a
+    // selected WOD, so its absence is the load-bearing half: no form.
+    hasLogForm: !!c?.querySelector("#wodLogDateInput"),
+    ctaAction: document.getElementById("bottomBarBtn")?.dataset.action || "",
+    ctaLabel: (document.getElementById("saveBtnLabel")?.textContent || "").trim(),
+  };
+});
+check(
+  "the log subtab shows the pick-a-WOD empty state on a fresh load, not a pre-filled form",
+  emptyState.text.includes("בחרו אימון ונרשום אותו") && !emptyState.hasLogForm,
+  emptyState.text.replace(/\s+/g, " ").trim().slice(0, 80),
+);
+check(
+  "that empty state offers a way out (a wod-picker button), not just a sentence",
+  emptyState.hasPicker,
+);
+// The builder is otherwise reachable only from inside the picker, so the
+// empty state is the only screen that offers it directly.
+check("the empty state also offers the build-your-own path", emptyState.hasBuilder);
+// The same screen used to leave the fixed bottom CTA reading "רישום סט" —
+// an action belonging to a different tab entirely — wired to save-wod.
+check(
+  "the bottom CTA on the empty state points at the picker, not a stale save",
+  emptyState.ctaAction === "open-wod-picker" && emptyState.ctaLabel === "בחירת אימון",
+  `${emptyState.ctaAction} / "${emptyState.ctaLabel}"`,
+);
 
 // Reach the benchmarks subtab via its pill in the subtabbar.
 await page.click("button.subtabbtn[data-subtab='benchmarks']");
