@@ -123,7 +123,12 @@ test("the dialog registry keeps DOM keys and state paths separate", () => {
   const entries = [...registry.matchAll(/\{ key: "([^"]+)", isOpen: \(\) => (state\.[\w.]+),/g)];
   // 12 since the launch-readiness audit's A3 fix added the confirm sheet -
   // it was previously invisible to this whole registry.
-  assert.equal(entries.length, 12, "every dialog entry needs a key and an isOpen getter");
+  // 13 since the five-persona audit's defect 3 added "reclaimInvite", the
+  // invite-reclaim confirmation. Deliberate, and this count is the review
+  // trigger that made it deliberate: a new overlay that is NOT registered
+  // here is unreachable by Escape, by the Tab trap and by a backdrop click,
+  // which is the exact defect A3 found in the confirm sheet.
+  assert.equal(entries.length, 13, "every dialog entry needs a key and an isOpen getter");
   const state = readStateLiteral();
   for (const [, key, path] of entries) {
     const value = path.split(".").slice(1).reduce((o, k) => (o == null ? o : o[k]), state);

@@ -253,6 +253,21 @@
       // sort key needs (documented in docs/community/backlog.md's COMM-377
       // paragraph).
       roster: { items: [], cursor: null, loading: false, loadingMore: false, loaded: false, error: false, end: false },
+
+      // ---- Five-persona UX audit, defect 3. Incomplete signups ---------
+      // The accounts every roster surface is structurally blind to: a real
+      // auth.users row that HAS redeemed an invite and has NO profiles row,
+      // because the profile insert sits at the END of the intro carousel
+      // (migration 202609060023's own header). items is
+      // admin_incomplete_signups()'s accumulated pages, most-recently-
+      // redeemed first; cursor/end/loading are the same shape as roster
+      // above. reclaim is the open confirm sheet - the one that NAMES ITS
+      // SUBJECT - and reclaimResult holds what admin_reclaim_invite()
+      // actually did, so the admin reads it instead of a silent success;
+      // same one-shot reveal shape as passwordResetResult above.
+      incompleteSignups: { items: [], cursor: null, loading: false, loadingMore: false, loaded: false, error: false, end: false },
+      reclaim: null,
+      reclaimResult: null,
     },
 
     // ---- analytics: the admin dashboards (COMM-310..313) ----
@@ -2496,6 +2511,75 @@
     }
     setMessage("הפעולה נרשמה");
     await loadModQueue();
+  }
+  // ---- Five-persona UX audit, defect 3. Reclaiming a ghost's invite ------
+  //
+  // THE CONFIRMATION NAMES ITS SUBJECT. A standing finding of this audit is
+  // that no confirmation in this app says what it is about to act on:
+  // askConfirm()'s message is a fixed sentence and renderConfirmSheet()
+  // escapes it as plain text, so it structurally cannot carry a name that
+  // mixes Latin and Hebrew without breaking bidi anyway. This is a dedicated
+  // sheet on renderModActionSheet's model - which is already where an
+  // optional note field lives - and the first thing inside it is WHO.
+  function openGhostReclaim(userId) {
+    // Second layer, not the only one: ghostRowHtml already withholds the
+    // control from a non-admin, admin_reclaim_invite checks a real
+    // profiles.is_admin server-side, and this is the fallback if a future
+    // change ever renders the button more widely than it should.
+    if (!isAdmin()) return;
+    const item = (state.admin.incompleteSignups.items || []).find((r) => r.user_id === userId);
+    if (!item) return;
+    state.admin.reclaim = { userId, item, note: "", saving: false, error: "" };
+    rerender();
+  }
+  function closeGhostReclaim() { state.admin.reclaim = null; rerender(); }
+  // admin_reclaim_invite raises four named errors, and every one of them
+  // means the admin is looking at a different situation than they think - so
+  // each gets its own sentence naming the real reason and, where there is
+  // one, the thing to do instead. NONE of them offers a retry: a generic
+  // "try again" would be a lie for all four, because not one can ever
+  // succeed on a second identical call.
+  function ghostReclaimErrorText(error) {
+    const msg = error && error.message;
+    return {
+      "member has a profile": "לחשבון הזה כבר יש פרופיל - זה חבר/ה במועדון ולא הרשמה שלא הושלמה. להסרה יש להשתמש בניהול חברים.",
+      "signup is still in progress": `ההרשמה עדיין בתהליך. אפשר לשחרר הזמנה רק אחרי ${GHOST_GRACE_DAYS} ימים ללא השלמה, כדי לא לקחת קוד ממי שנמצא באמצע ההרשמה ברגע זה.`,
+      "no invite to reclaim": "אין כאן הזמנה לשחרר. ייתכן שהיא כבר שוחררה - שווה לרענן את הרשימה.",
+      "cannot reclaim your own invite": "אי אפשר לשחרר את ההזמנה של עצמך.",
+      "target account required": "לא נבחר חשבון לשחרור.",
+      "not authorized": "שחרור הזמנה שמור למנהל/ת.",
+    }[msg] || "לא ניתן היה לשחרר את ההזמנה. נסו שוב.";
+  }
+  async function runGhostReclaim() {
+    const a = state.admin.reclaim;
+    if (!a || a.saving) return;
+    a.saving = true; a.error = ""; rerender();
+    const { data, error } = await client.rpc("admin_reclaim_invite", {
+      p_user_id: a.userId,
+      // Capped at 500 like mod_review's note, and sent as null rather than an
+      // empty string so the audit row carries "no reason given" instead of a
+      // reason that is the empty string.
+      p_note: String(a.note || "").slice(0, 500) || null,
+    });
+    if (error) {
+      a.saving = false;
+      a.error = ghostReclaimErrorText(error);
+      rerender();
+      return;
+    }
+    const result = data || {};
+    // The name is carried over from the row rather than re-read: the reclaim
+    // has just deleted this account's invite_redemptions row, which is the
+    // row admin_incomplete_signups INNER JOINs on, so the reload below will
+    // not return it and there would be nothing left to name it by.
+    state.admin.reclaimResult = {
+      name: ghostDisplayName(a.item),
+      invite_source: result.invite_source || a.item.invite_source,
+      welcome_posts_retracted: Number(result.welcome_posts_retracted || 0),
+      purgeable: !!result.purgeable_by_purge_abandoned_profiles,
+    };
+    state.admin.reclaim = null;
+    await loadIncompleteSignups(true);
   }
   // Admin-only member lookup/management - was previously only possible
   // through the Supabase SQL editor. Search by handle/name or paste an
@@ -5685,6 +5769,12 @@
       invite_created: "יצירת הזמנה", invite_revoked: "ביטול הזמנה",
       shared_code_created: "יצירת קוד שיתוף", shared_code_status_changed: "שינוי סטטוס קוד שיתוף",
       onboarding_content_updated: "עדכון תוכן קליטה", member_password_reset: "איפוס סיסמה לחבר/ה",
+      // Five-persona UX audit, defect 3 (202609060023). admin_reclaim_invite
+      // writes one invite_reclaimed row per reclaim, so without this the
+      // feature's own audit trail renders as raw English in an otherwise
+      // all-Hebrew log - the exact gap the two comments above already record
+      // for nine earlier action types.
+      invite_reclaimed: "שחרור הזמנה",
     }[t] || t;
   }
   // The other half of an audit row's headline. admin_actions.target_type is
@@ -5702,7 +5792,7 @@
       invite: "הזמנה", invite_code: "קוד הזמנה", onboarding_step: "שלב קליטה",
     }[t] || t;
   }
-  const AUDIT_ACTION_TYPES = ["content_delete", "content_hide", "member_restrict", "member_unrestrict", "role_change", "challenge_edit", "achievement_edit", "privacy_config", "content_pin", "content_unpin", "report_review", "member_of_week_publish", "monthly_recap_publish", "club_feature_toggle", "invite_created", "invite_revoked", "shared_code_created", "shared_code_status_changed", "onboarding_content_updated", "member_password_reset"];
+  const AUDIT_ACTION_TYPES = ["content_delete", "content_hide", "member_restrict", "member_unrestrict", "role_change", "challenge_edit", "achievement_edit", "privacy_config", "content_pin", "content_unpin", "report_review", "member_of_week_publish", "monthly_recap_publish", "club_feature_toggle", "invite_created", "invite_revoked", "shared_code_created", "shared_code_status_changed", "onboarding_content_updated", "member_password_reset", "invite_reclaimed"];
   function renderAuditLog() {
     if (!hasPerm(PERM.ANALYTICS_VIEW)) return "";
     const filterChips = `<div class="chip-row" style="margin:0 0 10px;">
@@ -5850,6 +5940,196 @@
       body = `<div class="log-list">${r.items.map((m) => memberManagementRowHtml(m, { readOnly, showRemove: false })).join("")}</div>${r.end ? "" : `<div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="roster-more"${r.loadingMore ? " disabled" : ""}>${r.loadingMore ? "טוען…" : "טעינת עוד"}</button></div>`}`;
     }
     return `<div class="ach-section" style="margin-top:18px;" data-member-roster-section="1">${sectionHead("var(--teal)", "רשימת חברים", true)}${body}</div>`;
+  }
+  // ==========================================================================
+  // Five-persona UX audit, defect 3. Incomplete signups ("ghost accounts"),
+  // the client half of migration 202609060023.
+  //
+  // WHAT THESE ARE, because nobody meeting this list has seen them before.
+  // Signup is two-stage and the stages are separated by a three-slide intro
+  // carousel: redeem_invite_code() consumes the invite and creates the real
+  // auth.users account, and the public.profiles row is written only after the
+  // carousel. Close the tab in between and what is left is a real
+  // authenticated account holding a spent invite with no profiles row at all.
+  //
+  // Every roster surface in this module starts `from public.profiles`
+  // (admin_member_roster, admin_search_members, admin_user_directory), so a
+  // row that does not exist cannot be listed by any of them: the club can see
+  // that four invites went missing and has no way to find out whose they
+  // were. registration_funnel can see the SHAPE of the gap and names nobody.
+  // Until this section existed the only way to look was the Supabase SQL
+  // editor, which defeats the purpose of having an admin screen at all.
+  //
+  // TWO GATES, DELIBERATELY DIFFERENT, and this UI has to show both:
+  //   * LISTING is is_staff() - admin_member_roster's own read-only browse
+  //     rank. A coach chasing a member who never appeared is the obvious
+  //     first user of it.
+  //   * RECLAIMING is a real profiles.is_admin, the same rank
+  //     admin_remove_member takes, because it un-memberships an account.
+  // A coach therefore sees every row and is offered NO reclaim control -
+  // not a disabled one. The roster above disables its role buttons for a
+  // coach because those controls belong to a screen a coach does legitimately
+  // share; here there is no path from a coach to this action at all, and a
+  // greyed-out button would imply one they simply have not found yet.
+  const GHOST_PAGE_SIZE = 25;
+  // admin_reclaim_invite's own p_older_than_days default, which the server
+  // ALSO floors at 1 so no caller can shorten it to "right now". Mirrored
+  // here only to disable a control that cannot succeed and to say why; the
+  // server refuses regardless, and its named refusal is what the sheet
+  // reports if this client-side mirror is ever wrong.
+  const GHOST_GRACE_DAYS = 7;
+  async function loadIncompleteSignups(reset) {
+    if (!state.user || !isStaff()) { state.admin.incompleteSignups.items = []; return; }
+    const g = state.admin.incompleteSignups;
+    if (reset) { g.items = []; g.cursor = null; g.end = false; g.loading = true; } else { g.loadingMore = true; }
+    g.error = false; rerender();
+    const { data, error } = await client.rpc("admin_incomplete_signups", { p_cursor: g.cursor, p_limit: GHOST_PAGE_SIZE });
+    g.loading = false; g.loadingMore = false; g.loaded = true;
+    if (error) { g.error = true; rerender(); return; }
+    const page = Array.isArray(data) ? data : [];
+    g.items = reset ? page : g.items.concat(page);
+    const last = page[page.length - 1];
+    // admin_incomplete_signups pages backwards on invite_redemptions.redeemed_at
+    // and INNER JOINs that table, so unlike admin_member_roster (see
+    // loadRoster's own GAP comment) redeemed_at can never come back null here.
+    // The same guard is kept anyway and costs nothing: the RPC reads a null
+    // p_cursor as "no bound at all" and would restart from the very top,
+    // looping the same page forever rather than paging.
+    g.end = page.length < GHOST_PAGE_SIZE || !last || last.redeemed_at == null;
+    g.cursor = last ? last.redeemed_at : g.cursor;
+    rerender();
+  }
+  // The ONLY two identifying strings a ghost has, in the order they come to
+  // exist. `username` is the local part of the synthetic login address this
+  // app mints (usernameToEmail) and exists only once they reached the
+  // credentials slide; `label` is the admin-authored label on the per-person
+  // invite ("דנה מהבוקר של שני"), which for someone who abandoned BEFORE
+  // credentials is the sole identifying string anywhere in the system. There
+  // is no display name and no handle - those live on profiles, which is
+  // exactly the row that was never written, and that is the whole point.
+  //
+  // Neither is guaranteed: a shared code abandoned on the username slide
+  // leaves nothing at all. That row says so plainly rather than rendering a
+  // blank line where a name should be.
+  function ghostName(g) { return (g && (g.username || g.label)) || ""; }
+  function ghostDisplayName(g) { return ghostName(g) || "הרשמה ללא שם"; }
+  function ghostSourceLabel(source) {
+    return source === "person_invite" ? "הזמנה אישית" : "קוד הצטרפות משותף";
+  }
+  function ghostStalledText(days) {
+    const d = Number(days || 0);
+    if (d <= 0) return "התחיל/ה היום";
+    if (d === 1) return "תקוע/ה יום אחד";
+    return `תקוע/ה ${d} ימים`;
+  }
+  // What happens to the ACCOUNT, stated per row rather than once for the
+  // section, because the two answers are genuinely different and an admin
+  // cannot infer which one they are looking at.
+  //
+  // purgeable_after_reclaim is auth.users.is_anonymous - whether
+  // purge_abandoned_profiles() would ever collect this account once the
+  // reclaim removes the redemption row that currently disqualifies it.
+  // CHOOSING A USERNAME AND PASSWORD FLIPS IT TO FALSE, verified against a
+  // real ghost made through the real signup flow. So for the COMMON ghost -
+  // someone who got as far as credentials and then abandoned the carousel -
+  // the empty account is never collected by anything and simply persists. A
+  // blanket "it will be cleaned up later" would be false for exactly the case
+  // an admin meets most often, and this audit has already found two screens
+  // asserting things that were not true. The false branch says so out loud
+  // instead of merely omitting the reassurance.
+  function ghostAfterwardsText(g) {
+    return g.purgeable_after_reclaim
+      ? "אחרי השחרור החשבון הריק ייאסף בהמשך על ידי ניקוי החשבונות הנטושים."
+      : "החשבון הזה יישאר קיים גם אחרי השחרור, ולא יימחק מעצמו - כבר נבחרו לו שם משתמש וסיסמה.";
+  }
+  function ghostRowHtml(g, admin) {
+    const stalled = Number(g.stalled_days || 0);
+    const ready = stalled >= GHOST_GRACE_DAYS;
+    // Both identifiers when both exist: the label is what the admin typed
+    // when they created the invite, and it is often the only thing that turns
+    // a username back into a person they remember.
+    const secondary = g.username && g.label
+      ? `<div style="color:var(--steel);font-size:12.5px;margin-top:2px;">${bidiText(`תווית ההזמנה: ${g.label}`)}</div>` : "";
+    const meta = [ghostSourceLabel(g.invite_source), ghostStalledText(stalled), `מימש/ה ${String(g.redeemed_at || "").slice(0, 10)}`];
+    const control = !admin
+      ? `<div class="footer-note" style="margin:10px 0 0;">שחרור ההזמנה שמור למנהל/ת.</div>`
+      : `<div class="chip-row" style="margin-top:10px;">
+          <button class="chip-btn danger"${ready ? "" : ` disabled title="${esc(`אפשר לשחרר רק אחרי ${GHOST_GRACE_DAYS} ימים ללא השלמה`)}"`} data-community-action="ghost-reclaim" data-id="${esc(g.user_id)}">שחרור ההזמנה</button>
+        </div>`;
+    return `<div class="chart-card" style="margin-bottom:10px;" data-ghost-user-id="${esc(g.user_id)}">
+      <div class="flex" style="justify-content:space-between;align-items:flex-start;gap:10px;">
+        <div style="min-width:0;">
+          <div style="font-weight:800;">${bidiText(ghostDisplayName(g))}</div>
+          ${secondary}
+        </div>
+        <span class="admin-tag"${ready ? ` style="background:rgba(194,57,44,.12);border-color:var(--red);color:var(--red-text);"` : ""}>${ready ? "ניתן לשחרור" : "עדיין בתהליך"}</span>
+      </div>
+      <div style="color:var(--steel);font-size:12px;margin-top:8px;">${meta.map(bidiText).join(" · ")}</div>
+      <div style="color:var(--steel);font-size:12px;margin-top:4px;">${bidiText(ghostAfterwardsText(g))}</div>
+      <div class="footer-note" style="margin:6px 0 0;font-size:10.5px;">${esc(g.user_id)}</div>
+      ${control}
+    </div>`;
+  }
+  // The explainer. Shown ALWAYS, not only when the list has rows: an admin
+  // opening this for the first time has to be able to tell that a list of
+  // near-nameless accounts is not an error report and not a wave of spam
+  // signups. Plain warm register, and explicit about what reclaiming does NOT
+  // do - which is the part an admin will otherwise assume wrongly, in the
+  // more alarming direction.
+  function ghostExplainerHtml() {
+    return `<div style="color:var(--steel);font-size:12.5px;line-height:1.7;margin:-2px 0 12px;">
+      <div>${bidiText("אלה חשבונות שנעצרו באמצע ההרשמה. מישהו הזין קוד הזמנה והתחיל להירשם, ואז עצר לפני שהשלים פרופיל - סגר את האפליקציה, נקרא לאימון, התחרט. זו לא תקלה ואלה לא חשבונות ספאם.")}</div>
+      <div style="margin-top:6px;">${bidiText("בלי פרופיל הם לא מופיעים ברשימת החברים ולא בשום מקום אחר באפליקציה, אבל ההזמנה שלהם כבר נוצלה - ולכן הם כאן.")}</div>
+      <div style="margin-top:6px;">${bidiText("שחרור ההזמנה מחזיר אותה למחזור: קוד משותף מקבל בחזרה שימוש אחד, והזמנה אישית חוזרת להמתנה כך שאפשר להשתמש שוב באותו קוד. השחרור לא מוחק את החשבון של מי שהתחיל להירשם, לא שולח לו שום הודעה, ולא מונע ממנו להירשם שוב.")}</div>
+    </div>`;
+  }
+  // The result card. admin_reclaim_invite() returns exactly what it did, and
+  // an admin who has just taken a destructive-sounding action deserves to
+  // read it rather than a bare "done" - especially welcome_posts_retracted,
+  // which is a change to the club's own feed that nothing else would tell
+  // them about.
+  function ghostReclaimResultHtml() {
+    const r = state.admin.reclaimResult;
+    if (!r) return "";
+    const releasedLine = r.invite_source === "person_invite"
+      ? "ההזמנה האישית חזרה להמתנה - אפשר להשתמש שוב באותו קוד."
+      : "שימוש אחד הוחזר לקוד ההצטרפות המשותף.";
+    const posts = Number(r.welcome_posts_retracted || 0);
+    const postsLine = posts > 0
+      ? `${posts} פוסטי הצטרפות למועדון הוסרו מהפיד.`
+      : "לא היה פוסט הצטרפות להסרה.";
+    const accountLine = r.purgeable
+      ? "החשבון לא נמחק. הוא ריק, ולכן ייאסף בהמשך על ידי ניקוי החשבונות הנטושים."
+      : "החשבון לא נמחק והוא יישאר קיים - מי שהתחיל להירשם יכול להיכנס אליו ולהתחיל מחדש עם קוד חדש.";
+    return `<div class="chart-card" style="margin-bottom:10px;border:1px solid var(--brass);" data-reclaim-result="1" role="status">
+      <div class="field-label" style="margin-bottom:6px;">${bidiText(`ההזמנה של ${r.name} שוחררה`)}</div>
+      <div style="color:var(--steel);font-size:12.5px;line-height:1.7;">
+        <div>${bidiText(releasedLine)}</div>
+        <div>${bidiText(postsLine)}</div>
+        <div>${bidiText(accountLine)}</div>
+      </div>
+      <div class="chip-row" style="margin-top:8px;"><button class="link-btn" data-community-action="reclaim-result-close">סגירה</button></div>
+    </div>`;
+  }
+  function renderIncompleteSignups() {
+    if (!isStaff()) return "";
+    const g = state.admin.incompleteSignups;
+    let body;
+    if (g.loading && !g.items.length) {
+      const skRow = `<div class="log-row" aria-hidden="true"><span style="height:12px;width:55%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`;
+      body = `<div class="log-list" aria-busy="true" data-incomplete-signups-skeleton="1">${skRow.repeat(3)}</div>`;
+    } else if (g.error) {
+      body = `<div class="empty">לא ניתן היה לטעון את ההרשמות שלא הושלמו.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="ghosts-retry">ניסיון חוזר</button></div></div>`;
+    } else if (!g.items.length) {
+      // A real empty state, not a blank area. This is the GOOD outcome and it
+      // should read like one - an admin who finds nothing here has learned
+      // something, and the screen should say what.
+      body = `<div class="empty">אין הרשמות שלא הושלמו<div style="color:var(--steel);font-size:12px;line-height:1.6;margin-top:6px;">${bidiText("כל מי שהזין קוד הזמנה גם השלים פרופיל. אין כרגע הזמנה תקועה אצל אף אחד.")}</div></div>`;
+    } else {
+      const admin = isAdmin();
+      body = `${g.items.map((row) => ghostRowHtml(row, admin)).join("")}${g.end ? "" : `<div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="ghosts-more"${g.loadingMore ? " disabled" : ""}>${g.loadingMore ? "טוען…" : "טעינת עוד"}</button></div>`}`;
+    }
+    return `<div class="ach-section" style="margin-top:18px;" data-incomplete-signups-section="1">${sectionHead("var(--yellow)", "הרשמות שלא הושלמו", true)}${ghostExplainerHtml()}${ghostReclaimResultHtml()}${body}</div>`;
   }
   // COMM-321 Club Modules. Same gating idiom the other four admin-only
   // account sections already use (renderModeration, renderMemberManagement,
@@ -11511,7 +11791,7 @@
   // this state). See scripts/browser-check/community-challenge-lifecycle.mjs.
   function renderConfirmDialog() {
     return renderPostComposer() + renderPrSharePrompt() + renderAchievementUnlockCelebration() + renderCommunityProfileOverlay() + renderNotificationCenter()
-      + renderReportSheet() + renderModActionSheet() + renderModContextOverlay() + renderChallengeViewOverlay() + renderEventViewOverlay() + renderRecapViewOverlay()
+      + renderReportSheet() + renderModActionSheet() + renderGhostReclaimSheet() + renderModContextOverlay() + renderChallengeViewOverlay() + renderEventViewOverlay() + renderRecapViewOverlay()
       + renderConfirmSheet();
   }
   // COMM-151. The report reason sheet. Reasons are a fixed list, an optional
@@ -11570,6 +11850,43 @@
           <div class="chip-row" style="margin-top:12px;">
             <button class="chip-btn" data-community-action="mod-action-cancel">ביטול</button>
             <button class="chip-btn primary${def.destructive ? " danger" : ""}" data-community-action="mod-action-run"${a.saving ? " disabled" : ""}>${a.saving ? "מבצע…" : "אישור"}</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+  // Five-persona UX audit, defect 3. The reclaim confirmation - the one
+  // confirmation in this app that names its subject. Structure follows
+  // renderModActionSheet above (title, body, optional note, error line, two
+  // buttons), with the subject card added at the top: an admin about to
+  // release someone's invite must be able to see WHOSE without leaving the
+  // sheet, and for a ghost that never set credentials the invite's own label
+  // is the only string that can identify them at all.
+  function renderGhostReclaimSheet() {
+    const a = state.admin.reclaim;
+    if (!a) return "";
+    const g = a.item;
+    const meta = [ghostSourceLabel(g.invite_source), ghostStalledText(g.stalled_days)];
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="ghostReclaimTitle" data-cloud-dialog="reclaimInvite" style="align-items:center;padding:0 20px;">
+      <div class="modal-sheet" style="border-radius:22px;max-height:none;">
+        <div style="padding:24px 22px calc(env(safe-area-inset-bottom,0px) + 20px);">
+          <h2 id="ghostReclaimTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:17px;margin-bottom:8px;">שחרור ההזמנה</h2>
+          <div class="chart-card" style="margin-bottom:10px;" data-reclaim-subject="1">
+            <div style="font-weight:800;">${bidiText(ghostDisplayName(g))}</div>
+            <div style="color:var(--steel);font-size:12px;margin-top:4px;">${meta.map(bidiText).join(" · ")}</div>
+          </div>
+          <div style="color:var(--steel);font-size:12.5px;line-height:1.7;margin-bottom:10px;">
+            <div>${bidiText(g.invite_source === "person_invite" ? "ההזמנה האישית תחזור להמתנה, ואפשר יהיה להשתמש שוב באותו קוד." : "שימוש אחד יוחזר לקוד ההצטרפות המשותף.")}</div>
+            <div>${bidiText("אם נוצר בפיד פוסט על הצטרפות למועדון, הוא יוסר.")}</div>
+            <div style="margin-top:6px;">${bidiText("החשבון לא יימחק ולא תישלח שום הודעה. מי שהתחיל להירשם פשוט יחזור למסך קוד ההזמנה.")}</div>
+            <div style="margin-top:6px;">${bidiText(ghostAfterwardsText(g))}</div>
+          </div>
+          <label class="field" style="margin-top:10px;"><span class="field-label">הערה (רשות)</span>
+            <textarea class="text-input" data-reclaim-note maxlength="500" placeholder="נרשמת ביומן הניהול">${esc(a.note || "")}</textarea></label>
+          ${a.error ? `<div class="footer-note" role="alert" style="color:var(--red-text);">${esc(a.error)}</div>` : ""}
+          <div class="chip-row" style="margin-top:12px;">
+            <button class="chip-btn" data-community-action="reclaim-cancel">ביטול</button>
+            <button class="chip-btn primary danger" data-community-action="reclaim-run"${a.saving ? " disabled" : ""}>${a.saving ? "משחרר…" : "שחרור ההזמנה"}</button>
           </div>
         </div>
       </div>
@@ -12202,7 +12519,11 @@
     if (!isStaff()) return `<h1 class="page-title">ניהול</h1><div class="empty">אין הרשאה לצפות בעמוד זה.</div>`;
     const manageTabs = [
       { id: "dashboard", label: "דשבורד", html: renderManageDashboard() },
-      { id: "members", label: "חברים", html: renderMemberManagement() + renderMemberRoster() },
+      // Five-persona UX audit, defect 3: the unfinished signups sit directly
+      // under the roster, because "who is in the club" and "who tried to join
+      // and did not finish" are the same question asked twice, and the second
+      // one is only findable from where the first is already being read.
+      { id: "members", label: "חברים", html: renderMemberManagement() + renderMemberRoster() + renderIncompleteSignups() },
       { id: "onboarding", label: "קליטה", html: renderOnboardingContentEditor() + renderIntroCarouselContentEditor() },
       { id: "moderation", label: "מודרציה", html: renderModeration() + renderAuditLog(), badge: pendingModerationCount() },
       // Redesign, Phase 3 fix: a coach who is staff-enough to see this whole
@@ -12304,6 +12625,7 @@
     { key: "confirmSheet", isOpen: () => state.ui.confirmDialog, close: function () { closeConfirm(); } },
     { key: "reportSheet", isOpen: () => state.admin.reportSheet, close: function () { closeReportSheet(); } },
     { key: "modAction", isOpen: () => state.admin.modAction, close: function () { closeModAction(); } },
+    { key: "reclaimInvite", isOpen: () => state.admin.reclaim, close: function () { closeGhostReclaim(); } },
     { key: "modContext", isOpen: () => state.admin.modContext, close: function () { closeModContext(); } },
     { key: "notifCenter", isOpen: () => state.notif.center, close: function () { closeNotifCenter(); } },
     { key: "achUnlock", isOpen: () => state.achievements.unlock, close: function () { dismissAchievementUnlock(); } },
@@ -12666,6 +12988,11 @@
     if (mt === "invites" && (hasPerm(PERM.MEMBER_INVITE) || isAdmin()) && !state.admin.invites.loaded && !state.admin.invites.loading) loadInvites(true);
     // COMM-377. is_staff(), matching admin_member_roster's own looser AUTH.
     if (mt === "members" && isStaff() && !state.admin.roster.loaded && !state.admin.roster.loading) loadRoster(true);
+    // Five-persona UX audit, defect 3. Same lazy pattern, same is_staff()
+    // gate as the roster above - admin_incomplete_signups shares that AUTH
+    // exactly, so a coach triggers this load and simply gets no reclaim
+    // controls in the rows it renders.
+    if (mt === "members" && isStaff() && !state.admin.incompleteSignups.loaded && !state.admin.incompleteSignups.loading) loadIncompleteSignups(true);
   };
   window.handleCommunityClick = function (el) {
     const action = el.dataset.communityAction;
@@ -12799,6 +13126,15 @@
     // COMM-377 member roster.
     else if (action === "roster-retry") loadRoster(true);
     else if (action === "roster-more") loadRoster(false);
+    // Five-persona UX audit, defect 3. ghost-reclaim opens the sheet rather
+    // than acting: it is the only control here that changes anything, and it
+    // is the one that has to name its subject first.
+    else if (action === "ghosts-retry") loadIncompleteSignups(true);
+    else if (action === "ghosts-more") loadIncompleteSignups(false);
+    else if (action === "ghost-reclaim") openGhostReclaim(el.dataset.id);
+    else if (action === "reclaim-cancel") closeGhostReclaim();
+    else if (action === "reclaim-run") runGhostReclaim();
+    else if (action === "reclaim-result-close") { state.admin.reclaimResult = null; rerender(); }
     // COMM-155 pins.
     else if (action === "unpin") unpinTarget(el.dataset.type, el.dataset.id);
     else if (action === "pin") pinTarget(el.dataset.type, el.dataset.id, el.dataset.note || "");
@@ -13132,6 +13468,12 @@
         state.admin.invites = { items: [], status: "all", cursor: null, loading: false, loadingMore: false, loaded: false, error: false, end: false, created: null, revoking: null };
         state.admin.inviteCodes = { items: [], loading: false, loaded: false, error: false, created: null, busy: null };
         state.admin.roster = { items: [], cursor: null, loading: false, loadingMore: false, loaded: false, error: false, end: false };
+        // Five-persona UX audit, defect 3. Same reason as the two panels
+        // above, and one more: reclaimResult names a specific person, and it
+        // must not still be on screen for whoever signs in next on this
+        // device.
+        state.admin.incompleteSignups = { items: [], cursor: null, loading: false, loadingMore: false, loaded: false, error: false, end: false };
+        state.admin.reclaim = null; state.admin.reclaimResult = null;
         state.challenges.items = []; state.challenges.loaded = false; state.challenges.loading = false;
         state.challenges.error = false; state.challenges.participation = {}; state.challenges.aggregates = {};
         state.challenges.view = null; state.challenges.form = null; state.challenges._rtId = null;
@@ -13203,6 +13545,11 @@
     // never drops what was typed.
     else if ("reportNote" in t.dataset && state.admin.reportSheet) state.admin.reportSheet.note = t.value;
     else if ("modNote" in t.dataset && state.admin.modAction) state.admin.modAction.note = t.value;
+    // Five-persona UX audit, defect 3. Same reasoning as modNote above, and
+    // it matters more here: admin_reclaim_invite writes this note into the
+    // admin_actions row, so anything a rerender drops is lost from the audit
+    // log rather than just from the screen.
+    else if ("reclaimNote" in t.dataset && state.admin.reclaim) state.admin.reclaim.note = t.value;
     // COMM-378. onboardingEditorDraft() lazily seeds the draft the first
     // time either field is touched, same "kept in state, not read off the
     // DOM at submit" reasoning as every note/body field above - a rerender
@@ -13295,6 +13642,7 @@
     if (state.ui.confirmDialog) { e.preventDefault(); closeConfirm(); return; }
     if (state.admin.reportSheet) { e.preventDefault(); closeReportSheet(); return; }
     if (state.admin.modAction) { e.preventDefault(); closeModAction(); return; }
+    if (state.admin.reclaim) { e.preventDefault(); closeGhostReclaim(); return; }
     if (state.admin.modContext) { e.preventDefault(); closeModContext(); return; }
     if (state.notif.center) { e.preventDefault(); closeNotifCenter(); return; }
     if (state.achievements.unlock) { e.preventDefault(); dismissAchievementUnlock(); return; }
