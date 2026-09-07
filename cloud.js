@@ -5462,6 +5462,20 @@
   // already has a session, backup-only or otherwise.
   function maybeAutoStartBackup() {
     if (!client || state.user || backupOptedOut()) return;
+    // First-run sequence (c4cd505), S5. Backup consent is asked AFTER the
+    // member's first saved entry, because asking before they have used the
+    // app is asking about nothing. But this fires ON that same first write -
+    // so without this line an anonymous account already exists by the time
+    // the card appears, and "לא עכשיו" would be answering a question the app
+    // had already answered for them. The screen would be making a promise
+    // the code breaks, which is the exact defect class the audit kept
+    // finding (see the account-security screen in a42f9d1).
+    //
+    // Deliberately a pending-consent CHECK rather than app.js writing this
+    // file's own backupOptOut key: "not asked yet" and "asked and declined"
+    // are different states, and collapsing them would make a member who has
+    // not seen the card indistinguishable from one who said no.
+    if (typeof window.haimuniaBackupConsentPending === "function" && window.haimuniaBackupConsentPending()) return;
     ensureAnonymousSession();
   }
 

@@ -15,8 +15,32 @@ const cloudJs = fs.readFileSync(new URL("../cloud.js", import.meta.url), "utf8")
 const appJs = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const privacyMd = fs.readFileSync(new URL("../PRIVACY.md", import.meta.url), "utf8");
 
-test("maybeAutoStartBackup only fires when there's no session yet and the member hasn't opted out, and is wired to the sync-needed event (not page load)", () => {
-  assert.match(cloudJs, /function maybeAutoStartBackup\(\) \{\s*\n\s*if \(!client \|\| state\.user \|\| backupOptedOut\(\)\) return;\s*\n\s*ensureAnonymousSession\(\);/);
+test("maybeAutoStartBackup only fires when there's no session yet, the member hasn't opted out, and consent has actually been asked - and is wired to the sync-needed event (not page load)", () => {
+  // The first two guards are unchanged. The third landed with the first-run
+  // sequence (c4cd505): consent is asked AFTER the member's first saved
+  // entry, but this function fires ON that same first write - so without the
+  // guard an anonymous account already existed by the time the card appeared,
+  // and "לא עכשיו" was answering a question the app had already answered for
+  // them. The screen would promise something the code broke, which is the
+  // defect class this audit kept finding (see a42f9d1's account-security
+  // screen, which claimed browse-only access the database refused).
+  //
+  // Asserted as three separate guards rather than one whitespace-exact block,
+  // because the previous single-regex form pinned the function's LAYOUT and
+  // broke on a comment - which tells you nothing about behaviour. Each of
+  // these is a real precondition and each can now fail independently.
+  const fn = cloudJs.match(/function maybeAutoStartBackup\(\) \{[\s\S]*?\n  \}/);
+  assert.ok(fn, "maybeAutoStartBackup must exist");
+  assert.match(fn[0], /if \(!client \|\| state\.user \|\| backupOptedOut\(\)\) return;/,
+    "still refuses without a client, with a session, or after an opt-out");
+  assert.match(fn[0], /window\.haimuniaBackupConsentPending\(\)\) return;/,
+    "and must not create an anonymous account while the consent card is still unanswered");
+  assert.match(fn[0], /ensureAnonymousSession\(\);/, "otherwise it starts the session");
+  // "not asked yet" and "asked and declined" are deliberately different
+  // states: collapsing them would make a member who has never seen the card
+  // indistinguishable from one who said no.
+  assert.match(appJs, /window\.haimuniaBackupConsentPending = function \(\) \{ return backupConsent === null; \};/,
+    "pending means unanswered, not declined");
   assert.match(cloudJs, /window\.addEventListener\("haimunia-sync-needed", \(\) => \{ maybeAutoStartBackup\(\); flushOutbox\(\); pingActivity\(\); \}\);/);
 });
 
