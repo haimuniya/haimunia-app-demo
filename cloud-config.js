@@ -48,6 +48,15 @@ window.HAIMUNIA_CONFIG = Object.freeze({
   // not broken by this file. Turning it on is: set the provider + secret
   // in the dashboard, paste the site key here, deploy.
   // See COMMUNITY_SETUP.md "CAPTCHA on sign-up" for the full runbook.
+  // DECISION (2026-09-07): staying OFF. The owner declined a third-party
+  // CAPTCHA provider, and the measurement backs it: an account that signs up
+  // but never redeems an invite can read nothing (posts and profiles are
+  // gated on is_community_member(); comments/reactions/media inherit that
+  // gate through post_visible_to_viewer(), which is SECURITY INVOKER) and
+  // write nothing. Redemption is rate-limited to 5 tries / 15 min. What is
+  // left is empty auth.users rows - a quota nuisance, not a leak.
+  // The code below stays, inert and tested, so this is reversible in one
+  // line. hCaptcha is the non-Cloudflare option if that ever changes.
   captchaProvider: "turnstile", // "turnstile" | "hcaptcha"
   captchaSiteKey: "",
 });
