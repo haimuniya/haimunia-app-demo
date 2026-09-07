@@ -4463,6 +4463,137 @@
     return /failed to fetch|networkerror|network request failed|load failed|fetch failed|timeout|timed out/i.test(m);
   }
 
+  // ---- Five-persona UX audit: the server speaks Postgres, members read Hebrew --
+  //
+  // Every write in this file ends at an RPC that refuses with a bare English
+  // wire code - 'posting_restricted', 'recovery method required',
+  // 'rate_limited'. Those are strings for a CLIENT to branch on, not
+  // sentences for a person, and renderOutboxBanner() printed one straight
+  // into the failure card it shows a member:
+  //
+  //     פוסט
+  //     posting_restricted
+  //
+  // That was how a moderated member found out they had been sanctioned. An
+  // English enum, no statement of what the sanction covers, no route to a
+  // human who can lift it - and, because the queue classifies that message
+  // as permanent, a "ניסיון חוזר" button sitting next to it that can never
+  // work. Verified against the real stack rather than read off the schema:
+  // signed in as a restricted member, post_create and add_post_comment both
+  // answer 'posting_restricted' while feed_page, community_search and
+  // toggle_reaction all still return 200 - which is why the sentence below
+  // can promise reading and cheering without lying.
+  //
+  // Same shape as ghostReclaimErrorText() rather than a second pattern: one
+  // flat lookup on the message, plain Hebrew, and a neutral fallback. Two
+  // rules carried over from it:
+  //
+  //   1. Each entry says WHAT HAPPENED and WHAT TO DO NEXT, in the register
+  //      of the invite-code screen - which explains why there is a code and
+  //      then bounds what it does NOT affect. Bounding the blast radius is
+  //      most of the reassurance: a member who cannot post needs to hear
+  //      that their workout log is untouched.
+  //   2. NO "try again" on anything a retry cannot fix. A restriction, a
+  //      missing recovery method and a permission refusal are all stable
+  //      states; telling a member to retry one is a lie that costs them a
+  //      few more taps and the last of their trust. Only 'rate_limited' and
+  //      the connection failures below are genuinely time-limited, and only
+  //      they invite another attempt.
+  //
+  // NOTHING falls through to a raw server string. An unrecognised message is
+  // a message this app has never seen, which makes it the LEAST safe thing
+  // to show, not the most informative - it would be untranslated, probably
+  // English, possibly a Postgres internal, and it is never actionable.
+  const SERVER_ERROR_TEXT = {
+    // The COMM-016 gate. Worth being blunt that this closes reading too:
+    // feed_page carries the same is_community_member() check as post_create,
+    // so "you can still browse" would be the same false promise the account
+    // security screen used to make.
+    "recovery method required": "החשבון עוד לא אומת כחשבון שאפשר לשחזר, ולכן הקהילה כולה סגורה בפניו — גם הפיד וגם הפרסום. במסך אבטחת החשבון יש כפתור אימות שפותח את הכול; רישום האימונים עצמו לא מושפע וממשיך לעבוד כרגיל.",
+    // COMM-153. The one message in this table that a member may be reading
+    // as the first news that they have been moderated at all, so it names
+    // the sanction plainly, states exactly what still works, and points at
+    // the only people who can lift it. No retry: only a moderator clears it.
+    posting_restricted: "צוות המועדון הגביל את הפרסום מהחשבון הזה, ולכן פוסטים ותגובות חדשים לא נשלחים. אפשר להמשיך לקרוא את הפיד ולעודד אחרים כרגיל, וההגבלה נפתחת רק על ידי הצוות — כדאי לפנות למאמן/ת.",
+    "not authorized": "לחשבון הזה אין הרשאה לפעולה הזו. הרשאות של צוות המועדון ניתנות על ידי מנהל/ת, וניסיון נוסף לא ישנה את התוצאה.",
+    // The only server refusal that clears on its own, so the only one that
+    // earns a "try again". Matches the wording react() and the comment
+    // editor already use for the same code.
+    rate_limited: "נשלחו יותר מדי פעולות בזמן קצר והשרת עצר את האחרונה. זו הגבלה זמנית — אפשר לנסות שוב בעוד כמה דקות.",
+    "captcha_failed": "אימות האבטחה לא עבר. אפשר לנסות שוב; אם זה חוזר, כדאי לרענן את הדף.",
+    // Content refusals a queued post or comment can carry. Each one is a
+    // thing the member can actually fix in the composer, so each names the
+    // fix instead of the rule.
+    "a post needs text or at least one photo": "פוסט חייב לכלול טקסט או לפחות תמונה אחת, והפוסט הזה יצא ריק. אפשר להסיר אותו מהתור ולכתוב אותו מחדש.",
+    "at most 4 photos per post": "אפשר לצרף עד ארבע תמונות לפוסט. יש להסיר את הפוסט מהתור ולפרסם אותו מחדש עם פחות תמונות.",
+    "each media item needs a storage_path": "אחת התמונות לא הועלתה במלואה, ולכן הפוסט לא נשלח. אפשר להסיר אותו מהתור ולצרף את התמונה שוב.",
+    "at most 10 mentions per comment": "אפשר לתייג עד עשרה אנשים בתגובה אחת. יש להסיר את התגובה מהתור ולכתוב אותה מחדש עם פחות תיוגים.",
+    "comment body required": "לא נשלחה תגובה ריקה. אפשר להסיר אותה מהתור ולכתוב אותה מחדש.",
+    "reply depth is capped at 2": "אפשר להגיב לתגובה, אבל לא לתגובה על תגובה. כדאי להשיב ישירות לתגובה הראשונה בשרשור.",
+    // The target of a queued write moved while the write was waiting. None
+    // of these can succeed on a retry: the row is gone or closed.
+    "post not found": "הפוסט הזה כבר לא קיים — יכול להיות שהכותב/ת מחק/ה אותו בינתיים. אפשר להסיר את הפעולה מהתור.",
+    "post is not available": "הפוסט הזה כבר לא זמין לצפייה. אפשר להסיר את הפעולה מהתור.",
+    "comment not found": "התגובה הזו כבר לא קיימת. אפשר להסיר את הפעולה מהתור.",
+    "parent comment not found": "התגובה שאליה רצינו להשיב כבר לא קיימת. אפשר להסיר את הפעולה מהתור ולהגיב ישירות לפוסט.",
+    "parent comment is no longer available": "התגובה שאליה רצינו להשיב הוסרה בינתיים. אפשר להסיר את הפעולה מהתור ולהגיב ישירות לפוסט.",
+    "content author is no longer available": "החשבון שכתב את התוכן הזה כבר לא פעיל, ולכן הפעולה לא רלוונטית. אפשר להסיר אותה מהתור.",
+    "event not found": "האירוע הזה כבר לא קיים. אפשר להסיר את ההרשמה מהתור.",
+    "event not open for rsvp": "האירוע הזה סגור להרשמה — הוא כבר התקיים או שההרשמה נסגרה. אפשר להסיר את ההרשמה מהתור.",
+    event_full: "האירוע מלא ואין בו יותר מקומות. אפשר להסיר את ההרשמה מהתור; אם יתפנה מקום, כדאי לבדוק שוב בדף האירוע.",
+    "challenge not found": "האתגר הזה כבר לא קיים. אפשר להסיר את העדכון מהתור.",
+    "not an active participant": "העדכון הזה שייך לאתגר שכבר לא משתתפים בו. אפשר להסיר אותו מהתור.",
+    // Thrown by registerOutboxHandlers() itself, not by the server: the
+    // queue tried to send while nobody was signed in.
+    "session expired": "החיבור לחשבון פג, ולכן הפעולה לא נשלחה. אחרי התחברות מחדש עם שם המשתמש והסיסמה אפשר לשלוח אותה שוב מכאן.",
+  };
+  // Accepts a Supabase error object, an Error, or a bare string - the outbox
+  // stores lastError as a string, every other caller holds the error object,
+  // and neither should have to remember which.
+  function serverErrorText(error) {
+    const msg = String((error && error.message) || error || "").trim();
+    if (SERVER_ERROR_TEXT[msg]) return SERVER_ERROR_TEXT[msg];
+    // A dropped connection, which is the one failure that is nobody's fault
+    // and always worth another attempt. Checked on the message alone rather
+    // than through isOfflineError(), which also consults navigator.onLine -
+    // wrong here, because a row that failed offline is being described later,
+    // very possibly after the connection came back.
+    if (/failed to fetch|networkerror|network request failed|load failed|fetch failed|timeout|timed out/i.test(msg)) {
+      return "הפעולה לא הגיעה לשרת, כנראה בגלל חיבור לא יציב. שום דבר לא אבד — אפשר לנסות לשלוח שוב כשהחיבור חוזר.";
+    }
+    // outbox.js writes "unsupported action: <action>" for an op queued by a
+    // previous version of the app whose handler no longer exists. The raw
+    // string ends in an English action id, which is exactly the kind of
+    // token that must not reach a member.
+    if (/^unsupported action/i.test(msg)) {
+      return "הפעולה הזו נוצרה בגרסה קודמת של האפליקציה וכבר אינה נתמכת, ולכן היא לא תישלח. אפשר להסיר אותה מהתור ולבצע אותה מחדש.";
+    }
+    // Rate limiting is expressed as 'rate_limited' by every RPC in this
+    // schema, but the Supabase edge (and any proxy in front of it) can answer
+    // 429 with its own wording, so the family is matched as well as the code.
+    if (/rate.?limit|too many requests|429/i.test(msg)) return SERVER_ERROR_TEXT.rate_limited;
+    // Unrecognised. Deliberately says nothing about the cause rather than
+    // guessing, and offers the one next step that is always true.
+    return "הפעולה לא הושלמה. אפשר לנסות שוב, ואם זה חוזר כדאי לפנות לצוות המועדון.";
+  }
+  // The other half of "no message says try again unless it can work". The
+  // failure banner offers a "ניסיון חוזר" button on every failed row, which
+  // for a restriction or a deleted post is a button that reruns the same
+  // call and lands the row straight back in the same list - and it sits
+  // directly under a sentence that has just told the member a retry will not
+  // help. One of the two has to go, and it is not the sentence.
+  //
+  // Allow-list, not a deny-list: retry stays for the connection failures,
+  // rate limiting and anything UNRECOGNISED, since an unknown error is
+  // exactly where the member should keep the option. Only the codes this
+  // file can positively identify as stable states lose it.
+  const PERMANENT_SERVER_ERRORS = Object.keys(SERVER_ERROR_TEXT).filter((k) => k !== "rate_limited" && k !== "captcha_failed");
+  function serverErrorIsRetryable(error) {
+    const msg = String((error && error.message) || error || "").trim();
+    if (/^unsupported action/i.test(msg)) return false;
+    return PERMANENT_SERVER_ERRORS.indexOf(msg) < 0;
+  }
+
   function newIdempotencyKey() {
     if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
     return null;
@@ -12116,8 +12247,23 @@
     // sign in again later on any device.
     if (!state.profile.recovery_verified_at) {
       verifyRecovery();
+      // "עד להשלמת האימות אפשר לצפות בקהילה בלבד" - what this sentence used
+      // to promise - is not what happens. is_community_member() gates the
+      // READS too: with recovery_verified_at unset, feed_page,
+      // community_search and announcements_read all refuse with 'recovery
+      // method required', exactly as post_create does. Checked against the
+      // real stack, not inferred: signed in as a member whose stamp was
+      // cleared, all four calls came back 400 with that same message.
+      //
+      // So the screen was describing a browse-only state that does not
+      // exist, to the one member who is standing in it and can see for
+      // themselves that the feed is empty. Replaced with what is actually
+      // true, plus the bound that matters most here - this gate is the
+      // COMMUNITY's, and the workout log it sits next to never depended on
+      // it. That pairing is the invite-code screen's own shape: say what
+      // the thing is, then say what it does not touch.
       return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">אבטחת החשבון</div>
-        <div style="color:var(--steel);font-size:13px;line-height:1.7;margin-bottom:14px;">כדי להשתתף בקהילה — לפרסם, להגיב, לעודד ולהצטרף לאתגרים — נדרש חשבון שאפשר לשחזר. שם המשתמש והסיסמה שהגדרתם הם דרך השחזור: הם מאפשרים להתחבר לאותו פרופיל מכל מכשיר, גם אחרי החלפת טלפון או מחיקת נתונים. עד להשלמת האימות אפשר לצפות בקהילה בלבד.</div>
+        <div style="color:var(--steel);font-size:13px;line-height:1.7;margin-bottom:14px;">כדי להשתתף בקהילה — לפרסם, להגיב, לעודד ולהצטרף לאתגרים — נדרש חשבון שאפשר לשחזר. שם המשתמש והסיסמה שהגדרתם הם דרך השחזור: הם מאפשרים להתחבר לאותו פרופיל מכל מכשיר, גם אחרי החלפת טלפון או מחיקת נתונים. עד להשלמת האימות הקהילה כולה סגורה — גם הפיד וגם הפרסום — ולכן כדאי להשלים אותו עכשיו; רישום האימונים והגיבוי הפרטי לא מושפעים וממשיכים לעבוד כרגיל.</div>
         <button class="save-btn" data-community-action="verify-recovery" style="margin-top:2px;">אימות והמשך</button>
         ${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     }
@@ -12436,7 +12582,14 @@
       toggle_reaction: "לייק",
       event_rsvp: "הרשמה לאירוע",
       chal_record_progress: "עדכון התקדמות",
-    }[action] || action;
+      // The queue's own actions are the five above, but a row queued by an
+      // OLDER build can name an action this table has never heard of - the
+      // same case outbox.js reports as "unsupported action". The fallback
+      // used to be `action` itself, so that row labelled itself to the
+      // member with a raw English identifier ("chal_record_progress"). A
+      // generic Hebrew noun says no less: serverErrorText() on the line
+      // below already explains that the op is from a retired version.
+    }[action] || "פעולה";
   }
   function renderOutboxBanner() {
     const pending = state.outbox.pending || 0;
@@ -12452,12 +12605,12 @@
     if (failed.length) {
       html += `<div class="chart-card" role="alert" style="margin-bottom:10px;border-color:var(--red);">
         <div style="font-weight:800;font-size:13.5px;color:var(--red-text);">${failed.length} ${failed.length === 1 ? "פעולה נכשלה" : "פעולות נכשלו"}</div>
-        <div style="color:var(--steel);font-size:12.5px;margin:4px 0 8px;">אפשר לנסות שוב או להסיר מהתור.</div>
+        <div style="color:var(--steel);font-size:12.5px;margin:4px 0 8px;">${failed.some((r) => serverErrorIsRetryable(r.lastError)) ? "אפשר לנסות שוב או להסיר מהתור." : "אף אחת מהן לא תעבור בניסיון חוזר — הסבר לכל פעולה למטה."}</div>
         ${failed.map((r) => `<div style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px;">
-          <div style="font-weight:700;font-size:12.5px;">${esc(outboxActionLabel(r.action))}</div>
-          <div style="color:var(--steel);font-size:12px;margin-top:2px;">${esc(String(r.lastError || "").slice(0, 160))}</div>
+          <div style="font-weight:700;font-size:12.5px;">${bidiText(outboxActionLabel(r.action))}</div>
+          <div style="color:var(--steel);font-size:12px;margin-top:2px;">${bidiText(serverErrorText(r.lastError))}</div>
           <div class="chip-row" style="margin-top:6px;">
-            <button class="chip-btn" data-community-action="outbox-retry" data-id="${esc(r.id)}">ניסיון חוזר</button>
+            ${serverErrorIsRetryable(r.lastError) ? `<button class="chip-btn" data-community-action="outbox-retry" data-id="${esc(r.id)}">ניסיון חוזר</button>` : ""}
             <button class="chip-btn danger" data-community-action="outbox-discard" data-id="${esc(r.id)}">הסרה</button>
           </div>
         </div>`).join("")}
@@ -12578,18 +12731,50 @@
   // recovery verification) never has to be reached just to keep a private
   // backup running. "join community" stays a fully separate, later,
   // optional decision on the Community tab, never blended into this one.
+  // ---- Five-persona UX audit: two cards, one word, one contradiction -----
+  //
+  // Three personas flagged this panel, and two separate defects were tangled
+  // together in it.
+  //
+  // ONE: "מתחילים להתגבות" is not Hebrew. There is no verb להתגבות - the
+  // reflexive of לגבות does not exist in this sense - so the single sentence
+  // introducing the whole backup feature was built on a made-up word. Now
+  // "מתחילים להיות מגובים".
+  //
+  // TWO: this is the CLOUD card and app.js's export reminder is the LOCAL
+  // FILE card, and both used to call themselves just "גיבוי". A member who
+  // had cloud backup running was told a few lines away that they had never
+  // backed up - two true statements about two different things, reading as
+  // one self-contradicting screen. app.js has since taken the file side of
+  // the split ("קובץ גיבוי להורדה" / "לא הורדתם קובץ גיבוי"); this is the
+  // cloud side of the same split. Every branch below now opens with the
+  // feature's full name, says the sync is automatic and runs in the
+  // background, and names the OTHER card explicitly so a member who reads
+  // both knows they are looking at two mechanisms and not one broken one.
+  // The other card is referenced by its title rather than its position on
+  // the screen, so re-ordering the settings pane cannot make this a lie.
+  const BACKUP_PANEL_TITLE = `<div style="font-weight:800;font-size:13.5px;margin-bottom:4px;">גיבוי אוטומטי לענן</div>`;
+  // The two facts a member switching this off almost certainly believes it
+  // does, and does not. Both are stated plainly in PRIVACY.md ("כיבוי לא
+  // מוחק... מהענן מה שכבר הועלה", and the anonymous account keeps existing
+  // under its own 30-day rule), so leaving them out of the UI would leave
+  // the screen quietly contradicting the policy. Shown on the opted-out
+  // card, which is where the member lands the instant they tap - a durable
+  // surface they can re-read, rather than a toast that is gone in five
+  // seconds.
+  const BACKUP_OPTOUT_TRUTHS = `<div class="footer-note" style="margin-bottom:8px;">הכיבוי עוצר העלאות מכאן והלאה בלבד: הוא לא מוחק מהענן את מה שכבר הועלה, ולא סוגר את החשבון שנפתח לגיבוי. למחיקת מה שכבר בענן צריך לבקש מחיקת חשבון.</div>`;
   window.renderBackupSettingsPanel = function () {
     if (!configured) return "";
     if (backupOptedOut()) {
-      return `<div class="footer-note" style="margin-bottom:8px;">גיבוי אוטומטי לענן כבוי — האימונים נשמרים במכשיר הזה בלבד.</div><button class="link-btn" data-community-action="backup-enable">הפעלת גיבוי אוטומטי</button>`;
+      return `${BACKUP_PANEL_TITLE}<div class="footer-note" style="margin-bottom:8px;">כבוי. מהשמירה הבאה האימונים נשמרים במכשיר הזה בלבד.</div>${BACKUP_OPTOUT_TRUTHS}<button class="link-btn" data-community-action="backup-enable">הפעלת גיבוי אוטומטי</button>`;
     }
     if (!state.user) {
-      return `<div class="footer-note" style="margin-bottom:8px;">האימונים שלכם מתחילים להתגבות אוטומטית ופרטית לענן מהשמירה הראשונה — רק אתם רואים אותם. אפשר לכבות בכל שלב.</div><button class="link-btn" data-community-action="backup-optout">כיבוי גיבוי אוטומטי</button>`;
+      return `${BACKUP_PANEL_TITLE}<div class="footer-note" style="margin-bottom:8px;">מהשמירה הראשונה האימונים שלכם מתחילים להיות מגובים לענן ברקע, אוטומטית ופרטית — רק אתם רואים אותם. הסנכרון קורה מעצמו ואין כאן קובץ להוריד; „קובץ גיבוי להורדה" הוא דבר נפרד במסך הזה. אפשר לכבות בכל שלב.</div><button class="link-btn" data-community-action="backup-optout">כיבוי גיבוי אוטומטי</button>`;
     }
     const credentialsCta = state.user.is_anonymous
       ? `<div style="margin-top:12px;"><div class="footer-note" style="margin-bottom:6px;">גישה לאותם נתונים ממכשיר אחר דורשת שם משתמש וסיסמה.</div><form id="backupCredentials">${field("backupCredentials", "username", "שם משתמש", `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="אותיות אנגליות, ספרות או קו תחתון" required/>`)}${field("backupCredentials", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="new-password" placeholder="לפחות 8 תווים" required/>`)}${field("backupCredentials", "passwordConfirm", "אימות סיסמה", `<input class="text-input" name="passwordConfirm" type="password" dir="ltr" autocomplete="new-password" placeholder="הקלידו שוב" required/>`)}<button class="chip-btn primary" type="submit" style="margin-top:6px;">שמירת גישה ממכשיר אחר</button></form></div>`
       : "";
-    return `<div class="footer-note" style="margin-bottom:8px;">${esc(state.syncEnabled ? "האימונים שלכם מגובים אוטומטית ופרטית לענן — רק אתם רואים אותם." : "גיבוי מוגדר אך טרם הופעל.")}</div><button class="link-btn" data-community-action="backup-optout">כיבוי גיבוי אוטומטי</button>${credentialsCta}${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}`;
+    return `${BACKUP_PANEL_TITLE}<div class="footer-note" style="margin-bottom:8px;">${esc(state.syncEnabled ? "פעיל. האימונים שלכם מגובים לענן ברקע, אוטומטית ופרטית — רק אתם רואים אותם. הסנכרון קורה מעצמו ואין כאן קובץ להוריד; „קובץ גיבוי להורדה\" הוא דבר נפרד במסך הזה." : "מוגדר אך טרם הופעל.")}</div><button class="link-btn" data-community-action="backup-optout">כיבוי גיבוי אוטומטי</button>${credentialsCta}${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}`;
   };
   // ---- Shared Phase 1 dialog focus + keyboard management (COMM-190) -----
   // Every Phase 1 overlay dialog behaves the same way: focus moves in on
@@ -13010,11 +13195,64 @@
       localStorage.removeItem(BACKUP_OPTOUT_KEY);
       if (!state.user) ensureAnonymousSession();
       else enableSyncIfAllowed();
+      // Mirror of the opt-out toast below - same reason, same placement
+      // before rerender(). Confirming only one direction of a toggle would
+      // leave the ON tap with exactly the silence that got the OFF tap
+      // reported as broken. Worded as a promise about the NEXT save, because
+      // that is when the first upload actually happens; enabling does not
+      // retroactively push what was logged while it was off.
+      if (typeof window.showToast === "function") window.showToast("גיבוי אוטומטי לענן הופעל. האימונים יגובו מהשמירה הבאה.");
       rerender();
     }
     else if (action === "backup-optout") {
       localStorage.setItem(BACKUP_OPTOUT_KEY, "1");
       if (state.syncEnabled) { state.syncEnabled = false; localStorage.setItem("haimunia-demo:cloudSyncEnabled", "0"); }
+      // Five-persona UX audit: an admin reported that turning cloud backup
+      // off "didn't appear to take effect". It always did - the flag flips,
+      // it persists, and the panel re-renders to the opted-out state - but
+      // the tap produced NO acknowledgement of any kind. The panel is three
+      // lines of small grey text near the bottom of a long settings screen,
+      // so the one thing that changed was the thing least likely to be in
+      // view at the moment of the tap. The member is left tapping a control
+      // that answers by rearranging text they cannot see.
+      //
+      // showToast() is app.js's existing rail (bottom-anchored, role=status,
+      // 5s), reached through window the same cross-file way this file
+      // already calls renderTabHeader() and communityShareCandidateFor().
+      // Guarded on typeof because cloud.js is loaded BEFORE app.js and a
+      // handler that fires before app.js has executed must not throw.
+      //
+      // Short by design: the toast confirms the STATE CHANGE and the one
+      // fact that answers "so where are my workouts now". The two things a
+      // member wrongly assumes an opt-out also does - deleting what is
+      // already uploaded, closing the account - are in BACKUP_OPTOUT_TRUTHS
+      // on the card itself, because those need to outlive five seconds and
+      // be re-readable. A toast is the wrong place to disclose something
+      // someone may want to act on.
+      //
+      // BLOCKED ON AN app.js FIX, and worth knowing before reading the rest:
+      // a real click on this button never gets here. index.html:1045 puts
+      // data-action="close-settings" on #settingsOverlay, and app.js's
+      // delegation only dispatches [data-community-action] when
+      // e.target.closest("[data-action]") finds NOTHING - so for any
+      // community control inside the settings overlay the community branch
+      // is skipped, and the close-settings branch then returns early on
+      // `e.target !== el`. Both paths drop it. That, not a missing
+      // confirmation, is the deeper reason the opt-out "didn't appear to
+      // take effect": it is inert, and #settingsOverlay is currently the
+      // only overlay holding a community action. The fix is one line in
+      // app.js's delegation, which this pass does not own; the handler and
+      // toast below are correct and go live the moment it lands. See the
+      // "KNOWN DEFECT, app.js" tripwire in
+      // test/community-error-copy.test.mjs.
+      //
+      // Set BEFORE rerender(), not after: showToast() only stores the
+      // pending toast and schedules its expiry - it never paints on its own,
+      // and app.js composes renderToastBar() during render(). Called after
+      // the rerender below, the confirmation would sit invisible until some
+      // unrelated event happened to trigger the next paint, which is the
+      // same "no feedback at the moment of the tap" this is fixing.
+      if (typeof window.showToast === "function") window.showToast("גיבוי אוטומטי לענן כובה. האימונים ממשיכים להישמר במכשיר הזה.");
       rerender();
     }
     else if (action === "avatar-remove") removeAvatarPhoto();

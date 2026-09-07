@@ -89,7 +89,18 @@ test("a failed verification keeps the gate, shows a retry message, and does not 
   const gateText = window.document.getElementById("content").textContent;
   assert.match(gateText, /אבטחת החשבון/, "gate heading in Hebrew");
   assert.match(gateText, /חשבון שאפשר לשחזר/, "gate explains why the recovery method is required");
-  assert.match(gateText, /עד להשלמת האימות אפשר לצפות בקהילה בלבד/, "gate states the read-only-until-verified rule");
+  // Five-persona UX audit. This used to assert the gate promised
+  // "עד להשלמת האימות אפשר לצפות בקהילה בלבד" - a read-only-until-verified
+  // rule that does not exist. is_community_member() gates the READS too:
+  // checked against the local stack with recovery_verified_at cleared,
+  // feed_page, community_search and announcements_read all refuse with
+  // 'recovery method required', exactly as post_create does. The screen was
+  // describing browse-only access to the one member standing in front of an
+  // empty feed. The assertion now pins what is actually true, and the
+  // negative below keeps the old promise from coming back.
+  assert.match(gateText, /הקהילה כולה סגורה/, "gate states that verification blocks reading too, not just posting");
+  assert.match(gateText, /רישום האימונים/, "and bounds it - the workout log never depended on this gate");
+  assert.ok(!/לצפות בקהילה בלבד/.test(gateText), "browse-only is not what happens and must not be promised again");
   assert.equal(mock.db.profiles[0].recovery_verified_at, null, "column still unstamped");
   assert.equal(mock.db.invite_redemptions.length, 1, "the invite redemption is untouched by a verification failure");
 
