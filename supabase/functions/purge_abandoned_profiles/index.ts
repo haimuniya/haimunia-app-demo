@@ -13,8 +13,12 @@
 // - Runs as service_role only (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are
 //   injected by the Edge Runtime automatically; nothing is hardcoded).
 // - "Abandoned" is real `auth.users.is_anonymous = true`, no
-//   `invite_redemptions` row, no `profiles.recovery_verified_at`, older
-//   than RETENTION_DAYS below. Not the same category `purge_due_accounts()`
+//   `invite_redemptions` row, no `profiles.recovery_verified_at`, NO
+//   TRAINING DATA AT ALL (no private_records row, soft-deleted included,
+//   and no attendance_log row - added by 202609070001, see PURGE_VERSION
+//   below), and no activity for longer than RETENTION_DAYS below. An
+//   account holding a training log is never deleted by this job under any
+//   window. Not the same category `purge_due_accounts()`
 //   (202608260001) already purges: that one is a member's own explicit
 //   deletion request. See this repo's supabase/migrations/
 //   202609010004_purge_abandoned_profiles.sql for the exact predicate.
@@ -52,7 +56,22 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
 // function's own response, so a later reader of run history can tell a
 // run under the old rule apart from one under the new rule even though
 // both wrote the same-shaped {checked, success, failure} record.
-const PURGE_VERSION = 1;
+//
+// v2 (202609070001) - THE PREDICATE CHANGED, so this is exactly the bump
+// 202609010004 asked for. Two narrowings:
+//   * An account that HOLDS TRAINING DATA is never purged. private_records
+//     cascades from auth.users, and cloud backup opens an anonymous account
+//     on the member's first saved set - so under v1 every backup-only
+//     member's whole training history was deleted on day 31. v1's counts
+//     must therefore be read as "accounts deleted, some of which held real
+//     logs"; v2's cannot contain such an account at all.
+//   * The window is measured from LAST ACTIVITY (greatest of created_at and
+//     last_sign_in_at) rather than created_at alone, so an account still in
+//     daily use is not eligible merely for being old.
+// v2 also adds a fourth count, retained_with_data - accounts that met all
+// four of v1's conditions and were spared only by the new guard. On the
+// first v2 runs that number IS the set of members v1 would have wiped.
+const PURGE_VERSION = 2;
 
 // The retention window, read from one named constant so changing it is a
 // one-line edit here, not a migration and not a redeploy of the
@@ -115,11 +134,16 @@ Deno.serve(async (req: Request) => {
     });
     if (error) throw error;
 
-    // The RPC's own return shape is {checked, success, failure} - no
-    // personal content, matching recap_weekly and purge_due_accounts'
-    // existing discipline. version/retention_days/ran_at are added here so
-    // the log record and the response are self-describing without a
-    // second lookup.
+    // The RPC's own return shape is {checked, success, failure,
+    // retained_with_data} - no personal content, matching recap_weekly and
+    // purge_due_accounts' existing discipline. version/retention_days/ran_at
+    // are added here so the log record and the response are self-describing
+    // without a second lookup.
+    //
+    // retained_with_data is surfaced and logged rather than dropped: it is
+    // the only signal that the v2 training-data guard is actually holding,
+    // and a run that reports a nonzero value is a run that would have
+    // destroyed that many members' logs under v1.
     const result = {
       version: PURGE_VERSION,
       retention_days: RETENTION_DAYS,
@@ -127,12 +151,14 @@ Deno.serve(async (req: Request) => {
       checked: data?.checked ?? 0,
       success: data?.success ?? 0,
       failure: data?.failure ?? 0,
+      retained_with_data: data?.retained_with_data ?? 0,
     };
     console.log(`purge_abandoned_profiles v${PURGE_VERSION}: run done`, {
       retention_days: result.retention_days,
       checked: result.checked,
       success: result.success,
       failure: result.failure,
+      retained_with_data: result.retained_with_data,
     });
     return new Response(JSON.stringify(result), { headers: { "Content-Type": "application/json" } });
   } catch (_err) {
