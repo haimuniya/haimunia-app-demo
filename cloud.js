@@ -2703,7 +2703,14 @@
 
     if (!viewer.can_attach) {
       // closed_reason, so the board SAYS why instead of hiding a control.
-      const why = { future: "האימון הזה נקבע למחר. אפשר לצרף תוצאה מהיום שהוא נקבע אליו.",
+      // 202609080004 added restricted/not_permitted. Note what this branch
+      // does NOT do: it never hides the board, and detach is rendered above
+      // this, so a restricted member who is already attached still sees their
+      // result and can still remove it. A sanction on adding content is not a
+      // sanction on withdrawing it.
+      const why = { restricted: "בזמן הגבלת הפרסום אי אפשר לצרף תוצאה ללוח. אפשר לראות את הלוח, ולהסיר תוצאה שכבר צורפה.",
+                    not_permitted: "לחשבון שלך אין הרשאה לפרסם תוכן במועדון, ולכן אי אפשר לצרף תוצאה ללוח.",
+                    future: "האימון הזה נקבע למחר. אפשר לצרף תוצאה מהיום שהוא נקבע אליו.",
                     expired: "הלוח הזה נסגר לצירוף תוצאות אחרי 14 יום. מה שכבר צורף נשאר.",
                     cancelled: "האימון בוטל, ולכן הלוח סגור לצירוף תוצאות." }[viewer.closed_reason] || "";
       return why ? `<div class="footer-note" style="margin:0;">${esc(why)}</div>` : "";

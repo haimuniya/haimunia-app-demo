@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.6.0";
+const APP_VERSION = "4.6.1";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -4646,7 +4646,14 @@ function renderClubWodAttachAffordance(w) {
 
   if (!viewer.can_attach) {
     // closed_reason, so the form SAYS why instead of hiding a control.
-    const why = { future: "אפשר יהיה לצרף תוצאה מהיום שהאימון נקבע אליו.",
+    // 202609080004 added the first two. They are the member's own standing,
+    // not the board's, and they are worded as such: a restriction is a
+    // moderation decision the member can already read in full on the account
+    // screen, so this says the board is affected and does not restate it or
+    // explain itself. The other three are facts about the session.
+    const why = { restricted: "בזמן הגבלת הפרסום אי אפשר לצרף תוצאה ללוח המועדון.",
+                  not_permitted: "לחשבון שלך אין הרשאה לפרסם תוכן במועדון.",
+                  future: "אפשר יהיה לצרף תוצאה מהיום שהאימון נקבע אליו.",
                   expired: "הלוח נסגר לצירוף תוצאות אחרי 14 יום.",
                   cancelled: "האימון בוטל, ולכן הלוח סגור." }[viewer.closed_reason] || "";
     if (!why) return "";

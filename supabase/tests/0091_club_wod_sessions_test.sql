@@ -711,5 +711,85 @@ select is(
   0,
   'and NO member attach or detach is written to the staff audit log - a member publishing their own result is not a staff act');
 
+-- ---------------------------------------------------------------------------
+-- 8. A RESTRICTED MEMBER IS TOLD BEFORE THEY TAP, NOT AFTER (202609080004).
+--
+-- club_wod_attach_result() refuses in five ways; club_wod_board_json()
+-- originally computed closed_reason from only the last three, so a member
+-- under a posting restriction was handed can_attach true and an offer to put
+-- their result on the club board, and was refused only once they had tapped
+-- it. The board and the write path have to agree, and this pins that they do
+-- - including the asymmetry that makes the sanction a fair one.
+-- ---------------------------------------------------------------------------
+
+-- m2 logs the empty board's WOD and attaches BEFORE any restriction, so the
+-- detach assertions below have a real row to act on.
+insert into public.private_records (user_id, record_type, record_id, payload)
+values (tests.uid('m2'), 'wod_entry', 'wodentry-m2-restrict',
+        jsonb_build_object('id', 'wodentry-m2-restrict', 'wodId', :w2,
+                           'scoreType', 'time', 'timeSeconds', 240, 'rx', true,
+                           'date', current_date::text));
+select tests.set_auth(tests.uid('m2'));
+select lives_ok(
+  $$select public.club_wod_attach_result((select session_id from t_empty), 'wodentry-m2-restrict')$$,
+  'an unrestricted member attaches to a live board');
+
+select tests.set_auth(tests.uid('admin'));
+select lives_ok(
+  format($$select public.mod_restrict_member(%L, 'temporary', now() + interval '7 days', 'test restriction')$$,
+         tests.uid('m2')),
+  'an admin restricts that member from posting');
+-- mod_lift_restriction() takes the RESTRICTION id, not the member's, so keep it.
+create temp table t_restr as
+select id from public.posting_restrictions
+where user_id = tests.uid('m2') and lifted_at is null;
+
+select tests.set_auth(tests.uid('m2'));
+select is(
+  (public.club_wod_board((select session_id from t_empty)) -> 'viewer' ->> 'closed_reason'),
+  'restricted',
+  'THE FIX: the board now names the restriction as the reason, instead of reporting the board open');
+select is(
+  (public.club_wod_board((select session_id from t_empty)) -> 'viewer' ->> 'can_attach'),
+  'false',
+  '...and can_attach is false, so no client can offer a control the write path will refuse');
+select throws_ok(
+  format($$select public.club_wod_attach_result((select session_id from t_empty), 'wodentry-m2-restrict',
+    jsonb_build_object('wodId', %L, 'scoreType', 'time', 'timeSeconds', 240, 'rx', true))$$, :w2),
+  'posting_restricted',
+  '...and the write still refuses, in the same order the board asks - the two cannot drift apart');
+
+-- THE ASYMMETRY. A restriction stops a member ADDING content. It must never
+-- trap what they already added, or the sanction quietly becomes "your result
+-- is stuck on a club surface you can no longer control".
+select is(
+  (public.club_wod_board((select session_id from t_empty)) -> 'viewer' ->> 'can_detach'),
+  'true',
+  'a RESTRICTED member can still detach - the sanction is on adding, never on withdrawing');
+select is(
+  (public.club_wod_board((select session_id from t_empty)) -> 'viewer' ->> 'attached'),
+  'true',
+  '...and they can still SEE that their result is on the board, so the control is not offered blindly');
+select lives_ok(
+  $$select public.club_wod_detach_result((select session_id from t_empty))$$,
+  '...and detaching genuinely works while restricted, not just advertised');
+select is(
+  (select count(*)::int from public.club_wod_results r join t_empty t on t.session_id = r.session_id
+    where r.user_id = tests.uid('m2')),
+  0,
+  '...leaving no row behind');
+
+-- Lifting the restriction restores the offer, so the closed state is the
+-- restriction's and not a one-way door.
+select tests.set_auth(tests.uid('admin'));
+select lives_ok(
+  $$select public.mod_lift_restriction((select id from t_restr))$$,
+  'an admin lifts the restriction');
+select tests.set_auth(tests.uid('m2'));
+select is(
+  (public.club_wod_board((select session_id from t_empty)) -> 'viewer' ->> 'can_attach'),
+  'true',
+  '...and the member can attach again, closed_reason back to null');
+
 select * from finish();
 rollback;
