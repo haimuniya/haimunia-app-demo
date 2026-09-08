@@ -137,11 +137,28 @@ this repo already requires Node ≥22). Grepped `cloud.js` and
 `src/realtime.js` for direct references to the renamed/internal symbols:
 none found, which lowers but does not eliminate risk — the realtime
 protocol change is invisible to a code search since nothing in this repo
-calls the serializer directly. **Recommendation unchanged from the main
-report: do this as its own isolated, fully-regression-tested change, not
-as a drive-by during this audit** — doubly true right now, with two other
-sessions mid-edit on `cloud.js`, the file that consumes this client the
-most.
+calls the serializer directly. **Recommendation at the time: do this as
+its own isolated, fully-regression-tested change, not as a drive-by.**
+
+**Update, later the same day:** a sibling session picked this up for
+real — a dedicated pass, not a drive-by. Reported findings: `jsdom` 25→30
+breaks this repo's own test boot (jsdom 30 made `window.crypto` a
+getter-only accessor; `test/helpers/boot.mjs`'s plain assignment to it
+throws, taking down every test that boots the app — a one-line
+`Object.defineProperty` fix restores 1505/1505), confirming the caution
+above was warranted rather than theoretical. The `@supabase/supabase-js`
+re-vendor also broke the DEP-3 version-detection heuristic in
+`check-vendored-supabase-version.mjs` — the new build's minifier dropped
+the structural pattern (`exports.version`) that check's regex relied on,
+since Supabase now versions its sub-packages as one monorepo unit.
+Reportedly fixed, with the sha256 pin retained as the actually
+load-bearing control (a version string proves what's claimed; the hash
+proves what's really shipped). The vendored bundle grew 131KB→212KB
+(+62%) — a real cost question for §17 (first-load size on this app's
+low-end-mobile audience), not a correctness one, still being weighed as
+of this writing. See `GO_LIVE_GUIDE.md` for current status — not
+independently re-verified by this audit while the files are in another
+session's active edit.
 
 **New finding, reported by a sibling session and recorded here with the
 appropriate caveats (not independently re-queried against production —
@@ -408,7 +425,7 @@ run here would not close it.
 | `check-deploy-readiness` vs local reset stack | READY, all 5 RPCs resolve |
 | `check-migration-immutability` | OK |
 | Migrations pending relative to `origin/main` | None (0) |
-| Production schema vs `origin/main` | **In sync, re-confirmed 2026-09-08.** Migration `202609080003` applied to production; `supabase db push --dry-run` reported the remote up to date, run immediately after that push when `origin/main` was at `d300a1a`. `origin/main` has since moved to `1e93e63` (a `supabase/tests/` file rename, zero files under `supabase/migrations/` touched — checked directly, `git show --stat 1e93e63` — not assumed), so the conclusion still holds at current `origin/main`, but the dry-run itself was executed one commit earlier than that. Reported by the "pre-release security audit" session, which ran the dry-run specifically to make this a verified line rather than an assumed one; the precise timing above was corrected after the session flagged its own first phrasing as a shade stronger than what was actually performed. Not independently re-run by this session, per the README's "never test against it" instruction. |
+| Production schema vs `origin/main` | **In sync, re-confirmed twice on 2026-09-08.** First: migration `202609080003` applied to production, `supabase db push --dry-run` reported the remote up to date (run at `d300a1a`; `main` moved to `1e93e63` immediately after via a migration-free rename, checked directly via `git show --stat`, not assumed — conclusion still held). Second, later the same day: migration `202609080004` (the club-WOD-board restriction fix) — reported by the authoring session as applied via `supabase db push --linked`, then `check-deploy-readiness` READY, then a direct probe of all six `club_wod_*` RPC signatures returning `42501` (exists, correctly access-denied) rather than `PGRST202`, then `supabase migration list --linked` showing zero drift at 123 migrations, **only then** `git push origin main` — verified by comparing `git rev-parse` locally vs `origin/main` rather than trusting the push's exit code. Both reports are sourced and dated, not independently re-run by this audit, per the README's "never test against it" instruction. |
 
 ## Offline verification summary
 

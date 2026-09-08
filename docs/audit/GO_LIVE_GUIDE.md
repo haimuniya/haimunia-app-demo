@@ -188,17 +188,35 @@ know what it actually promises before you need it in an emergency.
 
 ## B. Should do soon after (not launch-blocking)
 
-- **Review, don't blindly merge, the open Dependabot PR** bumping
-  `@supabase/supabase-js` (2.57.4 → 2.115.0, vendored — this repo has no
-  bundler, so this is a manual re-vendor, not an `npm update`). Reviewed
-  2026-09-08: real behavioral changes exist between these versions
-  (realtime's default serializer moved to protocol v2.0.0; a Storage API
-  rename; GoTrueClient's internal locking mechanism changed) — none are
-  referenced directly in this repo's code, but the realtime wire-protocol
-  change can't be ruled out by grep alone. Do this as its own isolated PR
-  with a full regression pass (`npm test` + `supabase test db` +
-  `run-all.mjs`), not bundled into a feature release. Same for the
-  lower-risk, dev-only `jsdom` bump.
+- **Dependabot bump — in progress, not just reviewed, as of 2026-09-08
+  (a sibling session picked it up mid-audit).** Real findings so far,
+  worth knowing regardless of who finishes it:
+  - **`jsdom` 25→30 is a genuine breaking change for this repo's test
+    suite** — a straight bump caused 1004 test failures. Cause: jsdom 30
+    made `window.crypto` a getter-only accessor, and
+    `test/helpers/boot.mjs`'s plain assignment to it throws, taking down
+    every test that boots the app. One-line fix
+    (`Object.defineProperty` instead of assignment) restores 1505/1505.
+  - **The `@supabase/supabase-js` re-vendor (2.57.4→2.114.0) broke the
+    DEP-3 supply-chain check** (`scripts/check-vendored-supabase-version.mjs`).
+    The new build's minifier no longer uses the `exports.version` pattern
+    the version-marker regex relied on — Supabase now versions its
+    sub-packages as one monorepo unit, so that structural signal is gone.
+    The check has reportedly been updated to detect the new pattern, with
+    the **sha256 pin kept as the actually load-bearing half** (a version
+    string proves what's claimed; the hash proves what's really there).
+    Anyone continuing this work should verify that updated detection
+    logic independently before trusting it, same as this audit has been
+    doing with every other cross-session claim.
+  - **The vendored bundle grew 131KB → 212KB, +62%.** All tests and
+    browser checks reportedly still pass against it — this is a payload
+    *cost* question (relevant to §17 Performance, first-load size on the
+    exact low-end-mobile audience this app targets), not a correctness
+    one, and is still being weighed (gzip delta, not yet decided) as of
+    this writing.
+  - Do the final version as its own isolated, reviewed change with a full
+    regression pass — not bundled silently into an unrelated release —
+    regardless of who lands it.
 - **Real screen-reader pass** (VoiceOver on iOS, or NVDA/TalkBack) — the
   automated axe-core sweep catches structural/contrast issues but not
   whether things make sense when heard.
