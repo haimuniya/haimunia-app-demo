@@ -1,0 +1,117 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&display=swap">
+  <style>
+    :root{
+      --bg:#152342; --surface:#1F3057; --surface2:#2A3D6B; --border:#425481;
+      --chalk:#F2ECE1; --steel:#A8B3C9; --brass:#E8B98A; --energy:#E85D3D;
+      --teal:#3FA7A0; --blue:#3E6FD9;
+    }
+    body{ margin:0; font-family:'Rubik', system-ui, sans-serif; background:var(--bg); color:var(--chalk); }
+    a{ color:var(--brass); } a:hover{ color:#F0CBA6; }
+    .muted{ color:var(--steel); }
+    .rule{ height:1px; background:var(--border); opacity:.65; }
+    .tab{ font-size:13.5px; font-weight:700; padding:6px 0; color:var(--steel); border-bottom:2px solid transparent; }
+    .tab.on{ color:var(--chalk); border-bottom-color:var(--brass); }
+    .act{ display:inline-flex; align-items:center; gap:5px; font-size:12.5px; font-weight:600; color:var(--steel); }
+  </style>
+</helmet>
+
+<div dir="rtl" style="width:390px; min-height:900px; background:var(--bg); box-sizing:border-box; padding-bottom:24px;">
+
+  <!-- No cards for chrome. The club is a line of text. -->
+  <div style="padding:18px 20px 0; display:flex; align-items:center; justify-content:space-between;">
+    <div style="font-weight:800; font-size:19px; letter-spacing:-.01em;">חיימוניה</div>
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="var(--steel)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.7 21a2 2 0 0 1-3.4 0"></path></svg>
+  </div>
+
+  <!-- Text tabs, not chip buttons: filters stop looking like actions. -->
+  <div style="display:flex; gap:18px; padding:14px 20px 0;">
+    <span class="tab on">הכול</span>
+    <span class="tab">עוקבים</span>
+    <span class="tab">הישגים</span>
+    <span class="tab">מאמנים</span>
+  </div>
+  <div class="rule" style="margin-top:-1px;"></div>
+
+  <!-- Today, as one quiet line with a single action. Not a hero. -->
+  <div style="padding:16px 20px; display:flex; align-items:flex-start; gap:12px;">
+    <div style="width:3px; align-self:stretch; background:var(--brass); border-radius:2px; margin-top:3px;"></div>
+    <div style="flex:1; min-width:0;">
+      <div class="muted" style="font-size:11px; font-weight:700; letter-spacing:.08em;">היום</div>
+      <div style="font-weight:700; font-size:16px; margin-top:3px;">Dana's Chipper</div>
+      <div class="muted" style="font-size:13px; font-family:ui-monospace,monospace; direction:ltr; text-align:right; margin-top:2px;">21-15-9 · Thrusters + Pull-ups</div>
+      <div style="margin-top:9px; display:flex; align-items:center; gap:14px;">
+        <span style="font-size:13px; font-weight:700; color:var(--brass);">צירוף התוצאה</span>
+        <span class="muted" style="font-size:12.5px;">3 חברים על הלוח</span>
+      </div>
+    </div>
+  </div>
+  <div class="rule"></div>
+
+  <!-- Posts breathe. No card borders, no shadows — separation by space. -->
+  <div style="padding:0 20px;">
+
+    <div style="padding:20px 0;">
+      <div style="display:flex; align-items:center; gap:9px; margin-bottom:9px;">
+        <div style="width:30px;height:30px;border-radius:999px;background:var(--brass);color:#1a0d08;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;">נ</div>
+        <div style="font-weight:700; font-size:13.5px;">נועה</div>
+        <div class="muted" style="font-size:11.5px;">· לפני 3 שעות</div>
+      </div>
+      <div style="font-size:16.5px; line-height:1.45; text-wrap:pretty;">שיא אישי ב־Back Squat אחרי חודשיים תקועה על אותו משקל.</div>
+      <div style="color:var(--brass); font-weight:700; font-size:19px; font-family:ui-monospace,monospace; direction:ltr; text-align:right; margin-top:8px; letter-spacing:-.01em;">82.5 kg × 1</div>
+      <div style="display:flex; gap:18px; margin-top:12px;">
+        <span class="act"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--energy)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5Z"></path></svg>11</span>
+        <span class="act"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--steel)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"></path></svg>3</span>
+        <span class="act">השוואה</span>
+      </div>
+    </div>
+    <div class="rule"></div>
+
+    <div style="padding:20px 0;">
+      <div style="display:flex; align-items:center; gap:9px; margin-bottom:9px;">
+        <div style="width:30px;height:30px;border-radius:999px;background:var(--teal);color:#0d1f1e;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;">א</div>
+        <div style="font-weight:700; font-size:13.5px;">איתי</div>
+        <div class="muted" style="font-size:11.5px;">· לפני שעה</div>
+      </div>
+      <div style="font-size:16.5px; line-height:1.45;">Dana's Chipper</div>
+      <div style="color:var(--brass); font-weight:700; font-size:19px; font-family:ui-monospace,monospace; direction:ltr; text-align:right; margin-top:8px;">11:05 @ 30 kg</div>
+      <div style="display:flex; gap:18px; margin-top:12px;">
+        <span class="act"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--energy)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5Z"></path></svg>4</span>
+        <span class="act"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--steel)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"></path></svg>1</span>
+      </div>
+    </div>
+    <div class="rule"></div>
+
+    <div style="padding:20px 0;">
+      <div style="display:flex; align-items:center; gap:9px; margin-bottom:9px;">
+        <div style="width:30px;height:30px;border-radius:999px;background:var(--blue);color:#F2ECE1;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;">ג</div>
+        <div style="font-weight:700; font-size:13.5px;">גיל</div>
+        <div class="muted" style="font-size:11.5px;">· לפני 5 שעות</div>
+      </div>
+      <div class="muted" style="font-size:15px;">התאמן/ה היום.</div>
+    </div>
+
+  </div>
+
+  <!-- One floating action, because there is only one thing to do here. -->
+  <div style="position:sticky; bottom:16px; display:flex; justify-content:center; padding-top:14px;">
+    <div style="background:var(--energy); color:#1a0d08; font-weight:700; font-size:13.5px; padding:13px 22px; border-radius:999px; box-shadow:0 10px 24px -10px rgba(0,0,0,.8);">כתיבת פוסט</div>
+  </div>
+
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

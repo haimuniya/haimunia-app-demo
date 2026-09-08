@@ -101,7 +101,13 @@
      and the generic routes Hebrew back to the app's own typeface while
      leaving Latin untouched: unicode-range still hands "WOD"/digits to
      Anton/JetBrains Mono exactly as before. Any future Latin-only face
-     added here needs the same 'Rubik' step. */
+     added here needs the same 'Rubik' step.
+
+     SINCE 4.8.0 the display stacks name 'Secular One' before 'Rubik' - a
+     Hebrew display cut, so a Hebrew heading gets a display face instead of
+     the body face. Rubik STAYS in every stack behind it: it is still what
+     catches anything neither Latin-only Anton nor Hebrew-only Secular One
+     covers, which is exactly the fall-through this comment exists to protect. */
   @font-face{ font-family:'Rubik'; font-style:normal; font-weight:400; font-display:swap; src:url('./assets/fonts/rubik-400-latin.woff2') format('woff2'); unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
   @font-face{ font-family:'Rubik'; font-style:normal; font-weight:400; font-display:swap; src:url('./assets/fonts/rubik-400-hebrew.woff2') format('woff2'); unicode-range:U+0307-0308,U+0590-05FF,U+200C-2010,U+20AA,U+25CC,U+FB1D-FB4F; }
   @font-face{ font-family:'Rubik'; font-style:normal; font-weight:600; font-display:swap; src:url('./assets/fonts/rubik-600-latin.woff2') format('woff2'); unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
@@ -115,6 +121,17 @@
   @font-face{ font-family:'JetBrains Mono'; font-style:normal; font-weight:500; font-display:swap; src:url('./assets/fonts/jbmono-500-latin.woff2') format('woff2'); unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
   @font-face{ font-family:'JetBrains Mono'; font-style:normal; font-weight:700; font-display:swap; src:url('./assets/fonts/jbmono-700-latin.woff2') format('woff2'); unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
   @font-face{ font-family:'Anton'; font-style:normal; font-weight:400; font-display:swap; src:url('./assets/fonts/anton-400-latin.woff2') format('woff2'); unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+  /* THE HEBREW HALF OF THE DISPLAY PAIRING. Anton is Latin-only, so under
+     the stack documented above every Hebrew heading fell through to Rubik -
+     the BODY face. That kept Hebrew headings on-brand (the defect-2 fix) but
+     left them with no voice of their own: in a Hebrew-first app, the display
+     typeface effectively only ever styled the English words. Secular One is a
+     Hebrew geometric display with a real 400 cut; slotted BETWEEN the
+     Latin-only face and Rubik, unicode-range routes Latin to Anton, Hebrew to
+     Secular One, and anything neither covers still lands on Rubik exactly as
+     before. Same self-hosted, offline-precached treatment as every other face
+     here - font-src is 'self' and stays that way. 7.9 KB. */
+  @font-face{ font-family:'Secular One'; font-style:normal; font-weight:400; font-display:swap; src:url('./assets/fonts/secularone-400-hebrew.woff2') format('woff2'); unicode-range:U+0307-0308,U+0590-05FF,U+200C-2010,U+20AA,U+25CC,U+FB1D-FB4F; }
 </style>
 <style>
   /* Theme tokens, light-first: bare :root is the light palette (the CSS-spec
@@ -517,7 +534,7 @@
      untouched - this only grows the transparent area around it, so nothing
      moves visually. */
   .icon-btn{ min-width:44px; min-height:44px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; border-radius:12px; }
-  .save-btn{ width:100%; max-width:448px; background:linear-gradient(180deg, color-mix(in srgb, var(--energy) 78%, white), var(--energy)); color:#1a0d08; font-family:'Anton','Rubik',sans-serif; font-weight:400; letter-spacing:0.5px; font-size:19px; padding:16px 0; border-radius:16px; display:flex; align-items:center; justify-content:center; gap:8px; box-shadow:0 10px 26px -6px rgba(232,93,61,.5); transition:opacity .15s; }
+  .save-btn{ width:100%; max-width:448px; background:linear-gradient(180deg, color-mix(in srgb, var(--energy) 78%, white), var(--energy)); color:#1a0d08; font-family:'Anton','Secular One','Rubik',sans-serif; font-weight:400; letter-spacing:0.5px; font-size:19px; padding:16px 0; border-radius:16px; display:flex; align-items:center; justify-content:center; gap:8px; box-shadow:0 10px 26px -6px rgba(232,93,61,.5); transition:opacity .15s; }
   .save-btn:active{ opacity:.85; }
   /* Shared tinted icon chip, reused by the Phase 2 nav menu and anywhere a
      generic gray icon badge would otherwise be re-derived inline per call
@@ -681,7 +698,7 @@
      own prev/next-month row, for example, is untouched below this) - the
      only page identity before this was the one global header shared by
      every tab. */
-  .page-title{ font-family:'Anton','Rubik',sans-serif; font-weight:400; letter-spacing:.3px; font-size:22px; color:var(--chalk); margin-bottom:14px; }
+  .page-title{ font-family:'Anton','Secular One','Rubik',sans-serif; font-weight:400; letter-spacing:.3px; font-size:22px; color:var(--chalk); margin-bottom:14px; }
   /* Desktop / wide-viewport layout. Everything here lives inside the media
      query on purpose - below 900px .app-shell/.desktop-sidebar have no
      rules at all, so the mobile layout (#app centered, max-width:480px,
@@ -1084,13 +1101,23 @@
   .ach-section{ margin-bottom:22px; }
   .ach-section-head{ display:flex; align-items:center; gap:8px; margin-bottom:10px; }
   .ach-section-dot{ width:8px; height:8px; border-radius:999px; flex-shrink:0; }
-  .ach-section-title{ font-weight:800; font-size:14px; color:var(--chalk); }
+  /* Section headings take the display pairing too, which is most of what
+     makes a screen read as designed rather than assembled. WEIGHT 400 IS NOT
+     A TYPO: Anton and Secular One each ship a single 400 cut, so asking for
+     800 here would make the browser synthesise a fake bold and smear both
+     faces - the same reason .page-title and .celebration-title above are 400.
+     Size goes up a little to carry the lighter weight. */
+  .ach-section-title{ font-family:'Anton','Secular One','Rubik',sans-serif; font-weight:400; font-size:15.5px; letter-spacing:.2px; color:var(--chalk); }
   .ach-row{ display:flex; gap:14px; overflow-x:auto; padding-bottom:4px; -webkit-overflow-scrolling:touch; }
   /* Community tab: real buttons and admin-only framing, instead of the
      11px underlined .link-btn (meant for a de-emphasized action like
      "delete account") standing in for every primary action. */
   .chip-btn{ display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:9px 16px; border-radius:12px; border:1px solid var(--border); background:var(--surface2); color:var(--chalk); font-weight:700; font-size:13px; white-space:nowrap; }
-  .chip-btn.primary{ background:var(--energy); color:#1a0d08; border-color:var(--energy); }
+  /* The primary action carries a tinted shadow so it reads as the one thing
+     to press, matching .save-btn's existing treatment rather than inventing a
+     second language for the same idea. Tinted with --energy, not black: a
+     grey drop under a warm button looks like dirt. */
+  .chip-btn.primary{ background:var(--energy); color:#1a0d08; border-color:var(--energy); box-shadow:0 8px 18px -10px color-mix(in srgb, var(--energy) 85%, transparent); }
   /* .primary was doing double duty as both "primary action" (compose, send,
      save) and "this filter/scope is selected" (feed scope, leaderboard
      scope, mod-queue status) - identical fill, so a selected filter chip
@@ -1238,7 +1265,7 @@
     .cstar{ animation:starTwinkle 1.8s ease-in-out infinite; }
   }
   @keyframes starTwinkle{ 0%,100%{ opacity:.3; transform:scale(.8) rotate(0deg); } 50%{ opacity:1; transform:scale(1.2) rotate(15deg); } }
-  .celebration-title{ font-family:'Anton','Rubik',sans-serif; font-weight:400; font-size:30px; color:var(--brass); margin-bottom:6px; letter-spacing:.5px; }
+  .celebration-title{ font-family:'Anton','Secular One','Rubik',sans-serif; font-weight:400; font-size:30px; color:var(--brass); margin-bottom:6px; letter-spacing:.5px; }
   .celebration-pr-line{ font-size:15px; font-weight:700; color:var(--chalk); margin-bottom:6px; }
   .celebration-sub{ color:var(--steel); font-size:14px; margin-bottom:20px; }
   .celebration-medals{ display:flex; justify-content:center; gap:16px; flex-wrap:wrap; }

@@ -2,3 +2,7 @@ node_modules/
 supabase/.temp/
 supabase/.branches/
 .codex/
+
+# The seeded design canvas is a ~2 MB build artifact regenerated from
+# design/*.dc.html + design/canvas.json by the design skill helper.
+design/community-directions.html

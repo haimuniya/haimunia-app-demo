@@ -1,0 +1,130 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&family=Secular+One&display=swap">
+  <style>
+    :root{
+      --bg:#152342; --surface:#1F3057; --surface2:#2A3D6B; --border:#425481;
+      --chalk:#F2ECE1; --steel:#A8B3C9; --brass:#E8B98A; --energy:#E85D3D;
+      --teal:#3FA7A0; --blue:#3E6FD9; --green:#4B9B5F;
+    }
+    body{ margin:0; font-family:'Rubik', system-ui, sans-serif; background:#0E1830; color:var(--chalk); }
+    a{ color:var(--brass); } a:hover{ color:#F0CBA6; }
+    .display{ font-family:'Secular One','Rubik',system-ui,sans-serif; font-weight:400; }
+    .muted{ color:var(--steel); }
+    .chip{ display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:9px 16px; border-radius:12px; border:1px solid var(--border); background:var(--surface2); color:var(--chalk); font-weight:700; font-size:13px; }
+    .row{ display:flex; align-items:center; gap:11px; padding:13px 14px; border-radius:14px; background:var(--surface); border:1px solid var(--border); }
+    .row.me{ border-color:var(--brass); background:linear-gradient(180deg, rgba(232,185,138,.09), rgba(232,185,138,.03)); }
+    .av{ width:36px; height:36px; border-radius:999px; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:14px; flex-shrink:0; }
+    .fig{ font-family:ui-monospace,monospace; font-weight:700; font-size:15px; color:var(--brass); direction:ltr; }
+  </style>
+</helmet>
+
+<div dir="rtl" style="width:390px; min-height:900px; box-sizing:border-box; background:#0E1830; padding-bottom:24px;">
+
+  <!-- Sheet header -->
+  <div style="display:flex; align-items:center; justify-content:space-between; padding:18px 16px 4px;">
+    <div style="width:40px;height:40px;border-radius:999px;background:var(--surface2);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--chalk)" stroke-width="2.1" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+    </div>
+    <div style="text-align:end;">
+      <div class="display" style="font-size:19px;">Dana's Chipper</div>
+      <div class="muted" style="font-size:11.5px; margin-top:2px;">היום · פורסם על ידי דנה</div>
+    </div>
+  </div>
+
+  <div style="padding:16px;">
+    <!-- the programming -->
+    <div style="background:var(--surface); border:1px solid var(--border); border-radius:18px; padding:15px 16px;">
+      <div style="font-family:ui-monospace,monospace; font-size:14px; line-height:1.8; direction:ltr; text-align:left;">
+        21-15-9<br>Thrusters + Pull-ups<br><span style="color:var(--brass);">Rx 43/30 kg</span>
+      </div>
+      <div class="muted" style="font-size:12px; margin-top:10px; padding-top:10px; border-top:1px solid var(--border);">
+        זמן · מגבלת זמן: 20 דקות
+      </div>
+    </div>
+
+    <!-- your own result, first and framed as yours -->
+    <div style="margin-top:16px;">
+      <div class="muted" style="font-size:10.5px; font-weight:700; letter-spacing:.14em; margin-bottom:9px;">התוצאה שלך</div>
+      <div class="row me">
+        <div class="av" style="background:var(--brass); color:#1a0d08;">ד</div>
+        <div style="flex:1; min-width:0;">
+          <div style="font-weight:800; font-size:14px;">את/ה</div>
+          <div class="muted" style="font-size:11px; margin-top:1px;">זמן · מלא (Rx)</div>
+        </div>
+        <div class="fig" style="font-size:17px;">9:48</div>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:9px;">
+        <div class="chip" style="flex:1;">הסרה מהלוח</div>
+      </div>
+    </div>
+
+    <!-- the club -->
+    <div style="margin-top:22px;">
+      <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:10px;">
+        <div class="display" style="font-size:16px;">מהמועדון</div>
+        <div class="muted" style="font-size:11.5px;">3 חברים</div>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:9px;">
+        <div class="row">
+          <div class="av" style="background:var(--teal); color:#0d1f1e;">א</div>
+          <div style="flex:1; min-width:0;">
+            <div style="font-weight:700; font-size:14px;">איתי</div>
+            <div class="muted" style="font-size:11px; margin-top:1px;">זמן · מותאם (Scaled)</div>
+          </div>
+          <div class="fig">11:05</div>
+        </div>
+
+        <!-- THE PRIVACY CASE: listed by name, no figure, and the app says so
+             plainly rather than leaving a blank the member reads as a bug. -->
+        <div class="row">
+          <div class="av" style="background:var(--blue); color:#F2ECE1;">נ</div>
+          <div style="flex:1; min-width:0;">
+            <div style="font-weight:700; font-size:14px;">נועה</div>
+            <div class="muted" style="font-size:11px; margin-top:1px;">זמן · מלא (Rx)</div>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px; color:var(--steel); font-size:12px; font-weight:600;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--steel)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.7 5.1A9.6 9.6 0 0 1 12 5c7 0 10 7 10 7a13.2 13.2 0 0 1-1.7 2.7"></path><path d="M6.6 6.6A13.3 13.3 0 0 0 2 12s3 7 10 7a9.7 9.7 0 0 0 5.4-1.6"></path><path d="m2 2 20 20"></path></svg>
+            מוסתרת
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="av" style="background:var(--green); color:#0c1a10;">ג</div>
+          <div style="flex:1; min-width:0;">
+            <div style="font-weight:700; font-size:14px;">גיל</div>
+            <div class="muted" style="font-size:11px; margin-top:1px;">זמן · מלא (Rx)</div>
+          </div>
+          <div class="fig">13:20</div>
+        </div>
+      </div>
+
+      <!-- The rule, stated once, at the bottom, where it explains what was
+           just seen rather than pre-empting it. -->
+      <div style="display:flex; gap:9px; align-items:flex-start; margin-top:16px; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 13px;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--steel)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; margin-top:1px;"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4M12 8h.01"></path></svg>
+        <div class="muted" style="font-size:12px; line-height:1.55;">
+          הרשימה מסודרת לפי סדר הצירוף — אין כאן דירוג. תוצאה מוצגת רק אם החבר/ה בחר/ה לשתף אותה.
+          <span style="color:var(--brass); font-weight:700;">ההגדרות שלי</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

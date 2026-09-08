@@ -2,7 +2,7 @@
 // Version is the single source of truth for the cache name — bumping
 // APP_VERSION in app.js is what ships an update. Don't edit SW_VERSION by
 // hand: run `npm run sync-version` (see app.js) to copy it here.
-const SW_VERSION = "4.7.2";
+const SW_VERSION = "4.8.0";
 // "haimunia-demo-v..." — deliberately distinct from the production app's
 // own "haimunia-v..." cache prefix. Both service workers are scoped to
 // the same origin (haimuniya.github.io), and the activate handler below
@@ -80,6 +80,7 @@ const OPTIONAL_ASSETS = [
   "./assets/fonts/jbmono-500-latin.woff2",
   "./assets/fonts/jbmono-700-latin.woff2",
   "./assets/fonts/anton-400-latin.woff2",
+  "./assets/fonts/secularone-400-hebrew.woff2",
 ];
 const ASSETS = [...REQUIRED_ASSETS, ...OPTIONAL_ASSETS];
 

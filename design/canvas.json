@@ -1,0 +1,66 @@
+{
+  "pages": [
+    { "id": "page-1", "name": "כיוונים" },
+    { "id": "page-2", "name": "מסכים" }
+  ],
+  "artboards": [
+    { "file": "Main.dc.html", "title": "מצב נוכחי · 4.7.2", "x": 0, "y": 0, "w": 390, "h": 900, "page": "page-1" },
+    { "file": "OptionA-Today.dc.html", "title": "A · היום קודם", "x": 470, "y": 0, "w": 390, "h": 900, "page": "page-1" },
+    { "file": "OptionB-Quiet.dc.html", "title": "B · פיד שקט", "x": 940, "y": 0, "w": 390, "h": 900, "page": "page-1" },
+    { "file": "OptionC-Board.dc.html", "title": "C · לוח הקיר", "x": 1410, "y": 0, "w": 390, "h": 900, "page": "page-1" },
+
+    { "file": "Board.dc.html", "title": "לוח האימון · פרטיות", "x": 0, "y": 0, "w": 390, "h": 900, "page": "page-2" },
+    { "file": "RestDay.dc.html", "title": "יום ללא תוכנית", "x": 470, "y": 0, "w": 390, "h": 900, "page": "page-2" }
+  ],
+  "annotations": [
+    {
+      "id": "brief",
+      "x": 0,
+      "y": -210,
+      "w": 470,
+      "text": "Community tab — three directions, all built on the app's real tokens read from index.html: Rubik 400–800, ground #152342, surface #1F3057, brass #E8B98A, energy #E85D3D, 20px card radius, chips 9×16px at radius 12.\n\nAdded as a display face: Secular One, a Hebrew geometric display, used only for headline moments against Rubik for everything else.\n\nLeftmost is the baseline — what ships today at 4.7.2, after the one-rail change.",
+      "page": "page-1"
+    },
+    {
+      "id": "note-a",
+      "x": 470,
+      "y": -210,
+      "w": 390,
+      "text": "A · HEIGHT FIRST — one dominant block answers \"what is the box doing today, who's in, what do I tap\" at a glance. The feed becomes a compact digest below it.\n\nTradeoff: strongest for a member checking in before class. Its weakness — a rest day with nothing to say — is answered on the מסכים page.",
+      "page": "page-1"
+    },
+    {
+      "id": "note-b",
+      "x": 940,
+      "y": -210,
+      "w": 390,
+      "text": "B · QUIET — no cards for chrome. Text tabs instead of chip buttons, hairline rules instead of borders, posts given room. Today is one line with one action, not a hero.\n\nTradeoff: the calmest and most readable, and closest to a feed people already know. Today's programming is easy to scroll past — the opposite of A's bet.",
+      "page": "page-1"
+    },
+    {
+      "id": "note-c",
+      "x": 1410,
+      "y": -210,
+      "w": 390,
+      "text": "C · THE WALL — the box's physical whiteboard as the surface. Slate with chalk dust, names in a plain row with no figures and no order that could read as rank.\n\nTradeoff: the most memorable and most opinionated. It introduces a texture the rest of the app doesn't have, so it either spreads or sits alone.",
+      "page": "page-1"
+    },
+    {
+      "id": "note-board",
+      "x": 0,
+      "y": -210,
+      "w": 390,
+      "text": "THE BOARD — where the privacy rule becomes visible. נועה is listed by name with \"מוסתרת\" where a figure would be, not a blank a member would read as a bug.\n\nOrder is attach order. The rule is stated once at the bottom, explaining what was just seen rather than pre-empting it, with a link to the member's own settings and no nudge to change them.",
+      "page": "page-2"
+    },
+    {
+      "id": "note-rest",
+      "x": 470,
+      "y": -210,
+      "w": 390,
+      "text": "REST DAY — the honest answer to A's weakness. With no programming, the hero does not render an empty shell: it collapses to one line, and the feed takes the space back.\n\nThis is the same \"renders nothing when empty\" rule the app already follows — and the reason the onboarding skeleton was removed in 4.7.2.",
+      "page": "page-2"
+    }
+  ],
+  "launch": { "view": "canvas", "page": "page-1" }
+}
