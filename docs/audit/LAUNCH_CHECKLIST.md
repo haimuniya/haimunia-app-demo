@@ -36,7 +36,7 @@ commit ahead of `origin/main` `c5f75c7`).
 | # | Criterion | Status | Notes |
 |---|---|---|---|
 | 15 | GitHub Pages build source confirmed (branch vs. Action) | NOT VERIFIED | No `gh` CLI / dashboard access in this sandbox |
-| 16 | GitHub branch protection requires all CI jobs | NOT VERIFIED | Same reason; carried forward from every prior audit pass |
+| 16 | GitHub branch protection requires all CI jobs | **FAIL, in practice — configuration verified, enforcement is not what's happening.** `git push origin main` from this session returned: `remote: Bypassed rule violations for refs/heads/main: 4 of 4 required status checks are expected.` This proves branch protection exists and names 4 required checks (matching the 4 CI jobs in `.github/workflows/`) — the part every prior audit pass could not confirm. **But it also proves direct pushes to `main` bypass it entirely**, which is exactly how every session today (including this one, and the merges/pushes described earlier in this document) has been shipping — none went through a PR that actually waited on green CI. Whether that bypass is an intended admin/owner privilege or a gap depends on who's authorized to push directly, which is a decision for whoever administers the repo, not something inferable from here. | Confirm this is the intended policy (owner/admin bypass allowed by design) rather than an oversight; if not, the workflow this whole session used — direct pushes to `main` after local verification — needs to change to PR-and-wait for every session sharing this repo. |
 | 17 | Supabase Auth dashboard password policy mirrors `config.toml` | NOT VERIFIED | Repo-side value verified (10 chars, complexity); dashboard mirror unconfirmed |
 | 18 | CAPTCHA (Turnstile/hCaptcha) dashboard state | N/A, proven with evidence | Deliberately OFF — owner declined 2026-09-07, code-complete and inert, reversible in one config line. Not an oversight. |
 | 19 | Vault secrets set for `recap-weekly` / `purge-abandoned-profiles` | **NOT VERIFIED, narrowed twice, still open by design.** `cc33dfc` (06:55) set both secrets, deliberately not claiming resolution ("the secrets exist" ≠ "the jobs work"). Follow-up probe of `net._http_response` got a 404, which a further self-correction (`091ed9d`) correctly walked back from "proves the transport" to **proves only the base URL/TLS/host resolve** — Supabase's gateway routes before it authorizes, so a wrong service-role key on a deliberately-nonexistent slug also 404s; a bad key only surfaces as 401 on a slug that actually exists. No side-effect-free way to test that by hand (all three Edge Functions do real work, none has a dry-run path). **Closes decisively at the next real scheduled run** — `purge-abandoned-profiles` 03:31 UTC daily: 200 proves the key end-to-end, 401 proves it's wrong (with 5 days' margin before `recap-weekly`'s Monday run). Safe to let that run happen specifically because `0e97746`'s data-loss guard is already live. Not independently re-queried against production by this audit. | **Does not affect the member-facing 30-day deletion promise** — that job is plain SQL, no Vault dependency. See `GO_LIVE_GUIDE.md` §A.4. |
@@ -49,12 +49,14 @@ commit ahead of `origin/main` `c5f75c7`).
 
 ## Score
 
-**15 PASS · 2 N/A (proven with evidence) · 1 FAIL · 8 NOT VERIFIED**, as of
+**15 PASS · 2 N/A (proven with evidence) · 2 FAIL · 7 NOT VERIFIED**, as of
 2026-09-08. Updated since the 2026-09-07 revision: the `purge_abandoned_profiles`
 data-loss bug (new item 25) was found and fixed on production before it
-could fire; the Vault-secret item (19) moved from a bare unknown to a
-dated, sourced claim, still not independently re-verified from this
-sandbox.
+could fire; the Vault-secret item (19) narrowed twice to a specific,
+decisive pending check; item 16 (branch protection) moved from NOT
+VERIFIED to FAIL after this session's own push to `main` proved the
+protection exists but is being bypassed in practice, by every session
+working on this repo today, this one included.
 
 No item above is marked PASS on the strength of source code alone where
 external confirmation was actually required — every NOT VERIFIED row names
