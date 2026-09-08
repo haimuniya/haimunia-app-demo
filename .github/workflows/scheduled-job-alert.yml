@@ -1,0 +1,72 @@
+name: scheduled-job-alert
+# Go-live guide, item A.5. public.scheduled_job_health() (202609060016) has
+# existed since the launch-readiness audit; nothing was ever wired to page a
+# human when it reports an unhealthy job. This workflow is that wiring - see
+# scripts/check-scheduled-job-health.mjs for the actual check and the reasons
+# behind its exit-code discipline (checked-and-healthy, checked-and-unhealthy,
+# and could-not-check are three DIFFERENT outcomes, deliberately).
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions),
+# none of which are ever committed to this repo:
+#   SUPABASE_URL               - the production project's REST URL
+#   SUPABASE_SERVICE_ROLE_KEY  - scheduled_job_health() is service_role-only
+#                                by design; this key must never be logged
+#                                (the script only ever prints job names/
+#                                statuses, never the key itself)
+#   ALERT_WEBHOOK_URL          - a Slack or Discord incoming webhook URL (or
+#                                anything else that accepts {"text": "..."})
+#
+# Until all three secrets are set, this workflow's own failure IS the alert
+# (a red run in the Actions tab) - it fails closed, not silently.
+#
+# KNOWN BLIND SPOT: cannot detect VAULT-1 (recap-weekly / purge-abandoned-
+# profiles reporting healthy while their Edge Function call is silently
+# skipped due to unset Vault secrets) - see the script's own header comment
+# and GO_LIVE_GUIDE.md §A.4/§A.5 for why, and the manual check that closes it
+# until a proper automated one exists.
+#
+# Two operational notes for whoever maintains this:
+#   - GitHub disables scheduled workflows after 60 days with no repository
+#     activity. On a quiet repo, this alert's own silence would be silent -
+#     check the Actions tab occasionally, don't rely solely on "no email
+#     means fine."
+#   - A `schedule` trigger only fires from the DEFAULT branch. This is not
+#     live until it's on `main` - a file existing on a feature branch does
+#     not satisfy go-live item A.5.
+#
+# SUPABASE_SERVICE_ROLE_KEY bypasses every RLS policy on production member
+# data - a large blast radius for what is otherwise just a health ping.
+# That's an accepted, deliberate tradeoff here (scheduled_job_health() is
+# service_role-only by its own design, 202609060016/0018 revoke it from
+# anon/authenticated), not an oversight - if it's ever worth narrowing, the
+# shape would be a purpose-made Postgres role plus a SECURITY DEFINER
+# function returning only job name + healthy boolean, granted to that role
+# instead of service_role.
+#
+# Add SUPABASE_SERVICE_ROLE_KEY directly in GitHub's Settings -> Secrets
+# and variables -> Actions UI. Never paste it into a chat, a file, a commit,
+# or a workflow log - same rule that keeps it out of this repository.
+on:
+  schedule:
+    # 06:00 UTC daily (08:00/09:00 Asia/Jerusalem depending on DST) - once a
+    # day is enough for jobs whose tightest cadence is 15 minutes
+    # (notif-batch-flush); this is a backstop, not the primary signal for
+    # anything that needs sub-day detection.
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: check scheduled_job_health() and alert on any unhealthy row
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: node scripts/check-scheduled-job-health.mjs
