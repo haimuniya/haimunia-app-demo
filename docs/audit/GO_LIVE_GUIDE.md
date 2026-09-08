@@ -85,9 +85,22 @@ Both columns must read `true` for the jobs to actually fire — one row with
 either column `false` means the gate is still refusing, silently, by
 design (a `NOTICE`, not an error).
 
-Even that only proves the values were *changed*, not that a request has
-actually gone out. The decisive, no-guessing check: after the next
-scheduled run (`purge-abandoned-profiles` fires daily at 03:31 UTC),
+**Update, 2026-09-08 evening — this is now confirmed broken, not just
+unverified, for two separate reasons:** (1) the service-role key in Vault
+has been proven **invalid** (a real `cron_invoke_edge_function()` call to a
+genuinely-deployed function returned 401), and (2) two of the three Edge
+Functions **had never been deployed at all** until roughly an hour before
+this was discovered — the nightly purge had been POSTing to a 404 for
+weeks, a more basic failure than the Vault-value question. `main` now has
+`scripts/check-edge-functions-deployed.mjs` as a hard CI gate plus a
+`deploy-edge-functions.yml` workflow to stop this recurring — not
+independently verified by this audit. **Action for whoever has production
+access: fix the service-role key in Vault (rotate/re-set it correctly),
+then confirm via the check below.**
+
+Even a correct-looking value only proves it was *changed*, not that a
+request has actually gone out. The decisive, no-guessing check: after the
+next scheduled run (`purge-abandoned-profiles` fires daily at 03:31 UTC),
 
 ```sql
 select * from net._http_response order by created desc limit 20;
