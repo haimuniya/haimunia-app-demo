@@ -294,6 +294,8 @@
     admin: {
       reports: [],
       modQueue: [], modQueueStatus: "open", modQueueLoading: false, modQueueError: false, modQueueLoaded: false,
+      // Live posting restrictions, for the panel that can lift them.
+      restrictions: [], restrictionsLoading: false, restrictionsError: false, restrictionsLoaded: false, restrictionLifting: "",
       modAction: null, modContext: null, reportSheet: null,
       pins: [], pinsLoaded: false, pinError: "",
       // One-time password-reset reveal (2026-09-05), same shape as
@@ -1298,6 +1300,7 @@
       await Promise.all([loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubWods(), loadClubWodBoards(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadEvents(), loadOnboardingProgress(), loadOnboardingStepContent()]);
       if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers(), loadActivitySignal()]);
       if (hasPerm(PERM.COMMENT_MODERATE) || isAdmin()) await loadModQueue();
+      if (hasPerm(PERM.MEMBER_RESTRICT) || hasPerm(PERM.COMMENT_MODERATE) || isAdmin()) await loadRestrictions();
       // COMM-141. Arm the own-row notification channel for this session.
       ensureNotifRealtime();
       // COMM-229. Consumes window.__pendingPushDeepLink once the session
@@ -3775,6 +3778,65 @@
   // Read via mod_queue(), an admin-only path: the function checks
   // community.comment.moderate or real is_admin and only it can resolve the
   // reporter identities, which stay invisible to everyone else.
+  // ACTIVE POSTING RESTRICTIONS, AND THE ONE CONTROL THAT ENDS THEM.
+  //
+  // mod_restrict_member() has been reachable since COMM-153 - a moderator
+  // decides restrict_temp / restrict_permanent on a report and the member
+  // stops being able to post. mod_lift_restriction() shipped in the same
+  // migration and had NO client surface at all: it appeared in this file only
+  // inside a comment. So the app could impose a sanction and had no way to
+  // remove one. A permanent restriction was, in practice, permanent - the
+  // only exit was somebody running SQL against production.
+  //
+  // That got worse rather than better when the member-facing panel landed:
+  // the member can now read exactly why they are silenced, and for how long,
+  // with no route back. A sanction a product cannot lift is not moderation,
+  // it is an accident that lasts forever.
+  //
+  // No migration needed - posting_restrictions_read (202608280015:71) already
+  // lets a holder of community.member.restrict or community.comment.moderate
+  // read every row; only the UI was missing.
+  async function loadRestrictions() {
+    if (!state.user || state.admin.restrictionsLoading) return;
+    if (!(hasPerm(PERM.MEMBER_RESTRICT) || hasPerm(PERM.COMMENT_MODERATE) || isAdmin())) { state.admin.restrictions = []; return; }
+    state.admin.restrictionsLoading = true; state.admin.restrictionsError = false; rerender();
+    const { data, error } = await client
+      .from("posting_restrictions")
+      .select("id,user_id,restriction_type,reason,expires_at,created_at")
+      .is("lifted_at", null)
+      .order("created_at", { ascending: false })
+      .limit(50);
+    state.admin.restrictionsLoading = false;
+    state.admin.restrictionsLoaded = true;
+    if (error) { state.admin.restrictionsError = true; state.admin.restrictions = []; rerender(); return; }
+    // Names in a SECOND read rather than an embedded join. A restriction row
+    // is the authoritative thing here; a missing display name must degrade to
+    // "חבר/ה" rather than lose the row, and a join makes the whole read fail
+    // together. Cheap: at most one extra request, only for ids actually
+    // restricted, and only for staff.
+    const ids = [...new Set((data || []).map((r) => r.user_id).filter(Boolean))];
+    let names = {};
+    if (ids.length) {
+      const { data: profs } = await client.from("profiles").select("id,handle,display_name").in("id", ids);
+      for (const pr of (profs || [])) names[pr.id] = pr.display_name || pr.handle || "";
+    }
+    for (const r of (data || [])) r.member_name = names[r.user_id] || "";
+    // An EXPIRED temporary restriction is no longer in force - is_posting_restricted()
+    // filters on expires_at at read time - so it must not be listed as something
+    // to lift, or staff would be lifting sanctions that already ended.
+    const now = Date.now();
+    state.admin.restrictions = (data || []).filter((r) => !r.expires_at || new Date(r.expires_at).getTime() > now);
+    rerender();
+  }
+  async function liftRestriction(id) {
+    if (!id || state.admin.restrictionLifting) return;
+    state.admin.restrictionLifting = id; rerender();
+    const { error } = await client.rpc("mod_lift_restriction", { p_restriction_id: id, p_reason: "" });
+    state.admin.restrictionLifting = "";
+    if (error) { setMessage(serverErrorText(error)); rerender(); return; }
+    setMessage("ההגבלה בוטלה");
+    await loadRestrictions();
+  }
   async function loadModQueue() {
     if (!state.user || !(hasPerm(PERM.COMMENT_MODERATE) || isAdmin())) { state.admin.modQueue = []; return; }
     state.admin.modQueueLoading = true; state.admin.modQueueError = false; rerender();
@@ -3841,6 +3903,7 @@
     }
     setMessage("הפעולה נרשמה");
     await loadModQueue();
+    await loadRestrictions();
   }
   // ---- Five-persona UX audit, defect 3. Reclaiming a ghost's invite ------
   //
@@ -7421,6 +7484,13 @@
   function setManageTab(tab, scrollTo) {
     state.ui.manageTab = MANAGE_TAB_ALIASES[tab] || tab;
     state.ui.manageScrollTo = String(scrollTo || "");
+    // Load the restrictions panel's data when its screen is actually opened,
+    // not only at boot. The boot path runs once, BEFORE permissions can
+    // change - a moderator who signs in afterwards, or whose role is granted
+    // during the session, would otherwise see an empty panel forever with no
+    // way to tell it apart from "nobody is restricted". loadRestrictions()
+    // carries its own in-flight flag, so reopening the tab cannot stack reads.
+    if (state.ui.manageTab === "moderation") loadRestrictions();
     rerender();
   }
 
@@ -8549,6 +8619,39 @@
   // that can resolve the reporter identities. Each row carries the content,
   // the reported member, the reporter count, the reason, the date and the
   // status. Actions (COMM-153) all open a sheet that calls mod_review().
+  function renderRestrictionsPanel() {
+    if (!(hasPerm(PERM.MEMBER_RESTRICT) || hasPerm(PERM.COMMENT_MODERATE) || isAdmin())) return "";
+    const a = state.admin;
+    if (a.restrictionsLoading && !a.restrictions.length) {
+      return `<div class="chart-card" style="margin-bottom:12px;">${sectionHead("var(--red)", "הגבלות פרסום פעילות")}<div class="log-list" aria-busy="true"><div class="log-row" aria-hidden="true"><span style="height:12px;width:55%;background:var(--border);border-radius:6px;display:inline-block;"></span></div></div></div>`;
+    }
+    if (a.restrictionsError) {
+      return `<div class="chart-card" style="margin-bottom:12px;">${sectionHead("var(--red)", "הגבלות פרסום פעילות")}<div class="empty">לא ניתן היה לטעון את ההגבלות.<div class="chip-row" style="justify-content:center;margin-top:6px;"><button class="chip-btn" data-community-action="restrictions-retry">ניסיון חוזר</button></div></div></div>`;
+    }
+    // Nothing to show is the healthy state, and saying so beats an empty box.
+    if (!a.restrictions.length) {
+      if (!a.restrictionsLoaded) return "";
+      return `<div class="chart-card" style="margin-bottom:12px;">${sectionHead("var(--red)", "הגבלות פרסום פעילות")}<div class="empty">אין כרגע הגבלות פרסום.</div></div>`;
+    }
+    const rows = a.restrictions.map((r) => {
+      const who = r.member_name || "חבר/ה";
+      const permanent = r.restriction_type === "permanent";
+      const until = permanent ? "ללא תאריך סיום" : `עד ${hebrewDateEchoText(String(r.expires_at || "").slice(0, 10)) || esc(String(r.expires_at || "").slice(0, 10))}`;
+      const busy = a.restrictionLifting === r.id;
+      return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:6px;">
+        <div style="font-weight:700;font-size:14px;">${bidiText(who)}</div>
+        <div style="color:var(--steel);font-size:12px;">${permanent ? "הגבלה קבועה" : "הגבלה זמנית"} · ${esc(until)}</div>
+        ${r.reason ? `<div style="color:var(--steel);font-size:12.5px;">${bidiText(r.reason)}</div>` : ""}
+        <button class="chip-btn" data-community-action="lift-restriction" data-id="${esc(r.id)}"${busy ? " disabled" : ""} style="margin-top:2px;">${busy ? "מבטל…" : "ביטול ההגבלה"}</button>
+      </div>`;
+    }).join("");
+    return `<div class="chart-card" style="margin-bottom:12px;">
+      ${sectionHead("var(--red)", "הגבלות פרסום פעילות")}
+      <div class="footer-note" style="margin:0 0 10px;">ביטול ההגבלה מחזיר מיד את היכולת לפרסם ולהגיב.</div>
+      <div class="log-list">${rows}</div>
+    </div>`;
+  }
+
   function renderModeration() {
     if (!(hasPerm(PERM.COMMENT_MODERATE) || isAdmin())) return "";
     const filters = `<div class="chip-row" style="margin:0 0 10px;">${MOD_QUEUE_STATUSES.map((s) =>
@@ -17081,7 +17184,7 @@
     // renderAdminAnalyticsDashboard() still includes renderRegistrationFunnel()
     // nested inside itself (see that function's own comment).
     const adminAreas = [
-      manageArea("manageArea-moderation", renderModeration()),
+      manageArea("manageArea-moderation", renderRestrictionsPanel() + renderModeration()),
       manageArea("manageArea-audit", renderAuditLog()),
       manageArea("manageArea-settings", renderClubModulesPanel() || `<div class="empty">אין לך הרשאה לצפות בהגדרות המודולים.</div>`),
       manageArea("manageArea-analytics", (renderAdminAnalyticsDashboard() + renderRetentionCorrelations()) || `<div class="empty">אין לך הרשאה לצפות באנליטיקס.</div>`),
@@ -17953,6 +18056,8 @@
     // invite and leave a stray one behind. A one-shot, unrecoverable moment
     // is a poor thing to put between a coach and a new member.
     else if (action === "reopen-invite-qr") openInviteQr(el.dataset.code, el.dataset.kind);
+    else if (action === "lift-restriction") liftRestriction(el.dataset.id);
+    else if (action === "restrictions-retry") loadRestrictions();
     // The joining QR. Every one of these reads the code/link off state rather
     // than off the element, except the two copy actions, which need the
     // exact string the button is sitting next to.

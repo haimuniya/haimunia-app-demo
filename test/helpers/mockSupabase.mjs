@@ -821,6 +821,19 @@ export function createMockSupabase(seedTables = {}) {
           items.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
           return Promise.resolve({ data: items.slice(0, limit), error: null });
         }
+        // The other half of the moderation pair. mod_review can CREATE a
+        // posting restriction, so a mock without a lift path could only ever
+        // prove a member gets silenced, never that they can be let back in.
+        if (name === "mod_lift_restriction") {
+          const uid = currentUser && currentUser.id;
+          if (!uid) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          const row = rows("posting_restrictions").find((r) => r.id === args.p_restriction_id);
+          if (!row) return Promise.resolve({ data: null, error: { message: "restriction not found" } });
+          row.lifted_at = new Date().toISOString();
+          row.lifted_by = uid;
+          row.lift_reason = args.p_reason || "";
+          return Promise.resolve({ data: null, error: null });
+        }
         if (name === "mod_review") {
           const uid = currentUser && currentUser.id;
           const prof = rows("profiles").find((p) => p.id === uid);

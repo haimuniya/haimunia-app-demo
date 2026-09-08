@@ -478,3 +478,66 @@ test("migration: real admin still gets the reported-post visibility bypass, not 
   assert.match(sql, /exists \(select 1 from public\.profiles where id = auth\.uid\(\) and is_admin and deleted_at is null\)/);
   assert.doesNotMatch(sql, /public\.is_staff\(\)/);
 });
+
+// ===== The other half of moderation: letting somebody back in ==========
+//
+// mod_restrict_member() has been reachable since COMM-153 - a moderator picks
+// restrict_temp or restrict_permanent on a report and the member stops being
+// able to post. mod_lift_restriction() shipped in the SAME migration and had
+// no client surface whatsoever: it appeared in cloud.js only inside a
+// comment. The app could impose the sanction and had no way to end it, so a
+// permanent restriction was permanent in practice - the only exit was
+// somebody running SQL against production. It got worse when the
+// member-facing panel landed: a member can now read exactly why they are
+// silenced, and for how long, with no route back.
+async function signInAsModerator(mock) {
+  // seedCredentials is the mock's documented way to have a real session
+  // without driving the whole anonymous->credentials upgrade first.
+  mock.seedCredentials("mod-1", "mod@members.haimuniya.invalid", "pw123456");
+  await mock.client.auth.signOut();
+  const { error } = await mock.client.auth.signInWithPassword({ email: "mod@members.haimuniya.invalid", password: "pw123456" });
+  assert.equal(error, null, "the moderator session must be real - these tests are about what a signed-in moderator can do");
+}
+
+test("a moderator can lift a posting restriction from the app, not just impose one", async () => {
+  const mock = baseMock({});
+  mock.db.posting_restrictions.push({
+    id: "restr-1", user_id: "author-1", restriction_type: "permanent",
+    reason: "פרסום חוזר של תוכן שדווח", expires_at: null, moderator_id: "mod-1",
+    created_at: VERIFIED, lifted_at: null, lifted_by: null, lift_reason: "",
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await signInAsModerator(mock);
+  await openManageModeration(window);
+
+  await waitFor(() => !!window.document.querySelector('[data-community-action="lift-restriction"]'), 4000);
+  assert.match(bodyText(window), /הגבלות פרסום פעילות/);
+  assert.match(bodyText(window), /קובי/, "the restricted member is named, so a moderator knows who this is about");
+  assert.match(bodyText(window), /הגבלה קבועה/, "and that it has no end date - the case that could never be undone before");
+
+  window.document.querySelector('[data-community-action="lift-restriction"]').click();
+
+  await waitFor(() => mock.db.posting_restrictions[0].lifted_at !== null, 4000);
+  assert.equal(mock.db.posting_restrictions[0].lifted_by, "mod-1", "the lift is attributed to the moderator who did it");
+  await waitFor(() => !window.document.querySelector('[data-community-action="lift-restriction"]'), 4000);
+  assert.match(bodyText(window), /אין כרגע הגבלות פרסום/, "and the panel says so rather than leaving an empty box");
+});
+
+// An expired temporary restriction is no longer in force - is_posting_restricted()
+// filters on expires_at at read time - so listing it would have staff lifting
+// sanctions that already ended, and reading the club as more punished than it is.
+test("an expired temporary restriction is not offered for lifting", async () => {
+  const past = new Date(Date.now() - 86400000).toISOString();
+  const mock = baseMock({});
+  mock.db.posting_restrictions.push({
+    id: "restr-old", user_id: "author-1", restriction_type: "temporary",
+    reason: "", expires_at: past, moderator_id: "mod-1",
+    created_at: past, lifted_at: null, lifted_by: null, lift_reason: "",
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await signInAsModerator(mock);
+  await openManageModeration(window);
+  await waitFor(() => /אין כרגע הגבלות פרסום/.test(bodyText(window)), 6000);
+  assert.equal(window.document.querySelector('[data-community-action="lift-restriction"]'), null,
+    "an already-expired restriction is not something there is anything left to lift");
+});
