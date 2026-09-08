@@ -1,16 +1,69 @@
 {
   "pages": [
-    { "id": "page-1", "name": "כיוונים" },
-    { "id": "page-2", "name": "מסכים" }
+    {
+      "id": "page-1",
+      "name": "כיוונים"
+    },
+    {
+      "id": "page-2",
+      "name": "מסכים"
+    }
   ],
   "artboards": [
-    { "file": "Main.dc.html", "title": "מצב נוכחי · 4.7.2", "x": 0, "y": 0, "w": 390, "h": 900, "page": "page-1" },
-    { "file": "OptionA-Today.dc.html", "title": "A · היום קודם", "x": 470, "y": 0, "w": 390, "h": 900, "page": "page-1" },
-    { "file": "OptionB-Quiet.dc.html", "title": "B · פיד שקט", "x": 940, "y": 0, "w": 390, "h": 900, "page": "page-1" },
-    { "file": "OptionC-Board.dc.html", "title": "C · לוח הקיר", "x": 1410, "y": 0, "w": 390, "h": 900, "page": "page-1" },
-
-    { "file": "Board.dc.html", "title": "לוח האימון · פרטיות", "x": 0, "y": 0, "w": 390, "h": 900, "page": "page-2" },
-    { "file": "RestDay.dc.html", "title": "יום ללא תוכנית", "x": 470, "y": 0, "w": 390, "h": 900, "page": "page-2" }
+    {
+      "file": "Main.dc.html",
+      "title": "מצב נוכחי · 4.8.0",
+      "x": 0,
+      "y": 0,
+      "w": 390,
+      "h": 900,
+      "page": "page-1"
+    },
+    {
+      "file": "OptionA-Today.dc.html",
+      "title": "A · היום קודם",
+      "x": 470,
+      "y": 0,
+      "w": 390,
+      "h": 900,
+      "page": "page-1"
+    },
+    {
+      "file": "OptionB-Quiet.dc.html",
+      "title": "B · פיד שקט",
+      "x": 940,
+      "y": 0,
+      "w": 390,
+      "h": 900,
+      "page": "page-1"
+    },
+    {
+      "file": "OptionC-Board.dc.html",
+      "title": "C · לוח הקיר",
+      "x": 1410,
+      "y": 0,
+      "w": 390,
+      "h": 900,
+      "page": "page-1"
+    },
+    {
+      "file": "Board.dc.html",
+      "title": "לוח האימון · פרטיות",
+      "x": 0,
+      "y": 0,
+      "w": 390,
+      "h": 900,
+      "page": "page-2"
+    },
+    {
+      "file": "RestDay.dc.html",
+      "title": "יום ללא תוכנית",
+      "x": 470,
+      "y": 0,
+      "w": 390,
+      "h": 900,
+      "page": "page-2"
+    }
   ],
   "annotations": [
     {
@@ -18,7 +71,7 @@
       "x": 0,
       "y": -210,
       "w": 470,
-      "text": "Community tab — three directions, all built on the app's real tokens read from index.html: Rubik 400–800, ground #152342, surface #1F3057, brass #E8B98A, energy #E85D3D, 20px card radius, chips 9×16px at radius 12.\n\nAdded as a display face: Secular One, a Hebrew geometric display, used only for headline moments against Rubik for everything else.\n\nLeftmost is the baseline — what ships today at 4.7.2, after the one-rail change.",
+      "text": "Community tab — three directions, all built on the app's real tokens read from index.html: Rubik 400–800, ground #152342, surface #1F3057, brass #E8B98A, energy #E85D3D, 20px card radius, chips 9×16px at radius 12.\n\nAdded as a display face: Secular One, a Hebrew geometric display, used only for headline moments against Rubik for everything else.\n\nLeftmost is the baseline — what ships today at 4.8.0 — after the one-rail change and the Hebrew display face, both now live.",
       "page": "page-1"
     },
     {
@@ -62,5 +115,8 @@
       "page": "page-2"
     }
   ],
-  "launch": { "view": "canvas", "page": "page-1" }
+  "launch": {
+    "view": "canvas",
+    "page": "page-1"
+  }
 }

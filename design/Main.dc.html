@@ -7,7 +7,7 @@
 <body>
 <x-dc>
 <helmet>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&family=Secular+One&display=swap">
   <style>
     /* Tokens lifted from index.html's :root dark block, not approximated.
        The artboard is isolated, so they are redeclared here verbatim. */
@@ -22,20 +22,22 @@
     .card{ background:var(--surface); border:1px solid var(--border); border-radius:20px; padding:16px; box-shadow:var(--shadow-card); }
     .chip{ display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:9px 16px; border-radius:12px; border:1px solid var(--border); background:var(--surface2); color:var(--chalk); font-weight:700; font-size:13px; white-space:nowrap; }
     .chip.sel{ border-color:var(--brass); color:var(--brass); }
-    .chip.primary{ background:var(--energy); color:#1a0d08; border-color:var(--energy); }
+    .chip.primary{ background:var(--energy); color:#1a0d08; border-color:var(--energy); box-shadow:0 8px 18px -10px rgba(232,93,61,.85); }
     .sect{ display:flex; align-items:center; gap:8px; margin-bottom:10px; }
     .dot{ width:8px; height:8px; border-radius:999px; flex-shrink:0; }
-    .stitle{ font-weight:800; font-size:14px; }
+    /* 4.8.0: section headings take the Anton/Secular One display pairing
+       at weight 400 - each face ships a single 400 cut. */
+    .stitle{ font-family:'Secular One','Rubik',system-ui,sans-serif; font-weight:400; font-size:15.5px; letter-spacing:.2px; }
     .muted{ color:var(--steel); }
   </style>
 </helmet>
 
 <div dir="rtl" style="width:390px; min-height:900px; background:var(--bg); padding:0 0 24px; box-sizing:border-box;">
 
-  <!-- ===== Baseline: the Community feed as it ships today (v4.7.2) ===== -->
+  <!-- ===== Baseline: the Community feed as it ships today (v4.8.0) ===== -->
   <div style="padding:14px 16px 10px; display:flex; align-items:center; justify-content:space-between; gap:10px;">
-    <div style="font-weight:800; font-size:22px; letter-spacing:-.01em;">קהילה</div>
-    <div style="font-size:11px;" class="muted">מצב נוכחי · 4.7.2</div>
+    <div style="font-family:'Secular One','Rubik',system-ui,sans-serif; font-weight:400; font-size:23px;">קהילה</div>
+    <div style="font-size:11px;" class="muted">מצב נוכחי · 4.8.0</div>
   </div>
 
   <!-- sub-tabs -->
