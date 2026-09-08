@@ -287,7 +287,12 @@ test("a coach publishes today's WOD, a member logs it and attaches from the log 
   // which is the whole point: the card is worth reading before anybody has
   // contributed anything.
   await waitFor(() => !!coach.document.querySelector('[data-community-action="open-club-wod-board"][data-source="strip"]'), 4000);
-  assert.match(coach.document.getElementById("content").textContent, /עדיין לא צורפו תוצאות/);
+  // Design direction C turned this strip into the club's BOARD, so the empty
+  // state is worded as a board is ("nobody yet - you could be first") rather
+  // than as a data table with no rows. The assertion that matters is
+  // unchanged: at zero results the surface still says so in words, instead of
+  // rendering a blank the reader has to interpret.
+  assert.match(coach.document.getElementById("content").textContent, /עדיין אף אחד/);
 
   const publishedDb = coachMock.db;
 

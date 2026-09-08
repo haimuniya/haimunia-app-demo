@@ -864,7 +864,42 @@
     return `<button class="chip-btn" data-community-action="feed-notifications" aria-label="התראות${unread ? `, ${unread} חדשות` : ""}" aria-haspopup="dialog" style="position:relative;">🔔${unread ? `<span class="tab-badge" aria-hidden="true">${unread}</span>` : ""}</button>`;
   }
   function rerender() { if (typeof window.render === "function") window.render(); }
-  function setMessage(message) { state.ui.message = message || ""; rerender(); }
+  // WHERE A CONFIRMATION APPEARS DECIDES WHETHER IT IS SEEN.
+  //
+  // state.ui.message is this app's single notice channel - 66 success
+  // confirmations route through it ("הפוסט פורסם", "ההזמנה נוצרה",
+  // "הפריט הוצמד"...). It rendered as a static line directly under the
+  // sub-tab bar, at the very top of the document. Every control that raises
+  // one of those messages is somewhere else: the invite panels, the
+  // moderation queue, a post's own action row - all reached by scrolling well
+  // past that line. So the confirmation painted off-screen, above where the
+  // member or coach was actually looking. Feedback that exists and cannot be
+  // seen is, to the person tapping, no feedback: reported as "I don't know if
+  // I copied the text".
+  //
+  // Two faults, both fixed here:
+  //   POSITION - anchored to the VIEWPORT now, just above the fixed bottom
+  //     bar, so it appears where the eye already is whatever the scroll.
+  //     role="status" is kept, so it is announced and not merely drawn.
+  //   STALENESS - it was cleared in exactly three places, so a confirmation
+  //     could survive later navigation and be read as the answer to something
+  //     else entirely. It now clears itself.
+  //
+  // Per-control feedback (markCopied) still wins wherever the answer is about
+  // one button among several; this channel is for everything else.
+  let messageTimer = null;
+  function setMessage(message) {
+    state.ui.message = message || "";
+    if (messageTimer) { clearTimeout(messageTimer); messageTimer = null; }
+    if (state.ui.message) {
+      const shown = state.ui.message;
+      messageTimer = setTimeout(() => {
+        messageTimer = null;
+        if (state.ui.message === shown) { state.ui.message = ""; rerender(); }
+      }, 6000);
+    }
+    rerender();
+  }
   // Cleared by markCopied() so a "הועתק ✓" from one control cannot linger
   // on screen after another copy, or after a panel is closed and reopened.
   let copyResetTimer = null;
@@ -2879,6 +2914,16 @@
   // point of the whole feature: a coach who can program sees the door even on
   // a day with nothing on it, because an empty feed is the problem being
   // solved and they are the only person who can fix it.
+  // "יום ג׳ · 8.9" - the way a date is written on a whiteboard, not the way a
+  // timestamp is written in a log. Falls back to the raw value rather than
+  // rendering "Invalid Date" if the server ever sends something unexpected.
+  function boardDateLabel(iso) {
+    if (!iso) return "";
+    const d = new Date(iso + "T00:00:00");
+    if (isNaN(d.getTime())) return String(iso);
+    const day = d.toLocaleDateString("he-IL", { weekday: "short" });
+    return `${day} · ${d.getDate()}.${d.getMonth() + 1}`;
+  }
   function renderClubWodTodayStrip() {
     if (!state.user) return "";
     const boards = state.club.wodBoards;
@@ -2898,22 +2943,47 @@
         body: "אימון מהקטלוג שנקבע ליום מסוים מייצר כרטיס אחד בפיד ולוח אחד, וחברי המועדון מצרפים אליו תוצאות שהם כבר רשמו — בלי לכתוב פוסט.",
       })}${renderClubWodSessionForm()}</div>`;
     }
+    // THE BOARD (design direction C). Today's programming is the one thing on
+    // this screen that exists physically in the gym, so it is drawn as the
+    // board on the wall rather than as another card in the stack. The
+    // programming itself is the content - it used to be hidden behind a row
+    // you had to tap - and the names of who has trained are read straight off
+    // the board, exactly as they are read off the real one.
     const rows = boards.map((b) => {
       const name = b.wod ? b.wod.name : "אימון היום";
-      const count = Number(b.result_count || 0);
-      return `<button class="log-row" data-community-action="open-club-wod-board" data-id="${esc(b.session_id)}" data-source="strip" style="width:100%;text-align:right;">
-        <span style="text-align:right;min-width:0;">
-          <span style="font-weight:800;font-size:14px;display:block;">${bidiText(name)}</span>
-          <span style="color:var(--steel);font-size:12px;">${count === 0 ? "עדיין לא צורפו תוצאות" : esc(count + " מהמועדון על הלוח")}${b.viewer && b.viewer.attached ? " · התוצאה שלך על הלוח" : ""}</span>
-        </span>
-        <span style="color:var(--steel);font-size:12px;font-weight:600;">פתיחת הלוח</span>
-      </button>`;
+      const viewer = b.viewer || {};
+      // Only members this viewer may see are in `results` at all - the RPC
+      // filters on visible_to_club before it ever reaches here - so listing
+      // the names discloses nothing the board itself would not.
+      const people = Array.isArray(b.results) ? b.results : [];
+      const shown = people.slice(0, 6);
+      const extra = people.length - shown.length;
+      const namesHtml = shown.length
+        ? shown.map((r) => `<span>${bidiText(r.display_name || r.handle || "")}</span>`).join(`<span class="wod-board-sep">/</span>`)
+          + (extra > 0 ? `<span class="wod-board-sep">/</span><span style="opacity:.6;">${esc("עוד " + extra)}</span>` : "")
+        : `<span style="opacity:.6;">${esc("עדיין אף אחד — אפשר להיות הראשון/ה")}</span>`;
+      // The WOD's own description carries the movements. Falls back to the
+      // name alone rather than printing an empty board.
+      const lines = b.wod && b.wod.desc ? b.wod.desc : "";
+      return `<div class="wod-board">
+        <div class="flex" style="justify-content:space-between;align-items:baseline;">
+          <span class="wod-board-eyebrow">היום</span>
+          <span class="wod-board-date">${esc(boardDateLabel(b.session_date))}</span>
+        </div>
+        <div class="wod-board-title">${bidiText(name)}</div>
+        ${lines ? `<div class="wod-board-lines">${esc(lines)}</div>` : ""}
+        <div class="wod-board-rule"></div>
+        <div class="wod-board-label">מי כבר עשה</div>
+        <div class="wod-board-names">${namesHtml}</div>
+        <div class="chip-row" style="margin-top:18px;">
+          ${viewer.attached
+            ? `<button class="chip-btn wod-board-ghost" data-community-action="open-club-wod-board" data-id="${esc(b.session_id)}" data-source="strip">התוצאה שלך על הלוח</button>`
+            : `<button class="chip-btn primary" data-community-action="open-club-wod-board" data-id="${esc(b.session_id)}" data-source="strip">אני עשיתי</button>`}
+          <button class="chip-btn wod-board-ghost" data-community-action="open-club-wod-board" data-id="${esc(b.session_id)}" data-source="strip">הלוח המלא</button>
+        </div>
+      </div>`;
     }).join("");
-    return `<div class="chart-card" style="margin-bottom:12px;">
-      ${sectionHead("var(--brass)", "האימון של היום במועדון")}
-      <div class="log-list">${rows}</div>
-      ${canProgram ? renderClubWodSessionForm() : ""}
-    </div>`;
+    return `${rows}${canProgram ? `<div class="chart-card" style="margin-bottom:12px;">${renderClubWodSessionForm()}</div>` : ""}`;
   }
 
   function renderClubWodSessionForm() {
@@ -16811,7 +16881,11 @@
     // render(), well after both scripts have executed.
     return renderTabHeader("community")
       + tabBar
-      + (state.ui.message ? `<div class="footer-note" role="status" style="color:var(--brass);margin-bottom:14px;">${esc(state.ui.message)}</div>` : "")
+      // Anchored to the viewport, not the document - see setMessage().
+      // pointer-events:none so a toast can never swallow a tap meant for the
+      // control underneath it, which would trade an invisible-feedback bug
+      // for an unreachable-control one.
+      + (state.ui.message ? `<div role="status" aria-live="polite" style="position:fixed;left:0;right:0;bottom:calc(var(--bottom-nav-reserve) - 118px);display:flex;justify-content:center;padding:0 16px;z-index:60;pointer-events:none;"><div style="max-width:448px;background:var(--surface);border:1px solid var(--brass);color:var(--brass);border-radius:14px;padding:11px 16px;font-size:13px;font-weight:700;line-height:1.45;box-shadow:var(--shadow-card);text-align:center;">${esc(state.ui.message)}</div></div>` : "")
       + renderOutboxBanner()
       + activeTab.html;
   };
@@ -17060,7 +17134,11 @@
       + renderManageAttention()
       + manageTabBar
       + manageTabIntro(activeManageTab.id)
-      + (state.ui.message ? `<div class="footer-note" role="status" style="color:var(--brass);margin-bottom:14px;">${esc(state.ui.message)}</div>` : "")
+      // Anchored to the viewport, not the document - see setMessage().
+      // pointer-events:none so a toast can never swallow a tap meant for the
+      // control underneath it, which would trade an invisible-feedback bug
+      // for an unreachable-control one.
+      + (state.ui.message ? `<div role="status" aria-live="polite" style="position:fixed;left:0;right:0;bottom:calc(var(--bottom-nav-reserve) - 118px);display:flex;justify-content:center;padding:0 16px;z-index:60;pointer-events:none;"><div style="max-width:448px;background:var(--surface);border:1px solid var(--brass);color:var(--brass);border-radius:14px;padding:11px 16px;font-size:13px;font-weight:700;line-height:1.45;box-shadow:var(--shadow-card);text-align:center;">${esc(state.ui.message)}</div></div>` : "")
       + activeManageTab.html;
   };
   // Sharing (see renderShareControl) can now be triggered from the

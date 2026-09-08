@@ -1222,6 +1222,44 @@
   /* Community: identity + timing, so a feed post reads as a person and a
      moment rather than an anonymous card of numbers. */
   .avatar-badge{ display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; border-radius:50%; color:var(--avatar-ink); font-weight:800; line-height:1; }
+  /* THE CLUB BOARD (design direction C, "לוח הקיר"). Today's programming is
+     the one thing on this screen that exists physically in the gym - it is
+     written on a board on the wall - so it is drawn as that board rather than
+     as another card. This is the only surface in the app with its own
+     material, and that is the point: it should be recognisable across the
+     room, not blend into the feed.
+     Slate is darker than --surface in BOTH themes on purpose; it is a
+     material, not an elevation, so it does not follow the card ramp. */
+  .wod-board{
+    position:relative;
+    background:
+      radial-gradient(90% 60% at 25% 8%, rgba(242,236,225,.055), transparent 62%),
+      radial-gradient(70% 50% at 85% 95%, rgba(242,236,225,.035), transparent 60%),
+      linear-gradient(178deg, #1B2531, #141C27);
+    border:1px solid #0A0F16;
+    border-radius:8px;
+    padding:20px 18px 18px;
+    margin-bottom:12px;
+    box-shadow:0 1px 0 rgba(242,236,225,.08) inset, 0 22px 40px -22px rgba(0,0,0,.95);
+    overflow:hidden;
+    color:#F2ECE1;
+  }
+  /* Chalk dust. A data URI, so it costs no request and nothing for the CSP
+     to allow. */
+  .wod-board::after{
+    content:""; position:absolute; inset:0; pointer-events:none; opacity:.40; mix-blend-mode:soft-light;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='c'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='4'/></filter><rect width='160' height='160' filter='url(%23c)' opacity='.42'/></svg>");
+  }
+  .wod-board > *{ position:relative; }
+  .wod-board-eyebrow{ font-size:11px; color:var(--brass); font-weight:700; letter-spacing:.16em; }
+  .wod-board-date{ font-size:11px; color:rgba(242,236,225,.45); font-weight:600; }
+  .wod-board-title{ font-family:'Anton','Secular One','Rubik',sans-serif; font-weight:400; font-size:21px; line-height:1.15; color:#FFFDF8; margin:14px 0; }
+  .wod-board-lines{ font-family:'JetBrains Mono','Rubik',ui-monospace,monospace; font-size:15px; line-height:1.9; direction:ltr; text-align:left; color:#F2ECE1; white-space:pre-wrap; }
+  .wod-board-rule{ height:1px; background:rgba(242,236,225,.15); margin:16px 0 14px; }
+  .wod-board-label{ font-size:10.5px; color:rgba(242,236,225,.45); font-weight:700; letter-spacing:.14em; margin-bottom:9px; }
+  .wod-board-names{ display:flex; flex-wrap:wrap; align-items:center; font-size:14px; font-weight:600; color:#F2ECE1; }
+  .wod-board-sep{ color:rgba(242,236,225,.28); padding:0 9px; }
+  .wod-board-ghost{ background:rgba(242,236,225,.06); border-color:rgba(242,236,225,.15); color:#F2ECE1; }
   .post-card{ padding:16px; }
   .post-head{ display:flex; align-items:center; gap:10px; margin-bottom:10px; }
   .post-head-text{ display:flex; flex-direction:column; gap:1px; min-width:0; }
