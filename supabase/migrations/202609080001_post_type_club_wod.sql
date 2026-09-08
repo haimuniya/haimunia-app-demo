@@ -1,0 +1,55 @@
+begin;
+
+-- =====================================================================
+-- POST_CLUB_WOD: the label for a day's club programming in the feed.
+-- =====================================================================
+-- This file exists ALONE, and contains one statement, for one Postgres
+-- rule: ALTER TYPE ... ADD VALUE may run inside a transaction block, but
+-- the new label cannot be USED until that transaction has committed.
+-- 202608280004/202608280005 were split for exactly this reason and say so;
+-- this pair is the same split for the same reason. Everything that uses
+-- the label - the tables, the policies, the RPCs, the privilege guard -
+-- is in 202609080002.
+--
+-- WHY A NEW LABEL AT ALL, rather than reusing one of the twelve.
+-- The card this names is a coach saying "this is what the club is doing
+-- today", and members' own results attach to it. Three existing labels
+-- were considered:
+--
+--   POST_WORKOUT - wrong, and not merely imprecise. feed_page puts
+--     POST_WORKOUT in diversity class 'workout', which is run-limited
+--     (v_max_workout_run) precisely because it means "one member's own
+--     logged session". The programming card is the OPPOSITE of that: it
+--     is the one card a day that the whole club shares. Filing it under
+--     the class built to suppress runs of member workout cards would let
+--     two members' shares push the day's programming out of the page.
+--     It would also make feed_page strip its text under the AUTHOR's
+--     show_workout_results (the hide_result lateral covers POST_WORKOUT
+--     and POST_PR), which is nonsense for club content and would hide a
+--     coach's programming behind the coach's personal privacy toggle.
+--
+--   POST_ANNOUNCEMENT / POST_COACH - closer, and both are already staff
+--     -only and already diversity class 'boost'. Rejected because the
+--     card is not free text: it is a row that OWNS a board of attached
+--     results, and the client has to be able to tell "this card has a
+--     board under it" from post_type alone, without parsing metadata.
+--     Overloading POST_ANNOUNCEMENT would also silently change the
+--     'coach' feed scope (feed_page filters it to POST_COACH and
+--     POST_ANNOUNCEMENT) into a programming archive.
+--
+--   POST_CHALLENGE - rejected on product grounds. A challenge is ranked
+--     competition and weekly_challenges already is one. This is "what the
+--     club did today", not "who won", and sharing a label with the
+--     ranked feature would make that distinction impossible to hold.
+--
+-- The label is added at the END of the enum. Nothing orders post_type
+-- values - every reader compares by equality or IN - so appending is
+-- safe, and it is the only position ADD VALUE can take without a BEFORE/
+-- AFTER clause that would force a rewrite of the sort order other
+-- migrations do not depend on.
+--
+-- `if not exists` so a re-run is a no-op: ADD VALUE is one of the few
+-- DDL statements this module cannot wrap in a create-or-replace.
+alter type public.post_type add value if not exists 'POST_CLUB_WOD';
+
+commit;

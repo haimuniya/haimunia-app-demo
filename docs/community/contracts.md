@@ -7966,3 +7966,210 @@ fixable in the schema:
    local per-member data. A challenge set on coach A's custom WOD looks
    broken to coach B and invalid to every member. The database cannot help
    with this — a shared challenge needs a shared catalog.
+
+## The feed writes itself: club WOD sessions and boards (202609080001–202609080002)
+
+The one product change out of the five-persona audit plus market research.
+The finding: **the community layer competes with WhatsApp on typed posts and
+loses** — 99% penetration, 99% daily use, and the box already has a group.
+The second, structural finding: every computed community surface is fed by
+`attendance_log`, which is trigger-written from the training log, so
+community was gated on log adoption and log adoption was meant to be driven
+by community.
+
+The answer built here is a card that is worth reading at **zero member
+contributions** — a coach programs a catalogue WOD to a day, and members
+attach results they have **already logged** with one tap instead of composing
+anything.
+
+Two migrations because `ALTER TYPE ... ADD VALUE` cannot be used in the
+transaction that adds it. `202609080001` adds `POST_CLUB_WOD` and nothing
+else; `202609080002` is the feature. Same split, same reason, as
+`202608280004`/`202608280005`.
+
+### New tables
+
+| table | grants | policy |
+| --- | --- | --- |
+| `public.club_wod_sessions` | `select` to `authenticated` only | `club_wod_sessions_read`: `is_community_member()` |
+| `public.club_wod_results` | `select` to `authenticated` only | `club_wod_results_read`: `is_community_member() and (user_id = auth.uid() or can_view_profile_field(user_id, 'show_workout_results'))` |
+
+Neither table has an `insert`, `update` or `delete` grant for any client
+role. Every write is a definer RPC below.
+
+`club_wod_results` has **no `score_value`, `score_direction`, `rank` or
+`position`** — the anti-leaderboard decision made structural rather than
+promised in a comment. `weekly_challenges` remains the ranked feature.
+
+### Functions
+
+```
+public.club_wod_session_publish(
+  p_wod_id text,
+  p_session_date date default null,
+  p_note text default '',
+  p_idempotency_key uuid default null
+) returns jsonb                                       -- the board
+```
+Programs one catalogue WOD to one day. Creates the `club_wod_sessions` row
+and its single `POST_CLUB_WOD` card. **Auth:** definer; `auth.uid()`
+(`not authorized`) → `is_community_member()` (`recovery method required`) →
+`has_perm('community.challenge.create')` (`not authorized`). **Raises:**
+`wod not found`, `wod is retired`,
+`a session can only be posted for yesterday, today or tomorrow`,
+`too many sessions posted for that day` (cap 4 live per date),
+`session already posted` (same `(wod_id, session_date)` with a **changed**
+note — `club_wod_publish`'s snapshot rule; an identical note returns the
+existing board and writes nothing). Re-publishing a **cancelled** session
+clears the cancellation, mints a fresh card and keeps the board.
+**Side effects:** one session row created or revived, one `workout_posts`
+row, one `admin_actions` row (`club_wod_session_published` /
+`club_wod_session`, `target_user_id` null).
+
+```
+public.club_wod_session_cancel(p_session_id uuid, p_reason text default null)
+  returns jsonb                                       -- the board
+```
+Withdraws the card (`workout_posts.deleted_at` only, `status` left `active`)
+and closes the board. **Deletes nothing.** Same three gates. Raises
+`session not found`; cancelling twice is a no-op with no second audit row.
+Audits `club_wod_session_cancelled`.
+
+```
+public.club_wod_attach_result(
+  p_session_id uuid,
+  p_record_id text,
+  p_entry jsonb default null,
+  p_idempotency_key uuid default null
+) returns jsonb                                       -- the board
+```
+Attaches the **caller's own** logged result. **Auth:** definer; `auth.uid()`
+→ `is_community_member()` → `has_perm('community.post.create')` →
+`is_posting_restricted` (`posting_restricted`). **Raises:**
+`session not found`, `this board is closed` (cancelled, or over 14 days old),
+`the session has not happened yet`, `record is required`, `not authorized`
+(the record id is another member's `wod_entry`),
+`that result is for a different workout` (the entry's `wodId` is not this
+session's, or is absent), `rate_limited` (20 per 10 minutes on its **own**
+`club_wod_attach` key, never `post_create`'s). The figure is
+**recomputed, never trusted**: `wod_entry_result_text(wod_entry_normalize(...))`
+over the caller's own `private_records` row, falling back to `p_entry` only
+when no server copy of that id exists (cloud backup is opt-out). With
+neither, the attach succeeds with `result_text` null. Idempotent twice over:
+`p_idempotency_key` (whose replay **re-reads** the board) and the natural
+`(session_id, user_id)` primary key. A second attach replaces the figure
+**without bumping `attached_at`**. Writes no `admin_actions` row.
+
+```
+public.club_wod_detach_result(p_session_id uuid) returns jsonb   -- the board
+```
+Removes the caller's own row. **Auth:** `auth.uid()` then
+`is_community_member()` and nothing else — deliberately no permission check,
+no restriction check and no window check. Raises `session not found`;
+detaching twice is a success.
+
+```
+public.club_wod_board(p_session_id uuid) returns jsonb
+public.club_wod_boards(p_from date default null, p_to date default null) returns setof jsonb
+```
+Reads, both definer with `auth.uid()` then `is_community_member()`.
+`club_wod_board` raises `session not found` and **returns cancelled sessions
+too** (a member with a result on a withdrawn board must still see it and
+detach). `club_wod_boards()` **with no arguments means today** — that is the
+club-home call; `p_to` defaults to `p_from`; a reversed range collapses to
+one day and a span over 14 is truncated to `p_from + 13`; cancelled sessions
+are excluded.
+
+Internal, **no client grant**: `club_wod_board_json(uuid)` (the one
+definition of a board, shared by the two reads and all four writes),
+`wod_entry_normalize(jsonb)`, `wod_entry_result_text(jsonb)`.
+
+### The board shape
+
+Every key is always present, so the empty, cancelled and not-yet-attached
+states need no absence tests.
+
+```
+{ session_id, session_date, note, post_id, published_at,
+  published_by: { id, display_name, handle, avatar_url } | null,
+  cancelled_at,
+  wod: <club_wod_json shape> | null,
+  result_count,                     -- viewer-relative, see below
+  results: [ { user_id, display_name, handle, avatar_url, is_viewer,
+               result_text, result_hidden, score_type, rx,
+               occurred_on, attached_at } ],
+  viewer: { attached, result_text, score_type, rx, occurred_on, attached_at,
+            can_attach, can_detach,
+            closed_reason: null | 'future' | 'expired' | 'cancelled' } }
+```
+
+`results` is ordered by `attached_at` — the order people trained in, never
+anything score-shaped.
+
+### Privacy: participation and the figure are two different permissions
+
+| what | gate | default |
+| --- | --- | --- |
+| listed on the board at all | `can_view_profile_field(member, 'visible_to_club')` | true |
+| `result_text` populated | `can_view_profile_field(member, 'show_workout_results')` | **false** |
+
+This is COMM-018's rule, applied to a board: the toggle **strips the
+number, it does not remove the member**. `can_view_profile_field` settles
+block edges in both directions and the self case in the same call.
+
+`result_count` is counted over the **same filtered set** as `results`, so no
+aggregate discloses a member the viewer may not see.
+
+The RLS policy on `club_wod_results` is deliberately **stricter** than the
+read RPC: a direct PostgREST select returns only the caller's own rows and
+rows whose owner's `show_workout_results` they may view. The definer RPC
+crosses that boundary in one direction only — to reveal *less* than the row.
+
+Two consequences worth stating:
+
+- **The shipped default is a board of names with few numbers**, until
+  members opt in. `show_workout_results` defaults false and eleven
+  server-enforced toggles are the audit's best-rated thing in this product.
+  **The client must not flip it, or offer to flip it.** The only correct
+  affordance is a link to the privacy screen.
+- **A coach cannot read a member's figure either.**
+  `can_view_profile_field` short-circuits for `is_admin()` (rank ≥ 50), not
+  `is_staff()`. A coach sees who took part, which is what a coach needs from
+  this board.
+
+**Nothing auto-publishes.** There is no trigger from `private_records`,
+`attendance_log` or `workout_posts` to `club_wod_results` and there must
+never be one — asserted as a catalog property in
+`0091_club_wod_sessions_test.sql`, not as a convention.
+
+### `POST_CLUB_WOD` (202609080001)
+
+Added to `public.post_type` and to
+`workout_posts_guard_privileged_type()`'s privileged list, so a member
+cannot mint or PATCH a card the client renders as club programming.
+`feed_page` is **not** recreated: the label falls to diversity class
+`'other'`, which is correct — `'workout'` is the run-suppression class and
+is also what `feed_page`'s `hide_result` lateral keys on, and `'boost'`
+exists to break workout runs, which a once-a-day card cannot be relied on to
+do. The card is already lifted by `author_is_staff`.
+
+### Client changes this enables (not made here — `cloud.js`/`app.js` owned elsewhere)
+
+1. `loadClubWodBoards()` calling `club_wod_boards()` for the club-home
+   "today" strip, and `club_wod_board(sessionId)` from a `POST_CLUB_WOD`
+   feed card (`metadata.club_wod_session_id`).
+2. `renderPostCard` must branch on `post_type === 'POST_CLUB_WOD'` **before**
+   its `data-source-type` deep link: `source_type` is null on these rows and
+   the default is `'workout'`, which would open the wrong thing.
+3. An attach control in the WOD log form, passing the entry the client
+   already holds as `p_entry` so a member with cloud backup off still gets a
+   figure.
+4. A detach control, and a "your result is hidden from the club" hint that
+   **links to** the privacy screen rather than offering to change the
+   toggle.
+
+Out of scope, deliberately: programming a whole week at once (a scheduling
+feature; the one-day window is what bounds the feed), a "hide this one
+number" per-row flag (a twelfth toggle would fragment a model members
+already understand — detach is the per-row control), and paging the board
+(one board is one club-day).
