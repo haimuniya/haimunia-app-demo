@@ -1816,12 +1816,21 @@
   }
   function renderOnboardingStep() {
     const step = currentOnboardingStep();
-    if (!state.onboarding.progress) {
-      // A loading skeleton only while a redemption is actually known - a
-      // pre-redemption visitor never had a row seeded, so there is nothing
-      // pending to skeleton for.
-      return state.redemption ? `<div class="chart-card" aria-busy="true" style="margin-bottom:12px;height:60px;background:var(--border);opacity:.35;"></div>` : "";
-    }
+    // NOTHING while progress is unknown - not a skeleton.
+    //
+    // A skeleton is a promise that something IS coming, and here that promise
+    // is usually false: every member who has finished onboarding resolves to
+    // no step at all, so the grey box was reserving space for a card that
+    // would never arrive, on the screen they open most. It also cost real
+    // money under the rail budget (RAIL_ABOVE_FEED): the placeholder occupied
+    // one of only two slots above the feed and pushed out the coach's pinned
+    // note or today's programming - actual content, displaced by a box with
+    // nothing in it.
+    //
+    // This is the same "renders nothing when empty, never an empty
+    // placeholder" rule the upcoming-event and classmates-today cards already
+    // follow. The step appears when it is real.
+    if (!state.onboarding.progress) return "";
     if (!step) return "";
     if (step === "welcome") return renderOnboardingWelcomeStep();
     if (step === "first_week") return renderOnboardingFirstWeekStep();
