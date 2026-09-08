@@ -108,6 +108,9 @@
     // (see MANAGE_TAB_ALIASES). manageScrollTo is a one-shot section id
     // consumed by afterRenderManage() - see setManageTab().
     ui: { tab: "feed", manageTab: "invites", manageScrollTo: "", loading: false, message: "", fieldErrors: {}, confirmDialog: null,
+      // What was last copied to the clipboard, so the control that was
+      // pressed can confirm on itself - see markCopied().
+      copiedToken: "",
       // Launch-readiness audit, RELIABILITY. The invite code the member
       // is typing, kept in state for the same reason reportNote and the
       // comment drafts are: this app re-renders by replacing #content's
@@ -862,6 +865,9 @@
   }
   function rerender() { if (typeof window.render === "function") window.render(); }
   function setMessage(message) { state.ui.message = message || ""; rerender(); }
+  // Cleared by markCopied() so a "הועתק ✓" from one control cannot linger
+  // on screen after another copy, or after a panel is closed and reopened.
+  let copyResetTimer = null;
   function todayIso() { return new Date().toISOString().slice(0, 10); }
   function setFieldErrors(formId, errors) {
     if (errors && Object.keys(errors).length) state.ui.fieldErrors[formId] = errors;
@@ -1483,6 +1489,27 @@
   // after this carousel finishes, in the credentials gate above and the
   // profile-completion gate below - duplicating either here would ask
   // twice for the same thing under different copy).
+  // JOINING IS A FOUR-STEP FLOW AND ONLY ONE STEP EVER SAID SO.
+  //
+  // A member redeeming an invite passes through: the code, then credentials,
+  // then three intro screens, then the profile form. The intro carousel drew
+  // progress dots; the three screens around it drew nothing. So for most of
+  // the flow a member could not tell whether they were nearly finished or had
+  // just started - "it is not clear what to do" - and a form with no visible
+  // end is the easiest place in an app to abandon.
+  //
+  // One indicator, in the carousel's existing dot language rather than a
+  // second convention, plus the step named in words for anyone who cannot see
+  // the dots. The carousel keeps its own internal dots for its three screens;
+  // this is the outer flow, which is why the counts differ and do not clash.
+  const JOIN_STEPS = ["קוד הזמנה", "חשבון", "היכרות", "פרופיל"];
+  function renderJoinProgress(idx) {
+    const dots = JOIN_STEPS.map((_, i) => `<span style="display:inline-block;height:6px;width:${i === idx ? "20px" : "6px"};border-radius:3px;background:${i <= idx ? "var(--brass)" : "var(--border)"};transition:width .2s;"></span>`).join(" ");
+    return `<div style="margin-bottom:14px;">
+      <div style="display:flex;gap:5px;align-items:center;margin-bottom:6px;">${dots}</div>
+      <div class="footer-note" style="margin:0;">${esc(`שלב ${idx + 1} מתוך ${JOIN_STEPS.length} · ${JOIN_STEPS[idx]}`)}</div>
+    </div>`;
+  }
   function renderIntroCarousel() {
     if (!state.intro.contentLoaded && !state.intro.contentError) loadIntroCarouselContent();
     const stepIdx = state.intro.step;
@@ -1490,6 +1517,7 @@
     const isLast = stepIdx === INTRO_CAROUSEL_STEPS.length - 1;
     const dots = INTRO_CAROUSEL_STEPS.map((_, i) => `<span style="display:inline-block;height:8px;width:${i === stepIdx ? "22px" : "8px"};border-radius:4px;background:${i === stepIdx ? "var(--brass)" : "var(--border)"};transition:width .2s;"></span>`).join(" ");
     return `<div class="chart-card" data-intro-carousel="1" data-intro-step="${step}" style="text-align:center;">
+      <div style="text-align:start;">${renderJoinProgress(2)}</div>
       <div style="display:flex;justify-content:center;gap:6px;margin-bottom:16px;">${dots}</div>
       <div style="font-weight:800;font-size:20px;margin-bottom:10px;">${esc(introStepTitle(step))}</div>
       <div style="color:var(--steel);font-size:14px;line-height:1.7;margin-bottom:20px;">${esc(introStepBody(step))}</div>
@@ -3961,10 +3989,38 @@
   // Leaving one of the two behind would have been a control that claims to
   // hide a credential and only hides half of it.
   function dismissInviteCodeCreated() { state.admin.inviteCodes.created = null; closeInviteQr(); }
+  // WHY THE CONFIRMATION IS ON THE BUTTON AND NOT IN A MESSAGE BAR.
+  // These handlers called setMessage(), and state.ui.message IS rendered -
+  // once, at the TOP of the Community tab, just under the sub-tab bar. That
+  // is the whole problem: it is nowhere near the control that was pressed.
+  // Every copy button lives deep inside the Manage tab's invite panels, well
+  // below the fold, so the confirmation painted somewhere the staff member
+  // had already scrolled past and could not see. The feedback existed and was
+  // invisible, which to the person tapping is the same as no feedback at all -
+  // reported as "I don't know if I copied the text".
+  //
+  // A top-of-screen notice is right for something about the SCREEN ("could
+  // not load the community"). It is wrong for the result of pressing one
+  // button among several, which is a fact about that button.
+  //
+  // Feedback belongs ON the control that was pressed. copiedToken names WHAT
+  // was copied, so the right button confirms even with several on screen, and
+  // it clears itself so a stale "הועתק" can never be read as a fresh one. The
+  // failure path stays a message: "ההעתקה נכשלה" has to say what to do
+  // instead, and that does not fit on a chip.
+  function markCopied(token) {
+    state.ui.copiedToken = token;
+    if (copyResetTimer) clearTimeout(copyResetTimer);
+    copyResetTimer = setTimeout(() => {
+      if (state.ui.copiedToken === token) { state.ui.copiedToken = ""; rerender(); }
+    }, 2600);
+    rerender();
+  }
+  function copyLabel(token, idle) { return state.ui.copiedToken === token ? "הועתק ✓" : idle; }
   function copyInviteCode(code) {
     if (!code) return;
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(code).then(() => setMessage("הקוד הועתק")).catch(() => setMessage("ההעתקה נכשלה, אפשר להעתיק ידנית"));
+      navigator.clipboard.writeText(code).then(() => markCopied(code)).catch(() => setMessage("ההעתקה נכשלה, אפשר להעתיק ידנית"));
     } else {
       setMessage("ההעתקה נכשלה, אפשר להעתיק ידנית");
     }
@@ -4066,7 +4122,8 @@
       <div class="field-label" style="margin-bottom:4px;">הקוד נוצר - זו הפעם היחידה שהוא יוצג</div>
       <div class="flex gap-10" style="align-items:center;flex-wrap:wrap;">
         <code class="mono" style="font-size:15px;">${esc(ic.created.code)}</code>
-        <button class="chip-btn" data-community-action="copy-invite-code" data-code="${esc(ic.created.code)}">העתקה</button>
+        <button class="chip-btn" data-community-action="copy-invite-code" data-code="${esc(ic.created.code)}">${copyLabel(ic.created.code, "העתקה")}</button>
+        <button class="chip-btn" data-community-action="reopen-invite-qr" data-code="${esc(ic.created.code)}" data-kind="shared">קוד QR</button>
         <button class="link-btn" data-community-action="dismiss-invite-code-created">סגירה</button>
       </div>
     </div>` : "";
@@ -4108,7 +4165,8 @@
       <div class="field-label" style="margin-bottom:4px;">ההזמנה נוצרה - זו הפעם היחידה שהקוד יוצג</div>
       <div class="flex gap-10" style="align-items:center;flex-wrap:wrap;">
         <code class="mono" style="font-size:15px;">${esc(iv.created.code)}</code>
-        <button class="chip-btn" data-community-action="copy-invite-code" data-code="${esc(iv.created.code)}">העתקה</button>
+        <button class="chip-btn" data-community-action="copy-invite-code" data-code="${esc(iv.created.code)}">${copyLabel(iv.created.code, "העתקה")}</button>
+        <button class="chip-btn" data-community-action="reopen-invite-qr" data-code="${esc(iv.created.code)}" data-kind="person">קוד QR</button>
         <button class="link-btn" data-community-action="dismiss-invite-created">סגירה</button>
       </div>
     </div>` : "";
@@ -4735,7 +4793,7 @@
   function copyInviteLink(link) {
     if (!link) return;
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(link).then(() => setMessage("הקישור הועתק")).catch(() => setMessage("ההעתקה נכשלה, אפשר להעתיק ידנית"));
+      navigator.clipboard.writeText(link).then(() => markCopied(link)).catch(() => setMessage("ההעתקה נכשלה, אפשר להעתיק ידנית"));
     } else {
       setMessage("ההעתקה נכשלה, אפשר להעתיק ידנית");
     }
@@ -4823,12 +4881,12 @@
       <div class="field-label" style="margin-bottom:4px;">${bidiText(`${kindLabel} — הקוד עצמו`)}</div>
       <div class="flex gap-10" style="align-items:center;flex-wrap:wrap;">
         <code class="mono" dir="ltr" style="font-size:13px;word-break:break-all;" data-invite-qr-code="1">${esc(q.code)}</code>
-        <button class="chip-btn" data-community-action="copy-invite-code" data-code="${esc(q.code)}">העתקת הקוד</button>
+        <button class="chip-btn" data-community-action="copy-invite-code" data-code="${esc(q.code)}">${copyLabel(q.code, "העתקת הקוד")}</button>
       </div>
       <div class="field-label" style="margin:10px 0 4px;">הקישור המלא</div>
       <div class="flex gap-10" style="align-items:center;flex-wrap:wrap;">
         <code class="mono" dir="ltr" style="font-size:12px;word-break:break-all;" data-invite-qr-link="1">${esc(q.link)}</code>
-        <button class="chip-btn"${q.link ? "" : " disabled"} data-community-action="copy-invite-link" data-link="${esc(q.link)}">העתקת הקישור</button>
+        <button class="chip-btn"${q.link ? "" : " disabled"} data-community-action="copy-invite-link" data-link="${esc(q.link)}">${copyLabel(q.link, "העתקת הקישור")}</button>
       </div>
     </div>`;
     const steps = `<ol style="margin:10px 0 0;padding-inline-start:20px;color:var(--steel);font-size:12.5px;line-height:1.8;">${INVITE_QR_STEPS.map((s) => `<li>${bidiText(s)}</li>`).join("")}</ol>`;
@@ -16250,13 +16308,13 @@
     //    below it, because they go to different places and answer different
     //    questions: back to the choice screen, versus straight to the login
     //    form. Collapsing them would make one of the two labels a lie.
-    if (!state.redemption) return `<div class="chart-card"><button class="gate-back" data-community-action="gate-back">‹ חזרה</button><div style="font-weight:800;font-size:18px;margin:6px 0 6px;">קוד הזמנה למועדון</div><div style="color:var(--steel);font-size:14px;line-height:1.6;margin-bottom:14px;">${bidiText("הכניסה עם קוד הזמנה שמקבלים מהמאמן/ת. הקוד לא נוגע לרישום האימונים שלכם — הוא רק פותח את לשונית הקהילה.")}</div>${state.ui.inviteCodeDraft ? `<div class="footer-note" data-invite-prefilled="1" style="margin-bottom:10px;color:var(--brass);">${bidiText("הקוד מולא אוטומטית מהקישור שנסרק. אפשר להמשיך.")}</div>` : ""}<form id="communityInviteCode">${field("communityInviteCode", "code", "קוד הזמנה", `<input class="text-input" name="code" dir="ltr" inputmode="text" autocomplete="off" maxlength="128" placeholder="קוד הזמנה" value="${esc(state.ui.inviteCodeDraft)}" data-invite-code required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">אישור קוד</button></form><div style="display:flex;justify-content:center;margin-top:16px;"><button class="gate-alt" data-community-action="back-to-login">כבר יש לכם חשבון? התחברות</button></div>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
+    if (!state.redemption) return `<div class="chart-card"><button class="gate-back" data-community-action="gate-back">‹ חזרה</button>${renderJoinProgress(0)}<div style="font-weight:800;font-size:18px;margin:0 0 6px;">קוד הזמנה למועדון</div><div style="color:var(--steel);font-size:14px;line-height:1.6;margin-bottom:14px;">${bidiText("הכניסה עם קוד הזמנה שמקבלים מהמאמן/ת. הקוד לא נוגע לרישום האימונים שלכם — הוא רק פותח את לשונית הקהילה.")}</div>${state.ui.inviteCodeDraft ? `<div class="footer-note" data-invite-prefilled="1" style="margin-bottom:10px;color:var(--brass);">${bidiText("הקוד מולא אוטומטית מהקישור שנסרק. אפשר להמשיך.")}</div>` : ""}<form id="communityInviteCode">${field("communityInviteCode", "code", "קוד הזמנה", `<input class="text-input" name="code" dir="ltr" inputmode="text" autocomplete="off" maxlength="128" placeholder="קוד הזמנה" value="${esc(state.ui.inviteCodeDraft)}" data-invite-code required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">אישור קוד</button></form><div style="display:flex;justify-content:center;margin-top:16px;"><button class="gate-alt" data-community-action="back-to-login">כבר יש לכם חשבון? התחברות</button></div>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     // Right after the code, before anything else — this is what turns the
     // bootstrap anonymous session into a real, log-in-from-any-device
     // account. state.user.is_anonymous flips to false the moment
     // setCredentials() succeeds, so a returning user (who logged in with
     // real credentials to begin with) never sees this screen at all.
-    if (state.user.is_anonymous) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">יצירת חשבון</div><div style="color:var(--steel);font-size:13px;line-height:1.7;margin-bottom:14px;">${CREDENTIALS_INTRO_TEXT}</div><form id="communityCredentials">${field("communityCredentials", "username", LOGIN_NAME_LABEL, `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="${esc(USERNAME_RULE_TEXT)}" data-live-validate="username" data-live-validate-form="communityCredentials" required/>`)}${field("communityCredentials", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="new-password" placeholder="${esc(PASSWORD_RULE_TEXT)}" data-live-validate="password" data-live-validate-form="communityCredentials" required/>`)}${field("communityCredentials", "passwordConfirm", "אימות סיסמה", `<input class="text-input" name="passwordConfirm" type="password" dir="ltr" autocomplete="new-password" placeholder="הקלידו שוב" data-live-validate="passwordConfirm" data-live-validate-form="communityCredentials" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">יצירת חשבון</button></form>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
+    if (state.user.is_anonymous) return `<div class="chart-card">${renderJoinProgress(1)}<div style="font-weight:800;font-size:18px;margin-bottom:6px;">יצירת חשבון</div><div style="color:var(--steel);font-size:13px;line-height:1.7;margin-bottom:14px;">${CREDENTIALS_INTRO_TEXT}</div><form id="communityCredentials">${field("communityCredentials", "username", LOGIN_NAME_LABEL, `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="${esc(USERNAME_RULE_TEXT)}" data-live-validate="username" data-live-validate-form="communityCredentials" required/>`)}${field("communityCredentials", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="new-password" placeholder="${esc(PASSWORD_RULE_TEXT)}" data-live-validate="password" data-live-validate-form="communityCredentials" required/>`)}${field("communityCredentials", "passwordConfirm", "אימות סיסמה", `<input class="text-input" name="passwordConfirm" type="password" dir="ltr" autocomplete="new-password" placeholder="הקלידו שוב" data-live-validate="passwordConfirm" data-live-validate-form="communityCredentials" required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">יצירת חשבון</button></form>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     // Redesign, Phase 3. Three purely informational screens, shown once per
     // device, right where the mockup's own new-member flow put them: after
     // credentials exist (so is_anonymous is already false and this gate is
@@ -16287,7 +16345,7 @@
     // gates above it: this screen is all there is until a profile exists,
     // and the whole screen changing to the real tabbed UI afterward is the
     // confirmation, not just a toast that's easy to miss.
-    if (!state.profile) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">השלמת פרופיל</div><div style="color:var(--steel);font-size:13px;line-height:1.7;margin-bottom:14px;">כמעט סיימתם — עוד רגע אחד ותהיו בפנים. ${CLUB_NAME_HINT_TEXT}</div><form id="communityProfile">${field("communityProfile", "handle", CLUB_NAME_LABEL, `<input class="text-input" name="handle" dir="auto" placeholder="למשל דנה_כהן" required/>`)}<label class="field"><span class="field-label">שם תצוגה</span><input class="text-input" name="displayName" placeholder="שם תצוגה"/></label><label class="field"><span class="field-label">קצת עליי</span><textarea class="text-input" name="bio" maxlength="160" placeholder="כמה מילים עליי"></textarea></label><button class="save-btn" type="submit" style="margin-top:12px;">שמירת פרופיל</button></form>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
+    if (!state.profile) return `<div class="chart-card">${renderJoinProgress(3)}<div style="font-weight:800;font-size:18px;margin-bottom:6px;">השלמת פרופיל</div><div style="color:var(--steel);font-size:13px;line-height:1.7;margin-bottom:14px;">כמעט סיימתם — עוד רגע אחד ותהיו בפנים. ${CLUB_NAME_HINT_TEXT}</div><form id="communityProfile">${field("communityProfile", "handle", CLUB_NAME_LABEL, `<input class="text-input" name="handle" dir="auto" placeholder="למשל דנה_כהן" required/>`)}<label class="field"><span class="field-label">שם תצוגה</span><input class="text-input" name="displayName" placeholder="שם תצוגה"/></label><label class="field"><span class="field-label">קצת עליי</span><textarea class="text-input" name="bio" maxlength="160" placeholder="כמה מילים עליי"></textarea></label><button class="save-btn" type="submit" style="margin-top:12px;">שמירת פרופיל</button></form>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     // COMM-016. Credentials are set and the profile row exists, but the
     // account has not been stamped recoverable yet, so is_community_member()
     // still blocks every write. Try once automatically (guarded inside
@@ -17809,6 +17867,14 @@
     // COMM-376 invite and code management.
     else if (action === "invite-code-toggle-active") setInviteCodeActive(el.dataset.id, el.dataset.active === "1");
     else if (action === "copy-invite-code") copyInviteCode(el.dataset.code);
+    // A WAY BACK TO THE QR. openInviteQr() used to be reachable from exactly
+    // two moments - the instant a shared code or a per-person invite was
+    // created - and from nowhere else. The card those buttons sit on says
+    // "זו הפעם היחידה שהוא יוצג", so a coach who closed the QR sheet before
+    // sending it had no route back: the only recovery was to issue a second
+    // invite and leave a stray one behind. A one-shot, unrecoverable moment
+    // is a poor thing to put between a coach and a new member.
+    else if (action === "reopen-invite-qr") openInviteQr(el.dataset.code, el.dataset.kind);
     // The joining QR. Every one of these reads the code/link off state rather
     // than off the element, except the two copy actions, which need the
     // exact string the button is sitting next to.

@@ -77,7 +77,14 @@ test("the gate order is: choice-or-login -> (bootstrap) -> invite code -> set cr
 });
 
 test("a returning member who signs in with real credentials never sees the credentials-setup screen (gated on is_anonymous)", () => {
-  assert.match(src, /if \(state\.user\.is_anonymous\) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:6px;">יצירת חשבון/);
+  // What this pins is the GATE - that the credentials screen is reached only
+  // for an anonymous session - not the byte layout of the markup after it.
+  // The original regex required the heading to be the very next characters
+  // after the return, so adding the join-progress indicator above the heading
+  // failed a test about authentication. The gate never moved; a test that
+  // reports a defect when nothing it describes has changed trains people to
+  // edit tests instead of reading them.
+  assert.match(src, /if \(state\.user\.is_anonymous\) return `<div class="chart-card">[\s\S]{0,400}?יצירת חשבון/);
 });
 
 test("the login form and the credentials form each validate independently and clear their own field errors on success", () => {

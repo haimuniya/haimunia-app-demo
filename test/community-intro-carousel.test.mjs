@@ -15,6 +15,7 @@ import { test } from "node:test";
 import assert from "node:assert";
 import { bootCommunity, waitFor, waitForCommunityGate } from "./helpers/boot.mjs";
 import { createMockSupabase } from "./helpers/mockSupabase.mjs";
+import fs from "node:fs";
 
 function submit(window, id) {
   window.document.getElementById(id).dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
@@ -356,4 +357,35 @@ test("a refused RLS write (does not raise - matches zero rows) is caught by the 
   const initialReads = selectCalls.length;
   window.document.querySelector('[data-intro-editor-row="welcome_intro"] [data-community-action="intro-content-save"]').click();
   await waitFor(() => selectCalls.length > initialReads, 3000);
+});
+
+// THE FLAKY-GATE BUG. renderIntroCarousel() starts loadIntroCarouselContent()
+// DURING RENDER, and the only state it could test - contentLoaded /
+// contentError - is set when the request RETURNS. So while one read was in
+// flight, every further render started another, and each ended in its own
+// rerender() replacing #content.
+//
+// The visible symptom was a release gate that failed at random:
+// scripts/browser-check/community-intro-carousel.mjs timed out waiting for
+// the second step under run-all's load and passed every time it ran alone.
+// The underlying defect is a member's problem, not a test's - a tap on "הבא"
+// landing in that window hits a node a redundant rerender is about to
+// destroy, and does nothing. Same class as COMM-234's unreachable confirm.
+//
+// Pinned at source because the mock records RPC calls but not .from() reads,
+// so there is no way to assert "exactly one read" behaviourally here. All
+// three parts are pinned: the guard, the flag being set, and the finally
+// that clears it - a guard that can wedge on a thrown request would strand
+// the carousel on its fallback copy forever, which is worse than the storm.
+test("the intro-carousel content read is guarded against overlapping in-flight loads", () => {
+  const cloudJs = fs.readFileSync(new URL("../cloud.js", import.meta.url), "utf8");
+  assert.match(
+    cloudJs, /if \(!state\.user \|\| state\.intro\.contentLoading\) return;/,
+    "loadIntroCarouselContent must refuse to start while one read is already in flight",
+  );
+  assert.match(cloudJs, /state\.intro\.contentLoading = true;/, "the in-flight flag must be set before awaiting");
+  assert.match(
+    cloudJs, /finally \{\s*state\.intro\.contentLoading = false;\s*\}/,
+    "and cleared in a finally, so a thrown request cannot wedge the flag",
+  );
 });
