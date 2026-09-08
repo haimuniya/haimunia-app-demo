@@ -2156,7 +2156,7 @@
     state.club.announcementSaving = true; rerender();
     const { error } = await client.from("announcements").insert(payload);
     state.club.announcementSaving = false;
-    if (error) return setMessage("לא ניתן היה לשמור את ההודעה. נסו שוב.");
+    if (error) return setMessage(failText("לא ניתן היה לשמור את ההודעה. נסו שוב.", error));
     form.reset(); await loadAnnouncements(); setMessage("ההודעה פורסמה"); rerender();
   }
   // The comparison key a challenge is built on is a DATABASE key
@@ -2328,7 +2328,7 @@
     if (Object.keys(errors).length) return setFieldErrors("communityWeeklyChallenge", errors);
     setFieldErrors("communityWeeklyChallenge", {});
     const { error } = await client.from("weekly_challenges").insert({ title, comparison_key: comparisonKey, starts_on: startsOn, ends_on: endsOn, created_by: state.user.id });
-    if (error) return setMessage("קביעת האתגר נכשלה");
+    if (error) return setMessage(failText("קביעת האתגר נכשלה", error));
     state.club.challengeKeyDraft = "";
     form.reset(); await loadWeeklyChallenge(); setMessage("האתגר השבועי עודכן"); rerender();
   }
@@ -3250,7 +3250,7 @@
     rerender();
     const { error } = await client.rpc("coach_assign_coach", { p_user_id: memberId, p_coach_id: coachId || null });
     state.coach.welcome.busy = null;
-    if (error) { setMessage("לא ניתן היה לבצע את הפעולה. נסו שוב."); rerender(); return; }
+    if (error) { setMessage(failText("לא ניתן היה לבצע את הפעולה. נסו שוב.", error)); rerender(); return; }
     const m = state.coach.welcome.members.find((x) => x.id === memberId);
     if (m) m.assigned_coach_id = coachId || null;
     setMessage(coachId ? "המאמן/ת שויכ/ה" : "השיוך בוטל");
@@ -3272,7 +3272,7 @@
     const note = String((state.coach.welcome.contactDrafts || {})[memberId] || "").trim().slice(0, 500);
     const { error } = await client.from("member_contact_log").insert({ user_id: memberId, note });
     state.coach.welcome.busy = null;
-    if (error) { setMessage("לא ניתן היה לבצע את הפעולה. נסו שוב."); rerender(); return; }
+    if (error) { setMessage(failText("לא ניתן היה לבצע את הפעולה. נסו שוב.", error)); rerender(); return; }
     state.coach.welcome.contactedIds[memberId] = true;
     setMessage("סומן כנוצר קשר");
     rerender();
@@ -3399,7 +3399,7 @@
       .update({ status, reviewed_by: state.user.id, reviewed_at: new Date().toISOString() })
       .eq("id", flagId);
     state.coach.engage.busy = null;
-    if (error) { setMessage("לא ניתן היה לבצע את הפעולה. נסו שוב."); rerender(); return; }
+    if (error) { setMessage(failText("לא ניתן היה לבצע את הפעולה. נסו שוב.", error)); rerender(); return; }
     state.coach.engage.items = state.coach.engage.items.filter((it) => it.id !== flagId);
     delete state.coach.engage.reachedOut[flagId];
     setMessage(status === "reviewed" ? "סומן כנבדק" : "הפריט נדחה");
@@ -4008,7 +4008,7 @@
   async function adminGrantCoach(userId) {
     if (!state.user || !isAdmin()) return;
     const { error } = await client.rpc("admin_grant_coach", { p_user_id: userId });
-    if (error) return setMessage("הענקת ההרשאה נכשלה");
+    if (error) return setMessage(failText("הענקת ההרשאה נכשלה", error));
     setMessage("הרשאת מאמן/ת הוענקה");
     await searchMembers(state.members.search);
   }
@@ -4018,7 +4018,7 @@
     if (roleCode === "coach") return adminGrantCoach(userId);
     if (roleCode !== "head_coach") return;
     const { error } = await client.rpc("admin_grant_coach", { p_user_id: userId, p_role: "head_coach" });
-    if (error) return setMessage("שינוי ההרשאה נכשל");
+    if (error) return setMessage(failText("שינוי ההרשאה נכשל", error));
     setMessage("ההרשאה עודכנה ל" + roleCodeLabel(roleCode));
     await searchMembers(state.members.search);
   }
@@ -4043,7 +4043,7 @@
   async function adminRevokeCoach(userId) {
     if (!state.user || !isAdmin()) return;
     const { error } = await client.rpc("admin_revoke_coach", { p_user_id: userId });
-    if (error) return setMessage("ביטול ההרשאה נכשל");
+    if (error) return setMessage(failText("ביטול ההרשאה נכשל", error));
     setMessage("הרשאת מאמן/ת בוטלה");
     await searchMembers(state.members.search);
   }
@@ -4114,7 +4114,7 @@
     state.admin.inviteCodes.busy = codeId; rerender();
     const { error } = await client.rpc("admin_invite_code_set_active", { p_code_id: codeId, p_active: active });
     state.admin.inviteCodes.busy = null;
-    if (error) { setMessage("עדכון הסטטוס נכשל"); rerender(); return; }
+    if (error) { setMessage(failText("עדכון הסטטוס נכשל", error)); rerender(); return; }
     await loadInviteCodes();
   }
   // Dismissing the reveal card and dismissing the QR are the same act - "the
@@ -5479,7 +5479,7 @@
     removeMemberBusy[userId] = true;
     const { error } = await client.rpc("admin_remove_member", { p_user_id: userId });
     removeMemberBusy[userId] = false;
-    if (error) return setMessage("הסרת החבר/ה נכשלה");
+    if (error) return setMessage(failText("הסרת החבר/ה נכשלה", error));
     setMessage("החבר/ה הוסר/ה");
     await searchMembers(state.members.search);
   }
@@ -5508,7 +5508,7 @@
     if (!state.user || !state.profile) return setMessage("התחברו לקהילה כדי לשתף עיטור");
     const payload = { author_id: state.user.id, source_type: "achievement", source_record_id: achievementId, visibility: "followers", title: String(title || "עיטור חדש").slice(0, 120), result_text: String(rule || "עיטור חדש נפתח").slice(0, 240), occurred_on: todayIso() };
     const { error } = await client.from("workout_posts").upsert(payload, { onConflict: "author_id,source_type,source_record_id" });
-    if (error) return setMessage("שיתוף העיטור נכשל");
+    if (error) return setMessage(failText("שיתוף העיטור נכשל", error));
     // COMM-170. The app.js entry point (window.shareAchievementToCommunity),
     // distinct from the unlock sheet below and never both in one action.
     track(A.ACHIEVEMENT_SHARED, { member_achievement_id: null, code: null, source: "app_share_button" });
@@ -6960,6 +6960,24 @@
   // Accepts a Supabase error object, an Error, or a bare string - the outbox
   // stores lastError as a string, every other caller holds the error object,
   // and neither should have to remember which.
+  // A DOMAIN MESSAGE, UNLESS THE CAUSE CHANGES WHAT THE MEMBER SHOULD DO.
+  //
+  // 29 failure branches in this file said only "<thing> נכשלה" and threw the
+  // cause away. That is right for a failure nobody can act on differently -
+  // "הסרת החבר/ה נכשלה" names what did not happen, which is what a member
+  // needs. It is wrong when the cause DOES change the next step: a dropped
+  // connection means "nothing was lost, try again when you are back", and a
+  // rate limit means "wait", and neither is "it failed".
+  //
+  // So: keep the domain message, except where serverErrorText() actually
+  // RECOGNISED the error - not where it fell through to its own generic. A
+  // generic replacing a specific one is a downgrade, which is why this cannot
+  // simply call serverErrorText() everywhere.
+  const SERVER_ERROR_GENERIC = "הפעולה לא הושלמה. אפשר לנסות שוב, ואם זה חוזר כדאי לפנות לצוות המועדון.";
+  function failText(domainMessage, error) {
+    const translated = serverErrorText(error);
+    return translated && translated !== SERVER_ERROR_GENERIC ? translated : domainMessage;
+  }
   function serverErrorText(error) {
     const msg = String((error && error.message) || error || "").trim();
     if (SERVER_ERROR_TEXT[msg]) return SERVER_ERROR_TEXT[msg];
@@ -6983,8 +7001,10 @@
     // 429 with its own wording, so the family is matched as well as the code.
     if (/rate.?limit|too many requests|429/i.test(msg)) return SERVER_ERROR_TEXT.rate_limited;
     // Unrecognised. Deliberately says nothing about the cause rather than
-    // guessing, and offers the one next step that is always true.
-    return "הפעולה לא הושלמה. אפשר לנסות שוב, ואם זה חוזר כדאי לפנות לצוות המועדון.";
+    // guessing, and offers the one next step that is always true. Named as a
+    // constant because failText() has to be able to tell "recognised" from
+    // "fell through to this" - see its comment above.
+    return SERVER_ERROR_GENERIC;
   }
   // The other half of "no message says try again unless it can work". The
   // failure banner offers a "ניסיון חוזר" button on every failed row, which
@@ -7329,7 +7349,7 @@
     // thing failed to save, and "לא ניתן לשמור הגדרה זו" says that where a
     // generic server string would not. The avatar path is the opposite
     // case - there the cause is what was missing.
-    if (error) { state.profile[field] = prev; setMessage("לא ניתן לשמור הגדרה זו"); return; }
+    if (error) { state.profile[field] = prev; setMessage(failText("לא ניתן לשמור הגדרה זו", error)); return; }
     setMessage("הגדרת הפרטיות נשמרה");
   }
   // COMM-321. Optimistic, same shape as savePrivacyField just above - the
@@ -7378,7 +7398,7 @@
   async function block(userId) {
     if (!state.user) return;
     const { error } = await client.from("blocks").upsert({ blocker_id: state.user.id, blocked_id: userId });
-    if (error) { setMessage("לא ניתן היה לחסום. נסו שוב"); return; }
+    if (error) { setMessage(failText("לא ניתן היה לחסום. נסו שוב", error)); return; }
     await client.from("follows").delete().eq("follower_id", state.user.id).eq("followed_id", userId);
     state.members.people = state.members.people.filter((person) => person.id !== userId);
     // COMM-125. Refresh the block set so comments and reaction avatars from
@@ -7391,7 +7411,7 @@
   async function deletePost(postId) {
     if (!state.user) return;
     const { error } = await client.from("workout_posts").delete().eq("id", postId).eq("author_id", state.user.id);
-    if (error) return setMessage("הסרת השיתוף נכשלה");
+    if (error) return setMessage(failText("הסרת השיתוף נכשלה", error));
     await loadFeed(); setMessage("השיתוף הוסר");
   }
   async function publishWorkout(type, id, visibility, photoFile) {
@@ -7420,7 +7440,7 @@
     const payload = { author_id: state.user.id, source_type: item.type, source_record_id: item.id, visibility: visibility === "public" ? "public" : "followers", title: item.title, result_text: item.resultText, comparison_key: item.comparisonKey, score_value: item.scoreValue, score_direction: item.scoreDirection, rx: item.rx, occurred_on: item.occurredOn };
     if (photoPath) payload.photo_path = photoPath;
     const { error } = await client.from("workout_posts").upsert(payload, { onConflict: "author_id,source_type,source_record_id" });
-    if (error) return setMessage("שיתוף התוצאה נכשל");
+    if (error) return setMessage(failText("שיתוף התוצאה נכשל", error));
     // COMM-170. After the write, so a failed share is not counted as one.
     // This path predates the composer and does not emit POST_CREATED, so
     // workout_shared is the only record of it.
@@ -7468,7 +7488,7 @@
   async function requestDeletion() {
     if (!state.user) return;
     const { error } = await client.rpc("request_account_deletion");
-    if (error) return setMessage("בקשת המחיקה נכשלה");
+    if (error) return setMessage(failText("בקשת המחיקה נכשלה", error));
     await client.auth.signOut();
   }
   // COMM-014. Every realtime channel is scoped to the sub-tab that
@@ -10613,7 +10633,7 @@
     if (canComplete) { insertPayload.status = "completed"; insertPayload.completed_at = new Date().toISOString(); }
     const { error } = await client.from("challenge_participants").insert(insertPayload);
     if (v && v.id === id) v.joining = false;
-    if (error) { setMessage("לא ניתן היה להצטרף לאתגר. נסו שוב."); return rerender(); }
+    if (error) { setMessage(failText("לא ניתן היה להצטרף לאתגר. נסו שוב.", error)); return rerender(); }
     if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.CHALLENGE_JOINED) {
       try { window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.CHALLENGE_JOINED, { challenge_id: id, challenge_type: c && c.challenge_type }); } catch (e) {}
     }
@@ -10641,7 +10661,7 @@
     if (v) { v.teamJoining = teamId; rerender(); }
     const { error } = await client.from("challenge_participants").update({ team_id: teamId }).eq("challenge_id", challengeId).eq("user_id", state.user.id);
     if (v) v.teamJoining = null;
-    if (error) { setMessage("לא ניתן היה להצטרף לקבוצה. נסו שוב."); return rerender(); }
+    if (error) { setMessage(failText("לא ניתן היה להצטרף לקבוצה. נסו שוב.", error)); return rerender(); }
     if (state.challenges.view && state.challenges.view.id === challengeId) await refreshChallengeView(challengeId);
     rerender();
   }
@@ -10773,7 +10793,7 @@
     if (v && v.id === id) { v.leaving = true; rerender(); }
     const { error } = await client.from("challenge_participants").delete().eq("challenge_id", id).eq("user_id", state.user.id);
     if (v && v.id === id) v.leaving = false;
-    if (error) { setMessage("לא ניתן היה לעזוב את האתגר. נסו שוב."); return rerender(); }
+    if (error) { setMessage(failText("לא ניתן היה לעזוב את האתגר. נסו שוב.", error)); return rerender(); }
     delete state.challenges.participation[id];
     setMessage("עזבת את האתגר");
     await loadChallenges();
@@ -11090,7 +11110,7 @@
   }
   async function archiveChallenge(id) {
     const { error } = await client.from("challenges").update({ status: "archived" }).eq("id", id);
-    if (error) return setMessage("הפעולה נכשלה");
+    if (error) return setMessage(failText("הפעולה נכשלה", error));
     state.challenges.form = null;
     setMessage("האתגר הועבר לארכיון");
     await loadChallenges();
@@ -11099,7 +11119,7 @@
   }
   async function publishChallengeDraft(id) {
     const { error } = await client.from("challenges").update({ status: "active" }).eq("id", id);
-    if (error) return setMessage("הפעולה נכשלה");
+    if (error) return setMessage(failText("הפעולה נכשלה", error));
     state.challenges.form = null;
     setMessage("האתגר פורסם");
     await loadChallenges();
@@ -11107,7 +11127,7 @@
   }
   async function deleteChallengeDraft(id) {
     const { error } = await client.from("challenges").delete().eq("id", id);
-    if (error) return setMessage("הפעולה נכשלה");
+    if (error) return setMessage(failText("הפעולה נכשלה", error));
     state.challenges.form = null;
     setMessage("הטיוטה נמחקה");
     await loadChallenges();
@@ -12386,7 +12406,7 @@
   }
   async function publishEventDraft(id) {
     const { error } = await client.from("events").update({ status: "published" }).eq("id", id);
-    if (error) return setMessage("הפעולה נכשלה");
+    if (error) return setMessage(failText("הפעולה נכשלה", error));
     const event = state.events.byId[id];
     const companionId = event ? await ensureEventCompanionPost(Object.assign({}, event, { status: "published" })) : null;
     state.events.form = null;
@@ -12420,7 +12440,7 @@
   // to call from here.
   async function cancelEvent(id) {
     const { error } = await client.from("events").update({ status: "cancelled" }).eq("id", id);
-    if (error) return setMessage("הפעולה נכשלה");
+    if (error) return setMessage(failText("הפעולה נכשלה", error));
     setMessage("האירוע בוטל");
     await loadEvents();
     if (state.events.view && state.events.view.id === id) await refreshEventView(id);
@@ -13510,7 +13530,7 @@
       delete state.posts.savedIds[postId];
       rerender();
       const { error } = await client.from("saved_posts").delete().eq("user_id", state.user.id).eq("post_id", postId);
-      if (error) { state.posts.savedIds[postId] = true; setMessage("לא ניתן לעדכן את השמורים"); rerender(); }
+      if (error) { state.posts.savedIds[postId] = true; setMessage(failText("לא ניתן לעדכן את השמורים", error)); rerender(); }
       else setMessage("הוסר מהשמורים");
     } else {
       state.posts.savedIds[postId] = true;
@@ -13541,7 +13561,7 @@
     if (!e) return;
     const body = cleanPostBody(e.body);
     const { error } = await client.rpc("post_edit_caption", { post_id: e.postId, body });
-    if (error) { setMessage("עריכת הכיתוב נכשלה"); return; }
+    if (error) { setMessage(failText("עריכת הכיתוב נכשלה", error)); return; }
     const post = findFeedPost(e.postId);
     if (post) post.body = body;
     state.posts.captionEdit = null;
@@ -13559,7 +13579,7 @@
     const e = state.posts.visibilityEdit;
     if (!e || !POST_VISIBILITY_OPTIONS.some((o) => o.value === visibility)) return;
     const { error } = await client.rpc("post_set_visibility", { post_id: e.postId, visibility });
-    if (error) { setMessage("שינוי הנראוּת נכשל"); return; }
+    if (error) { setMessage(failText("שינוי הנראוּת נכשל", error)); return; }
     const post = findFeedPost(e.postId);
     if (post) post.visibility = visibility;
     state.posts.visibilityEdit = null;
@@ -13568,7 +13588,7 @@
   }
   async function postDeleteViaMenu(postId) {
     const { error } = await client.rpc("post_delete", { post_id: postId });
-    if (error) { setMessage("מחיקת הפוסט נכשלה"); return; }
+    if (error) { setMessage(failText("מחיקת הפוסט נכשלה", error)); return; }
     if (Array.isArray(state.feed.items)) state.feed.items = state.feed.items.filter((p) => p && p.id !== postId);
     setMessage("הפוסט נמחק");
     rerender();
@@ -15382,7 +15402,7 @@
       const { error } = await client.from("push_subscriptions").upsert(
         { user_id: state.user.id, endpoint: json.endpoint, keys: json.keys || {}, revoked_at: null },
         { onConflict: "endpoint" });
-      if (error) { setMessage("לא אושרה הרשאת התראות"); return false; }
+      if (error) { setMessage(failText("לא אושרה הרשאת התראות", error)); return false; }
       state.notif.pushSub = { endpoint: json.endpoint };
       try { localStorage.setItem(NOTIF_PUSH_ENDPOINT_KEY, json.endpoint); } catch (e) {}
       // COMM-233. Only once the subscription row is actually written -

@@ -81,7 +81,11 @@ test("the composer replaces nothing about the important boolean (never built cli
 
 test("expires_at must be after the moment of submission, client-side only, with the ticket's exact save-failure copy", () => {
   assert.match(src, /errors\.expiresAt = "תאריך התפוגה חייב להיות אחרי מועד הפרסום"/);
-  assert.match(src, /setMessage\("לא ניתן היה לשמור את ההודעה\. נסו שוב\."\)/);
+  // The ticket's copy is intact; it is now passed through failText(), which
+  // keeps this exact sentence unless the error was one that changes what the
+  // member should do next - a dropped connection or a rate limit, where "try
+  // again" alone would be worse advice than the truth.
+  assert.match(src, /failText\("לא ניתן היה לשמור את ההודעה\. נסו שוב\.", error\)/);
   assert.match(src, /state\.club\.announcementSaving = true; rerender\(\);/);
   assert.match(src, /state\.club\.announcementSaving \? "מפרסם…" : "פרסום הודעה"/);
 });
