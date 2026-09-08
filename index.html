@@ -1778,6 +1778,7 @@
 <!-- The community write queue. Must load before cloud.js, which registers
      its handlers at module load so a queue drained on the first `online`
      event already knows how to send what it is holding. -->
+<script defer src="./src/dormancy.js"></script>
 <script defer src="./src/outbox.js"></script>
 <script defer src="./cloud.js"></script>
 <script defer src="./src/constants.js"></script>

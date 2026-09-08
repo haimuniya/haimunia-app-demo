@@ -46,6 +46,7 @@ const OPTIONAL_ASSETS = [
   "./src/analytics.js",
   "./src/realtime.js",
   "./src/image.js",
+  "./src/dormancy.js",
   "./src/outbox.js",
   "./vendor/supabase.js",
   // Settings links to these two styled pages (app.js), not the raw .md
