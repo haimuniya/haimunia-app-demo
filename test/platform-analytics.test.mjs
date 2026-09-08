@@ -11,6 +11,14 @@ import { bootApp } from "./helpers/boot.mjs";
 import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
 const SPEC_77_EVENTS = [
+  // NOT from spec section 77. write_failed is an operational event, added
+  // because the app had no way to know it was broken: a policy change
+  // silently stopped every profile write for members who had completed
+  // account recovery, and the only reason anybody found out was a member
+  // photographing their own screen. It carries an action name and a coarse
+  // error code, never arguments or message bodies - a Postgres error can
+  // quote the row that failed, and telemetry must not become a data leak.
+  "write_failed",
   "club_tab_viewed", "feed_viewed", "post_impression", "post_opened", "post_created",
   "workout_shared", "achievement_shared", "reaction_added", "comment_created",
   "profile_opened", "member_followed", "challenge_viewed", "challenge_joined",

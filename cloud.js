@@ -7064,7 +7064,34 @@
       await window.HaimuniaOutbox.enqueue(action, withKey, options);
       return { queued: true, data: null, error: null };
     }
+    // WHY A FAILED WRITE IS RECORDED.
+    //
+    // The avatar bug (profiles .upsert() refused by profiles_insert_self once
+    // recovery_verified_at was set) broke photo, privacy and profile saves for
+    // every member who had completed account recovery - and the only way it
+    // was ever found was a member photographing their own screen. Nothing in
+    // this app told anybody it was happening. 29 failure branches show a fixed
+    // Hebrew string and discard the cause; none of them reach a log.
+    //
+    // WHAT IS RECORDED: the action name and a coarse error signature - the
+    // PostgREST/Postgres code, or "network" - and nothing else. Never the
+    // arguments, never a message body, never member content: an error string
+    // can quote the row that failed, so passing it through would turn
+    // telemetry into a data leak. A code plus an action name is enough to see
+    // "club_wod_attach_result is failing 42501 for everyone since Tuesday",
+    // which is the entire question this answers.
+    if (error) trackWriteFailure(action, error);
     return { queued: false, data, error };
+  }
+  // Deliberately fire-and-forget and never awaited by a caller: telemetry
+  // must not add a second failure on top of the one it is reporting, and a
+  // member's action must never wait on it.
+  function trackWriteFailure(action, error) {
+    try {
+      if (!A.WRITE_FAILED) return;
+      const code = (error && (error.code || error.status)) || (isOfflineError(error) ? "network" : "unknown");
+      track(A.WRITE_FAILED, { action: String(action || "").slice(0, 60), code: String(code).slice(0, 20) });
+    } catch (_) { /* telemetry can never break the thing it is watching */ }
   }
 
   // One handler per queued action. Deliberately thin: the queue owns

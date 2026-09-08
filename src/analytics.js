@@ -32,6 +32,16 @@
   // list is the real allow-list, and it lives here rather than in a CHECK
   // so adding a tracked event does not need a migration.
   const EVENTS = Object.freeze({
+    // A community write that came back with an error. Carries the ACTION NAME
+    // and a coarse error code only - never arguments, never a message body,
+    // never member content, because a Postgres error string can quote the row
+    // that failed and telemetry must not become a data leak.
+    //
+    // It exists because the app had no way to know it was broken. A policy
+    // change silently stopped every profile write for members who had
+    // completed account recovery, and the only reason anybody found out was a
+    // member photographing their own screen.
+    WRITE_FAILED: "write_failed",
     CLUB_TAB_VIEWED: "club_tab_viewed",
     FEED_VIEWED: "feed_viewed",
     POST_IMPRESSION: "post_impression",
