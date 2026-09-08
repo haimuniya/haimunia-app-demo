@@ -395,6 +395,22 @@ export function createMockSupabase(seedTables = {}) {
         // seeding `profiles` + `invite_redemptions` keeps describing the
         // club the same way it always did, and does not have to learn a new
         // table to say "this member joined three days ago".
+        // Supabase Security Advisor conversion (202609080005):
+        // community_streaks moved from a view to a SECURITY DEFINER
+        // function. The real privacy boundary (visible_to_club,
+        // in_leaderboards, show_attendance, blocks, deleted_at) is
+        // Postgres and is asserted in pgTAP (0093), not here - every
+        // existing test already seeds community_streaks as flat fixture
+        // rows, so this answers straight from them, sorted and capped the
+        // same way the real function is.
+        if (name === "community_streaks") {
+          const limit = Math.max(1, Math.min(Number((args && args.p_limit) != null ? args.p_limit : 50), 100));
+          const data = rows("community_streaks")
+            .slice()
+            .sort((a, b) => Number(b.current_streak || 0) - Number(a.current_streak || 0))
+            .slice(0, limit);
+          return Promise.resolve({ data, error: null });
+        }
         if (name === "coach_new_members") {
           const within = Math.min(Math.max(Number((args && args.p_within_days) || 14), 1), 365);
           const dayMs = 86400000;

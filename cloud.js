@@ -561,7 +561,9 @@
     // already knows this one.
     intro: {
       step: 0,
-      content: {}, contentLoaded: false, contentError: false,
+      // contentLoading is the IN-FLIGHT flag, and it is load-bearing rather
+      // than cosmetic - see loadIntroCarouselContent().
+      content: {}, contentLoaded: false, contentError: false, contentLoading: false,
       editor: { drafts: {}, saving: {}, saved: {} },
     },
 
@@ -1399,9 +1401,34 @@
   // renderIntroCarouselContentEditor, the same "render triggers its own
   // one-shot lazy load" shape verifyRecovery() already uses a few hundred
   // lines below), so it has to trigger the follow-up render itself.
+  // WHY THE IN-FLIGHT GUARD. renderIntroCarousel() calls this DURING RENDER
+  // when the content has not loaded, and the only conditions it could check
+  // - contentLoaded / contentError - are both set when the request RETURNS.
+  // So while one read was in flight every subsequent render started another
+  // one, and each of those ended in its own rerender(), replacing #content.
+  //
+  // That is not merely wasteful. A member who taps "הבא" in that window can
+  // have the tap land on a node a redundant rerender is about to destroy, and
+  // the tap does nothing at all - the same defect class as COMM-234's
+  // confirm sheet, where a control existed but could not be reached. It
+  // surfaced as an intermittently failing release gate
+  // (community-intro-carousel.mjs timing out waiting for step 2 under
+  // run-all's load, passing every time the file ran alone), which is the
+  // mildest symptom of a real bug rather than a test problem: a flaky gate
+  // teaches people to re-run until green, and the bug it was reporting is one
+  // a member feels as "the button did not work".
+  //
+  // One read, one rerender. Cleared in a finally so a thrown request cannot
+  // wedge the flag and leave the carousel on its fallback copy forever.
   async function loadIntroCarouselContent() {
-    if (!state.user) return;
-    const { data, error } = await client.from("intro_carousel_content").select("step,title,body,updated_at");
+    if (!state.user || state.intro.contentLoading) return;
+    state.intro.contentLoading = true;
+    let data, error;
+    try {
+      ({ data, error } = await client.from("intro_carousel_content").select("step,title,body,updated_at"));
+    } finally {
+      state.intro.contentLoading = false;
+    }
     if (error) { state.intro.contentError = true; return rerender(); }
     const map = {};
     for (const row of (data || [])) map[row.step] = row;
