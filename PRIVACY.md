@@ -18,9 +18,13 @@ the Hebrew governs for members.
 - **יומן האימונים עובד על המכשיר שלכם.** כל עוד לא שמרתם אימון ולא
   נכנסתם לקהילה, שום מידע לא יוצא מהטלפון — לא בגלישה באפליקציה, לא
   במסך הפתיחה ולא בבחירת תרגילים.
-- **מהאימון הראשון שאתם שומרים, האפליקציה פותחת לכם חשבון בענן ומתחילה
-  לגבות אליו את היומן — אוטומטית, בלי לשאול אתכם קודם.** הגיבוי פרטי:
-  אף חבר אחר ואף מאמן לא רואה אותו. אפשר לכבות בכל רגע בהגדרות, במקטע
+- **הגיבוי לענן מתחיל באימון הראשון שאתם שומרים — ואם נשאלתם עליו, רק
+  אחרי שעניתם.** אחרי האימון הראשון מופיע באפליקציה כרטיס ששואל "לגבות
+  את האימונים לענן?". מי שראה את הכרטיס: האפליקציה לא פותחת לו חשבון
+  גיבוי עד שענה, ותשובת "לא עכשיו" משאירה את היומן על המכשיר בלבד. מי שלא ראה
+  אותו — מכשירים שכבר היה בהם שימוש לפני שהשאלה הזו נוספה — הגיבוי אצלו
+  התחיל אוטומטית, בלי לשאול. בשני המקרים הגיבוי פרטי: אף חבר אחר ואף
+  מאמן לא רואה אותו, ואפשר לכבות או להפעיל בכל רגע בהגדרות, במקטע
   "נתונים וגיבוי".
 - **"יום אימון" באפליקציה הוא יום שרשמתם בו אימון ביומן** — לא כניסה
   לשיעור. האפליקציה לא מחוברת למערכת הרישום או הצ'ק־אין של המועדון
@@ -58,18 +62,37 @@ the Hebrew governs for members.
 
 שני דברים מוציאים מידע מהמכשיר:
 
-1. **השמירה הראשונה של אימון** — מרגע זה מתחיל גיבוי אוטומטי לענן (ראו
-   הסעיף הבא).
+1. **השמירה הראשונה של אימון** — כאן מתחיל הגיבוי לענן: במכשיר שבו
+   נשאלתם, רק אחרי שאישרתם; במכשיר שבו לא נשאלתם, אוטומטית (ראו הסעיף
+   הבא).
 2. **כניסה לקהילה** — מימוש קוד הזמנה, יצירת פרופיל, פרסום, תגובה או
    מעקב.
 
-## גיבוי אוטומטי ופרטי לענן
+## גיבוי פרטי לענן — ומתי הוא מתחיל בלי לשאול
 
-**מה קורה, ומתי.** ברגע שאתם שומרים את האימון הראשון, האפליקציה פותחת
-עבורכם חשבון אנונימי בשרת (בלי שם, בלי מייל, בלי סיסמה) ומתחילה להעלות
-אליו את רשומות היומן שאתם שומרים מכאן והלאה. זה קורה אוטומטית ובלי
-לשאול אתכם. אנחנו כותבים את זה כאן במפורש כי זו נקודת האיסוף האמיתית
-הראשונה באפליקציה, וכי אין כרגע מסך שמבקש את אישורכם באותו רגע.
+**מה קורה.** הגיבוי פותח עבורכם חשבון אנונימי בשרת (בלי שם, בלי מייל,
+בלי סיסמה) ומעלה אליו את רשומות היומן שאתם שומרים מכאן והלאה. אנחנו
+כותבים את זה כאן במפורש כי זו נקודת האיסוף האמיתית הראשונה באפליקציה.
+
+**מתי הוא מתחיל — ובזה יש שני מצבים.** אפשר לדעת באיזה מהם אתם לפי דבר
+אחד: האם האפליקציה שאלה אתכם.
+
+- **נשאלתם.** אחרי האימון הראשון שאתם שומרים מופיע כרטיס — "לגבות את
+  האימונים לענן?" — עם שתי תשובות. **עד שאתם עונים, האפליקציה לא פותחת
+  עבורכם חשבון גיבוי ולא מעלה שום רשומה.** "כן, לגבות" פותח את החשבון
+  ומתחיל את הגיבוי; "לא עכשיו" משאיר את היומן על המכשיר הזה בלבד, ואפשר
+  להפעיל את הגיבוי בהגדרות בכל שלב. (יוצא דופן אחד: אם כבר נכנסתם
+  לקהילה עם קוד הזמנה, חשבון כבר נפתח לכם באותה כניסה — ואז היומן מגובה
+  אליו מיד, והכרטיס רק שואל אם להמשיך. "לא עכשיו" עוצר את הגיבוי מאותו
+  רגע.)
+- **לא נשאלתם.** במכשירים שכבר היה בהם שימוש לפני שהכרטיס הזה נוסף —
+  וגם במקרים שבהם האפליקציה לא זיהתה את המכשיר כחדש, למשל אם כבר הוזן
+  בו שם לפני האימון הראשון, או אם לא ניתן לקרוא את התשובה שנשמרה בו —
+  הגיבוי מתחיל אוטומטית בשמירה הראשונה, בלי לשאול. הוא פרטי בדיוק
+  באותה מידה, ואפשר לכבות אותו בכל רגע בהגדרות.
+
+מחיקת כל הנתונים מההגדרות מחזירה את המכשיר למצב "טרם נשאל", והשאלה
+תישאל שוב באימון הראשון שאחריה.
 
 **מי רואה את זה.** רק אתם. הגיבוי הזה נפרד לחלוטין מהקהילה: אין בו
 פרופיל, אין פיד ואין פרסום, ואף חבר אחר ואף מאמן לא יכולים לקרוא אותו
@@ -84,7 +107,7 @@ the Hebrew governs for members.
 חשבון (ראו "הזכויות שלכם").
 
 **מגבלה שחשוב להכיר: חשבון גיבוי בלבד וריק נסגר אחרי 30 יום.** חשבון
-שנפתח אוטומטית לגיבוי, ושלא מימשתם בו קוד הזמנה ולא הגדרתם לו שם משתמש
+שנפתח לגיבוי, ושלא מימשתם בו קוד הזמנה ולא הגדרתם לו שם משתמש
 וסיסמה, נמחק אוטומטית אם לא גובה אליו שום דבר מעולם ועברו 30 יום מאז
 שנפתח או מאז הכניסה האחרונה אליו. **אם שמרתם אליו ולו אימון אחד — הוא
 לא נמחק.** יומן האימונים שלכם נשמר כל עוד החשבון קיים, בדיוק כמו בכל
@@ -254,19 +277,32 @@ the Hebrew governs for members.
 לרעה, אכיפת מגבלות הזמנה וניסיונות, וזיהוי חברים שקצב האימון שלהם ירד
 כדי שמאמן/ת יפנו אליהם).
 
-הערת דיוק, כי חשוב לנו לא לטעון יותר ממה שקורה: הגיבוי האוטומטי לענן
-**אינו** מבוסס על הסכמה, כי הוא נדלק מעצמו בשמירה הראשונה ולא מוצג מסך
-שמבקש אישור. הוא מבוסס על ההתקשרות ועל האינטרס הלגיטימי שלא לאבד את
-היומן שלכם, ומאוזן בכך שהוא פרטי לחלוטין ושאפשר לכבות אותו בכל רגע.
-אנחנו מציינים את זה במפורש במקום לקרוא לזה "הסכמה" — הצוות מודע לפער
-הזה ולכך שהמקום הנכון להודעה כזו הוא בתוך האפליקציה, ברגע השמירה.
+הערת דיוק, כי חשוב לנו לא לטעון יותר ממה שקורה: **לגיבוי לענן אין בסיס
+אחד, כי לא כל החברים נשאלו.** הוא תלוי במה שקרה במכשיר שלכם, בדיוק
+כמתואר בסעיף "גיבוי פרטי לענן — ומתי הוא מתחיל בלי לשאול":
+
+- **אם נשאלתם** — כלומר ראיתם את הכרטיס "לגבות את האימונים לענן?"
+  ועניתם עליו — הבסיס הוא **הסכמה**. עד לתשובה שלכם לא נפתח חשבון גיבוי
+  ולא הועלתה שום רשומה, ושתי התשובות מוצגות באותו גודל ובאותו משקל. כיבוי
+  הגיבוי בהגדרות הוא משיכת ההסכמה, בכל רגע, בלי צורך בנימוק ובלי שום
+  מחיר.
+- **אם לא נשאלתם** — מכשירים שכבר היה בהם שימוש לפני שהכרטיס נוסף —
+  הגיבוי נדלק מעצמו בשמירה הראשונה, ולכן אצלכם הוא **אינו** מבוסס על
+  הסכמה. הוא נשען על ההתקשרות איתכם ועל האינטרס הלגיטימי שלא לאבד את
+  היומן שלכם, ומאוזן בכך שהוא פרטי לחלוטין ושאפשר לכבות אותו בכל רגע
+  בהגדרות.
+
+בחרנו לכתוב את זה כך ולא לבחור בניסוח הנוח מבין השניים: "הסכמה" לא
+תהיה נכונה לגבי מי שמעולם לא נשאל, ו"בלי לשאול" כבר לא נכון לגבי מי שכן
+נשאל. עד שהשאלה נוספה, המסמך הזה אמר שהמקום הנכון להודעה כזו הוא בתוך
+האפליקציה, ברגע השמירה. שם היא נמצאת עכשיו — למי שהתקין מאז.
 
 ## כמה זמן נשמר מידע
 
 - **יומן האימונים בענן** נשמר כל עוד החשבון קיים. זה נכון גם לחשבון
   גיבוי בלבד: חשבון שגובה אליו משהו לא נמחק על ידי ניקוי החשבונות
   הנטושים לעולם.
-- **חשבון ריק** שנפתח אוטומטית לגיבוי, שלא גובה אליו שום דבר, ושעברו 30
+- **חשבון ריק** שנפתח לגיבוי, שלא גובה אליו שום דבר, ושעברו 30
   יום מאז שנפתח או מאז הכניסה האחרונה אליו — נמחק אוטומטית.
 - **מחיקת חשבון לבקשתכם**: הפרופיל והפוסטים מוסתרים מיד, והחשבון וכל
   התוכן שלו נמחקים לצמיתות אחרי 30 ימים.
@@ -289,7 +325,8 @@ the Hebrew governs for members.
 
 גם בלי חוק שמחייב אותנו, אתם רשאים: לקבל את המידע האישי שיש לנו עליכם,
 לתקן אותו, לבקש למחוק אותו, לקבל עותק בפורמט נייד, להתנגד לעיבוד או
-להגביל אותו, ולחזור בכם מהסכמה שנתתם (למשל שיתוף בקהילה) בלי שזה ישפיע
+להגביל אותו, ולחזור בכם מהסכמה שנתתם (למשל שיתוף בקהילה, או "כן, לגבות"
+בכרטיס הגיבוי) בלי שזה ישפיע
 על מה שכבר נעשה. בתוך האפליקציה אפשר לייצא את הנתונים המקומיים, לכבות
 את הגיבוי האוטומטי, לשנות כל מתג פרטיות, לחסום חברים, לדווח על תוכן
 ולבקש מחיקת חשבון מלאה. למימוש זכות שאין לה כפתור באפליקציה — פנו
@@ -336,11 +373,15 @@ the Hebrew governs for members.
 - **The training log runs on your device.** Until you save a workout or
   start joining the community, nothing leaves your phone — not browsing
   the app, not the intro screens, not the exercise picker.
-- **From the first workout you save, the app opens a cloud account for
-  you and starts backing the log up to it — automatically, without
-  asking first.** That backup is private: no other member and no coach
-  can read it. You can turn it off at any time in Settings, under "data
-  and backup".
+- **Cloud backup starts at the first workout you save — and if you were
+  asked about it, only once you answered.** After that first workout the
+  app shows a card asking "back your workouts up to the cloud?". If you
+  saw that card: the app opens no backup account until you answer, and
+  "not now" leaves the log on this device only. If you never saw it — devices
+  already in use before that question was added — backup started
+  automatically, without asking. Either way the backup is private: no
+  other member and no coach can read it, and you can turn it off or on at
+  any time in Settings, under "data and backup".
 - **A "training day" in this app is a day you logged a workout** — not a
   class you attended. The app is not connected to the club's class
   booking or check-in system (Arbox) and has no other attendance source.
@@ -383,20 +424,41 @@ entirely local.
 
 Two things send data off the device:
 
-1. **Saving your first workout** — automatic cloud backup starts from
-   that moment (see the next section).
+1. **Saving your first workout** — cloud backup starts there: on a
+   device that asked you, only after you agreed; on a device that did not
+   ask, automatically (see the next section).
 2. **Joining the community** — redeeming an invite code, creating a
    profile, posting, commenting, or following.
 
-## Automatic private cloud backup
+## Private cloud backup — and when it starts without asking
 
-**What happens, and when.** The moment you save your first workout, the
-app opens an anonymous account for you on the server (no name, no email,
-no password) and starts uploading the log records you save from then on.
-This happens automatically and without asking you. We state it plainly
-here because it is the first real point of collection in the app, and
-because there is currently no screen that asks for your agreement at that
-moment.
+**What happens.** Backup opens an anonymous account for you on the server
+(no name, no email, no password) and uploads the log records you save
+from then on. We state it plainly here because it is the first real point
+of collection in the app.
+
+**When it starts — and there are two cases.** You can tell which one you
+are in by one thing: whether the app asked you.
+
+- **You were asked.** After the first workout you save, a card appears —
+  "back your workouts up to the cloud?" — with two answers. **Until you
+  answer, the app opens no backup account for you and uploads no
+  record.** "Yes, back it up" opens the account and starts the backup;
+  "not now" leaves the log on this device only, and you can switch backup
+  on from Settings whenever you want. (One exception: if you have already
+  joined the community with an invite code, an account was opened for you
+  at that step — the log is then backed up to it straight away, and the
+  card only asks whether to continue. "Not now" stops the backup from
+  that moment.)
+- **You were not asked.** On devices already in use before that card was
+  added — and in cases where the app did not recognise the device as new,
+  for example if a name had already been entered on it before the first
+  workout, or if the answer saved on it could not be read — backup starts
+  automatically at the first save, without asking. It is exactly as
+  private, and can be turned off at any moment in Settings.
+
+Deleting all data from Settings returns the device to "not asked yet",
+and the question is asked again at the next first workout.
 
 **Who can see it.** Only you. This backup is entirely separate from the
 community: no profile, no feed, no publishing, and no other member and no
@@ -414,7 +476,7 @@ delete what has already been uploaded to the cloud — for that you need to
 request account deletion (see "Your rights").
 
 **A limit worth knowing: an empty backup-only account is closed after 30
-days.** An account that was opened automatically for backup, on which you
+days.** An account that was opened for backup, on which you
 never redeemed an invite code and never set a username and password, is
 deleted automatically if nothing was ever backed up to it and 30 days
 have passed since it was opened or last signed in to. **If you have saved
@@ -619,13 +681,29 @@ identifying members whose training rate has dropped so a coach can reach
 out).
 
 One point of accuracy, because we do not want to claim more than happens:
-automatic cloud backup is **not** based on consent, because it switches
-itself on at your first save and no screen asks you to agree. It rests on
-our arrangement with you and on the legitimate interest in not losing
-your log, balanced by the fact that it is entirely private and can be
-turned off at any moment. We say this plainly rather than calling it
-"consent" — the team is aware of the gap, and of the fact that the right
-place for a notice like this is inside the app, at the moment of saving.
+**cloud backup does not have a single basis, because not every member was
+asked.** It depends on what happened on your device, exactly as described
+under "Private cloud backup — and when it starts without asking":
+
+- **If you were asked** — that is, you saw the card "back your workouts
+  up to the cloud?" and answered it — the basis is **consent**. No backup
+  account was opened and no record was uploaded before your answer, and
+  both answers are presented at the same size and weight. Turning backup
+  off in Settings withdraws that consent, at any time, with no reason
+  required and no penalty.
+- **If you were not asked** — devices already in use before that card was
+  added — backup switched itself on at your first save, so for you it is
+  **not** based on consent. It rests on our arrangement with you and on
+  the legitimate interest in not losing your log, balanced by the fact
+  that it is entirely private and can be turned off at any moment in
+  Settings.
+
+We write it this way rather than picking whichever of the two reads more
+tidily: "consent" would not be true of anyone who was never asked, and
+"without asking" is no longer true of anyone who was. Until that card
+existed, this document said the right place for a notice like this is
+inside the app, at the moment of saving. That is where it now is — for
+anyone who installed since.
 
 ## Data retention
 
@@ -633,7 +711,7 @@ place for a notice like this is inside the app, at the moment of saving.
   This is true for a backup-only anonymous account too: an account that
   has anything backed up to it is never deleted by the abandoned-account
   clean-up.
-- **An empty account** that was opened automatically for backup, never
+- **An empty account** that was opened for backup, never
   had anything backed up to it, and was opened or last signed in to more
   than 30 days ago, is deleted automatically.
 - **Account deletion at your request**: your profile and posts are hidden
@@ -662,7 +740,8 @@ place for a notice like this is inside the app, at the moment of saving.
 Even without a specific law requiring it, you have the right to access
 the personal data we hold about you, correct it, request its deletion,
 receive a copy in a portable format, object to or restrict processing,
-and withdraw consent you gave (for example, community sharing) without
+and withdraw consent you gave (for example, community sharing, or "yes,
+back it up" on the backup card) without
 affecting what has already been done. In the app you can export your
 local data, turn off automatic backup, change every privacy toggle, block
 members, report content, and request full account deletion. To exercise a

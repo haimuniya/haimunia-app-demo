@@ -33,9 +33,12 @@ the Hebrew governs for members.
 הזמנה מוגבלים בשימוש ובקצב ניסיונות, ואנחנו רשאים לבטל קוד או מימוש
 שנעשה בטעות או בחוסר תום לב.
 
-**חשבון נפתח לכם אוטומטית בשמירת האימון הראשון.** האפליקציה פותחת
-חשבון אנונימי כדי לגבות את היומן לענן, בלי לבקש מכם קודם. זה מוסבר
-במלואו במדיניות הפרטיות, כולל איך לכבות את זה.
+**חשבון נפתח לכם בשמירת האימון הראשון — אחרי שאלה, או בלעדיה.**
+האפליקציה פותחת חשבון אנונימי כדי לגבות את היומן לענן. במכשיר שבו מופיע
+הכרטיס "לגבות את האימונים לענן?", חשבון הגיבוי לא נפתח עד שאתם עונים,
+ותשובת "לא עכשיו" משאירה את היומן על המכשיר בלבד. במכשירים שכבר היה בהם שימוש
+לפני שהכרטיס נוסף, החשבון נפתח אוטומטית בלי לבקש מכם קודם. זה מוסבר
+במלואו במדיניות הפרטיות, כולל מי בכל קבוצה ואיך לכבות את זה.
 
 חשבון אנונימי קשור לדפדפן ולמכשיר שבו הוא נפתח, ולא לפרטי כניסה שאפשר
 לשחזר. אם הגישה לחשבון כזה אובדת — מחיקת נתוני האתר, התקנה מחדש או
@@ -130,10 +133,14 @@ commenting, joining a club's community) require redeeming a valid invite
 code issued by a club; invite codes are limited in use and rate-limited,
 and we may revoke a code or a redemption made in error or bad faith.
 
-**An account is opened for you automatically when you save your first
-workout.** The app opens an anonymous account in order to back your log up
-to the cloud, without asking you first. This is explained in full in the
-Privacy Policy, including how to turn it off.
+**An account is opened for you when you save your first workout — after a
+question, or without one.** The app opens an anonymous account in order to
+back your log up to the cloud. On a device that shows the card "back your
+workouts up to the cloud?", no backup account is opened until you answer,
+and "not now" leaves the log on that device only. On devices already in use
+before that card was added, the account is opened automatically, without
+asking you first. This is explained in full in the Privacy Policy,
+including who is in each group and how to turn it off.
 
 An anonymous account is tied to the browser and device it was opened on
 rather than to a recoverable login. If access to such an account is lost —

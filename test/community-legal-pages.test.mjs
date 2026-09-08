@@ -154,6 +154,80 @@ test("all four documents scope the abandoned-account clean-up to an empty accoun
 //
 // These assertions exist so that neither the false denial nor the
 // over-declaration can come back by an edit that is not thinking about it.
+// THE 2026-09-08 CONSENT CORRECTION, and the most serious of the two
+// inaccuracies this pass found, because a false LEGAL BASIS is a claim about
+// what members agreed to.
+//
+// c4cd505 added the S5 backup-consent card and 8136133 made
+// maybeAutoStartBackup() return early while window.haimuniaBackupConsentPending()
+// is true. On a device that gets asked, no anonymous account exists until the
+// member answers - which is consent in the ordinary sense. But app.js:5831
+// writes backupConsent = "grandfathered" for any device that is not a fresh
+// install, and those members were never asked. So there are genuinely TWO
+// populations and the document has to be true for both; picking either single
+// basis would be false for the other half. These assertions hold the split in
+// place, in both languages and both formats.
+test("the basis-for-processing section splits cloud backup by population instead of claiming one basis for everyone", () => {
+  for (const text of privacyBoth) {
+    assert.match(text, /לגיבוי לענן אין בסיס אחד, כי לא כל החברים נשאלו/);
+    assert.match(text, /אם נשאלתם/);
+    // Bold in both formats: **הסכמה** in the Markdown, <strong> in the HTML.
+    assert.match(text, /הבסיס הוא (?:\*\*|<strong>)הסכמה/);
+    assert.match(text, /אם לא נשאלתם/);
+    assert.match(text, /cloud backup does not have a single basis, because not every member was asked/i);
+    assert.match(text, /If you were asked/);
+    assert.match(text, /If you were not asked/);
+  }
+});
+
+// The old sentence, blocked from returning. It is not merely stale - it is
+// the load-bearing premise of the paragraph that followed it, so a revert of
+// this one line silently re-declares the basis for every member who WAS asked.
+test("the retired 'not based on consent, no screen asks you to agree' claim cannot return to any of the four documents", () => {
+  for (const text of allFour) {
+    assert.doesNotMatch(text, /אוטומטית, בלי לשאול אתכם קודם/);
+    // The retired sentence in either format's bold. The surviving text says
+    // the same words in the opposite order ("...נדלק מעצמו..., ולכן אצלכם
+    // הוא אינו מבוסס על הסכמה"), and only for the population it is true of,
+    // so this pattern is specific to the claim that covered everyone.
+    assert.doesNotMatch(text, /(?:\*\*|<strong>)אינו(?:\*\*|<\/strong>) מבוסס על הסכמה, כי הוא נדלק מעצמו/);
+    assert.doesNotMatch(text, /אין כרגע מסך שמבקש את אישורכם/);
+    assert.doesNotMatch(text, /חשבון נפתח לכם אוטומטית בשמירת האימון הראשון/);
+    assert.doesNotMatch(text, /automatically, without asking first/i);
+    assert.doesNotMatch(text, /no screen asks you to agree/i);
+    assert.doesNotMatch(text, /there is currently no screen that asks for your agreement/i);
+    assert.doesNotMatch(text, /An account is opened for you automatically when you save your first workout/i);
+    assert.doesNotMatch(text, /back your log up to the cloud, without asking you first/i);
+  }
+});
+
+// The Terms carry the same fact in a shorter form, and a member who reads
+// only the Terms must not be told the account is opened without a question.
+test("the Terms describe account creation as asked-or-not, matching the Privacy Policy", () => {
+  for (const text of termsBoth) {
+    assert.match(text, /חשבון הגיבוי לא נפתח עד שאתם עונים/);
+    assert.match(text, /no backup account is opened until you answer/i);
+    assert.match(text, /On devices already in use before that card was added, the account is opened automatically/i);
+  }
+});
+
+// WHY THIS TEST READS THE APP AND NOT THE DOCUMENT. The consent half of the
+// basis above is true only while the interlock exists: app.js exposes
+// haimuniaBackupConsentPending() and cloud.js's maybeAutoStartBackup()
+// refuses to create an anonymous session while it is true (8136133). Delete
+// either line and the policy's "no cloud account is opened until you answer"
+// becomes exactly the kind of screen-promises-what-the-code-does-not defect
+// this audit keeps finding - in the legal basis this time. Asserted here, in
+// the suite that owns the sentence, so the failure lands next to the claim.
+test("the code that makes the consent half of the legal basis true is still in place", () => {
+  const cloudJs = fs.readFileSync(new URL("../cloud.js", import.meta.url), "utf8");
+  assert.match(appJs, /window\.haimuniaBackupConsentPending = function \(\) \{ return backupConsent === null; \};/);
+  assert.match(cloudJs, /if \(typeof window\.haimuniaBackupConsentPending === "function" && window\.haimuniaBackupConsentPending\(\)\) return;/);
+  // And the other population is real, which is why the document names it:
+  // any device that is not a fresh install is grandfathered and never asked.
+  assert.match(appJs, /if \(backupConsent === null && !isFreshInstall\) setBackupConsent\("grandfathered"\);/);
+});
+
 test("the policy does not re-declare data the app never collects, in either language", () => {
   for (const text of privacyBoth) {
     assert.doesNotMatch(text, /your class attendance history/i);

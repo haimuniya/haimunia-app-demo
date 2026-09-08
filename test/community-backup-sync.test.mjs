@@ -124,18 +124,61 @@ test("the stale-local-export reminder threshold tightens for anyone not already 
 // are still required verbatim.
 const privacyText = privacyMd.replace(/\s+/g, " ");
 
-test("PRIVACY.md discloses automatic private backup - private, from the first save, separate from joining the community, and reversible - in Hebrew", () => {
-  assert.match(privacyText, /גיבוי אוטומטי ופרטי לענן/);
-  assert.match(privacyText, /מהאימון הראשון שאתם שומרים/);
+// THE 2026-09-08 CONSENT CORRECTION. The four guarantees above are unchanged
+// in substance, but the SECOND one had to be re-stated: c4cd505 added the S5
+// backup-consent card and 8136133 made maybeAutoStartBackup() return early
+// while window.haimuniaBackupConsentPending() is true, so on a device that is
+// asked, NO anonymous account exists until the member answers. "From the
+// first workout you save, the app opens a cloud account for you" was true of
+// every member when it was written and is now true only of the grandfathered
+// half (app.js:5831). The section headings changed with it, which is why the
+// verbatim strings below moved.
+test("PRIVACY.md discloses private backup - private, at the first save, separate from joining the community, and reversible - in Hebrew", () => {
+  assert.match(privacyText, /גיבוי פרטי לענן — ומתי הוא מתחיל בלי לשאול/);
+  assert.match(privacyText, /הגיבוי לענן מתחיל באימון הראשון שאתם שומרים/);
   assert.match(privacyText, /נפרד לחלוטין מהקהילה/);
-  assert.match(privacyText, /אפשר לכבות בכל רגע/);
+  assert.match(privacyText, /אפשר לכבות או להפעיל בכל רגע בהגדרות/);
 });
 
-test("PRIVACY.md discloses automatic private backup - private, from the first save, separate from joining the community, and reversible - in English", () => {
-  assert.match(privacyText, /Automatic private cloud backup/);
-  assert.match(privacyText, /From the first workout you save, the app opens a cloud account for you/);
+test("PRIVACY.md discloses private backup - private, at the first save, separate from joining the community, and reversible - in English", () => {
+  assert.match(privacyText, /Private cloud backup — and when it starts without asking/);
+  assert.match(privacyText, /Cloud backup starts at the first workout you save/);
   assert.match(privacyText, /entirely separate from the community/);
-  assert.match(privacyText, /turn it off at any time in Settings/);
+  assert.match(privacyText, /turn it off or on at any time in Settings/);
+});
+
+// The interlock, stated as the member experiences it. This is the sentence
+// 8136133's guard makes true, and it is the one a member is entitled to rely
+// on: answering the card is what opens the account, not saving the workout.
+//
+// SCOPED TO THE BACKUP ACCOUNT, and that scope is load-bearing rather than
+// hedging. refreshSession()/onAuthStateChange call enableSyncIfAllowed() for
+// ANY session, so a member who redeemed an invite before ever logging a set
+// already has an account and already syncs by the time the card appears -
+// backupConsent is still null on that device, so the card is still shown. An
+// unqualified "no account is opened until you answer" would be false for
+// exactly that member, which is the defect class being closed here, so the
+// policy states the exception and these assertions require it.
+test("PRIVACY.md promises that on a device that asks, no BACKUP account is opened and nothing is uploaded before the answer", () => {
+  assert.match(privacyText, /עד שאתם עונים, האפליקציה לא פותחת עבורכם חשבון גיבוי ולא מעלה שום רשומה/);
+  assert.match(privacyText, /Until you answer, the app opens no backup account for you and uploads no record/);
+});
+
+test("PRIVACY.md names the one case where an account already exists when the card appears - joining the community first", () => {
+  assert.match(privacyText, /אם כבר נכנסתם לקהילה עם קוד הזמנה, חשבון כבר נפתח לכם באותה כניסה/);
+  assert.match(privacyText, /if you have already joined the community with an invite code, an account was opened for you at that step/i);
+});
+
+// And the guard that matters most: the retired claim is a sentence somebody
+// could plausibly restore while "simplifying" this section, and restoring it
+// would misdescribe the collection point AND the legal basis built on it.
+test("the retired 'without asking first' claim cannot return to PRIVACY.md in either language", () => {
+  assert.doesNotMatch(privacyText, /אוטומטית, בלי לשאול אתכם קודם/);
+  assert.doesNotMatch(privacyText, /זה קורה אוטומטית ובלי לשאול אתכם/);
+  assert.doesNotMatch(privacyText, /אין כרגע מסך שמבקש את אישורכם/);
+  assert.doesNotMatch(privacyText, /automatically, without asking first/i);
+  assert.doesNotMatch(privacyText, /This happens automatically and without asking you/i);
+  assert.doesNotMatch(privacyText, /there is currently no screen that asks for your agreement/i);
 });
 
 // THIS TEST USED TO ASSERT A BUG, and its own comment argued the bug was a
