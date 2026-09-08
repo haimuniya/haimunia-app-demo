@@ -16299,8 +16299,32 @@
     if (!state.user) {
       return `${BACKUP_PANEL_TITLE}<div class="footer-note" style="margin-bottom:8px;">מהשמירה הראשונה האימונים שלכם מתחילים להיות מגובים לענן ברקע, אוטומטית ופרטית — רק אתם רואים אותם. הסנכרון קורה מעצמו ואין כאן קובץ להוריד; „קובץ גיבוי להורדה" הוא דבר נפרד במסך הזה. אפשר לכבות בכל שלב.</div><button class="link-btn" data-community-action="backup-optout">כיבוי גיבוי אוטומטי</button>`;
     }
+    // How much is actually at stake, and how loudly to say it. See
+    // src/dormancy.js - the short version is that an anonymous account is
+    // reachable ONLY by the refresh token in this browser, so clearing site
+    // data or changing phones strands the cloud copy permanently. Never
+    // phrased as a deletion threat: since 202609070001 these accounts are
+    // RETAINED, and saying otherwise would be a promise the database does
+    // not keep - the same defect the purge bug had, pointed the other way.
+    const backupRisk = (function () {
+      if (!window.HaimuniaDormancy || typeof window.haimuniaTrainingDataSummary !== "function") return { level: "soft" };
+      let summary = { entryCount: 0, daysSinceExport: null };
+      try { summary = window.haimuniaTrainingDataSummary() || summary; } catch (e) {}
+      const created = state.user && state.user.created_at ? Date.parse(state.user.created_at) : NaN;
+      return window.HaimuniaDormancy.assess({
+        configured: true, optedOut: false, signedIn: true,
+        isAnonymous: !!state.user.is_anonymous,
+        hasRecovery: !!(state.profile && state.profile.recovery_verified_at),
+        entryCount: summary.entryCount,
+        daysSinceExport: summary.daysSinceExport,
+        accountAgeDays: isFinite(created) ? Math.floor((Date.now() - created) / 86400000) : 0,
+      });
+    })();
+    const unreachableWarning = backupRisk.level === "urgent"
+      ? `<div class="footer-note" role="status" style="margin:0 0 10px;padding:10px;border-radius:8px;border:1px solid var(--red-text);color:var(--red-text);">האימונים שלכם מגובים לחשבון אנונימי — אין אליו שם משתמש או סיסמה, והדרך היחידה אליו היא הדפדפן הזה. אם תנקו את נתוני האתר, תחליפו מכשיר או תאבדו את הטלפון, הגיבוי יישאר בשרת ולא תוכלו להגיע אליו. אף אחד לא ימחק אותו — פשוט לא תוכלו לפתוח אותו.<div style="margin-top:8px;"><button class="chip-btn" data-community-action="backup-download-copy">הורדת עותק עכשיו</button></div></div>`
+      : "";
     const credentialsCta = state.user.is_anonymous
-      ? `<div style="margin-top:12px;"><div class="footer-note" style="margin-bottom:6px;">גישה לאותם נתונים ממכשיר אחר דורשת שם לכניסה וסיסמה.</div><form id="backupCredentials">${field("backupCredentials", "username", LOGIN_NAME_LABEL, `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="${esc(USERNAME_RULE_TEXT)}" data-live-validate="username" data-live-validate-form="backupCredentials" required/>`)}${field("backupCredentials", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="new-password" placeholder="${esc(PASSWORD_RULE_TEXT)}" data-live-validate="password" data-live-validate-form="backupCredentials" required/>`)}${field("backupCredentials", "passwordConfirm", "אימות סיסמה", `<input class="text-input" name="passwordConfirm" type="password" dir="ltr" autocomplete="new-password" placeholder="הקלידו שוב" data-live-validate="passwordConfirm" data-live-validate-form="backupCredentials" required/>`)}<button class="chip-btn primary" type="submit" style="margin-top:6px;">שמירת גישה ממכשיר אחר</button></form></div>`
+      ? `<div style="margin-top:12px;">${unreachableWarning}<div class="footer-note" style="margin-bottom:6px;">${backupRisk.level === "urgent" ? "הפתרון הקבוע: שם לכניסה וסיסמה. אחריהם אפשר להיכנס לאותם נתונים מכל מכשיר." : "גישה לאותם נתונים ממכשיר אחר דורשת שם לכניסה וסיסמה."}</div><form id="backupCredentials">${field("backupCredentials", "username", LOGIN_NAME_LABEL, `<input class="text-input" name="username" dir="ltr" autocapitalize="off" autocomplete="username" placeholder="${esc(USERNAME_RULE_TEXT)}" data-live-validate="username" data-live-validate-form="backupCredentials" required/>`)}${field("backupCredentials", "password", "סיסמה", `<input class="text-input" name="password" type="password" dir="ltr" autocomplete="new-password" placeholder="${esc(PASSWORD_RULE_TEXT)}" data-live-validate="password" data-live-validate-form="backupCredentials" required/>`)}${field("backupCredentials", "passwordConfirm", "אימות סיסמה", `<input class="text-input" name="passwordConfirm" type="password" dir="ltr" autocomplete="new-password" placeholder="הקלידו שוב" data-live-validate="passwordConfirm" data-live-validate-form="backupCredentials" required/>`)}<button class="chip-btn primary" type="submit" style="margin-top:6px;">שמירת גישה ממכשיר אחר</button></form></div>`
       : "";
     return `${BACKUP_PANEL_TITLE}<div class="footer-note" style="margin-bottom:8px;">${esc(state.syncEnabled ? "פעיל. האימונים שלכם מגובים לענן ברקע, אוטומטית ופרטית — רק אתם רואים אותם. הסנכרון קורה מעצמו ואין כאן קובץ להוריד; „קובץ גיבוי להורדה\" הוא דבר נפרד במסך הזה." : "מוגדר אך טרם הופעל.")}</div><button class="link-btn" data-community-action="backup-optout">כיבוי גיבוי אוטומטי</button>${credentialsCta}${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}`;
   };
@@ -16781,6 +16805,17 @@
       // that is when the first upload actually happens; enabling does not
       // retroactively push what was logged while it was off.
       if (typeof window.showToast === "function") window.showToast("גיבוי אוטומטי לענן הופעל. האימונים יגובו מהשמירה הבאה.");
+      rerender();
+    }
+    else if (action === "backup-download-copy") {
+      // The one action a member can take right now that survives losing this
+      // browser. app.js owns the file, so this only reports the outcome -
+      // and reports FAILURE honestly rather than claiming a download that a
+      // browser without URL.createObjectURL never started.
+      const ok = typeof window.haimuniaExportBackup === "function" && window.haimuniaExportBackup();
+      if (typeof window.showToast === "function") {
+        window.showToast(ok ? "ההורדה התחילה. שמרו את הקובץ במקום שתמצאו אותו." : "ההורדה נכשלה. אפשר לייצא גיבוי ממסך ההגדרות.");
+      }
       rerender();
     }
     else if (action === "backup-optout") {

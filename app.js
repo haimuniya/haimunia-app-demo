@@ -2330,6 +2330,31 @@ function exportData() {
   render();
 }
 
+// ---- Bridge for the cloud backup panel (src/dormancy.js) --------------
+// cloud.js owns the account (anonymous or not, recovery or not); app.js owns
+// the training log and the export. Neither can answer "is this member's only
+// copy about to become unreachable" alone, so app.js publishes the two facts
+// it holds, the same way window.haimuniaBackupConsentPending already does.
+//
+// The record types counted here are exactly the seven groups queueSyncRecord()
+// mirrors to private_records (app.js:~1655), because the question being asked
+// is "what would be stranded in the cloud", not "what is on this device".
+window.haimuniaTrainingDataSummary = function () {
+  var count = 0;
+  [entries, wodEntries, bodyweightEntries, measureEntries, customMovements, customWods, measureTypes]
+    .forEach(function (group) { count += Array.isArray(group) ? group.length : 0; });
+  return { entryCount: count, daysSinceExport: daysSinceLastExport() };
+};
+
+// Lets the backup panel offer the download without reaching into app.js's
+// internals. Returns whether a file was actually produced, so the caller can
+// avoid claiming success on a browser with no URL.createObjectURL.
+window.haimuniaExportBackup = function () {
+  var ok = downloadBackup(buildBackupPayload(), `box-log-backup-${todayISO()}.json`);
+  if (ok) markExported();
+  return ok;
+};
+
 const MAX_BACKUP_BYTES = 25 * 1024 * 1024;
 
 function triggerImport() {
