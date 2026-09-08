@@ -63,6 +63,21 @@ const RAW_SERVER_STRINGS = [
   "event_full",
   "challenge not found",
   "not an active participant",
+  // Club WOD sessions and boards (202609080002). Each was produced by calling
+  // the RPC against the local Supabase stack with a real JWT - dana_k as the
+  // coach, noa_s as a member - and recording what came back, the same method
+  // every string above it was harvested with. 'wod not found' is already in
+  // the list above, raised by club_wod_publish; club_wod_session_publish
+  // raises the identical string for the identical reason.
+  "wod is retired",
+  "session already posted",
+  "too many sessions posted for that day",
+  "a session can only be posted for yesterday, today or tomorrow",
+  "session not found",
+  "this board is closed",
+  "the session has not happened yet",
+  "record is required",
+  "that result is for a different workout",
   "session expired",
 ];
 

@@ -242,6 +242,24 @@
       // The coach's picked comparison key, kept in state so a rejected submit
       // (a missing title, a missing date) does not silently reset the picker.
       challengeKeyDraft: "",
+      // ---- The feed writes itself (202609080002) --------------------------
+      // Today's club WOD boards, exactly as club_wod_boards() returned them -
+      // never re-sorted, never re-filtered and never re-derived from
+      // (see renderClubWodBoardBody: `viewer` is the server's answer about
+      // what this member may do, not something the client recomputes).
+      //
+      // These live in `club` rather than in a namespace of their own for the
+      // same reason clubWods does: this is the box's programming, a club-wide
+      // surface, and the namespace pin in community-state-namespaces.test.mjs
+      // is a review trigger that a genuinely club-shaped feature should not
+      // be spending.
+      wodBoards: [], wodBoardsLoaded: false, wodBoardsLoading: false, wodBoardsError: false,
+      // The open board dialog: { sessionId, board, loading, error, busy,
+      // errorText }. null - a dialog starts closed (CLOUD_DIALOGS).
+      wodBoardView: null,
+      // The staff publish form's draft, always present (it is a panel, not a
+      // dialog): { wodId, date, note, saving }.
+      wodSessionForm: { wodId: "", date: "", note: "", saving: false },
     },
 
     // ---- leaderboard (COMM-210/211/212) ----
@@ -1234,7 +1252,7 @@
       // that at read time now (see weeklyChallengeIsValid), so there is no
       // ordering left to preserve and no reason to serialise a round trip in
       // front of thirteen parallel ones.
-      await Promise.all([loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubWods(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadEvents(), loadOnboardingProgress(), loadOnboardingStepContent()]);
+      await Promise.all([loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubWods(), loadClubWodBoards(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadEvents(), loadOnboardingProgress(), loadOnboardingStepContent()]);
       if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers(), loadActivitySignal()]);
       if (hasPerm(PERM.COMMENT_MODERATE) || isAdmin()) await loadModQueue();
       // COMM-141. Arm the own-row notification channel for this session.
@@ -2301,6 +2319,536 @@
     const { error } = await client.rpc("club_wod_restore", { p_wod_id: wodId });
     if (error) { setMessage(serverErrorText(error)); return false; }
     await loadClubWods(); setMessage("האימון הוחזר לקטלוג"); rerender(); return true;
+  }
+
+  // ==========================================================================
+  // THE FEED WRITES ITSELF - club WOD sessions and boards (202609080002)
+  // ==========================================================================
+  // The community layer competes with WhatsApp on typed posts and loses, so
+  // the only content it can win with is what the app already knows: today's
+  // programming, and who did it. A coach programs one catalogue WOD to one
+  // day; that is ONE card and ONE board. A member who has ALREADY LOGGED the
+  // workout attaches their own result with a single tap from the log form
+  // they were filling in anyway - no composing, no feed slot.
+  //
+  // THREE RULES THIS CLIENT DOES NOT GET TO RE-DECIDE, each of them a
+  // rejection recorded in the migration rather than a preference:
+  //
+  //   1. THE UI IS BUILT OFF `viewer`, NOT OFF A RE-DERIVATION. Every one of
+  //      the six RPCs returns the same board object with every key present,
+  //      including viewer.can_attach, viewer.can_detach and
+  //      viewer.closed_reason. Recomputing "is this board open" from
+  //      session_date and cancelled_at here would create a second, drifting
+  //      copy of a rule the write path already enforces - and the board and
+  //      the refusal would disagree the first time one of them changed.
+  //      Nothing below reads session_date to decide what a member may do.
+  //
+  //   2. IT IS NOT A LEADERBOARD AND CANNOT BECOME ONE. `results` arrives
+  //      ordered by attached_at - the order people trained in - and is
+  //      rendered in exactly that order. Nothing here sorts, ranks, numbers
+  //      or positions a row, and rx and scaled sit in ONE list. The table has
+  //      no score_value, score_direction or rank column BY DESIGN, asserted
+  //      in pgTAP, so there is nothing to sort by even if this file wanted to.
+  //      renderRankedList()/leaderboardRowHtml() are deliberately NOT reused:
+  //      they are the ranked convention (trophy, position, brass tint) and
+  //      wearing them here would say the opposite of what this board is.
+  //
+  //   3. show_workout_results IS NEVER FLIPPED FROM HERE, AND NEVER OFFERED.
+  //      It defaults FALSE, so the honest shipped first state is a board of
+  //      names with few numbers - which the beginner persona's finding says
+  //      is arguably the better one: "eight people did this today" is a roll
+  //      call, not a leaderboard. The only correct affordance is a LINK to
+  //      the privacy screen the member already owns (open-privacy-settings),
+  //      and the hint that carries it states the fact without asking for a
+  //      change. Compare hide-my-leaderboard-result, which DOES write a
+  //      privacy field from a board - that one turns a disclosure OFF; this
+  //      one would turn it ON, on the member's behalf, which is the direction
+  //      no surface in this app gets to take.
+  //
+  // AND THE ONE FACT THE SERVER CANNOT KNOW: whether this member has logged
+  // this WOD. The training log is local-first and cloud backup is opt-OUT, so
+  // private_records may simply not hold it. viewer.attached answers "is your
+  // result on the board", never "did you do it" - so the attach CTA is driven
+  // from app.js's OWN log through clubWodLoggedEntries() below. That is also
+  // why nothing here auto-attaches a logged entry that happens to match the
+  // day or the WOD: inferring participation is decision 2's central rejection.
+
+  function clubWodCanProgram() { return hasPerm(PERM.CHALLENGE_CREATE); }
+
+  // app.js's log, asked for by WOD. Returns [] rather than throwing when the
+  // bridge is absent - cloud.js is loaded BEFORE app.js, and a board rendered
+  // in that window must degrade to "no attach control", never to a broken
+  // render. Same feature-detected shape as window.allWods()/
+  // window.communityShareCandidateFor().
+  function clubWodLoggedEntries(wodId) {
+    if (!wodId || typeof window.communityWodLogFor !== "function") return [];
+    try { return window.communityWodLogFor(wodId) || []; } catch (e) { return []; }
+  }
+  // The entry behind one record id, for p_entry. Sent so a member with cloud
+  // backup OFF still gets a figure on the board; the server prefers its own
+  // private_records copy when it has one and re-formats either source from
+  // clamped structured fields, so this is a fallback, never a claim.
+  function clubWodEntryById(recordId) {
+    if (!recordId || typeof window.communityWodEntryForAttach !== "function") return null;
+    try { return window.communityWodEntryForAttach(recordId) || null; } catch (e) { return null; }
+  }
+
+  // ---- Reads ---------------------------------------------------------------
+  // club_wod_boards() WITH NO ARGUMENTS MEANS TODAY. That is the club-home
+  // call, and it is what this loader wants: the strip is "what is the club
+  // doing today". A wider range is available (p_from/p_to) and deliberately
+  // not used - a member who logs Thursday's WOD on Saturday reaches that
+  // board from its feed card, which is still in the feed, rather than through
+  // a fourteen-day fetch on every boot.
+  async function loadClubWodBoards() {
+    if (!state.user) {
+      state.club.wodBoards = []; state.club.wodBoardsLoaded = false;
+      state.club.wodBoardsLoading = false; state.club.wodBoardsError = false;
+      clubWodSessionsToApp();
+      return;
+    }
+    state.club.wodBoardsLoading = true;
+    const { data, error } = await client.rpc("club_wod_boards");
+    state.club.wodBoardsLoading = false;
+    state.club.wodBoardsLoaded = true;
+    state.club.wodBoardsError = !!error;
+    // Kept in the server's order. Cancelled sessions are already excluded by
+    // club_wod_boards itself, so there is nothing to filter here either.
+    state.club.wodBoards = error ? [] : (data || []);
+    clubWodSessionsToApp();
+  }
+
+  // Hands today's boards to app.js, the same way setClubWods() hands it the
+  // catalogue - because the attach control has to render inside the WOD log
+  // form, which app.js owns, and that form must not have to know how to talk
+  // to Supabase. Called after every read AND after every write, so the log
+  // form's CTA and the board can never disagree about what is attached.
+  function clubWodSessionsToApp() {
+    if (typeof window.setClubWodSessions === "function") window.setClubWodSessions(state.club.wodBoards);
+  }
+
+  // A board that came back from any of the six RPCs, folded into both places
+  // it can be on screen at once: the today strip and the open dialog. One
+  // function so a write cannot refresh one and leave the other stale.
+  function applyClubWodBoard(board) {
+    if (!board || !board.session_id) return;
+    const idx = state.club.wodBoards.findIndex((b) => b && b.session_id === board.session_id);
+    // Order is the server's. A board already in the list is replaced IN
+    // PLACE; a new one (a fresh publish) is appended rather than unshifted,
+    // so the strip does not reorder itself under a coach mid-publish.
+    if (idx >= 0) state.club.wodBoards[idx] = board;
+    else if (board.session_date === todayIso() && !board.cancelled_at) state.club.wodBoards.push(board);
+    // A cancelled board leaves the today strip (club_wod_boards excludes
+    // them) but stays fully readable by id in the dialog, because a member
+    // holding a result on a withdrawn board must still be able to detach.
+    if (board.cancelled_at && idx >= 0) state.club.wodBoards.splice(idx, 1);
+    const v = state.club.wodBoardView;
+    if (v && v.sessionId === board.session_id) { v.board = board; v.loading = false; v.error = false; }
+    clubWodSessionsToApp();
+  }
+
+  async function openClubWodBoard(sessionId) {
+    if (!sessionId) return;
+    const known = state.club.wodBoards.find((b) => b && b.session_id === sessionId) || null;
+    // Opens on the board already in hand when there is one, so the dialog
+    // paints filled rather than as a skeleton, and re-reads underneath.
+    state.club.wodBoardView = { sessionId, board: known, loading: !known, error: false, busy: false, errorText: "" };
+    rerender();
+    const { data, error } = await client.rpc("club_wod_board", { p_session_id: sessionId });
+    const v = state.club.wodBoardView;
+    if (!v || v.sessionId !== sessionId) return;
+    if (error || !data) { v.loading = false; v.error = true; v.errorText = error ? serverErrorText(error) : ""; return rerender(); }
+    applyClubWodBoard(data);
+    rerender();
+  }
+  function closeClubWodBoard() { state.club.wodBoardView = null; rerender(); }
+
+  // ---- The member's two writes ---------------------------------------------
+  // Neither is queued through HaimuniaOutbox, and that is a decision rather
+  // than an omission: an attach that leaves the device now and lands tomorrow
+  // could land on a board that has since been cancelled or expired, and the
+  // member would have been told it succeeded. Attaching is cheap to repeat
+  // and worthless once the board is closed, so it fails honestly instead.
+  // communityRpc() is still used for the idempotency key and for its
+  // un-migrated-server fallback (PGRST202), which is what stops a client
+  // deployed ahead of these migrations from killing the feature outright.
+  async function attachClubWodResult(sessionId, recordId, entry) {
+    if (!state.user || !sessionId || !recordId) return false;
+    const v = state.club.wodBoardView;
+    if (v && v.sessionId === sessionId) { v.busy = true; v.errorText = ""; rerender(); }
+    // p_entry: the entry the client already holds, sent so a member with
+    // cloud backup OFF still gets a figure. It is a fallback, never a claim -
+    // the server prefers its own copy of the record when it has one and
+    // re-formats either source from clamped structured fields, so nothing
+    // typed here can reach the board.
+    const { data, error } = await communityRpc("club_wod_attach_result", {
+      p_session_id: sessionId, p_record_id: recordId, p_entry: entry || null,
+    });
+    if (v && v.sessionId === sessionId) v.busy = false;
+    if (error) {
+      const text = serverErrorText(error);
+      if (v && v.sessionId === sessionId) { v.errorText = text; rerender(); } else setMessage(text);
+      return false;
+    }
+    if (data) applyClubWodBoard(data);
+    setMessage("התוצאה צורפה ללוח של המועדון");
+    rerender();
+    return true;
+  }
+
+  async function detachClubWodResult(sessionId) {
+    if (!state.user || !sessionId) return false;
+    const v = state.club.wodBoardView;
+    if (v && v.sessionId === sessionId) { v.busy = true; v.errorText = ""; rerender(); }
+    const { data, error } = await client.rpc("club_wod_detach_result", { p_session_id: sessionId });
+    if (v && v.sessionId === sessionId) v.busy = false;
+    if (error) {
+      const text = serverErrorText(error);
+      if (v && v.sessionId === sessionId) { v.errorText = text; rerender(); } else setMessage(text);
+      return false;
+    }
+    if (data) applyClubWodBoard(data);
+    setMessage("התוצאה הוסרה מהלוח");
+    rerender();
+    return true;
+  }
+
+  // ---- Staff: program a day, and withdraw one ------------------------------
+  // Gated on has_perm('community.challenge.create') - the same permission
+  // club_wod_publish uses, and NOT isStaff(), which also admits the `staff`
+  // role that holds no such permission. THE DATABASE IS THE REAL BOUNDARY:
+  // both RPCs check it themselves, so what follows is a display rule that
+  // keeps a control nobody can use off the screen, never the enforcement.
+  async function publishClubWodSession(form) {
+    if (!state.user || !clubWodCanProgram() || !form) return;
+    const wodId = String((form.elements.wodId && form.elements.wodId.value) || "");
+    const date = String((form.elements.sessionDate && form.elements.sessionDate.value) || "");
+    const note = String((form.elements.note && form.elements.note.value) || "");
+    const errors = {};
+    if (!wodId) errors.wodId = "בחרו אימון מקטלוג המועדון";
+    if (Object.keys(errors).length) return setFieldErrors("communityClubWodSession", errors);
+    setFieldErrors("communityClubWodSession", {});
+    state.club.wodSessionForm.wodId = wodId;
+    state.club.wodSessionForm.date = date;
+    state.club.wodSessionForm.note = note;
+    state.club.wodSessionForm.saving = true;
+    rerender();
+    const { data, error } = await communityRpc("club_wod_session_publish", {
+      p_wod_id: wodId, p_session_date: date || null, p_note: note,
+    });
+    state.club.wodSessionForm.saving = false;
+    if (error) { setMessage(serverErrorText(error)); return rerender(); }
+    if (data) applyClubWodBoard(data);
+    state.club.wodSessionForm.wodId = ""; state.club.wodSessionForm.note = "";
+    setMessage("האימון של היום פורסם למועדון");
+    rerender();
+  }
+
+  async function cancelClubWodSession(sessionId) {
+    if (!state.user || !clubWodCanProgram() || !sessionId) return;
+    const { data, error } = await client.rpc("club_wod_session_cancel", { p_session_id: sessionId });
+    if (error) { setMessage(serverErrorText(error)); return rerender(); }
+    // Cancelling DELETES NOTHING: the card is withdrawn and the board closes,
+    // and every attached result survives a re-publish. The message says so,
+    // because "ביטול" on its own reads like a delete.
+    if (data) applyClubWodBoard(data);
+    setMessage("האימון הוסר מהפיד. התוצאות שכבר צורפו נשמרו.");
+    rerender();
+  }
+
+  // ---- Render --------------------------------------------------------------
+  function clubWodDateLabel(iso) {
+    const d = String(iso || "").slice(0, 10);
+    if (!d) return "";
+    const today = todayIso();
+    if (d === today) return "היום";
+    const shift = (days) => new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+    if (d === shift(-1)) return "אתמול";
+    if (d === shift(1)) return "מחר";
+    return d;
+  }
+  // The programming itself - the half of this card WhatsApp cannot produce.
+  // bidiText on every human string: a WOD is wall-to-wall mixed script
+  // (Hebrew beside `21-15-9`, `Fran`, `@ 30 ק"ג`), which is exactly the case
+  // where an unisolated LTR run paints a DIFFERENT, plausible workout.
+  function clubWodProgrammingHtml(wod) {
+    if (!wod) return "";
+    const bits = [];
+    if (wod.scoreType) bits.push(scoreTypeHtml(wod.scoreType));
+    if (wod.timeCapSeconds) bits.push(bidiText("מגבלת זמן: " + Math.round(Number(wod.timeCapSeconds) / 60) + " דקות"));
+    if (wod.emomMinutes) bits.push(bidiText("EMOM " + Number(wod.emomMinutes)));
+    const emom = Array.isArray(wod.emomMovements) && wod.emomMovements.length
+      ? `<div class="log-list" style="margin-top:6px;">${wod.emomMovements.map((m, i) => `<div class="log-row"><span>${bidiText(String(m))}</span><span class="mono" style="color:var(--steel);">${Number((wod.emomTargetReps || [])[i] || 0)}</span></div>`).join("")}</div>`
+      : "";
+    return `${wod.desc ? `<div class="mono" style="white-space:pre-wrap;line-height:1.6;font-size:13px;margin-top:6px;">${bidiText(String(wod.desc))}</div>` : ""}
+      ${bits.length ? `<div style="color:var(--steel);font-size:12px;margin-top:6px;">${bits.join(" · ")}</div>` : ""}
+      ${emom}`;
+  }
+
+  // THE FEED CARD (COMM / 202609080001).
+  //
+  // Registered in POST_CARD_RENDERERS so renderPostCard's ONE dispatch picks
+  // it up BEFORE renderWorkoutPostCard can - which is the whole point and the
+  // trap the schema flagged. POST_CLUB_WOD rows carry source_type and
+  // source_id NULL ON PURPOSE, and renderWorkoutPostCard's deep link falls
+  // back to `data-source-type="workout"`, so a card that reached that
+  // renderer would offer to open a workout that does not exist. This card
+  // opens the BOARD, off metadata.club_wod_session_id, and emits no
+  // data-source-type attribute at all.
+  function renderClubWodPostCard(post) {
+    const m = (post && post.metadata) || {};
+    const sessionId = m.club_wod_session_id || "";
+    const name = post.title || "אימון היום";
+    const when = m.session_date || post.occurred_on || "";
+    // The catalogue is already in hand (loadClubWods), so the card can show
+    // the actual programming rather than a bare name. A wod_id this device
+    // has never seen simply renders without it - club_wods_list() returns
+    // retired rows precisely so this stays resolvable.
+    const wod = (state.club.clubWods || []).find((w) => w && w.id === m.club_wod_id) || null;
+    const board = sessionId ? state.club.wodBoards.find((b) => b && b.session_id === sessionId) : null;
+    // The count comes ONLY from a board actually read from the server. It is
+    // viewer-relative there (counted over the same filtered set as the list),
+    // so it is never derived, guessed or defaulted to 0 here.
+    const countHtml = board
+      ? `<div style="color:var(--steel);font-size:12px;margin-top:6px;">${Number(board.result_count || 0) === 0 ? "עדיין לא צורפו תוצאות" : `${Number(board.result_count)} מהמועדון צירפו תוצאה`}</div>`
+      : "";
+    const inner = `<div class="post-title">${bidiText(name)}</div>
+      ${when ? `<div style="color:var(--steel);font-size:12px;">${esc(clubWodDateLabel(when))}</div>` : ""}
+      ${clubWodProgrammingHtml(wod)}
+      ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${bidiText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}
+      ${countHtml}`;
+    const extra = sessionId
+      ? `<button class="chip-btn primary" data-community-action="open-club-wod-board" data-id="${esc(sessionId)}" data-source="feed">פתיחת הלוח</button>`
+      : "";
+    return postCardShell(post, inner + postMediaHtml(post), { extra });
+  }
+
+  // ONE result row. No index, no position, no trophy - see rule 2 above.
+  function renderClubWodResultRow(r, sessionDate) {
+    const name = r.display_name || (r.handle ? "@" + r.handle : "חבר/ה");
+    const tags = [];
+    if (r.score_type) tags.push(scoreTypeHtml(r.score_type));
+    if (r.rx === true || r.rx === false) tags.push(effortHtml(r.rx ? "rx" : "scaled"));
+    // "logged Thursday" when the entry's own date differs from the session's.
+    // Attaching is not tied to when the entry was made - a member may log
+    // Thursday's WOD on Saturday - and the row carries its own occurred_on
+    // precisely so the client can say so instead of implying everybody
+    // trained on the session date.
+    if (r.occurred_on && sessionDate && String(r.occurred_on).slice(0, 10) !== String(sessionDate).slice(0, 10)) {
+      tags.push(bidiText("נרשם " + clubWodDateLabel(r.occurred_on)));
+    }
+    // THREE figure states, which are three different facts about a member:
+    //   a result_text        - the member allows the club to see the number;
+    //   result_hidden        - there IS a number and it is not this viewer's
+    //                          to read (show_workout_results, default false);
+    //   neither              - they took part and no figure was recorded
+    //                          (cloud backup off and no local copy to send).
+    const figure = r.result_text
+      ? `<span class="mono" style="color:var(--brass);font-weight:700;">${esc(r.result_text)}</span>`
+      : r.result_hidden
+      ? `<span style="color:var(--steel);font-size:12px;">התוצאה מוסתרת</span>`
+      : `<span style="color:var(--steel);font-size:12px;">השתתפ/ה</span>`;
+    return `<div class="log-row" data-club-wod-user="${esc(r.user_id)}"${r.is_viewer ? ` data-club-wod-self="1"` : ""}${r.is_viewer ? ` style="border-color:var(--energy);"` : ""}>
+      <span class="flex gap-8" style="align-items:center;min-width:0;">
+        ${avatarHtml(r.display_name || r.handle, 28, r.avatar_url)}
+        <span style="min-width:0;">
+          <span style="font-weight:700;font-size:13px;">${nameHtml(r.display_name, r.handle)}${r.is_viewer ? " (את/ה)" : ""}</span>
+          ${tags.length ? `<span style="color:var(--steel);font-size:11px;display:block;">${tags.join(" · ")}</span>` : ""}
+        </span>
+      </span>
+      <span style="text-align:left;">${figure}</span>
+    </div>`;
+  }
+
+  // The link that replaces the toggle this file will not offer. It closes the
+  // board first - the privacy panel lives under #content, which an open
+  // modal-overlay covers - and rides the one-shot scroll setManageTab()
+  // already uses, consumed in the same afterRenderCommunity() pass by a plain
+  // getElementById that does not care which tab set it.
+  function openPrivacySettings() {
+    closeClubWodBoard();
+    if (typeof window.switchToCommunityTopTab === "function") window.switchToCommunityTopTab();
+    state.ui.manageScrollTo = "communityPrivacyPanel";
+    setCommunityTab("account");
+  }
+
+  // The viewer's own block: what they may do, and why not when they may not.
+  // EVERY branch below reads `viewer`, never session_date or cancelled_at.
+  function renderClubWodViewerPanel(board, v) {
+    const viewer = board.viewer || {};
+    const wodId = board.wod ? board.wod.id : "";
+    const sid = board.session_id;
+    const busy = !!(v && v.busy);
+    const parts = [];
+
+    if (viewer.attached) {
+      const mine = viewer.result_text
+        ? `<span class="mono" style="color:var(--brass);font-weight:800;">${esc(viewer.result_text)}</span>`
+        : `<span style="color:var(--steel);">בלי תוצאה מספרית</span>`;
+      parts.push(`<div style="font-size:13px;margin-bottom:6px;">התוצאה שלך על הלוח: ${mine}</div>`);
+      // THE HINT, and the whole of what this client does about
+      // show_workout_results. It states the fact and links; it does not
+      // offer, suggest or provide a way to change the setting from here.
+      if (viewer.result_text && state.profile && state.profile.show_workout_results === false) {
+        parts.push(`<div class="footer-note" style="margin:0 0 8px;">חברי המועדון רואים שהשתתפת, אבל לא את התוצאה עצמה — כך מוגדר אצלך „הצגת תוצאות אימון". <button class="link-btn" data-community-action="open-privacy-settings">להגדרות הפרטיות</button></div>`);
+      }
+      // can_detach, not "attached && open": detaching works on a cancelled
+      // and on an expired board too, deliberately, because taking your own
+      // result off a club surface must never be blocked.
+      if (viewer.can_detach) {
+        parts.push(`<div class="chip-row"><button class="chip-btn" data-community-action="club-wod-detach" data-id="${esc(sid)}"${busy ? " disabled" : ""}>${busy ? "מסיר…" : "הסרת התוצאה שלי מהלוח"}</button></div>`);
+      }
+      return parts.join("");
+    }
+
+    if (!viewer.can_attach) {
+      // closed_reason, so the board SAYS why instead of hiding a control.
+      const why = { future: "האימון הזה נקבע למחר. אפשר לצרף תוצאה מהיום שהוא נקבע אליו.",
+                    expired: "הלוח הזה נסגר לצירוף תוצאות אחרי 14 יום. מה שכבר צורף נשאר.",
+                    cancelled: "האימון בוטל, ולכן הלוח סגור לצירוף תוצאות." }[viewer.closed_reason] || "";
+      return why ? `<div class="footer-note" style="margin:0;">${esc(why)}</div>` : "";
+    }
+
+    // OPEN, AND NOT ATTACHED. The one question left is one the SERVER CANNOT
+    // ANSWER: has this member logged it? The log is local-first and backup is
+    // opt-out, so it is asked of app.js's own log - and a member who has not
+    // logged it is offered the log, not a way onto the board.
+    const entries = clubWodLoggedEntries(wodId);
+    if (!entries.length) {
+      return emptyStateHtml({
+        key: "club-wod-not-logged", icon: "chart",
+        headline: "עוד לא רשמת את האימון הזה",
+        body: "אחרי שתרשמו אותו ביומן האימונים אפשר יהיה לצרף את התוצאה ללוח בלחיצה אחת. הצירוף תמיד יזום — שום רישום לא מגיע ללוח מעצמו.",
+      });
+    }
+    // Explicit, per entry. Nothing is pre-selected and nothing is attached
+    // because it happens to match the day - the member chooses which of their
+    // attempts the club sees.
+    const rows = entries.slice(0, 5).map((e) => `<button class="chip-btn" data-community-action="club-wod-attach" data-id="${esc(sid)}" data-record="${esc(e.id)}"${busy ? " disabled" : ""}>${esc(clubWodDateLabel(e.date))}${e.resultText ? " · " + esc(e.resultText) : ""}</button>`).join("");
+    return `<div style="font-size:13px;margin-bottom:6px;">${entries.length === 1 ? "לצרף את הרישום שלך ללוח?" : "איזה מהרישומים שלך לצרף ללוח?"}</div>
+      <div class="chip-row" style="flex-wrap:wrap;">${rows}</div>`;
+  }
+
+  function renderClubWodBoardBody(board, v) {
+    const wodName = board.wod ? board.wod.name : "אימון היום";
+    const by = board.published_by;
+    const meta = [clubWodDateLabel(board.session_date)];
+    if (by) meta.push("פורסם על ידי " + (by.display_name || (by.handle ? "@" + by.handle : "")));
+    const cancelled = board.cancelled_at
+      ? `<div class="footer-note" role="status" style="margin:0 0 10px;color:var(--brass);">האימון הזה בוטל והכרטיס הוסר מהפיד. התוצאות שכבר צורפו נשמרו, ואפשר להסיר את שלך מכאן.</div>`
+      : "";
+    const note = board.note ? `<div class="post-body" style="white-space:pre-wrap;margin:8px 0;">${bidiText(String(board.note))}</div>` : "";
+    // Nobody yet. The card is worth opening at zero results - that is what
+    // breaks the log-adoption circularity - so this is a real four-slot state
+    // and not a dash.
+    const list = (board.results || []).length
+      ? `<div class="log-list">${board.results.map((r) => renderClubWodResultRow(r, board.session_date)).join("")}</div>`
+      : emptyStateHtml({
+          key: "club-wod-board-empty", icon: "people",
+          headline: "עוד אף אחד לא צירף תוצאה",
+          body: "זה האימון של המועדון להיום. מי שרשם אותו ביומן יכול לצרף את התוצאה שלו לכאן, וזה מה שיבנה את הלוח.",
+        });
+    const countLine = `<div style="color:var(--steel);font-size:12px;margin:10px 0 6px;">${Number(board.result_count || 0)} מהמועדון על הלוח</div>`;
+    const staffTools = clubWodCanProgram() && !board.cancelled_at
+      ? `<div class="chip-row" style="margin-bottom:10px;"><button class="chip-btn danger" data-community-action="club-wod-cancel-confirm" data-id="${esc(board.session_id)}">ביטול האימון של היום</button></div>`
+      : "";
+    const err = v && v.errorText ? `<div class="field-error" role="alert">${esc(v.errorText)}</div>` : "";
+    return `<div style="color:var(--steel);font-size:12px;margin-bottom:6px;">${meta.map(bidiText).join(" · ")}</div>
+      ${cancelled}
+      ${clubWodProgrammingHtml(board.wod)}
+      ${note}
+      ${staffTools}
+      <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px;">${renderClubWodViewerPanel(board, v)}${err}</div>
+      ${countLine}
+      ${list}
+      <div class="footer-note" style="margin-top:10px;">הרשימה מסודרת לפי סדר הצירוף — אין כאן דירוג, ואימון מלא ומותאם יושבים באותה רשימה.</div>`;
+  }
+
+  function renderClubWodBoardOverlay() {
+    const v = state.club.wodBoardView;
+    if (!v) return "";
+    const board = v.board;
+    const title = board && board.wod ? board.wod.name : "אימון היום";
+    const bodyHtml = v.loading ? `<div class="empty">טוען את הלוח…</div>`
+      : (v.error || !board) ? `<div class="empty">${esc(v.errorText || "לא ניתן היה לטעון את הלוח.")}</div>`
+      : renderClubWodBoardBody(board, v);
+    return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="clubWodBoardTitle" data-cloud-dialog="clubWodBoard" style="align-items:flex-start;padding:20px 12px;">
+      <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:560px;">
+        <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
+          <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:12px;">
+            <h2 id="clubWodBoardTitle" style="margin-top:0;font-weight:800;font-size:17px;margin-bottom:0;">${bidiText(title)}</h2>
+            <button class="chip-btn" data-community-action="close-club-wod-board" aria-label="סגירה">✕</button>
+          </div>
+          ${bodyHtml}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // The club-home strip: what the box is doing today, above the feed. Same
+  // "renders nothing rather than an empty placeholder" style as the upcoming
+  // event and classmates-today cards - with one exception, and it is the
+  // point of the whole feature: a coach who can program sees the door even on
+  // a day with nothing on it, because an empty feed is the problem being
+  // solved and they are the only person who can fix it.
+  function renderClubWodTodayStrip() {
+    if (!state.user) return "";
+    const boards = state.club.wodBoards;
+    const canProgram = clubWodCanProgram();
+    if (!boards.length) {
+      if (!canProgram) return "";
+      if (!state.club.wodBoardsLoaded) return "";
+      // A FAILED READ IS NOT AN EMPTY DAY. Without this the strip would tell
+      // a coach nothing is programmed - and invite them to publish a second
+      // session - on the strength of a request that never landed.
+      if (state.club.wodBoardsError) {
+        return `<div class="chart-card" style="margin-bottom:12px;"><div class="empty">לא ניתן היה לטעון את האימון של היום.<div class="chip-row" style="justify-content:center;margin-top:6px;"><button class="chip-btn" data-community-action="club-wod-retry">ניסיון חוזר</button></div></div></div>`;
+      }
+      return `<div class="chart-card" style="margin-bottom:12px;">${emptyStateHtml({
+        key: "club-wod-today-none", icon: "chart",
+        headline: "לא נקבע אימון למועדון היום",
+        body: "אימון מהקטלוג שנקבע ליום מסוים מייצר כרטיס אחד בפיד ולוח אחד, וחברי המועדון מצרפים אליו תוצאות שהם כבר רשמו — בלי לכתוב פוסט.",
+      })}${renderClubWodSessionForm()}</div>`;
+    }
+    const rows = boards.map((b) => {
+      const name = b.wod ? b.wod.name : "אימון היום";
+      const count = Number(b.result_count || 0);
+      return `<button class="log-row" data-community-action="open-club-wod-board" data-id="${esc(b.session_id)}" data-source="strip" style="width:100%;text-align:right;">
+        <span style="text-align:right;min-width:0;">
+          <span style="font-weight:800;font-size:14px;display:block;">${bidiText(name)}</span>
+          <span style="color:var(--steel);font-size:12px;">${count === 0 ? "עדיין לא צורפו תוצאות" : esc(count + " מהמועדון על הלוח")}${b.viewer && b.viewer.attached ? " · התוצאה שלך על הלוח" : ""}</span>
+        </span>
+        <span style="color:var(--steel);font-size:12px;font-weight:600;">פתיחת הלוח</span>
+      </button>`;
+    }).join("");
+    return `<div class="chart-card" style="margin-bottom:12px;">
+      ${sectionHead("var(--brass)", "האימון של היום במועדון")}
+      <div class="log-list">${rows}</div>
+      ${canProgram ? renderClubWodSessionForm() : ""}
+    </div>`;
+  }
+
+  function renderClubWodSessionForm() {
+    if (!clubWodCanProgram()) return "";
+    const f = state.club.wodSessionForm;
+    const today = todayIso();
+    const shift = (days) => new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+    // Only live catalogue rows are offerable: club_wod_session_publish
+    // refuses a retired WOD ('wod is retired'), so listing one would be an
+    // option that can only fail.
+    const choices = (state.club.clubWods || []).filter((w) => w && !w.retiredAt);
+    if (!choices.length) {
+      return `<div class="footer-note" style="margin-top:10px;">אין עדיין אימונים בקטלוג המועדון. אפשר לפרסם אימון לקטלוג ממסך רישום האימון, ואז לקבוע אותו ליום.</div>`;
+    }
+    const options = choices.map((w) => `<option value="${esc(w.id)}"${f.wodId === w.id ? " selected" : ""}>${esc(w.name)}</option>`).join("");
+    return `<form id="communityClubWodSession" class="admin-card" style="margin-top:10px;">
+      <div style="font-weight:800;margin-bottom:10px;">קביעת האימון של היום<span class="admin-tag">ניהול</span></div>
+      ${field("communityClubWodSession", "wodId", "אימון מהקטלוג", `<select class="text-input" name="wodId"><option value="">בחירת אימון</option>${options}</select>`)}
+      ${dateField("communityClubWodSession", "sessionDate", "ליום", `<input class="text-input" name="sessionDate" type="date" value="${esc(f.date || today)}" min="${esc(shift(-1))}" max="${esc(shift(1))}"/>`)}
+      ${field("communityClubWodSession", "note", "מילה מהמאמן/ת (אופציונלי)", `<textarea class="text-input" name="note" maxlength="500" rows="2">${esc(f.note || "")}</textarea>`)}
+      <div class="footer-note" style="margin:-4px 0 8px;">אפשר לקבוע לאתמול, להיום או למחר בלבד, ועד ארבעה אימונים ליום — כך הפיד נשאר מה שקורה עכשיו. הטקסט נשמר כפי שהוא ברגע הפרסום; לשינוי שלו צריך לבטל ולקבוע מחדש.</div>
+      <button class="chip-btn primary" type="submit"${f.saving ? " disabled" : ""}>${f.saving ? "מפרסם…" : "פרסום למועדון"}</button>
+    </form>`;
   }
 
   async function loadInactiveMembers() {
@@ -6106,6 +6654,34 @@
     "wod is used by a live challenge": "אי אפשר להוציא מהקטלוג אימון שיש עליו אתגר שעדיין לא הסתיים. אפשר לחזור לזה אחרי שהאתגר נגמר.",
     "wod is locked by a challenge": "כבר התקיים אתגר על האימון הזה, ולכן אי אפשר לשנות אותו — לוח התוצאות מתעד מה אנשים עשו מול אימון מסוים. לאימון שונה צריך לפרסם אימון חדש.",
     "not an active participant": "העדכון הזה שייך לאתגר שכבר לא משתתפים בו. אפשר להסיר אותו מהתור.",
+    // ---- Club WOD sessions and boards (202609080002) ---------------------
+    // Every refusal the six RPCs can raise, mapped. The rule this file
+    // already follows applies with unusual force here: NOTHING below says
+    // "try again", because none of these can succeed on a retry - each one
+    // is a stable state, and each one therefore names the move that IS
+    // available instead (cancel and re-publish, pick another day, log the
+    // workout, open the board from the feed).
+    //
+    // 'wod not found' is deliberately NOT re-stated: club_wod_session_publish
+    // raises the same string club_wod_publish already does, for the same
+    // reason (the id is not in the catalogue), and the sentence above it
+    // reads correctly for both.
+    "wod is retired": "האימון הזה הוצא מקטלוג המועדון, ולכן אי אפשר לקבוע עליו אימון יום. אפשר להחזיר אותו לקטלוג בניהול הקטלוג, או לבחור אימון אחר.",
+    // The snapshot rule, again - same shape as 'wod already published' above
+    // and for the same reason: the note is frozen at publish time so a card
+    // the club has already read cannot change under it. The correction path
+    // is real and is named.
+    "session already posted": "האימון הזה כבר נקבע ליום הזה, והטקסט שנשמר איתו הוא מה שהמועדון כבר ראה. לשינוי הטקסט אפשר לבטל את האימון שנקבע ולקבוע אותו מחדש; הלוח והתוצאות שכבר צורפו נשמרים.",
+    "too many sessions posted for that day": "כבר נקבעו ארבעה אימונים ליום הזה, וזו התקרה. אפשר לבטל אחד מהם או לקבוע ליום אחר.",
+    "a session can only be posted for yesterday, today or tomorrow": "אפשר לקבוע אימון יום לאתמול, להיום או למחר בלבד — כך הפיד נשאר מה שקורה עכשיו במועדון ולא לוח זמנים של שבוע קדימה.",
+    "session not found": "האימון הזה כבר לא קיים בלוח של המועדון.",
+    // Two different closures behind one server string; the client knows
+    // which from viewer.closed_reason and says so on the board itself, so
+    // this sentence has to cover both without guessing.
+    "this board is closed": "הלוח הזה סגור לצירוף תוצאות — או שהאימון בוטל, או שעברו יותר מ-14 יום מהיום שהוא נקבע אליו. התוצאה שכבר צורפה נשארת, ואפשר להסיר אותה בכל רגע.",
+    "the session has not happened yet": "האימון הזה נקבע למחר, ואפשר לצרף אליו תוצאה רק מהיום שהוא נקבע אליו.",
+    "record is required": "לא נבחר רישום לצירוף. אפשר לרשום את האימון ביומן ואז לצרף את התוצאה.",
+    "that result is for a different workout": "הרישום שנבחר שייך לאימון אחר, ולכן אי אפשר לצרף אותו ללוח הזה. אפשר לרשום את האימון של היום ולצרף את הרישום שלו.",
     // Thrown by registerOutboxHandlers() itself, not by the server: the
     // queue tried to send while nobody was signed in.
     "session expired": "החיבור לחשבון פג, ולכן הפעולה לא נשלחה. אחרי התחברות מחדש עם שם המשתמש והסיסמה אפשר לשלוח אותה שוב מכאן.",
@@ -6799,6 +7375,7 @@
     else if (c.action === "challenge-delete-draft") deleteChallengeDraft(c.payload.challengeId);
     else if (c.action === "challenge-team-delete-confirm") deleteChallengeTeam(c.payload.teamId);
     else if (c.action === "event-cancel") cancelEvent(c.payload.eventId);
+    else if (c.action === "club-wod-cancel") cancelClubWodSession(c.payload.sessionId);
     else rerender();
   }
 
@@ -9412,6 +9989,15 @@
     POST_PR: renderPrPostCard,
     POST_ACHIEVEMENT: renderAchievementPostCard,
     POST_ATTENDANCE_MILESTONE: renderAttendanceMilestonePostCard,
+    // 202609080001. Registered HERE, in the one dispatch, which is what makes
+    // renderPostCard branch on this type BEFORE renderWorkoutPostCard can see
+    // it. That ordering is load-bearing rather than tidy: POST_CLUB_WOD rows
+    // carry source_type and source_id NULL on purpose, and
+    // renderWorkoutPostCard's deep link defaults a missing source_type to
+    // "workout" - so a club-programming card that fell through to it would
+    // render an "open the workout" button pointing at nothing. This card
+    // opens the BOARD instead, off metadata.club_wod_session_id.
+    POST_CLUB_WOD: renderClubWodPostCard,
     POST_CHALLENGE: renderChallengeLinkCard,
     POST_EVENT: renderEventLinkCard,
     POST_ANNOUNCEMENT: renderAnnouncementPostCard,
@@ -15083,7 +15669,13 @@
   // and never noticed a real user cannot reach the confirm button at all in
   // this state). See scripts/browser-check/community-challenge-lifecycle.mjs.
   function renderConfirmDialog() {
-    return renderPostComposer() + renderPrSharePrompt() + renderAchievementUnlockCelebration() + renderCommunityProfileOverlay() + renderNotificationCenter()
+    // FIRST, so everything that can stack ON the board paints after it: the
+    // term sheet (the board is full of `?`-marked terms - Rx, Scaled, For
+    // Time) and the confirm sheet (a coach cancelling the session). Nothing
+    // can ever be under it, since the board is only opened from the feed or
+    // the club-home strip.
+    return renderClubWodBoardOverlay()
+      + renderPostComposer() + renderPrSharePrompt() + renderAchievementUnlockCelebration() + renderCommunityProfileOverlay() + renderNotificationCenter()
       + renderReportSheet() + renderModActionSheet() + renderGhostReclaimSheet() + renderModContextOverlay() + renderChallengeViewOverlay() + renderEventViewOverlay() + renderRecapViewOverlay()
       // Third-to-last, for the same DOM-order/z-order reason as the two
       // below it: a `?` marker can sit inside a challenge, event or recap
@@ -15748,7 +16340,14 @@
     const feedHtml = `<div class="ach-section">${sectionHead("var(--blue)", "הפיד שלי")}${composeBtn}${filterHtml}${classmatesTodayHtml}${feed}${upcomingEventHtml}${feedMoreHtml}</div>`;
 
     // COMM-155. The pinned strip sits above everything else on the Club home.
-    const feedTab = renderPinnedStrip() + renderOnboardingStep() + clubTopHtml + announcementsHtml + feedHtml;
+    // 202609080002. Directly under the club header and ABOVE the feed list:
+    // "what is the box doing today" is the first thing a member opens the app
+    // for, and it is the one card that is worth reading at zero member
+    // contributions. Same renders-nothing-when-empty style as the upcoming
+    // event and classmates-today cards, with the one deliberate exception
+    // renderClubWodTodayStrip() documents.
+    const clubWodTodayHtml = renderClubWodTodayStrip();
+    const feedTab = renderPinnedStrip() + renderOnboardingStep() + clubTopHtml + clubWodTodayHtml + announcementsHtml + feedHtml;
 
     // ---- Boards tab: weekly challenge + streaks, top-3-plus-your-rank ----
     const challengeSetter = staff ? `<form id="communityWeeklyChallenge" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">קביעת אתגר שבועי<span class="admin-tag">ניהול</span></div>${field("communityWeeklyChallenge", "title", "שם האתגר", `<input class="text-input" name="title" placeholder="שם האתגר" required/>`)}${field("communityWeeklyChallenge", "comparisonKey", "על מה מתחרים", renderChallengeKeyPicker())}<div style="color:var(--steel);font-size:11px;margin:-6px 0 10px;">רק תרגילים ואימונים שקיימים באפליקציה — כך התוצאות שחברי המועדון משתפים נספרות לאתגר מעצמן.</div><div class="flex gap-16 field">${dateField("communityWeeklyChallenge", "startsOn", "תאריך התחלה", `<input class="text-input" name="startsOn" type="date" required/>`)}${dateField("communityWeeklyChallenge", "endsOn", "תאריך סיום", `<input class="text-input" name="endsOn" type="date" required/>`)}</div><button class="chip-btn primary" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
@@ -15833,7 +16432,11 @@
     const privacyRows = state.profile
       ? PRIVACY_FIELDS.map((f) => `<label class="log-row" style="justify-content:space-between;gap:12px;cursor:pointer;"><span style="font-size:13px;">${f.label}</span><input type="checkbox" data-privacy-field="${f.key}"${state.profile[f.key] ? " checked" : ""} aria-label="${esc(f.label)}"/></label>`).join("")
       : `<div class="log-row" aria-hidden="true"><span style="height:12px;width:62%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`.repeat(4);
-    const privacyPanel = `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--blue)", "פרטיות")}
+    // The id is the scroll anchor for open-privacy-settings - the club WOD
+    // board's "your result is hidden from the club" hint LINKS here rather
+    // than offering to flip show_workout_results, which is the only correct
+    // affordance for a toggle that must stay the member's own decision.
+    const privacyPanel = `<div class="ach-section" id="communityPrivacyPanel" style="margin-top:18px;">${sectionHead("var(--blue)", "פרטיות")}
       <div style="color:var(--steel);font-size:12px;line-height:1.6;margin-bottom:8px;">כל שינוי נשמר מיד ונאכף בשרת. הגדרות הנוכחות והרישום לשיעור ייכנסו לתוקף כשמודול הנוכחות יעלה.</div>
       <div class="log-list">${privacyRows}</div>
     </div>`;
@@ -16368,6 +16971,29 @@
     { key: "challengeView", isOpen: () => state.challenges.view, close: function () { closeChallengeView(); } },
     { key: "eventView", isOpen: () => state.events.view, close: function () { closeEventView(); } },
     { key: "recapView", isOpen: () => state.recaps.view, close: function () { closeRecapView(); } },
+    // 202609080002, the club WOD board. LAST, which is the mirror image of
+    // its FIRST position in renderConfirmDialog()'s DOM order and follows the
+    // same rule the three entries at the top of this list follow: this
+    // registry returns the first array match, not the topmost dialog, so a
+    // dialog that can have others stacked on top of it must be checked
+    // AFTER them. Two can cover this one today - the confirm sheet (a coach
+    // cancelling the session) and the term sheet (a `?` marker inside the
+    // board's own score-type and Rx labels) - and NONE can ever be covered BY
+    // it, since the board is only ever opened from the feed or the club-home
+    // strip. Last is therefore the only position that cannot mis-trap focus,
+    // and it stays correct if the rows later gain a tap that opens the
+    // profile overlay: they already carry data-club-wod-user, the same
+    // row-identity marker leaderboardRowHtml uses.
+    //
+    // WHY A DIALOG AT ALL, since this pin is a review trigger and not a
+    // formality: the board is opened from a feed card and from the club-home
+    // strip, exactly as challengeView and eventView are, and it has to sit
+    // over the feed rather than replace it - a member taps a card, reads who
+    // trained, attaches, and is back in the feed. The alternative considered
+    // was a sixth sub-tab, which would have made "today's board" a
+    // destination the member navigates TO, when the whole premise of the
+    // feature is that it arrives in the feed they are already reading.
+    { key: "clubWodBoard", isOpen: () => state.club.wodBoardView, close: function () { closeClubWodBoard(); } },
   ];
   const cloudDialogOpeners = {};
   let cloudOpenDialogKey = null;
@@ -16875,6 +17501,28 @@
     else if (action === "leaderboard-find-people") { directoryEntrySource = "leaderboard"; setCommunityTab("directory"); }
     // COMM-232 suggestions strip.
     else if (action === "suggestion-follow") followSuggestion(el.dataset.id);
+    // ---- Club WOD sessions and boards (202609080002) --------------------
+    else if (action === "open-club-wod-board") openClubWodBoard(el.dataset.id);
+    else if (action === "close-club-wod-board") closeClubWodBoard();
+    // The one retry in this feature that CAN succeed - a dropped read, not a
+    // refused write. Every refusal below is a stable state and offers no such
+    // button; see SERVER_ERROR_TEXT's club WOD block.
+    else if (action === "club-wod-retry") loadClubWodBoards().then(rerender);
+    // The record id and the entry both come from app.js's own log, which is
+    // the only place that knows whether this member logged this WOD.
+    else if (action === "club-wod-attach") {
+      const entry = clubWodEntryById(el.dataset.record);
+      attachClubWodResult(el.dataset.id, el.dataset.record, entry);
+    }
+    else if (action === "club-wod-detach") detachClubWodResult(el.dataset.id);
+    else if (action === "club-wod-cancel-confirm") askConfirm({
+      title: "ביטול האימון של היום",
+      message: "הכרטיס יוסר מהפיד והלוח ייסגר לצירוף תוצאות. שום תוצאה לא נמחקת — מי שכבר צירף נשאר על הלוח, ואם תקבעו את האימון מחדש הלוח חוזר איתו.",
+      confirmLabel: "ביטול האימון", destructive: true,
+      action: "club-wod-cancel", payload: { sessionId: el.dataset.id },
+    });
+    // A LINK, not a toggle. See rule 3 at the head of the club WOD section.
+    else if (action === "open-privacy-settings") openPrivacySettings();
     else if (action === "confirm-yes") runConfirm();
     else if (action === "confirm-no") closeConfirm();
     // Design spec section 3, tiers 2 and 3.
@@ -17187,6 +17835,27 @@
   // staff-gated here and permission-gated again in the database, which is the
   // boundary that actually counts.
   window.publishClubWod = publishClubWod;
+  // 202609080002. The club WOD board's write surface, exposed for the same
+  // reason publishClubWod is: the control belongs INSIDE the WOD log form,
+  // which app.js owns, and attaching has to cost less than composing - so it
+  // cannot be a trip to another tab. app.js decides WHETHER to offer it (only
+  // it knows whether this member logged this WOD); these decide what happens.
+  window.attachClubWodResult = attachClubWodResult;
+  window.detachClubWodResult = detachClubWodResult;
+  window.openClubWodBoard = openClubWodBoard;
+  // The privacy-screen link, so the log form's "hidden from the club" hint
+  // routes to the same place the board's does. It NAVIGATES; it never writes
+  // a privacy field.
+  window.openCommunityPrivacySettings = openPrivacySettings;
+  // READ-ONLY, and deliberately so. app.js's log form needs to know whether
+  // the member's figure reaches the club, so it can say so and link to the
+  // privacy screen. There is no matching setter and there must not be one:
+  // show_workout_results defaults false, and no surface in this app flips a
+  // member's disclosure ON for them. null while the profile is still loading,
+  // which is neither true nor false and renders no hint at all.
+  window.communityShowsWorkoutResults = function () {
+    return state.profile ? !!state.profile.show_workout_results : null;
+  };
   window.editClubWod = editClubWod;
   window.retireClubWod = retireClubWod;
   window.restoreClubWod = restoreClubWod;
@@ -17230,6 +17899,7 @@
     else if (event.target.id === "communityInviteCreate") { event.preventDefault(); createInvite(event.target); }
     else if (event.target.id === "communityChallengeForm") { event.preventDefault(); submitChallengeForm(event.target); }
     else if (event.target.id === "communityEventForm") { event.preventDefault(); submitEventForm(event.target); }
+    else if (event.target.id === "communityClubWodSession") { event.preventDefault(); publishClubWodSession(event.target); }
     else if (event.target.id === "communityInviteCode") { event.preventDefault(); redeemCode(event.target); }
     else if (event.target.id === "communityLogin") { event.preventDefault(); login(event.target); }
     else if (event.target.id === "communityCredentials") { event.preventDefault(); setCredentials(event.target); }
@@ -17330,6 +18000,15 @@
         state.leaderboard.scope = "club"; state.leaderboard.rows = []; state.leaderboard.loading = false;
         state.leaderboard.loaded = false; state.leaderboard.error = false;
         state.feed.items = [];
+        // The club WOD board is a signed-in surface: today's boards, the open
+        // dialog and the coach's publish draft all go, and app.js is told the
+        // list is empty so the attach control in the log form disappears with
+        // the session rather than lingering as a dead button.
+        state.club.wodBoards = []; state.club.wodBoardsLoaded = false;
+        state.club.wodBoardsLoading = false; state.club.wodBoardsError = false;
+        state.club.wodBoardView = null;
+        state.club.wodSessionForm = { wodId: "", date: "", note: "", saving: false };
+        clubWodSessionsToApp();
         state.posts.openShare = {}; state.posts.comparisonForPostId = null; state.posts.comparison = [];
         state.posts.composer = null; state.posts.composerTrigger = null; state.posts.openMenu = null; state.posts.savedIds = {};
         state.posts.captionEdit = null; state.posts.visibilityEdit = null; state.posts.prPrompt = null;

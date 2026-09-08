@@ -324,5 +324,35 @@ test("subjectSentenceHtml escapes both halves and isolates only the name, and no
     "confirmSheet", "outwardShare", "termSheet", "reportSheet", "modAction", "reclaimInvite", "modContext",
     "notifCenter", "achUnlock", "prPrompt", "composer", "profileView",
     "challengeView", "eventView", "recapView",
+    // 16 since 202609080002 added "clubWodBoard", the club WOD board. Treated
+    // as the review trigger this pin is meant to be:
+    //
+    //   WHY A DIALOG AND NOT A REUSE. The candidates were the challenge and
+    //   event overlays and a sixth Community sub-tab. The overlays are the
+    //   right SHAPE (opened from a feed card, painted over the feed, closed
+    //   back to where you were) but not the right content - neither carries a
+    //   participant list whose every row has three different privacy states,
+    //   nor a write control whose availability is decided by data this file
+    //   does not own (app.js's local training log). A sub-tab was rejected
+    //   for a product reason rather than a technical one: it would make
+    //   today's board a place the member has to navigate TO, and the entire
+    //   premise of this feature is that the board arrives inside the feed
+    //   they are already reading, because what it competes with is a WhatsApp
+    //   group that costs one thumb.
+    //
+    //   WHY IT IS LAST, and why that is the same rule as confirmSheet being
+    //   first. This registry returns the FIRST array match, not the topmost
+    //   dialog, so an entry must be checked before any dialog it can be
+    //   stacked on top of. Two dialogs can cover the board today - the
+    //   confirm sheet (a coach cancelling the session) and the term sheet
+    //   (the board is full of `?`-marked terms: Rx, Scaled, For Time) - and
+    //   NOTHING can be covered by it, since it is only ever opened from the
+    //   feed or the club-home strip. Last is therefore the only position from
+    //   which it cannot trap focus in a dialog the member cannot see, and it
+    //   stays correct if the rows later gain a tap that opens the profile
+    //   overlay. It is also FIRST in renderConfirmDialog()'s DOM order, which
+    //   is the same fact stated in the other direction: earliest sibling
+    //   paints lowest.
+    "clubWodBoard",
   ], "a dialog was added or removed - say why here and update the pin in community-state-namespaces.test.mjs too");
 });

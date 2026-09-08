@@ -355,6 +355,13 @@ let customWods = [];
 // It IS cached (see CLUB_WODS_CACHE_KEY / loadCachedClubWods) in the settings
 // store, which is neither exported nor synced.
 let clubWods = [];
+// 202609080002. Today's club WOD boards, exactly as cloud.js received them
+// from club_wod_boards(). NOT cached and NOT persisted, unlike clubWods
+// above: a board is one club-day and a stale one would offer to attach to a
+// session that has closed. Empty until cloud.js calls setClubWodSessions,
+// and empty again the moment the member signs out, so every affordance built
+// on it disappears with the session rather than lingering as a dead control.
+let clubWodSessions = [];
 let wodSubTab = "log";
 // COMM-360: null (not WOD_LIBRARY[0].id/"Fran") until the user actually
 // picks one, unlike selectedId - there's no internal logic depending on
@@ -2558,6 +2565,57 @@ async function loadCachedClubWods() {
     if (Array.isArray(cached)) clubWods = sanitizeList(cached, sanitizeClubWod);
   } catch (e) { /* no cache is a cold start, not an error */ }
 }
+
+// ---------- The club's board for today (202609080002) ----------
+// THE DIVISION OF LABOUR, and the reason these three bridges exist at all:
+// the SERVER owns the board and every rule about it, and cloud.js owns
+// talking to the server — but the one fact neither of them can know is
+// whether THIS member has logged this WOD. The training log is local-first
+// and cloud backup is opt-OUT, so private_records may simply not hold the
+// entry. So the board's viewer.attached answers "is your result on the
+// board", never "did you do it", and the decision to OFFER the attach
+// control is made here, from this file's own log.
+//
+// Nothing below ever attaches anything by itself. A logged entry that
+// happens to match today's date and today's WOD is still only an OFFER —
+// inferring participation from a matching log is the central rejection in
+// the migration's decision 2, and this is the file that would have been in
+// a position to make it.
+
+// Called by cloud.js after every board read and after every board write.
+window.setClubWodSessions = function (list) {
+  clubWodSessions = Array.isArray(list) ? list : [];
+  // The אימונים tab may be on screen with the log form open when a board
+  // changes underneath it (a coach publishes; another device attaches), and
+  // renderWodContent() is the narrow repaint that owns that form.
+  if (tab === "wod" && wodSubTab === "log" && document.getElementById("wodContent")) renderWodContent();
+};
+// The open, uncancelled session for one WOD, or null. `viewer` is the
+// SERVER's answer about what this member may do and is passed through
+// untouched — this file does not re-derive can_attach from dates either.
+function clubWodSessionForWod(wodId) {
+  if (!wodId) return null;
+  return clubWodSessions.find((b) => b && b.wod && b.wod.id === wodId && !b.cancelled_at) || null;
+}
+// This member's own logged entries for one WOD, newest first — the fact the
+// server cannot have. Formatted here because formatWodEntry() is the only
+// definition of what a WOD result looks like and it lives in this file.
+window.communityWodLogFor = function (wodId) {
+  if (!wodId) return [];
+  return wodEntriesFor(wodId).slice()
+    .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+    .slice(0, 5)
+    .map((e) => ({ id: e.id, date: e.date, resultText: formatWodEntry(e), rx: e.rx }));
+};
+// The raw entry behind one record id, for club_wod_attach_result's p_entry.
+// Re-sanitized on the way out like everything else that crosses out of this
+// file: the server clamps it again anyway, and sending a shape sanitizeWodEntry
+// would reject is a bug worth catching on this side of the wire.
+window.communityWodEntryForAttach = function (recordId) {
+  if (!recordId) return null;
+  const entry = wodEntries.find((e) => e.id === recordId);
+  return entry ? sanitizeWodEntry(entry) : null;
+};
 // THE CLUB COPY WINS ON AN ID COLLISION, and that is the whole point rather
 // than a tie-break detail.
 //
@@ -4477,6 +4535,93 @@ function renderClubPublishAffordance(w) {
       <div style="color:var(--steel); font-size:12px; line-height:1.5;">כל חברי המועדון יוכלו לרשום את האימון הזה, ואפשר יהיה לקבוע עליו אתגר שבועי.</div>
     </div>`;
 }
+
+// THE ATTACH CONTROL, and the reason it lives HERE rather than in the
+// community tab.
+//
+// The whole premise of this feature is that ATTACHING MUST COST LESS THAN
+// COMPOSING. A member who has just filled in this form has already done the
+// only work involved; asking them to leave it, find the feed, find the card
+// and open the board would put the community layer back where it started —
+// competing with a WhatsApp message that takes one thumb. So the board comes
+// to the form.
+//
+// WHAT IT WILL NOT DO. It renders only when THIS member has an entry for
+// THIS WOD in their own log — that is the fact the server cannot know, since
+// the log is local-first and backup is opt-out — and it renders as an OFFER
+// with the member's own logged results on it, never as a completed act. A
+// logged entry that matches today and matches the WOD is still not
+// participation until the member says so.
+//
+// EVERY "may I" QUESTION IS THE SERVER'S. can_attach / can_detach /
+// closed_reason are read off the board's `viewer` and are never re-derived
+// from session_date or cancelled_at here, so this control and the RPC that
+// backs it cannot drift apart.
+function renderClubWodAttachAffordance(w) {
+  if (!w || typeof window.attachClubWodResult !== "function") return "";
+  const board = clubWodSessionForWod(w.id);
+  if (!board) return "";
+  const viewer = board.viewer || {};
+  const sid = esc(board.session_id);
+  const head = `<div style="color:var(--brass); font-weight:800; font-size:13px; margin-bottom:6px;">${esc(clubWodSessionHeadline(board))}</div>`;
+  const openBoard = `<button class="link-btn" data-action="open-club-wod-board" data-id="${sid}" style="min-height:44px;">צפייה בלוח של המועדון</button>`;
+
+  if (viewer.attached) {
+    // THE HIDDEN-FIGURE HINT. It states what the club can see and LINKS to
+    // the privacy screen. It does not offer to change the setting, and this
+    // file has no code that could: show_workout_results defaults false on
+    // purpose and flipping it on a member's behalf — or nudging them to —
+    // is the one thing this feature is not allowed to do.
+    const shows = typeof window.communityShowsWorkoutResults === "function" ? window.communityShowsWorkoutResults() : null;
+    const hidden = viewer.result_text && shows === false
+      ? `<div class="footer-note" style="margin:4px 0 0;">חברי המועדון רואים שהשתתפת, אבל לא את התוצאה עצמה. <button class="link-btn" data-action="open-community-privacy" style="min-height:44px;">להגדרות הפרטיות</button></div>`
+      : "";
+    return `<div style="background:rgba(232,185,138,.12); border:1px solid var(--brass); border-radius:14px; padding:12px 14px; margin-bottom:12px;">
+      ${head}
+      <div style="font-size:13px;">התוצאה שלך על הלוח${viewer.result_text ? `: <span class="mono" style="font-weight:800;">${esc(viewer.result_text)}</span>` : ""}</div>
+      ${viewer.can_detach ? `<button class="link-btn" data-action="detach-club-wod-result" data-id="${sid}" style="min-height:44px;">הסרת התוצאה שלי מהלוח</button>` : ""}
+      ${openBoard}
+      ${hidden}
+    </div>`;
+  }
+
+  if (!viewer.can_attach) {
+    // closed_reason, so the form SAYS why instead of hiding a control.
+    const why = { future: "אפשר יהיה לצרף תוצאה מהיום שהאימון נקבע אליו.",
+                  expired: "הלוח נסגר לצירוף תוצאות אחרי 14 יום.",
+                  cancelled: "האימון בוטל, ולכן הלוח סגור." }[viewer.closed_reason] || "";
+    if (!why) return "";
+    return `<div style="border:1px solid var(--border); border-radius:14px; padding:12px 14px; margin-bottom:12px;">
+      ${head}<div style="color:var(--steel); font-size:12px;">${esc(why)}</div>${openBoard}</div>`;
+  }
+
+  // Open, not attached. The offer — one button per logged result, so a member
+  // with two attempts chooses which one the club sees rather than having the
+  // newest assumed for them.
+  const mine = typeof window.communityWodLogFor === "function" ? window.communityWodLogFor(w.id) : [];
+  if (!mine.length) {
+    return `<div style="border:1px solid var(--border); border-radius:14px; padding:12px 14px; margin-bottom:12px;">
+      ${head}
+      <div style="color:var(--steel); font-size:12px; line-height:1.5;">אחרי שתרשמו את האימון כאן אפשר יהיה לצרף את התוצאה ללוח של המועדון בלחיצה אחת.</div>
+      ${openBoard}
+    </div>`;
+  }
+  const buttons = mine.map((e) => `<button class="chip-btn" data-action="attach-club-wod-result" data-id="${sid}" data-record="${esc(e.id)}" style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:8px 12px; min-height:44px; font-size:12.5px; font-weight:700;">${esc(fmtDate(e.date))}${e.resultText ? " · " + esc(e.resultText) : ""}</button>`).join("");
+  return `<div style="background:rgba(232,185,138,.12); border:1px solid var(--brass); border-radius:14px; padding:12px 14px; margin-bottom:12px;">
+    ${head}
+    <div style="font-size:13px; margin-bottom:6px;">${mine.length === 1 ? "לצרף את הרישום שלך ללוח של המועדון?" : "איזה מהרישומים שלך לצרף ללוח של המועדון?"}</div>
+    <div class="flex wrap gap-8">${buttons}</div>
+    ${openBoard}
+  </div>`;
+}
+// "האימון של היום במועדון", or the day it was actually programmed for when
+// that is not today — a member logging Thursday's WOD on Saturday must not
+// be told Thursday's session is today's.
+function clubWodSessionHeadline(board) {
+  const d = String((board && board.session_date) || "").slice(0, 10);
+  if (!d || d === todayISO()) return "האימון של היום במועדון";
+  return `האימון של המועדון — ${fmtDate(d)}`;
+}
 // The אימונים save CTA, in one place. Two call sites set it - the full
 // render() and renderWodContent()'s partial sub-tab update - and they had
 // drifted into two copies of the same three lines. Design spec §3.6 adds a
@@ -4624,6 +4769,7 @@ function renderWodLogSection() {
     </button>
 
     ${renderClubPublishAffordance(w)}
+    ${renderClubWodAttachAffordance(w)}
 
     <div class="flex items-center gap-8" style="margin-bottom:12px;">
       <input type="date" id="wodLogDateInput" value="${esc(wodLogDate)}" max="${todayISO()}" aria-label="תאריך רישום האימון" style="flex:1; min-width:0; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 14px; color:var(--chalk); font-size:14px; font-weight:700; font-family:inherit;" />
@@ -5575,6 +5721,36 @@ document.addEventListener("click", (e) => {
     // has no server copy for it to read.
     const wod = customWods.find((item) => item.id === el.dataset.id);
     if (wod && typeof window.publishClubWod === "function") window.publishClubWod(wod);
+  }
+  // ---- The club's board for today (202609080002) ----
+  // Thin on purpose: cloud.js owns the RPC, the error copy and the board's
+  // state. This only says WHICH session and WHICH of the member's own logged
+  // records, both of which are facts this file holds.
+  else if (action === "attach-club-wod-result") {
+    if (typeof window.attachClubWodResult === "function") {
+      // The entry travels with the call as p_entry, for the same reason
+      // publish-club-wod hands over the whole WOD: cloud backup is opt-out,
+      // so a member who has it switched off has no server copy for the RPC
+      // to read, and without this they would land on the board with no
+      // figure at all. The server still prefers its own copy when it has
+      // one and re-formats either source itself.
+      const entry = window.communityWodEntryForAttach(el.dataset.record);
+      window.attachClubWodResult(el.dataset.id, el.dataset.record, entry);
+    }
+  }
+  else if (action === "detach-club-wod-result") {
+    if (typeof window.detachClubWodResult === "function") window.detachClubWodResult(el.dataset.id);
+  }
+  else if (action === "open-club-wod-board") {
+    if (typeof window.switchToCommunityTopTab === "function") window.switchToCommunityTopTab();
+    if (typeof window.openClubWodBoard === "function") window.openClubWodBoard(el.dataset.id);
+    render();
+  }
+  // A LINK to the privacy screen, never a toggle: show_workout_results
+  // defaults false and stays the member's own decision.
+  else if (action === "open-community-privacy") {
+    if (typeof window.openCommunityPrivacySettings === "function") window.openCommunityPrivacySettings();
+    render();
   }
   else if (action === "save-bw") { saveBodyweight(); }
   else if (action === "toggle-bodyweight") { bodyweightExpanded = !bodyweightExpanded; renderBodyweightArea(); }
