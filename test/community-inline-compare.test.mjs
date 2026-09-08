@@ -13,12 +13,28 @@ const cloudJs = fs.readFileSync(new URL("../cloud.js", import.meta.url), "utf8")
 
 test("the standalone top-of-feed comparison section is gone", () => {
   assert.doesNotMatch(cloudJs, /const feedTab = [^;]*\bcomparison\b[^;]*;/);
-  // COMM-115 added the club strip above the announcements, COMM-155 the
-  // pinned strip above that, COMM-222 the onboarding step card above that,
-  // and 202609080002 the club WOD "today" strip between the club header and
-  // the announcements. The assertion that matters here is unchanged:
-  // `comparison` is not one of the parts the Feed sub-tab is built from.
-  assert.match(cloudJs, /const feedTab = renderPinnedStrip\(\) \+ renderOnboardingStep\(\) \+ clubTopHtml \+ clubWodTodayHtml \+ announcementsHtml \+ feedHtml;/);
+  // ONE RAIL. This pin used to read
+  //   renderPinnedStrip() + renderOnboardingStep() + clubTopHtml
+  //   + clubWodTodayHtml + announcementsHtml + feedHtml
+  // and the shape of that line was the bug: SIX blocks concatenated above the
+  // first post, each added by its own ticket (COMM-115 the club strip,
+  // COMM-155 the pinned strip, COMM-222 the onboarding card, 202609080002
+  // today's programming), each locally justified, with nothing anywhere
+  // judging the total. A concatenation cannot say "no".
+  //
+  // It is now: the club header, then AT MOST TWO rail cards chosen by
+  // priority (RAIL_ABOVE_FEED), then the feed, then the announcements
+  // archive. The cards that lose the contest are interleaved into the feed a
+  // few posts down by railInterleave() rather than dropped, and the
+  // announcements section moved BELOW the feed because an archive is not what
+  // a member opened the app to read.
+  //
+  // The assertion that matters here is unchanged: `comparison` is not one of
+  // the parts the Feed sub-tab is built from.
+  assert.match(cloudJs, /const feedTab = clubTopHtml \+ railAbove \+ feedHtml \+ announcementsHtml;/);
+  // And the budget itself, which is the thing that must not quietly grow
+  // back. Raising this number is a product decision, not a refactor.
+  assert.match(cloudJs, /const RAIL_ABOVE_FEED = 2;/, "the cap on blocks above the feed must stay explicit and small");
 });
 
 test("compare() tracks which post it's for, and a second tap on the same post closes it instead of re-fetching", () => {

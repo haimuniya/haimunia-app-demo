@@ -1578,9 +1578,26 @@
     // above (window.HaimuniaEvents.emit).
     try { await client.from("activity_pings").upsert({ user_id: state.user.id, activity_date: todayIso() }, { onConflict: "user_id,activity_date", ignoreDuplicates: true }); } catch (e) {}
   }
+  // Supabase Security Advisor, security_definer_view finding on the
+  // community_streaks VIEW (202608270001/202609060002): a view without
+  // security_invoker runs with its owner's rights rather than the
+  // caller's. Real here, not a false positive - the view had to run as
+  // owner to aggregate every member's activity_pings past that table's
+  // owner-only RLS, and there was no way to prove from the client alone
+  // that it re-applied every equivalent check by hand (it does; see the
+  // migration). 202609080005 moved the same query into a SECURITY DEFINER
+  // FUNCTION instead - the pattern every sibling aggregate here already
+  // uses (feed_leaderboard, chal_progress, coach_celebrate_feed,
+  // member_of_week_candidate_set) - which the advisor's rule does not
+  // flag, and which makes "runs with elevated privilege" an explicit,
+  // audited property instead of an implicit one. EXPAND phase: the old
+  // view still exists and is intentionally left alone until this client
+  // has had time to actually reach installed users; a later migration
+  // drops it. Ordering and limiting now happen server-side inside the
+  // function, matching feed_leaderboard's own call shape.
   async function loadStreaks() {
     if (!state.user) return;
-    const { data, error } = await client.from("community_streaks").select("user_id,handle,display_name,current_streak,last_activity_on").order("current_streak", { ascending: false }).limit(50);
+    const { data, error } = await client.rpc("community_streaks", { p_limit: 50 });
     state.club.streaks = error ? [] : (data || []).filter((r) => r.current_streak > 0);
   }
 
@@ -9634,10 +9651,54 @@
   // club top card. Up to three chips; staff with community.content.pin get
   // an unpin control on each.
   function pinTargetLabel(t) { return { announcement: "הודעה", challenge: "אתגר", event: "אירוע", post: "פוסט" }[t] || t; }
-  function renderPinnedStrip() {
+  // ONE RAIL. The single owner of "how much may sit between a member and the
+  // first thing another member wrote".
+  //
+  // THE PROBLEM IT ENDS. Six blocks used to stack above the feed: the pinned
+  // strip, the onboarding step, the club header, today's programming, the
+  // announcements section and then the feed's own header, compose button and
+  // filter chips. Every one of them was added for a good reason, carried a
+  // ticket, and had a comment arguing why it belonged exactly there - and
+  // every one of those arguments was correct. The defect was never in any
+  // single block. It was that NOTHING OWNED THE TOTAL: each addition was
+  // judged against the blocks already present, never against a budget, so the
+  // screen could only grow. This function is that budget.
+  //
+  // Cards are offered in priority order and the first RAIL_ABOVE_FEED of them
+  // that actually have content render above the feed. The rest are not
+  // dropped - they are interleaved into the feed a few posts down, where they
+  // are still reachable but are no longer competing for the opening screen.
+  // A card that renders "" is absent, not empty: the existing
+  // renders-nothing-when-empty style is what makes the budget affordable.
+  const RAIL_ABOVE_FEED = 2;
+  const RAIL_INTERLEAVE_AFTER = 3;
+  function railInterleave(cards, rail) {
+    if (!rail.length) return cards.join("");
+    const out = cards.slice();
+    out.splice(Math.min(RAIL_INTERLEAVE_AFTER, out.length), 0, ...rail);
+    return out.join("");
+  }
+
+  // p_surfacedAnnouncementId: the announcement that is ALREADY on screen as
+  // the "הערת האימון להיום" card, if any.
+  function renderPinnedStrip(surfacedAnnouncementId) {
     const canPin = hasPerm(PERM.CONTENT_PIN);
-    if (!state.admin.pins.length && !state.admin.pinError) return "";
-    const chips = state.admin.pins.slice(0, 3).map((p) => `<div class="chip-btn" style="cursor:default;gap:6px;align-items:center;">
+    // ONE RAIL. A pinned announcement that is also rendering as its own card
+    // put two boxes with the same 📌 on the same screen, saying the same
+    // thing, from two different features - a member cannot tell those apart,
+    // and whichever one they learn to read they stop reading the other.
+    //
+    // EXCLUDED ONLY WHILE IT IS ACTUALLY SHOWN, which is the whole subtlety.
+    // A first draft dropped every announcement pin and broke something real:
+    // an EXPIRED announcement stops rendering as a card, but its pin row
+    // survives until someone explicitly unpins it (COMM-155), and the strip
+    // is then the ONLY place staff can see that a stale pin is still there.
+    // Filtering by target_type would have hidden exactly the pins that most
+    // need attention. So the test that caught it was right, and this filters
+    // on identity - is THIS announcement on screen right now - not on kind.
+    const pins = state.admin.pins.filter((p) => !(p.target_type === "announcement" && surfacedAnnouncementId && p.target_id === surfacedAnnouncementId));
+    if (!pins.length && !state.admin.pinError) return "";
+    const chips = pins.slice(0, 3).map((p) => `<div class="chip-btn" style="cursor:default;gap:6px;align-items:center;">
       📌 <span>${bidiText(p.note || pinTargetLabel(p.target_type))}</span>
       ${canPin ? `<button class="link-btn" data-community-action="unpin" data-type="${esc(p.target_type)}" data-id="${esc(p.target_id)}" aria-label="ביטול הצמדה" style="margin:0;padding:0 4px;">✕</button>` : ""}
     </div>`).join("");
@@ -16237,7 +16298,13 @@
     const canPinContent = hasPerm(PERM.CONTENT_PIN);
     const isPinned = (type, id) => state.admin.pins.some((p) => p.target_type === type && p.target_id === id);
     const announcementsList = otherAnnouncements.length ? `<div class="log-list">${otherAnnouncements.map((a) => `<div class="log-row" data-announcement-id="${esc(a.id)}" style="align-items:flex-start;flex-direction:column;gap:4px;${announcementAccentStyle(a)}"><div style="font-weight:700;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">${bidiText(a.title)}${announcementPriorityBadge(a)}</div><div style="color:var(--steel);font-size:13px;">${bidiText(a.body)}</div><div style="color:var(--steel);font-size:11px;">${esc(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div>${canPinContent ? `<button class="link-btn" data-community-action="${isPinned("announcement", a.id) ? "unpin" : "pin"}" data-type="announcement" data-id="${esc(a.id)}" data-note="${esc(a.title)}" style="margin:2px 0 0;">${isPinned("announcement", a.id) ? "ביטול הצמדה" : "הצמדה למעלה"}</button>` : ""}</div>`).join("")}</div>` : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
-    const announcementsHtml = `<div class="ach-section">${sectionHead("var(--brass)", "הודעות מהמועדון")}${pinnedHtml}${announcementsList}${announceComposer}</div>`;
+    // ONE RAIL. pinnedHtml has moved OUT of this section and into the rail
+    // above the feed, where it competes for a slot on merit like everything
+    // else. What is left here is the archive: older announcements and the
+    // staff composer, which are reference material rather than the thing a
+    // member opened the app to see - so this section now renders BELOW the
+    // feed instead of above it. See the rail construction further down.
+    const announcementsHtml = `<div class="ach-section">${sectionHead("var(--brass)", "הודעות מהמועדון")}${announcementsList}${announceComposer}</div>`;
 
     // Sharing itself no longer lives here - it was a standing list of the
     // 8 most recent shareable results eating vertical space at the top of
@@ -16303,6 +16370,38 @@
     // exists, so there is no branch here.
     const classmatesTodayHtml = renderClassmatesTodayCard();
 
+    const clubWodTodayHtml = renderClubWodTodayStrip();
+
+    // ---- ONE RAIL (see railInterleave) ----
+    // Priority order, and the reasoning for it:
+    //   1. onboarding - a member who has not finished joining cannot use any
+    //      of the rest, so it outranks everything while it exists at all.
+    //   2. the pinned note - a coach deliberately marked ONE thing as today's
+    //      note. That is the strongest signal on the screen and the only one
+    //      a human explicitly chose.
+    //   3. today's programming - what the box is doing today, the question
+    //      most members open the app to answer.
+    //   4. the upcoming event - time-sensitive, and useless once it passes.
+    //   5. who else trained today - a post-class moment, valuable but only to
+    //      the member who just logged.
+    //   6. other pinned targets - staff bookkeeping, lowest claim on a member's
+    //      first screen.
+    // Only the first two with content render above the feed; the rest are
+    // interleaved a few posts in rather than dropped.
+    const clubRail = [
+      renderOnboardingStep(),
+      pinnedHtml,
+      clubWodTodayHtml,
+      upcomingEventHtml,
+      classmatesTodayHtml,
+      renderPinnedStrip(pinnedToday && pinnedToday.id),
+    ].filter(Boolean);
+    const railAbove = clubRail.slice(0, RAIL_ABOVE_FEED).join("");
+    const railRest = clubRail.slice(RAIL_ABOVE_FEED);
+
+    // The club header stays first and alone: it is identity and the bell, not
+    // content, and it is the one thing that should never compete for a slot.
+    // Announcements are now the ARCHIVE and sit below the feed.
     // COMM-111 filter chips. My Classes is rendered disabled, tied to
     // COMM-P01, and setFeedScope refuses it on the way in as well.
     // Launch-readiness audit, A5 (axe, aria-required-children - CRITICAL).
@@ -16321,7 +16420,7 @@
       ? `<div class="log-list" aria-busy="true">${renderPostCardSkeleton().repeat(3)}</div>`
       : state.feed.error && !state.feed.items.length
       ? `<div class="empty">לא ניתן לטעון את פיד המועדון.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="feed-retry">ניסיון חוזר</button></div></div>`
-      : state.feed.items.length ? `<div class="log-list" id="communityFeedList">${state.feed.items.map((post) => post && post.post_type ? renderPostCard(post) : `<article class="chart-card post-card">
+      : state.feed.items.length ? `<div class="log-list" id="communityFeedList">${railInterleave(state.feed.items.map((post) => post && post.post_type ? renderPostCard(post) : `<article class="chart-card post-card">
       <div class="post-head">${avatarHtml(post.display_name || post.handle, 36, (post.author && post.author.avatar_url) || post.avatar_url)}<div class="post-head-text"><div class="post-author">${nameHtml(post.display_name, post.handle)}</div><div class="post-time">${relativeTime(post.published_at)}</div></div></div>
       <div class="post-title">${bidiText(post.title)}</div>
       <div class="mono post-result">${esc(post.result_text)}</div>
@@ -16333,7 +16432,7 @@
         ${post.author_id === (state.user && state.user.id) ? `<button class="chip-btn" data-community-action="delete-post" data-id="${esc(post.id)}">הסרה</button>` : `<button class="chip-btn" data-community-action="report" data-id="${esc(post.id)}">דיווח</button>`}
       </div>
       ${state.posts.comparisonForPostId === post.id ? `<div class="log-list" style="margin-top:10px;">${state.posts.comparison.length ? state.posts.comparison.map((item, index) => `<div class="log-row"><span>${index + 1}. ${nameHtml(item.display_name, item.handle)}</span><span class="mono" style="color:var(--brass);">${esc(item.result_text)}</span></div>`).join("") : `<div class="empty">אין עדיין תוצאות להשוואה</div>`}</div>` : ""}
-      ${renderComments(post)}</article>`).join("")}</div>` : `<div class="empty">${esc(feedScopeDef(state.feed.scope).empty || "פעילות המועדון תופיע כאן.")}</div>`;
+      ${renderComments(post)}</article>`), railRest)}</div>` : `<div class="empty">${esc(feedScopeDef(state.feed.scope).empty || "פעילות המועדון תופיע כאן.")}</div>${railRest.join("")}`;
     // COMM-113. The sentinel is what IntersectionObserver watches; the
     // button under it is the same call for keyboard and for anywhere the
     // observer is unavailable. Reaching the end is a quiet marker, never an
@@ -16344,7 +16443,12 @@
         ${state.feed.moreError ? `<div class="footer-note" role="alert" style="text-align:center;color:var(--red-text);">לא ניתן היה לטעון עוד.</div>` : ""}
         <div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="feed-load-more"${state.feed.loadingMore ? " disabled" : ""}>${state.feed.loadingMore ? "טוען…" : state.feed.moreError ? "ניסיון חוזר" : "טעינת עוד"}</button></div>`;
     const composeBtn = `<button class="chip-btn primary" data-community-action="open-composer" style="margin:0 0 10px;">כתיבת פוסט</button>`;
-    const feedHtml = `<div class="ach-section">${sectionHead("var(--blue)", "הפיד שלי")}${composeBtn}${filterHtml}${classmatesTodayHtml}${feed}${upcomingEventHtml}${feedMoreHtml}</div>`;
+    // classmatesTodayHtml and upcomingEventHtml are no longer concatenated
+    // here. Both are now rail cards. The event card in particular used to
+    // render AFTER ${feed} - the one time-sensitive item on the screen sat
+    // underneath an infinite list, so a member who kept scrolling passed it
+    // and a member who did not never saw it at all.
+    const feedHtml = `<div class="ach-section">${sectionHead("var(--blue)", "הפיד שלי")}${composeBtn}${filterHtml}${feed}${feedMoreHtml}</div>`;
 
     // COMM-155. The pinned strip sits above everything else on the Club home.
     // 202609080002. Directly under the club header and ABOVE the feed list:
@@ -16353,8 +16457,7 @@
     // contributions. Same renders-nothing-when-empty style as the upcoming
     // event and classmates-today cards, with the one deliberate exception
     // renderClubWodTodayStrip() documents.
-    const clubWodTodayHtml = renderClubWodTodayStrip();
-    const feedTab = renderPinnedStrip() + renderOnboardingStep() + clubTopHtml + clubWodTodayHtml + announcementsHtml + feedHtml;
+    const feedTab = clubTopHtml + railAbove + feedHtml + announcementsHtml;
 
     // ---- Boards tab: weekly challenge + streaks, top-3-plus-your-rank ----
     const challengeSetter = staff ? `<form id="communityWeeklyChallenge" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">קביעת אתגר שבועי<span class="admin-tag">ניהול</span></div>${field("communityWeeklyChallenge", "title", "שם האתגר", `<input class="text-input" name="title" placeholder="שם האתגר" required/>`)}${field("communityWeeklyChallenge", "comparisonKey", "על מה מתחרים", renderChallengeKeyPicker())}<div style="color:var(--steel);font-size:11px;margin:-6px 0 10px;">רק תרגילים ואימונים שקיימים באפליקציה — כך התוצאות שחברי המועדון משתפים נספרות לאתגר מעצמן.</div><div class="flex gap-16 field">${dateField("communityWeeklyChallenge", "startsOn", "תאריך התחלה", `<input class="text-input" name="startsOn" type="date" required/>`)}${dateField("communityWeeklyChallenge", "endsOn", "תאריך סיום", `<input class="text-input" name="endsOn" type="date" required/>`)}</div><button class="chip-btn primary" type="submit" style="margin-top:10px;">קביעת אתגר</button></form>` : "";
