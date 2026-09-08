@@ -51,6 +51,32 @@ jobs:
             (cd "$fn" && deno cache --frozen --lock=deno.lock index.ts)
           done
 
+  # Every function in supabase/functions/ must exist on the live project.
+  # Added after two of three sat undeployed for weeks: the nightly cron job
+  # POSTed to a 404 and still recorded 'succeeded', and admin_reset_password
+  # answered 404 to real admins in the browser. Uses only the PUBLISHABLE key
+  # already shipped in cloud-config.js - 401 means deployed, 404 means not -
+  # so it is safe on a fork and needs no secret.
+  #
+  # A HARD GATE. This repo does not allow a CI job to opt out of failing the
+  # build, pinned by community-rls-boundaries.test.mjs - which caught the
+  # first draft of this job doing exactly that, and then caught the second
+  # draft naming the escape hatch in a comment, since the assertion matches
+  # the whole file rather than the job keys. Both catches were correct.
+  #
+  # No escape hatch is needed anyway: the script separates "not deployed"
+  # from "could not ask", and only the former fails. An unreachable project,
+  # a network error or a 5xx exits 0 with the reason printed, so a Supabase
+  # outage cannot turn every branch red.
+  edge-functions-deployed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - run: node scripts/check-edge-functions-deployed.mjs
+
   browser-checks:
     runs-on: ubuntu-latest
     steps:

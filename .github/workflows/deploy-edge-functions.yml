@@ -1,0 +1,123 @@
+name: deploy-edge-functions
+# WHY THIS EXISTS.
+#
+# Until 2026-09-08 this repo had no automated deploy for Edge Functions at
+# all. Migrations have a documented path (`supabase db push`, ordered before
+# the client merge), and the client ships to Pages on every push to main.
+# Functions had nothing - they were deployed by hand, from someone's laptop,
+# whenever somebody remembered.
+#
+# The result was not one forgotten deploy. It was TWO OF THREE functions
+# missing from production for weeks, undetected:
+#
+#   * purge_abandoned_profiles - the nightly 03:31 UTC cron job POSTed to it
+#     and got 404 every night. cron.job_run_details recorded 'succeeded',
+#     because the SQL that fires the request succeeds whether or not the
+#     request finds anything at the other end, so scheduled_job_health()
+#     reported the job healthy the whole time.
+#   * admin_reset_password - called from the BROWSER by a real admin session
+#     (cloud.js, threat model entry point E8). A live, user-facing 404 that
+#     no monitor could ever have caught, because the job health check only
+#     knows about cron jobs and this one is not a cron job.
+#
+# A deploy step that a human has to remember is not a deploy step. This
+# workflow makes "what is deployed" a function of what is on main.
+#
+# ---------------------------------------------------------------------------
+# REQUIRED SECRET, added in Settings -> Secrets and variables -> Actions:
+#
+#   SUPABASE_ACCESS_TOKEN - a personal access token from
+#     https://supabase.com/dashboard/account/tokens
+#
+# It is NOT the service_role key and must never be confused with it: this
+# token deploys code, the service_role key reads and writes member data.
+# Neither belongs in this repository. Until the secret is set, this workflow
+# fails loudly rather than reporting a green deploy that did nothing - which
+# is the exact failure mode it was written to end.
+# ---------------------------------------------------------------------------
+on:
+  workflow_dispatch:
+    inputs:
+      function:
+        description: "Which function to deploy (or 'all')"
+        required: true
+        default: all
+        type: choice
+        options: [all, purge_abandoned_profiles, admin_reset_password, recap_weekly]
+permissions:
+  contents: read
+concurrency:
+  group: deploy-edge-functions
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      PROJECT_REF: jajmlyrjlkhclgphbfbb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: refuse to run without the access token
+        run: |
+          if [ -z "$SUPABASE_ACCESS_TOKEN" ]; then
+            echo "SUPABASE_ACCESS_TOKEN is not set. Nothing was deployed."
+            echo "This step fails on purpose: a deploy workflow that skips"
+            echo "quietly is indistinguishable from one that worked, and that"
+            echo "confusion is why two functions sat undeployed for weeks."
+            exit 1
+          fi
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # Verified against the lockfile FIRST, by the same command the
+      # edge-function-lockfiles job in test.yml runs. A function that cannot
+      # resolve its own pinned dependencies must never reach production, and
+      # finding that out here costs a minute instead of an incident.
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.x
+      - name: verify each function against its lockfile
+        run: |
+          for fn in supabase/functions/*/; do
+            [ -f "$fn/index.ts" ] || continue
+            echo "--- $fn"
+            (cd "$fn" && deno cache --frozen --lock=deno.lock index.ts)
+          done
+
+      - name: deploy
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.function }}" = "all" ]; then
+            for fn in supabase/functions/*/; do
+              [ -f "$fn/index.ts" ] || continue
+              name="$(basename "$fn")"
+              echo "::group::deploy $name"
+              supabase functions deploy "$name" --project-ref "$PROJECT_REF"
+              echo "::endgroup::"
+            done
+          else
+            supabase functions deploy "${{ inputs.function }}" --project-ref "$PROJECT_REF"
+          fi
+
+      # Deploying is not the same as being deployed. This reads the project
+      # back and fails if any function in the repo is missing from it - the
+      # check that, had it existed, would have caught both absences.
+      - name: verify every repo function is now live on the project
+        run: |
+          set -euo pipefail
+          supabase functions list --project-ref "$PROJECT_REF" > /tmp/live.json
+          missing=0
+          for fn in supabase/functions/*/; do
+            [ -f "$fn/index.ts" ] || continue
+            name="$(basename "$fn")"
+            if grep -q "\"slug\":\"$name\"" /tmp/live.json; then
+              echo "  OK       $name"
+            else
+              echo "  MISSING  $name"
+              missing=1
+            fi
+          done
+          exit $missing
