@@ -138,13 +138,55 @@ test("PRIVACY.md discloses automatic private backup - private, from the first sa
   assert.match(privacyText, /turn it off at any time in Settings/);
 });
 
-// The 30-day rule is the other half of an honest backup disclosure: a
-// backup-only anonymous account (no invite redeemed, no username/password) is
-// collected by purge_abandoned_profiles() 30 days after it was opened, taking
-// the private_records rows with it through the auth.users cascade. A policy
-// that advertises automatic backup without this reads as long-term storage.
-test("PRIVACY.md warns that a backup-only account, and everything backed up to it, is deleted after 30 days", () => {
-  assert.match(privacyText, /חשבון גיבוי בלבד נמחק אחרי 30 יום/);
-  assert.match(privacyText, /a backup-only account is deleted after 30 days/i);
+// THIS TEST USED TO ASSERT A BUG, and its own comment argued the bug was a
+// feature. Until 202609070001, purge_abandoned_profiles() deleted a
+// backup-only anonymous account 30 days after it was OPENED, and
+// private_records cascades from auth.users - so a member who logged workouts
+// for a month and never joined the community lost every entry they had, from
+// their only server-side copy, silently. The policy described that as a
+// retention limit and this test held the description in place, which is how a
+// green suite came to certify data loss.
+//
+// 202609070001 is now the source of truth and the rule is different in kind,
+// not in degree: an account holding ANY training data is removed from that
+// job's population outright, under any window (account_holds_training_data(),
+// which counts private_records by presence - soft-deleted rows included - plus
+// any attendance_log row), and the clock is last activity rather than account
+// age. What is still collected is a shell that was opened for backup and never
+// had anything backed up to it.
+//
+// So the disclosure this suite has to hold is now TWO facts, not one, and the
+// second is the one that matters to a member: the window exists, AND a log is
+// never inside it. The doesNotMatch guard is the point of the test - the old
+// promise is a sentence somebody could plausibly reintroduce while "restoring
+// the retention limit", and it must not come back without this failing.
+test("PRIVACY.md scopes the 30-day rule to an EMPTY backup-only account and promises a saved workout is never deleted by it", () => {
+  assert.match(privacyText, /חשבון גיבוי בלבד וריק נסגר אחרי 30 יום/);
+  assert.match(privacyText, /אם שמרתם אליו ולו אימון אחד — הוא לא נמחק/);
+  assert.match(privacyText, /an empty backup-only account is closed after 30 days/i);
+  assert.match(privacyText, /If you have saved even one workout to it, it is not deleted/);
   assert.match(privacyText, /set a username and password/);
+});
+
+test("the retired promise of data loss cannot return to PRIVACY.md in either language", () => {
+  // The exact wording that shipped, plus the generalisation of it: any
+  // sentence saying a backup-only account (unqualified) is deleted, or that
+  // what was backed up goes with it.
+  assert.doesNotMatch(privacyText, /חשבון גיבוי בלבד נמחק אחרי 30 יום/);
+  assert.doesNotMatch(privacyText, /יחד עם כל מה שגובה אליו/);
+  assert.doesNotMatch(privacyText, /רשת ביטחון קצרת טווח/);
+  assert.doesNotMatch(privacyText, /a backup-only account is deleted after 30 days/i);
+  assert.doesNotMatch(privacyText, /along with everything backed up to it/i);
+  assert.doesNotMatch(privacyText, /short-term safety net/i);
+});
+
+// The loss that IS real, and is the whole reason the paragraph still exists:
+// an anonymous account has no username, no password and no email, so a lost
+// or wiped device is unrecoverable. Correcting the retention claim must not
+// quietly delete this one - it is the only warning a member gets before the
+// only copy of their log becomes unreachable.
+test("PRIVACY.md still states the unrecoverability of an anonymous account, in both languages", () => {
+  assert.match(privacyText, /אם תאבדו את המכשיר או תמחקו את נתוני הדפדפן/);
+  assert.match(privacyText, /אף אחד — גם לא אנחנו — לא יוכל לשחזר אותו עבורכם/);
+  assert.match(privacyText, /if you lose this device or clear its data, nobody — including us — can restore it to you/i);
 });

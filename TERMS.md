@@ -1,6 +1,6 @@
 # תנאי שימוש / Terms of Service
 
-*עודכן לאחרונה: 6 בספטמבר 2026 — Last updated: 2026-09-06*
+*עודכן לאחרונה: 8 בספטמבר 2026 — Last updated: 2026-09-08*
 
 המסמך הזה קיים בשתי שפות: קודם עברית, ואחריה אנגלית. התוכן זהה. אם
 נפלה סתירה בין הנוסחים, הנוסח העברי הוא הקובע מול חברי המועדון.
@@ -40,10 +40,10 @@ the Hebrew governs for members.
 חשבון אנונימי קשור לדפדפן ולמכשיר שבו הוא נפתח, ולא לפרטי כניסה שאפשר
 לשחזר. אם הגישה לחשבון כזה אובדת — מחיקת נתוני האתר, התקנה מחדש או
 מעבר למכשיר אחר בלי להגדיר קודם שם משתמש וסיסמה — אין לנו דרך להחזיר
-לכם אותו, וההיסטוריה שבו אבודה. **בנוסף, חשבון שנפתח רק לגיבוי ולא
-הוגדרו לו שם משתמש וסיסמה נמחק אוטומטית 30 יום אחרי שנפתח.** הגדרת שם
-משתמש וסיסמה במסך ההגדרות היא מה שהופך את החשבון לכזה שאפשר לשחזר מכל
-מכשיר, ומה ששומר עליו לאורך זמן.
+לכם אותו, וההיסטוריה שבו אבודה. **חשבון כזה, אם לא גובה אליו שום דבר
+מעולם, נמחק אוטומטית אחרי 30 יום; אם שמרתם אליו ולו אימון אחד — הוא לא
+נמחק, והיומן נשמר כל עוד החשבון קיים.** הגדרת שם משתמש וסיסמה במסך
+ההגדרות היא הדבר היחיד שהופך את החשבון לכזה שאפשר לשחזר מכל מכשיר.
 
 ## שימוש הוגן
 
@@ -139,10 +139,11 @@ An anonymous account is tied to the browser and device it was opened on
 rather than to a recoverable login. If access to such an account is lost —
 by clearing site data, reinstalling, or switching devices without first
 setting a username and password — we cannot restore it, and its history is
-lost. **In addition, an account opened only for backup, with no username
-and password set, is deleted automatically 30 days after it was opened.**
-Setting a username and password in Settings is what makes an account
-recoverable from any device, and what keeps it beyond that window.
+lost. **Such an account is deleted automatically after 30 days if nothing
+was ever backed up to it; if you have saved even one workout to it, it is
+not deleted, and the log is kept for as long as the account exists.**
+Setting a username and password in Settings is the only thing that makes
+an account recoverable from any device.
 
 ## Acceptable use
 

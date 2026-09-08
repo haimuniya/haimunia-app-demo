@@ -3,9 +3,10 @@
 // content for in-app viewing (see the comment at the top of each .html file).
 // Nothing generates one from the other, so the risk is silent drift between
 // them. This suite guards the facts that matter most against that drift
-// (no leftover placeholders, and the load-bearing facts — 30-day deletion,
-// minimum age, hosting region, "contact your coach" — agree across all four
-// files) rather than diffing full prose, which would be too brittle.
+// (no leftover placeholders, and the load-bearing facts — the 30-day
+// deletion windows, minimum age, hosting region, "contact your coach" —
+// agree across all four files) rather than diffing full prose, which would
+// be too brittle.
 import { test } from "node:test";
 import assert from "node:assert";
 import fs from "node:fs";
@@ -87,7 +88,14 @@ test("both formats agree there is no separate legal entity, and point to the coa
   }
 });
 
-test("both formats agree on the real, verifiable facts: 30-day deletion window, minimum age 13, and Supabase's ap-southeast-1 region", () => {
+// NOTE ON THE TWO 30-DAY WINDOWS. There are two, they are different, and
+// this assertion deliberately only pins the number. (1) Account deletion you
+// ASKED for: the profile is hidden immediately and everything is erased 30
+// days later. (2) The abandoned-account clean-up: an EMPTY backup-only
+// account is collected after 30 days of dormancy. The scope of (2) is what
+// 202609070001 corrected and is asserted in full below, and in
+// community-backup-sync.test.mjs.
+test("both formats agree on the real, verifiable facts: 30-day deletion windows, minimum age 13, and Supabase's ap-southeast-1 region", () => {
   for (const text of privacyBoth) {
     assert.match(text, /30.days/);
     assert.match(text, /under 13/);
@@ -98,6 +106,37 @@ test("both formats agree on the real, verifiable facts: 30-day deletion window, 
   for (const text of termsBoth) {
     assert.match(text, /at least 13/);
     assert.match(text, /בני 13 לפחות/);
+  }
+});
+
+// The 2026-09-08 correction, and the reason this suite covers .html and not
+// only .md: the markdown was corrected in the same pass, and a styled copy
+// still promising that a member's log is deleted after 30 days is the same
+// harm shipped to the screen members actually read. 202609070001 is the
+// source of truth - an account holding any training data is never touched by
+// purge_abandoned_profiles(), so only an EMPTY backup-only account is
+// collected. Asserted in both languages and both formats, with the retired
+// promise blocked from returning.
+test("all four documents scope the abandoned-account clean-up to an empty account, and none of them still promises to delete a log", () => {
+  for (const text of privacyBoth) {
+    assert.match(text, /חשבון גיבוי בלבד וריק נסגר אחרי 30 יום/);
+    assert.match(text, /אם שמרתם אליו ולו אימון אחד — הוא לא נמחק/);
+    assert.match(text, /an empty backup-only account is closed after 30 days/i);
+    assert.match(text, /If you have saved even one workout to it, it is not deleted/);
+    // The retention section has to agree with the paragraph above it.
+    assert.match(text, /חשבון שגובה אליו משהו לא נמחק על ידי ניקוי החשבונות הנטושים לעולם/);
+    assert.match(text, /an account that has anything backed up to it is never deleted by the abandoned-account clean-up/i);
+  }
+  for (const text of termsBoth) {
+    assert.match(text, /אם שמרתם אליו ולו אימון אחד — הוא לא נמחק/);
+    assert.match(text, /if you have saved even one workout to it, it is not deleted/i);
+  }
+  for (const text of allFour) {
+    assert.doesNotMatch(text, /חשבון גיבוי בלבד נמחק אחרי 30 יום/);
+    assert.doesNotMatch(text, /נמחק אוטומטית 30 יום אחרי שנפתח/);
+    assert.doesNotMatch(text, /a backup-only account is deleted after 30 days/i);
+    assert.doesNotMatch(text, /deleted automatically 30 days after it was opened/i);
+    assert.doesNotMatch(text, /along with everything backed up to it/i);
   }
 });
 

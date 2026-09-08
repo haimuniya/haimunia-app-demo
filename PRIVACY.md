@@ -1,6 +1,6 @@
 # מדיניות פרטיות / Privacy Policy
 
-*עודכן לאחרונה: 6 בספטמבר 2026 — Last updated: 2026-09-06*
+*עודכן לאחרונה: 8 בספטמבר 2026 — Last updated: 2026-09-08*
 
 המסמך הזה קיים בשתי שפות: קודם עברית, ואחריה אנגלית. התוכן זהה. אם
 נפלה סתירה בין הנוסחים, הנוסח העברי הוא הקובע מול חברי המועדון.
@@ -83,12 +83,16 @@ the Hebrew governs for members.
 נשמר, וגם לא מוחק מהענן מה שכבר הועלה — למחיקה מהענן צריך לבקש מחיקת
 חשבון (ראו "הזכויות שלכם").
 
-**מגבלה שחשוב להכיר: חשבון גיבוי בלבד נמחק אחרי 30 יום.** חשבון שנפתח
-אוטומטית לגיבוי, ושלא מימשתם בו קוד הזמנה ולא הגדרתם לו שם משתמש
-וסיסמה, נמחק אוטומטית 30 יום אחרי שנפתח — יחד עם כל מה שגובה אליו.
-כלומר גיבוי אנונימי הוא רשת ביטחון קצרת טווח, לא אחסון לטווח ארוך. כדי
-לשמור עליו לאורך זמן, ולהגיע אליו ממכשיר אחר, הגדירו שם משתמש וסיסמה
-במסך ההגדרות. אפשר גם, ובנוסף, לייצא קובץ גיבוי מקומי מההגדרות.
+**מגבלה שחשוב להכיר: חשבון גיבוי בלבד וריק נסגר אחרי 30 יום.** חשבון
+שנפתח אוטומטית לגיבוי, ושלא מימשתם בו קוד הזמנה ולא הגדרתם לו שם משתמש
+וסיסמה, נמחק אוטומטית אם לא גובה אליו שום דבר מעולם ועברו 30 יום מאז
+שנפתח או מאז הכניסה האחרונה אליו. **אם שמרתם אליו ולו אימון אחד — הוא
+לא נמחק.** יומן האימונים שלכם נשמר כל עוד החשבון קיים, בדיוק כמו בכל
+חשבון אחר. מה שחשבון אנונימי לא נותן לכם זה דרך חזרה: אין בו שם משתמש,
+סיסמה או אימייל, ולכן אם תאבדו את המכשיר או תמחקו את נתוני הדפדפן, אף
+אחד — גם לא אנחנו — לא יוכל לשחזר אותו עבורכם. כדי להגיע ליומן ממכשיר
+אחר, הגדירו שם משתמש וסיסמה במסך ההגדרות. אפשר גם לייצא קובץ גיבוי
+מקומי מההגדרות בכל רגע.
 
 ## איזה מידע נאסף
 
@@ -259,14 +263,18 @@ the Hebrew governs for members.
 
 ## כמה זמן נשמר מידע
 
-- **יומן האימונים בענן** נשמר כל עוד החשבון קיים — בכפוף לכלל 30 הימים
-  לחשבון גיבוי בלבד שתואר למעלה.
+- **יומן האימונים בענן** נשמר כל עוד החשבון קיים. זה נכון גם לחשבון
+  גיבוי בלבד: חשבון שגובה אליו משהו לא נמחק על ידי ניקוי החשבונות
+  הנטושים לעולם.
+- **חשבון ריק** שנפתח אוטומטית לגיבוי, שלא גובה אליו שום דבר, ושעברו 30
+  יום מאז שנפתח או מאז הכניסה האחרונה אליו — נמחק אוטומטית.
 - **מחיקת חשבון לבקשתכם**: הפרופיל והפוסטים מוסתרים מיד, והחשבון וכל
   התוכן שלו נמחקים לצמיתות אחרי 30 ימים.
 - **הרשמה שלא הושלמה**: אם מימשתם קוד הזמנה ולא השלמתם פרופיל, מנהל/ת
   יכולים להחזיר את הקוד למחזור אחרי כמה ימים. החשבון עצמו לא נמחק
-  באותו רגע, אבל הוא חוזר להיות "חשבון גיבוי בלבד" ולכן נכנס לכלל 30
-  הימים שלמעלה.
+  באותו רגע; הוא חוזר להיות "חשבון גיבוי בלבד", ולכן חלים עליו שני
+  הכללים שלמעלה — אם הוא ריק הוא נמחק אחרי 30 יום, ואם גובה אליו משהו
+  הוא לא נמחק.
 - **פעילות בקהילה ורשימת הפוסטים שהוצגו לכם** נמחקות אוטומטית אחרי 90
   ימים, בלי קשר למצב החשבון.
 - **ימי אימון** נשמרים כל עוד החשבון קיים ולא נמחקים כשמוחקים אימון
@@ -405,14 +413,19 @@ does not delete anything already saved on the device, and it does not
 delete what has already been uploaded to the cloud — for that you need to
 request account deletion (see "Your rights").
 
-**A limit worth knowing: a backup-only account is deleted after 30
+**A limit worth knowing: an empty backup-only account is closed after 30
 days.** An account that was opened automatically for backup, on which you
 never redeemed an invite code and never set a username and password, is
-deleted automatically 30 days after it was opened, along with everything
-backed up to it. In other words, an anonymous backup is a short-term
-safety net, not long-term storage. To keep it — and to reach it from
-another device — set a username and password in Settings. You can also
-export a local backup file from Settings.
+deleted automatically if nothing was ever backed up to it and 30 days
+have passed since it was opened or last signed in to. **If you have saved
+even one workout to it, it is not deleted.** Your training log is kept for
+as long as the account exists, exactly like any other account's. What an
+anonymous account does not give you is a way back in: there is no
+username, no password and no email, so if you lose this device or clear
+its data, nobody — including us — can restore it to you. To be able to
+reach your log from another device, set a username and password in
+Settings. You can also export a local backup file from Settings at any
+time.
 
 ## What we collect
 
@@ -616,16 +629,22 @@ place for a notice like this is inside the app, at the moment of saving.
 
 ## Data retention
 
-- **The cloud training log** is kept for as long as the account exists —
-  subject to the 30-day rule for backup-only accounts described above.
+- **The cloud training log** is kept for as long as the account exists.
+  This is true for a backup-only anonymous account too: an account that
+  has anything backed up to it is never deleted by the abandoned-account
+  clean-up.
+- **An empty account** that was opened automatically for backup, never
+  had anything backed up to it, and was opened or last signed in to more
+  than 30 days ago, is deleted automatically.
 - **Account deletion at your request**: your profile and posts are hidden
   immediately, and the account and all its content are permanently
   deleted after 30 days.
 - **An unfinished signup**: if you redeemed an invite code but never
   completed a profile, an admin can return that code to circulation after
-  a few days. The account is not deleted at that moment, but it goes back
-  to being a backup-only account and therefore falls under the 30-day
-  rule above.
+  a few days. The account is not deleted at that moment; it goes back to
+  being a backup-only account, so both rules above apply to it — if it is
+  empty it is deleted after 30 days, and if anything is backed up to it,
+  it is not.
 - **Community activity and the record of posts shown to you** are deleted
   automatically after 90 days, regardless of account status.
 - **Training days** are kept for as long as the account exists and are
