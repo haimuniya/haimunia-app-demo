@@ -104,15 +104,23 @@ test("cloud.js contains no sort of the feed rows", async () => {
 
 // --- COMM-111 filters -----------------------------------------------------
 
-test("the four live filter chips are rendered and My Classes is disabled", async () => {
+// The "השיעורים שלי" chip used to render here, permanently disabled and
+// labelled "בקרוב". It was removed by an explicit product decision: what it
+// waited on is class attendance, which is Arbox's responsibility rather than
+// this app's, so "soon" had no owner and no date. These two tests now pin the
+// removal from both ends - it is not offered, and it cannot be reached.
+test("every filter chip is a scope a member can actually select", async () => {
   const window = await bootCommunity(seeded([row(1)]), { syncEnabled: false });
   await openFeed(window);
   const chips = window.document.querySelectorAll('[data-community-action="feed-scope"]');
   const scopes = Array.prototype.slice.call(chips).map((c) => c.dataset.scope);
-  assert.deepEqual(scopes, ["for_you", "following", "achievements", "coach", "my_classes"]);
-  const parked = window.document.querySelector('[data-community-action="feed-scope"][data-scope="my_classes"]');
-  assert.ok(parked.disabled, "My Classes is present but disabled, COMM-P01");
-  assert.match(parked.getAttribute("title") || "", /בקרוב/);
+  assert.deepEqual(scopes, ["for_you", "following", "achievements", "coach"]);
+  assert.equal(
+    window.document.querySelector('[data-scope="my_classes"]'), null,
+    "the parked My Classes chip is gone, not merely hidden",
+  );
+  const disabled = Array.prototype.slice.call(chips).filter((c) => c.disabled);
+  assert.deepEqual(disabled, [], "no filter advertises a scope that cannot be chosen");
 });
 
 test("choosing a filter sends the scope to feed_page and restarts the feed", async () => {
@@ -130,14 +138,27 @@ test("choosing a filter sends the scope to feed_page and restarts the feed", asy
   assert.equal(call.p_cursor, null, "a scope change starts a fresh feed session at the top");
 });
 
-test("the disabled My Classes chip cannot start a feed session", async () => {
+test("a scope this client no longer offers can never reach the server", async () => {
   const mock = seeded([row(1)]);
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openFeed(window);
   const before = mock.callsTo("feed_page").length;
-  window.document.querySelector('[data-scope="my_classes"]').click();
+  // There is no my_classes chip to click any more, so this forges one - the
+  // case that matters is a crafted or stale data-scope reaching the handler,
+  // not a button the UI renders. feedScopeDef() falls back to for_you for any
+  // id it does not know, so the unknown scope must never go out on the wire.
+  const row0 = window.document.getElementById("communityFeedFilters");
+  const forged = window.document.createElement("button");
+  forged.setAttribute("data-community-action", "feed-scope");
+  forged.setAttribute("data-scope", "my_classes");
+  row0.appendChild(forged);
+  forged.click();
   await new Promise((r) => setTimeout(r, 50));
-  assert.equal(mock.callsTo("feed_page").length, before, "no call was made for the parked scope");
+  assert.equal(
+    mock.callsTo("feed_page").filter((a) => a.p_scope === "my_classes").length, 0,
+    "no feed_page call carried the removed scope",
+  );
+  assert.equal(mock.callsTo("feed_page").length, before, "and the forged scope started no new feed session at all");
 });
 
 // --- COMM-113 cursor pagination ------------------------------------------

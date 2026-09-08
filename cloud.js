@@ -5376,10 +5376,23 @@
     { id: "following", label: "אחרי מי שאני עוקב/ת", empty: "אין עדיין פוסטים ממי שאתם עוקבים אחריו." },
     { id: "achievements", label: "הישגים", empty: "אין עדיין הישגים לשתף." },
     { id: "coach", label: "פוסטים מהמאמנים", empty: "אין עדיין פוסטים מהמאמנים." },
-    // COMM-P01. The scope exists on both sides and answers empty on the
-    // server; the chip is rendered disabled until an attendance source is
-    // picked, so nobody can reach a filter with nothing behind it.
-    { id: "my_classes", label: "השיעורים שלי", empty: "", parked: true },
+    // COMM-P01's "השיעורים שלי" chip is GONE from this list, by an explicit
+    // product decision rather than as cleanup.
+    //
+    // It rendered disabled, labelled "בקרוב", on every load of the feed. What
+    // it was waiting for is class attendance, and class scheduling and
+    // attendance are Arbox's job, not this app's - so "soon" had no owner and
+    // no date. A permanently disabled control is not honesty, it is a promise
+    // the product has not made, taking real space on the one screen a member
+    // opens most.
+    //
+    // THE SERVER SIDE IS DELIBERATELY LEFT ALONE. feed_ranked() still accepts
+    // 'my_classes' as a known scope and still returns nothing for it, and its
+    // tests still pin that. That is defence in depth, not dead code: a client
+    // that has cached an old scope value - one already sitting in a member's
+    // localStorage right now - must still get a valid empty answer rather than
+    // an error. Removing the chip is a UI decision; the scope stays a word the
+    // server understands until something is actually built behind it.
   ];
   function feedScopeDef(id) { return FEED_SCOPES.find((s) => s.id === id) || FEED_SCOPES[0]; }
 
@@ -16402,8 +16415,13 @@
     // The club header stays first and alone: it is identity and the bell, not
     // content, and it is the one thing that should never compete for a slot.
     // Announcements are now the ARCHIVE and sit below the feed.
-    // COMM-111 filter chips. My Classes is rendered disabled, tied to
-    // COMM-P01, and setFeedScope refuses it on the way in as well.
+    // COMM-111 filter chips. Every chip here is now selectable - the parked
+    // "השיעורים שלי" chip was removed (see FEED_SCOPES). setFeedScope still
+    // refuses a `parked` scope on the way in; nothing sets that flag today,
+    // and the guard stays for a future one. The real protection against a
+    // scope this client no longer offers is feedScopeDef(), which falls back
+    // to for_you for any id it does not know - so a crafted data-scope can
+    // never put an unknown scope on the wire.
     // Launch-readiness audit, A5 (axe, aria-required-children - CRITICAL).
     // The PARKED chips were plain <button aria-disabled>, with no role="tab",
     // while the live ones had it. A role="tablist" whose children are not all
@@ -16412,9 +16430,12 @@
     // can be mis-announced or skipped. A disabled tab is still a tab -
     // aria-disabled is the right way to say "not selectable yet", not
     // dropping the role.
-    const filterHtml = `<div class="chip-row" id="communityFeedFilters" role="tablist" aria-label="סינון הפיד" style="margin:0 0 10px;">${FEED_SCOPES.map((s) => s.parked
-      ? `<button class="chip-btn" data-community-action="feed-scope" data-scope="${s.id}" disabled role="tab" aria-selected="false" tabindex="-1" aria-disabled="true" title="בקרוב, ממתין למודול הנוכחות">${esc(s.label)} · בקרוב</button>`
-      : `<button class="chip-btn${state.feed.scope === s.id ? " selected" : ""}" data-community-action="feed-scope" data-scope="${s.id}" role="tab" aria-selected="${state.feed.scope === s.id ? "true" : "false"}" tabindex="${state.feed.scope === s.id ? "0" : "-1"}">${esc(s.label)}</button>`).join("")}</div>`;
+    // No parked branch any more: every chip in FEED_SCOPES is a scope a member
+    // can actually select. The aria-required-children fix that branch carried
+    // (a role="tablist" whose children were not all tabs) is moot now that
+    // there is nothing disabled left to render, but the note above stays as
+    // the reason the live chips each carry role="tab".
+    const filterHtml = `<div class="chip-row" id="communityFeedFilters" role="tablist" aria-label="סינון הפיד" style="margin:0 0 10px;">${FEED_SCOPES.map((s) => `<button class="chip-btn${state.feed.scope === s.id ? " selected" : ""}" data-community-action="feed-scope" data-scope="${s.id}" role="tab" aria-selected="${state.feed.scope === s.id ? "true" : "false"}" tabindex="${state.feed.scope === s.id ? "0" : "-1"}">${esc(s.label)}</button>`).join("")}</div>`;
 
     const feed = state.feed.loading && !state.feed.items.length
       ? `<div class="log-list" aria-busy="true">${renderPostCardSkeleton().repeat(3)}</div>`
