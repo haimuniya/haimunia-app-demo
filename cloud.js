@@ -1554,13 +1554,16 @@
     const step = INTRO_CAROUSEL_STEPS[stepIdx];
     const isLast = stepIdx === INTRO_CAROUSEL_STEPS.length - 1;
     const dots = INTRO_CAROUSEL_STEPS.map((_, i) => `<span style="display:inline-block;height:8px;width:${i === stepIdx ? "22px" : "8px"};border-radius:4px;background:${i === stepIdx ? "var(--brass)" : "var(--border)"};transition:width .2s;"></span>`).join(" ");
-    return `<div class="chart-card" data-intro-carousel="1" data-intro-step="${step}" style="text-align:center;">
-      <div style="text-align:start;">${renderJoinProgress(2)}</div>
+    return `<div class="chart-card" data-intro-carousel="1" data-intro-step="${step}" style="text-align:center;padding:0;overflow:hidden;">
+      <div style="padding:16px 16px 0;text-align:start;">${renderJoinProgress(2)}</div>
+      ${window.photoHeaderHtml("assets/photos/club-logo-wall-wide.jpeg", "")}
+      <div style="padding:0 16px 16px;">
       <div style="display:flex;justify-content:center;gap:6px;margin-bottom:16px;">${dots}</div>
       <div style="font-weight:800;font-size:20px;margin-bottom:10px;">${esc(introStepTitle(step))}</div>
       <div style="color:var(--steel);font-size:14px;line-height:1.7;margin-bottom:20px;">${esc(introStepBody(step))}</div>
       <button class="save-btn" data-community-action="intro-carousel-next">${isLast ? "המשך להשלמת הפרופיל" : "הבא"}</button>
       ${stepIdx > 0 ? `<button class="link-btn" data-community-action="intro-carousel-back" style="display:block;margin:12px auto 0;">חזרה</button>` : ""}
+      </div>
     </div>`;
   }
   // COMM-017. A stable per-client identifier the invite throttle keys on
@@ -16513,8 +16516,9 @@
       // one, so the collision needs a deliberate tap onto the login screen
       // to happen at all. The real fix is app.js's, and is reported there.
       if (!state.signupStarted && state.ui.gateView !== "login") {
-        return `<div class="chart-card">
-          <div aria-hidden="true" style="font-size:32px;line-height:1;margin-bottom:10px;color:var(--brass);">👥</div>
+        return `<div class="chart-card" style="padding:0;overflow:hidden;">
+          ${window.photoHeaderHtml("assets/photos/club-logo-wall-wide.jpeg", "", { eager: true })}
+          <div style="padding:16px;">
           <div style="font-weight:800;font-size:20px;margin-bottom:8px;">קהילת המועדון</div>
           <div style="color:var(--chalk);font-size:15px;line-height:1.5;margin-bottom:12px;">${bidiText("כאן רואים מה קורה במועדון: אימונים ושיאים של חברי המועדון, הודעות מהמאמנים ולוחות תוצאות.")}</div>
           <div style="color:var(--steel);font-size:14px;line-height:1.6;margin-bottom:18px;">${bidiText("הכניסה עם קוד הזמנה שמקבלים מהמאמן/ת. הקוד לא נוגע לרישום האימונים שלכם — הוא רק פותח את לשונית הקהילה.")}</div>
@@ -16524,6 +16528,7 @@
             <button class="gate-alt" data-community-action="show-login">התחברות</button>
           </div>
           ${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}
+          </div>
         </div>`;
       }
       if (!state.signupStarted) {
@@ -16669,7 +16674,7 @@
     // staff composer, which are reference material rather than the thing a
     // member opened the app to see - so this section now renders BELOW the
     // feed instead of above it. See the rail construction further down.
-    const announcementsHtml = `<div class="ach-section">${sectionHead("var(--brass)", "הודעות מהמועדון")}${announcementsList}${announceComposer}</div>`;
+    const announcementsHtml = `<div class="ach-section">${sectionHead("var(--brass)", "הודעות מהמועדון")}${window.photoHeaderHtml("assets/photos/club-logo-wall-wide.jpeg", "")}${announcementsList}${announceComposer}</div>`;
 
     // Sharing itself no longer lives here - it was a standing list of the
     // 8 most recent shareable results eating vertical space at the top of
@@ -16805,7 +16810,7 @@
         ${post.author_id === (state.user && state.user.id) ? `<button class="chip-btn" data-community-action="delete-post" data-id="${esc(post.id)}">הסרה</button>` : `<button class="chip-btn" data-community-action="report" data-id="${esc(post.id)}">דיווח</button>`}
       </div>
       ${state.posts.comparisonForPostId === post.id ? `<div class="log-list" style="margin-top:10px;">${state.posts.comparison.length ? state.posts.comparison.map((item, index) => `<div class="log-row"><span>${index + 1}. ${nameHtml(item.display_name, item.handle)}</span><span class="mono" style="color:var(--brass);">${esc(item.result_text)}</span></div>`).join("") : `<div class="empty">אין עדיין תוצאות להשוואה</div>`}</div>` : ""}
-      ${renderComments(post)}</article>`), railRest)}</div>` : `<div class="empty">${esc(feedScopeDef(state.feed.scope).empty || "פעילות המועדון תופיע כאן.")}</div>${railRest.join("")}`;
+      ${renderComments(post)}</article>`), railRest)}</div>` : `${emptyStateHtml({ key: "feed-empty", icon: "people", headline: "עדיין אין כאן פעילות", body: feedScopeDef(state.feed.scope).empty || "פעילות המועדון תופיע כאן." })}${railRest.join("")}`;
     // COMM-113. The sentinel is what IntersectionObserver watches; the
     // button under it is the same call for keyboard and for anywhere the
     // observer is unavailable. Reaching the end is a quiet marker, never an
@@ -17107,13 +17112,13 @@
     let html = "";
     if (pending) {
       html += `<div class="chart-card" role="status" style="margin-bottom:10px;border-color:var(--brass);">
-        <div style="font-weight:800;font-size:13.5px;">${pending} ${pending === 1 ? "פעולה ממתינה" : "פעולות ממתינות"} לשליחה</div>
+        <div class="flex items-center gap-8"><span class="icon-chip icon-chip-brass" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 2"/></svg></span><div style="font-weight:800;font-size:13.5px;">${pending} ${pending === 1 ? "פעולה ממתינה" : "פעולות ממתינות"} לשליחה</div></div>
         <div style="color:var(--steel);font-size:12.5px;margin-top:4px;">יישלחו אוטומטית כשהחיבור יחזור.</div>
       </div>`;
     }
     if (failed.length) {
       html += `<div class="chart-card" role="alert" style="margin-bottom:10px;border-color:var(--red);">
-        <div style="font-weight:800;font-size:13.5px;color:var(--red-text);">${failed.length} ${failed.length === 1 ? "פעולה נכשלה" : "פעולות נכשלו"}</div>
+        <div class="flex items-center gap-8" style="margin-bottom:2px;"><span class="icon-chip" style="background:color-mix(in srgb, var(--red) 16%, transparent);color:var(--red-text);" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 2.5 18a2 2 0 0 0 1.7 3h15.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg></span><div style="font-weight:800;font-size:13.5px;color:var(--red-text);">${failed.length} ${failed.length === 1 ? "פעולה נכשלה" : "פעולות נכשלו"}</div></div>
         <div style="color:var(--steel);font-size:12.5px;margin:4px 0 8px;">${failed.some((r) => serverErrorIsRetryable(r.lastError)) ? "אפשר לנסות שוב או להסיר מהתור." : "אף אחת מהן לא תעבור בניסיון חוזר — הסבר לכל פעולה למטה."}</div>
         ${failed.map((r) => `<div style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px;">
           <div style="font-weight:700;font-size:12.5px;">${bidiText(outboxActionLabel(r.action))}</div>

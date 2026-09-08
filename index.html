@@ -150,7 +150,16 @@
        decoration. Dark-theme --brass already clears AA and is untouched. */
     --yellow:#B07E12; --green:#2E7A48; --purple:#7A4FC2; --brass:#956529;
     --teal:#1E7D76;
-    --energy:#C94B29;
+    /* Direction 06 "Club Balance" handoff (README1.md): light --energy moves
+       to the same coral the dark theme already ships (#E85D3D) instead of
+       its own darker rust tone, so the primary accent is one color across
+       both themes rather than two. Safe: --energy-text (below) is an
+       independently-tuned token, not derived from --energy, so every small-
+       text use already routes around this fill and keeps its own measured
+       contrast (5.94:1/5.44:1 vs surface/bg) regardless of what the fill
+       itself is. As a fill/border (not text), #E85D3D still clears the
+       3:1 graphical-object floor against white (3.46:1). */
+    --energy:#E85D3D;
     /* Text over an AVATAR_PALETTE swatch (cloud.js). White reads fine
        against every swatch in this theme (measured contrast 4.2-6.7:1) but
        collapses in the dark theme below, where several swatches lighten -
@@ -461,6 +470,28 @@
   .rep-cell{ flex:1; background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:8px 4px; text-align:center; }
   .rep-cell-label{ color:var(--steel); font-size:11.5px; font-weight:700; }
   .rep-cell-val{ font-weight:700; font-size:13px; }
+  /* Direction 06 "Club Balance" handoff: a shallow real-photo strip at the
+     top of a screen, identifying the club without competing with the task
+     below it. aspect-ratio 3.6/1 (inside README1.md's 3:1-4:1 range) keeps
+     it well under the "16% of mobile viewport height" ceiling at every
+     width narrower than the max-height cap (390px/3.6 ≈ 108px vs a 135px
+     ceiling at a 844px-tall viewport); max-height is a hard backstop for
+     wider/shorter viewports where aspect-ratio alone would grow past that.
+     object-fit:cover + explicit width/height on the <img> (set inline by
+     photoHeaderHtml()) avoid layout shift while the file loads. */
+  .photo-header{ position:relative; margin-bottom:16px; border-radius:20px; overflow:hidden; border:1px solid var(--border); box-shadow:var(--shadow-card); aspect-ratio:960/260; max-height:150px; }
+  .photo-header img{ width:100%; height:100%; object-fit:cover; display:block; }
+  /* Navy overlay, dark theme only (README1.md: "Add a navy overlay in dark
+     mode") - same photo, calmer in the low-light palette. Two blocks for
+     the same reason every other dark rule here is duplicated (auto vs the
+     explicit data-theme stamp); this is a plain rule, not a custom
+     property, so theme-token-parity.test.mjs's --token diff does not apply
+     to it - kept byte-identical between the two blocks by convention only. */
+  .photo-header::after{ content:""; position:absolute; inset:0; pointer-events:none; }
+  :root[data-theme="dark"] .photo-header::after{ background:linear-gradient(180deg, rgba(21,35,66,.10), rgba(21,35,66,.45)); }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]) .photo-header::after{ background:linear-gradient(180deg, rgba(21,35,66,.10), rgba(21,35,66,.45)); }
+  }
   /* The save button and the tab bar are ONE fixed-position wrapper
      (#bottomNavWrap, index.html), not two independently-fixed elements -
      each computing its own `bottom` offset from env(safe-area-inset-bottom)
@@ -970,7 +1001,13 @@
   .rx-btn{ flex:1; min-height:44px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px; padding:8px 6px; border-radius:12px; border:1px solid var(--border); background:var(--surface); font-weight:700; font-size:15px; color:var(--steel); line-height:1.2; }
   .rx-btn.active-rx{ background:rgba(63,132,85,.15); border-color:var(--green); color:var(--green); }
   .rx-btn.active-scaled{ background:rgba(224,178,60,.15); border-color:var(--yellow); color:var(--yellow); }
-  .rx-btn.active-type{ background:rgba(201,75,41,.15); border-color:var(--energy); color:var(--energy); box-shadow:var(--shadow-sm); }
+  /* Direction 06 token fix: this literal (201,75,41) was the PRE-redesign
+     light --energy's rgb, so once light --energy moved to match dark's
+     coral, this tint silently stopped matching its own border-color/color
+     (both var(--energy)) in light theme. color-mix derives it from the
+     live token instead, the same way .icon-chip-energy already does, so it
+     can never drift from --energy again regardless of theme. */
+  .rx-btn.active-type{ background:color-mix(in srgb, var(--energy) 15%, transparent); border-color:var(--energy); color:var(--energy); box-shadow:var(--shadow-sm); }
   /* The gloss inherits the chip's own colour once that chip is selected, the
      same way .format-chip.active .format-chip-sub does — a steel-grey
      subtitle on a green chip reads as disabled text rather than part of the
@@ -1739,28 +1776,36 @@
 
 <div class="modal-overlay" id="onboardingOverlay" role="dialog" aria-modal="true" aria-labelledby="onboardingTitle" style="align-items:center; padding:0 20px;">
   <div class="modal-sheet" style="border-radius:22px; border-bottom:1px solid var(--border); max-height:none;">
-    <div style="padding:28px 22px calc(env(safe-area-inset-bottom,0px) + 24px);">
+    <div style="padding:0 20px calc(env(safe-area-inset-bottom,0px) + 24px);">
+      <!-- Direction 06: photo-header is markup-only here (not routed through
+           photoHeaderHtml() since this whole overlay is static index.html,
+           never re-rendered by app.js) - same asset/crop/overlay rules, just
+           written by hand once. eager-loaded: this overlay's first paint IS
+           the photo, not something scrolled to. -->
+      <div class="photo-header" style="margin:0 -20px 18px; border-radius:0;">
+        <img src="./assets/photos/club-logo-wall-wide.jpeg" alt="" width="960" height="260" loading="eager">
+      </div>
       <div id="onboardingTitle" style="color:var(--chalk); font-weight:800; font-size:19px; margin-bottom:4px; text-align:center;">כמה מילים על האפליקציה</div>
       <div style="color:var(--steel); font-size:13px; margin-bottom:22px; text-align:center;">חמישה מסכים, כל אחד למטרה שלו</div>
-      <div style="display:flex; flex-direction:column; gap:16px; margin-bottom:24px;">
+      <div style="display:flex; flex-direction:column; gap:14px; margin-bottom:24px;">
         <div class="flex items-center gap-10">
-          <span style="color:var(--brass); flex-shrink:0;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 9v6M20 9v6M2 10v4M22 10v4M7 12h10"/></svg></span>
+          <span class="icon-chip icon-chip-brass"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 9v6M20 9v6M2 10v4M22 10v4M7 12h10"/></svg></span>
           <div><div style="font-weight:700; font-size:14px;">רישום</div><div style="color:var(--steel); font-size:12.5px;">רישום סטים ואימונים, כולל סולם של כמה סטים ברצף</div></div>
         </div>
         <div class="flex items-center gap-10">
-          <span style="color:var(--brass); flex-shrink:0;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V12M12 20V4M20 20v-7"/></svg></span>
+          <span class="icon-chip icon-chip-brass"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V12M12 20V4M20 20v-7"/></svg></span>
           <div><div style="font-weight:700; font-size:14px;">התקדמות</div><div style="color:var(--steel); font-size:12.5px;">גרפים, שיאים אישיים, משקל גוף ומדדים</div></div>
         </div>
         <div class="flex items-center gap-10">
-          <span style="color:var(--brass); flex-shrink:0;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg></span>
+          <span class="icon-chip icon-chip-brass"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg></span>
           <div><div style="font-weight:700; font-size:14px;">לוח שנה</div><div style="color:var(--steel); font-size:12.5px;">כל האימונים שלכם לפי תאריך, ונפח אימון לפי קטגוריה</div></div>
         </div>
         <div class="flex items-center gap-10">
-          <span style="color:var(--brass); flex-shrink:0;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2M9 2h6M12 2v3"/></svg></span>
+          <span class="icon-chip icon-chip-brass"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2M9 2h6M12 2v3"/></svg></span>
           <div><div style="font-weight:700; font-size:14px;">אימונים</div><div style="color:var(--steel); font-size:12.5px;">רישום WOD, כולל בנצ׳מארקים מוכרים או אימון מותאם אישית</div></div>
         </div>
         <div class="flex items-center gap-10">
-          <span style="color:var(--brass); flex-shrink:0;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M2 20c0-3.5 3-6 7-6s7 2.5 7 6"/><circle cx="17" cy="7" r="2.4"/><path d="M16.5 12.2c2.7.3 4.5 2.4 4.5 5.3"/></svg></span>
+          <span class="icon-chip icon-chip-brass"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M2 20c0-3.5 3-6 7-6s7 2.5 7 6"/><circle cx="17" cy="7" r="2.4"/><path d="M16.5 12.2c2.7.3 4.5 2.4 4.5 5.3"/></svg></span>
           <div><div style="font-weight:700; font-size:14px;">קהילה</div><div style="color:var(--steel); font-size:12.5px;">פיד, עידודים ולוחות תוצאות עם חברי המועדון — צריך קוד הזמנה מהמאמן/ת</div></div>
         </div>
       </div>
@@ -1794,8 +1839,10 @@
 
 <div class="modal-overlay" id="welcomeOverlay" role="dialog" aria-modal="true" aria-labelledby="welcomeTitle" style="align-items:center; padding:0 20px;">
   <div class="modal-sheet" style="border-radius:22px; border-bottom:1px solid var(--border); max-height:none;">
-    <div style="padding:28px 20px calc(env(safe-area-inset-bottom,0px) + 24px); text-align:center;">
-      <img src="./assets/mark.png" alt="" width="36" height="41" style="margin-bottom:14px; opacity:.9;" />
+    <div style="padding:0 20px calc(env(safe-area-inset-bottom,0px) + 24px); text-align:center;">
+      <div class="photo-header" style="margin:0 -20px 18px; border-radius:0;">
+        <img src="./assets/photos/club-logo-wall-wide.jpeg" alt="" width="960" height="260" loading="eager">
+      </div>
       <div id="welcomeTitle" style="color:var(--chalk); font-weight:800; font-size:19px; margin-bottom:6px;">ברוכים הבאים!</div>
       <div id="welcomeSubtitle" style="color:var(--steel); font-size:13px; margin-bottom:18px;">איך נקרא לך?</div>
       <input id="welcomeNameInput" class="text-input" dir="auto" maxlength="80" autocomplete="off" placeholder="השם שלך" aria-labelledby="welcomeSubtitle" style="margin-bottom:16px; text-align:center;" />

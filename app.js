@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.14.0";
+const APP_VERSION = "4.15.0";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -239,6 +239,26 @@ function renderTabHeader(navId) {
   const item = getNavItems().find((i) => i.id === navId);
   if (!item) return "";
   return `<h1 class="page-title">${esc(item.label)}</h1>`;
+}
+// Direction 06 "Club Balance" handoff (README1.md/CLAUDE_CODE_PROMPT.md).
+// One shared real-photo header - the crop/overlay/lazy-load rules live here
+// exactly once rather than being re-decided per screen; each render function
+// only picks which asset per README1's photo-mapping table. assetPath is
+// root-relative (e.g. "assets/photos/club-rig-wide.jpeg"), sized 960x260 to
+// match the .photo-header aspect-ratio exactly (index.html) - explicit
+// width/height reserves the box before the file loads, avoiding layout
+// shift. opts.eager skips loading="lazy" for the one screen that is already
+// on screen at first paint (the Add tab); every other screen is reached by
+// navigating there, so lazy-loading them costs nothing a member would
+// notice and keeps first paint from waiting on decorative photography.
+// A plain top-level function (not IIFE-scoped), so it becomes a window
+// property like every other cross-file shared helper here - cloud.js reaches
+// it as window.photoHeaderHtml(), the same way it reaches every other
+// platform module, per that file's own documented convention.
+function photoHeaderHtml(assetPath, altText, opts) {
+  opts = opts || {};
+  const loading = opts.eager ? "eager" : "lazy";
+  return `<div class="photo-header"><img src="${esc(assetPath)}" alt="${esc(altText)}" width="960" height="260" loading="${loading}"></div>`;
 }
 // Redesign, Phase 3 fix: cloud.js's setCommunityTab() is Community's own
 // internal sub-tab switch - every existing caller assumed the top-level
@@ -3911,6 +3931,7 @@ function renderCalDetail() {
   const label = d.toLocaleDateString("he-IL", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
   el.innerHTML = `
     <div class="section-label" style="margin-top:4px;">${label.toUpperCase()}</div>
+    <div class="chart-card">
     ${(dayEntries.length === 0 && dayWods.length === 0) ? `<div class="empty">לא נרשם דבר ביום הזה.</div>` : `
     <div class="log-list">
       ${groupDayEntries(dayEntries).map((group) => {
@@ -3982,9 +4003,10 @@ function renderCalDetail() {
       }).join("")}
     </div>`}
 
-    <div style="color:var(--steel); font-size:11px; font-weight:700; letter-spacing:.5px; margin:16px 0 6px;">איך היה האימון היום</div>
+    <div class="section-label" style="margin-top:16px;">איך היה האימון היום</div>
     <textarea id="sessionNoteInput" class="text-input" dir="auto" maxlength="${LIMITS.notesLen}" rows="3" placeholder="הרגשה, אנרגיה, מה עבד ומה פחות..." aria-label="איך היה האימון היום" style="resize:vertical; min-height:64px; font-family:inherit; margin-bottom:8px;">${esc(calNoteDate === calSelectedDate ? calNoteText : "")}</textarea>
     <button data-action="save-session-note" data-date="${esc(calSelectedDate)}" class="link-btn" style="display:block;">שמירת הערה</button>
+    </div>
   `;
 }
 
@@ -4028,15 +4050,18 @@ function renderVolumeReport() {
   }).join("");
 
   return `
+    <div class="chart-card">
     <div class="section-label">נפח ותדירות לפי קטגוריה</div>
     <div style="color:var(--steel); font-size:11px; margin-bottom:10px;">סטים ב-7 / 30 הימים האחרונים, וזמן מאז האימון האחרון</div>
     ${rows}
+    </div>
   `;
 }
 
 function renderCalendarTab() {
   return `
     ${renderTabHeader("calendar")}
+    ${photoHeaderHtml("assets/photos/club-open-floor-wide.jpeg", "")}
     <div class="cal-panel">
       <div class="cal-header">
         <button class="cal-nav-btn" data-action="cal-prev" aria-label="חודש קודם">
@@ -4175,9 +4200,10 @@ function renderHistoryTab() {
 
   return `
     ${renderTabHeader("history")}
+    ${photoHeaderHtml("assets/photos/club-rig-wide.jpeg", "")}
     ${!storageOK ? `<div class="footer-note" style="color:var(--red-text); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
     <div class="stat-row">
-      <div class="stat-card" style="text-align:center;"><div class="stat-value mono" style="color:var(--brass); font-size:20px;">${prCountThisMonth}</div><div class="stat-label">שיאים החודש</div></div>
+      <div class="stat-card stat-hero" style="text-align:center;"><div class="stat-value mono" style="color:var(--brass); font-size:20px;">${prCountThisMonth}</div><div class="stat-label">שיאים החודש</div></div>
       <div class="stat-card" style="text-align:center;"><div class="stat-value mono" style="font-size:20px;">${sessionsThisWeek}</div><div class="stat-label">אימונים השבוע</div></div>
       <div class="stat-card" style="text-align:center;"><div class="stat-value mono" style="font-size:20px;">${totalSetsLogged}</div><div class="stat-label">סטים שנרשמו</div></div>
     </div>
@@ -5059,17 +5085,32 @@ function renderWodHistorySection() {
 // other drill-in row in the app shows (ICONS.chevronsLeft, and the settings
 // navrow's scaleX(-1) chevron) - "forward" is leftward here, same rule the
 // calendar's cal-next arrow follows.
+// Grouped by Girls/Heroes (the only two categories WOD_LIBRARY actually
+// uses) with the same .cat-group/.cat-head pattern the exercise/strength
+// pickers already use, instead of one flat undifferentiated list. Hebrew
+// labels are local to this grouping, not catLabel()'s CATEGORY_LABELS table
+// - that table is scoped to strength MOVEMENT categories (Squat/Deadlift/…)
+// and mixing WOD-library categories into it would blur two different
+// classification systems that happen to share the word "category".
+const WOD_LIBRARY_CATEGORY_LABELS = { Girls: "בנות", Heroes: "גיבורים" };
 function renderWodBenchmarksSection() {
-  return `<div class="section-label">Benchmarks</div>
-    ${WOD_LIBRARY.map((w) => `<button class="movement-btn" data-action="select-benchmark" data-id="${esc(w.id)}">
-      <div><span style="font-weight:700;">${bidiText(w.name)}</span>${w.desc ? `<div class="wod-desc">${bidiText(w.desc)}</div>` : ""}</div>
-      <span aria-hidden="true">›</span>
-    </button>`).join("")}`;
+  const groups = Object.entries(
+    WOD_LIBRARY.reduce((acc, w) => { (acc[w.category] = acc[w.category] || []).push(w); return acc; }, {})
+  );
+  return groups.map(([cat, list]) => `
+    <div class="cat-group">
+      <div class="cat-head"><span class="cat-name">${esc(WOD_LIBRARY_CATEGORY_LABELS[cat] || cat)}</span></div>
+      ${list.map((w) => `<button class="movement-btn" data-action="select-benchmark" data-id="${esc(w.id)}">
+        <div><span style="font-weight:700;">${bidiText(w.name)}</span>${w.desc ? `<div class="wod-desc">${bidiText(w.desc)}</div>` : ""}</div>
+        <span aria-hidden="true">›</span>
+      </button>`).join("")}
+    </div>`).join("");
 }
 
 function renderWodTab() {
   return `
     ${renderTabHeader("wod")}
+    ${photoHeaderHtml("assets/photos/club-rig-wide.jpeg", "")}
     ${!storageOK ? `<div class="footer-note" style="color:var(--red-text); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
     <div class="subtabbar" role="tablist">
       <button class="subtabbtn ${wodSubTab === "log" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="log" role="tab" aria-selected="${wodSubTab === "log"}" aria-controls="wodContent" tabindex="${wodSubTab === "log" ? "0" : "-1"}">רישום</button>

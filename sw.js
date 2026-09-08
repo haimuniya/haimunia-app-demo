@@ -2,7 +2,7 @@
 // Version is the single source of truth for the cache name — bumping
 // APP_VERSION in app.js is what ships an update. Don't edit SW_VERSION by
 // hand: run `npm run sync-version` (see app.js) to copy it here.
-const SW_VERSION = "4.14.0";
+const SW_VERSION = "4.15.0";
 // "haimunia-demo-v..." — deliberately distinct from the production app's
 // own "haimunia-v..." cache prefix. Both service workers are scoped to
 // the same origin (haimuniya.github.io), and the activate handler below
@@ -67,6 +67,20 @@ const OPTIONAL_ASSETS = [
   "./assets/medal-bronze.png",
   "./assets/medal-silver.png",
   "./assets/medal-gold.png",
+  // Direction 06 "Club Balance" handoff: real club photography for the new
+  // .photo-header component (index.html/photoHeaderHtml() in app.js).
+  // Optional, not required: a missed photo degrades to no header image (the
+  // browser just shows the empty .photo-header box's border/background),
+  // never blocks install or the offline training log - same reasoning as
+  // every icon/font above.
+  "./assets/photos/club-stripe-wall-wide.jpeg",
+  "./assets/photos/club-stripe-wall-angle.jpeg",
+  "./assets/photos/club-equipment-wide.jpeg",
+  "./assets/photos/club-logo-wall-wide.jpeg",
+  "./assets/photos/club-logo-wall-portrait.jpeg",
+  "./assets/photos/club-rig-wide.jpeg",
+  "./assets/photos/club-open-floor-wide.jpeg",
+  "./assets/photos/club-rings-portrait.jpeg",
   "./assets/fonts/rubik-400-latin.woff2",
   "./assets/fonts/rubik-400-hebrew.woff2",
   "./assets/fonts/rubik-600-latin.woff2",
