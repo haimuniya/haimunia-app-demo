@@ -357,7 +357,32 @@ async function generateRecaps(supabase: SupabaseClient, now: Date) {
         .single();
       if (upsertErr) throw upsertErr;
 
-      if (isNewRow && upserted) {
+      // DO NOT PUSH A RECAP OF NOTHING.
+      //
+      // loadActiveMemberIds() means "redeemed an invite and not deleted" - it
+      // has nothing to do with training - so without this guard the Monday
+      // run notified EVERY member, including everyone who did not train at
+      // all, with the body "0 אימונים השבוע, רצף של 0.". That is a push
+      // notification telling the least engaged people in the club that they
+      // did nothing, delivered first thing on a Monday. It is the single most
+      // uninstall-shaped message this app could send, and it was working
+      // exactly as designed.
+      //
+      // The RECAP ROW IS STILL WRITTEN either way: a member who opens the
+      // recap screen sees their real week, zero included, because they asked
+      // for it. What is withheld is the interruption, which is the part
+      // nobody asked for.
+      //
+      // "Nothing to say" is judged on the member's OWN week, not on the club
+      // aggregates (club_challenge_progress and upcoming_event are identical
+      // for everybody this run, so counting them would notify the whole club
+      // whenever an event is scheduled - which is exactly the same bug).
+      const hasSomethingToSay = fields.sessions_completed > 0
+        || (Array.isArray(fields.prs) && fields.prs.length > 0)
+        || (Array.isArray(fields.achievements) && fields.achievements.length > 0)
+        || (Array.isArray(fields.challenge_progress) && fields.challenge_progress.length > 0);
+
+      if (isNewRow && upserted && hasSomethingToSay) {
         const { error: notifErr } = await supabase.rpc("notif_create", {
           p_user: userId,
           p_type: "weekly_recap",
