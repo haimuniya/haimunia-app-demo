@@ -86,11 +86,18 @@ test("a failed save reverts the toggle and shows the Hebrew error", async () => 
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openAccountTab(window);
 
-  // Make a profiles upsert fail without mutating the mock db.
+  // Make the profiles write fail without mutating the mock db.
+  //
+  // Stubs `update`, not `upsert`: savePrivacyField() was changed from upsert
+  // to update because an upsert makes Postgres evaluate profiles_insert_self,
+  // which requires recovery_verified_at to be null - so once a member had
+  // completed account recovery, every privacy toggle (and their avatar, and
+  // their profile) silently stopped saving. The write this test forces to
+  // fail has to be the write the app actually performs, or it proves nothing.
   const realFrom = mock.client.from.bind(mock.client);
   mock.client.from = (table) => {
     const chain = realFrom(table);
-    if (table === "profiles") chain.upsert = () => ({ then: (res) => Promise.resolve(res({ error: { message: "boom" } })) });
+    if (table === "profiles") chain.update = () => ({ eq: () => ({ then: (res) => Promise.resolve(res({ error: { message: "boom" } })) }) });
     return chain;
   };
 

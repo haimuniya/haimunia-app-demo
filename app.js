@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.11.0";
+const APP_VERSION = "4.12.0";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -426,6 +426,11 @@ function noteStorageError(e) {
 let bodyweightEntries = [];
 let bwWeight = 70;
 let bodyweightExpanded = false;
+// Whether the percentage table under the 1RM estimate is open. Module-level
+// like bodyweightExpanded, because this screen re-renders by replacing its
+// own innerHTML - a <details> element would spring shut on every keystroke
+// in the weight field.
+let pctTableExpanded = false;
 
 // Body measurements (custom types the user defines, e.g. waist/chest — cm)
 let measureTypes = [];
@@ -451,6 +456,28 @@ function recentEntriesFor(id, days = 14, cap = 5) {
   const cutoff = localISODate(new Date(Date.now() - days * 86400000));
   return entriesFor(id).filter((e) => e.date >= cutoff).slice(0, cap);
 }
+// PERCENTAGE WORK OFF THE ESTIMATE.
+//
+// This app is post-workout management, not a bar-side calculator: you open it
+// to record what you did and to work out what to aim for next time. So the
+// percentages live under the estimate on the log screen, where a lift is
+// being reviewed, and are framed as the NEXT session rather than this one.
+//
+// The reference is bestEst1RM(), an Epley estimate from real logged sets, and
+// NOT a tested single. That is a deliberate trade: it works for every member
+// on day one with nothing to fill in, at the cost of being an estimate - a
+// number derived from a 5-rep set can sit a few kg either side of a true max.
+// The panel says so once, plainly, rather than presenting the figures as
+// measured. It is a starting point to adjust from, which is how percentage
+// work is used in practice anyway.
+//
+// Rounded to 2.5 kg because that is what a barbell can actually hold - the
+// smallest common plate pair is 1.25 kg a side. An unrounded "77.3 ק\"ג" is a
+// number nobody can load, and rounding at the point of display keeps the
+// arithmetic honest above it.
+const PCT_STEPS = [95, 90, 85, 80, 75, 70, 65, 60];
+function roundToPlate(kg) { return Math.round(kg / 2.5) * 2.5; }
+function formatPlateKg(kg) { return Number.isInteger(kg) ? String(kg) : kg.toFixed(1); }
 function bestEst1RM(id, excludeId) {
   // Duration entries carry est1RM: 0 (see sanitizeEntry) so they can't win
   // this max by accident, but they're filtered explicitly anyway so an
@@ -3499,6 +3526,21 @@ function renderLogTab() {
       </button>` : ""}
     </div>` : ""}
 
+    ${est && !isDuration ? `
+    <div style="margin-bottom:12px;">
+      <button data-action="toggle-pct-table" class="movement-btn ${pctTableExpanded ? "active" : ""}" aria-expanded="${pctTableExpanded}" style="width:100%; display:flex; align-items:center; justify-content:space-between; gap:8px;">
+        <span>אחוזים לאימון הבא</span>
+        <span style="display:inline-flex; transition:transform .2s; transform:rotate(${pctTableExpanded ? "90deg" : "180deg"});">${ICONS.chevron}</span>
+      </button>
+      ${pctTableExpanded ? `<div class="chart-card" style="margin-top:8px;">
+        <div class="footer-note" style="margin:0 0 10px;">מחושב מ־1RM משוער (${est} ק"ג) — הערכה מהסטים שרשמתם, לא מקס שנבדק. נקודת פתיחה להתאמה.</div>
+        <div class="log-list">
+          ${PCT_STEPS.map((pct) => `<div class="log-row"><span style="color:var(--steel); font-weight:700;">${pct}%</span><span class="mono" style="font-weight:700; color:var(--brass);">${formatPlateKg(roundToPlate(est * pct / 100))} ק"ג</span></div>`).join("")}
+        </div>
+        <div class="footer-note" style="margin:10px 0 0;">מעוגל ל־2.5 ק"ג — הקפיצה הקטנה ביותר שאפשר להעמיס על המוט.</div>
+      </div>` : ""}
+    </div>` : ""}
+
     ${(() => {
       const recent = recentEntriesFor(selectedId);
       if (recent.length === 0) return "";
@@ -5820,6 +5862,7 @@ document.addEventListener("click", (e) => {
   }
   else if (action === "save-bw") { saveBodyweight(); }
   else if (action === "toggle-bodyweight") { bodyweightExpanded = !bodyweightExpanded; renderBodyweightArea(); }
+  else if (action === "toggle-pct-table") { pctTableExpanded = !pctTableExpanded; render(); }
   else if (action === "open-add-measure-type") { measureAddOpen = true; renderMeasureArea(); }
   else if (action === "cancel-add-measure-type") { measureAddOpen = false; renderMeasureArea(); }
   else if (action === "confirm-add-measure-type") {

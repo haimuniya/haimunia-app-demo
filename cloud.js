@@ -6722,7 +6722,14 @@
     // real coach-scoped permissions (their own classes/members) are a
     // separate piece of work, not built yet.
     const payload = { id: state.user.id, handle, display_name: String(form.elements.displayName.value || "").trim().slice(0, 80), bio: String(form.elements.bio.value || "").trim().slice(0, 160) };
-    const { error } = await client.from("profiles").upsert(payload);
+    // The ONE place an insert is genuinely possible: profile completion runs
+    // before the row exists. Once it does, update - an upsert would evaluate
+    // profiles_insert_self, which requires recovery_verified_at to be null,
+    // so a member who has completed account recovery could no longer edit
+    // their own profile at all.
+    const { error } = state.profile
+      ? (await client.from("profiles").update({ handle: payload.handle, display_name: payload.display_name, bio: payload.bio }).eq("id", state.user.id))
+      : (await client.from("profiles").upsert(payload));
     if (error) {
       if (error.code === "23505") setFieldErrors(formId, { handle: "השם הזה כבר תפוס במועדון. בחרו שם אחר." });
       else setMessage("שמירת הפרופיל נכשלה");
@@ -7286,7 +7293,15 @@
     if (prev === value) return;
     state.profile[field] = value;
     rerender();
-    const { error } = await client.from("profiles").upsert({ id: state.user.id, [field]: value });
+    // update, not upsert - same reason as saveAvatarUrl() above: the row
+    // exists (this returns early without state.profile), and an upsert makes
+    // Postgres evaluate profiles_insert_self, which refuses once
+    // recovery_verified_at is set.
+    const { error } = await client.from("profiles").update({ [field]: value }).eq("id", state.user.id);
+    // Domain message, not serverErrorText(): a member needs to know WHICH
+    // thing failed to save, and "לא ניתן לשמור הגדרה זו" says that where a
+    // generic server string would not. The avatar path is the opposite
+    // case - there the cause is what was missing.
     if (error) { state.profile[field] = prev; setMessage("לא ניתן לשמור הגדרה זו"); return; }
     setMessage("הגדרת הפרטיות נשמרה");
   }
@@ -13251,13 +13266,36 @@
   // savePrivacyField's immediate-save pattern (a photo change is already a
   // committed action the moment the bytes are in Storage) rather than
   // saveProfile's bundled-into-form-submit pattern.
+  // UPDATE, NOT UPSERT - and that is the whole bug this once had.
+  //
+  // Saving an avatar used to .upsert() this row. The row always already
+  // exists here (the function returns early without state.profile), so the
+  // insert half was never needed - but Postgres still evaluates the INSERT
+  // policy's WITH CHECK on the proposed tuple for an INSERT ... ON CONFLICT.
+  // profiles_insert_self (202608280003:214) requires `recovery_verified_at is
+  // null` - it exists to stop a member re-creating a verified profile row -
+  // so the policy that protects account recovery was refusing photo uploads
+  // for exactly the members who had completed recovery. Reported from a real
+  // device as "can't add profile pic", with only "שמירת התמונה נכשלה" to go
+  // on. An update touches one column and needs only profiles_update_self.
+  //
+  // The error is now REPORTED rather than swallowed. The old message named
+  // the failure and not its cause, which is why this took a screenshot from
+  // production to find at all: serverErrorText() turns a Postgres error into
+  // something a member can act on, and anything it does not recognise still
+  // beats a dead end.
   async function saveAvatarUrl(url) {
     if (!state.user || !state.profile) return false;
     const prev = state.profile.avatar_url;
     state.profile.avatar_url = url || null;
     rerender();
-    const { error } = await client.from("profiles").upsert({ id: state.user.id, avatar_url: url || null });
-    if (error) { state.profile.avatar_url = prev; setMessage("שמירת התמונה נכשלה"); rerender(); return false; }
+    const { error } = await client.from("profiles").update({ avatar_url: url || null }).eq("id", state.user.id);
+    if (error) {
+      state.profile.avatar_url = prev;
+      setMessage(serverErrorText(error) || "שמירת התמונה נכשלה");
+      rerender();
+      return false;
+    }
     return true;
   }
   async function avatarPhotoSelected(file) {
