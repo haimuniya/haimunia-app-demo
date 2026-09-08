@@ -84,7 +84,13 @@ function newDom(url) {
     addListener() {},
     removeListener() {},
   });
-  window.crypto = globalThis.crypto;
+  // defineProperty rather than assignment: jsdom 30 made window.crypto an
+  // accessor with no setter, so `window.crypto = ...` throws "Cannot set
+  // property crypto of [object Window] which has only a getter" and takes
+  // every test that boots the app down with it. Assignment worked on 25.
+  Object.defineProperty(window, "crypto", {
+    value: globalThis.crypto, configurable: true, writable: true,
+  });
 
   // window.confirm has no jsdom implementation; default to "yes" for tests
   // that go through confirmation flows (e.g. import merge).

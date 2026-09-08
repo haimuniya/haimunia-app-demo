@@ -22,7 +22,23 @@ if (!declared) {
 }
 
 const vendorSrc = readFileSync(path.join(root, "vendor", "supabase.js"), "utf8");
-const match = vendorSrc.match(/exports?\.version=void 0,\s*t\.version="([0-9.]+)"/) || vendorSrc.match(/t\.version="([0-9.]+)"/);
+// The 2.114.0 re-vendor changed the minifier: string literals are now
+// backticks, and the top-level version is emitted as a BARE LOCAL
+// (`let Vn=\`2.114.0\``) rather than through an `exports.version` pattern.
+// The property this check used to lean on - that the top-level package was
+// the only one assigned that way - no longer exists, because Supabase now
+// versions the monorepo as a unit (realtime-js reports 2.114.0 too).
+//
+// So the version half of this check is deliberately weaker than it was: it
+// asserts the declared version appears in the bundle as a version-shaped
+// literal, not that a specific sub-package reported it. That is honest about
+// what can still be distinguished. THE SHA256 PIN BELOW IS UNCHANGED and is
+// the half that actually stops an unexplained edit - a version marker only
+// ever proved what the bundle CLAIMS.
+const match = vendorSrc.match(/exports?\.version=void 0,\s*t\.version="([0-9.]+)"/)
+  || vendorSrc.match(/t\.version="([0-9.]+)"/)
+  || vendorSrc.match(new RegExp("[=:]\\s*[`\"']" + declared.replace(/\./g, "\\.") + "[`\"']"))
+  && [null, declared];
 if (!match) {
   console.error("Could not find the @supabase/supabase-js version marker in vendor/supabase.js - the bundle's minification pattern may have changed; update this script's regex.");
   process.exit(1);
@@ -44,7 +60,7 @@ if (vendored !== declared) {
 // `sha256sum vendor/supabase.js`, paste it here, and say in the PR why the
 // bundle changed. That is the whole control - it makes an unexplained edit
 // impossible to land quietly.
-const EXPECTED_SHA256 = "7e94b62086deecef8c0ba3b38f514e2a1944ff6c81d92fb3ff967828c406c38f";
+const EXPECTED_SHA256 = "c3754a5a4e8efcdc03c1c0028781eb7ec6043da0b952ebf85d530a21d5c91469";
 const actualSha = createHash("sha256").update(readFileSync(path.join(root, "vendor", "supabase.js"))).digest("hex");
 if (actualSha !== EXPECTED_SHA256) {
   console.error(`vendor/supabase.js content does not match its pinned hash.
