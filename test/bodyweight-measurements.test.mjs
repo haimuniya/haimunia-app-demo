@@ -95,6 +95,61 @@ test("deleting a measure type removes it and its logged measurements", async () 
   assert.ok(!(await window.dbLoadMeasurements()).some((e) => e.typeId === type.id), "its measurements should be cleaned up too, not left orphaned");
 });
 
+// Go-live audit: this was "the least-guarded destructive action left in the
+// app now that the entry-delete path is fixed" — tapping the bin icon
+// deleted the type and every measurement under it immediately, with no
+// confirmation at all. Fixed to follow the same askAppConfirm + offerUndo
+// pattern askDeleteEntry already established.
+test("tapping delete on a measure type asks for confirmation, names it and its measurement count, and only deletes on confirm", async () => {
+  const window = await bootApp();
+  window.document.getElementById("tabHistoryBtn").click();
+  await window.addMeasureType("Test Waist");
+  const type = (await window.dbLoadMeasureTypes()).find((t) => t.name === "Test Waist");
+  window.applyFieldValue("measure-step", type.id, 80);
+  await window.saveMeasurement(type.id);
+  window.renderMeasureArea();
+
+  window.document.querySelector(`[data-action="delete-measure-type"][data-id="${type.id}"]`).click();
+
+  const dialogText = window.document.getElementById("appConfirmOverlay").textContent;
+  assert.match(dialogText, /Test Waist/, "the dialog names the type being deleted, not a generic message");
+  assert.match(dialogText, /1/, "the dialog names the count of measurements that will also be deleted");
+
+  // Not deleted yet - the confirm sheet is up, nothing has happened.
+  assert.ok((await window.dbLoadMeasureTypes()).some((t) => t.id === type.id), "the type must survive until the confirm button is actually pressed");
+
+  window.document.querySelector('[data-action="app-confirm-yes"]').click();
+  await new Promise((r) => setTimeout(r, 0)); // deleteMeasureType() is async
+
+  assert.ok(!(await window.dbLoadMeasureTypes()).some((t) => t.id === type.id), "confirming deletes the type");
+  assert.ok(!(await window.dbLoadMeasurements()).some((e) => e.typeId === type.id), "and its measurements");
+
+  // The same confirm+undo parity askDeleteEntry gets: a five-second window
+  // to put it back exactly as it was.
+  const toastBtn = window.document.querySelector('[data-action="toast-action"]');
+  assert.ok(toastBtn, "a confirmed delete offers an undo, matching every other destructive action in this app");
+  toastBtn.click();
+  await new Promise((r) => setTimeout(r, 0)); // restoreMeasureType() is async
+
+  const restoredType = (await window.dbLoadMeasureTypes()).find((t) => t.id === type.id);
+  assert.ok(restoredType, "undo restores the type");
+  assert.equal(restoredType.name, "Test Waist");
+  assert.ok((await window.dbLoadMeasurements()).some((e) => e.typeId === type.id), "and restores its measurement, not just the type");
+});
+
+test("deleting a measure type with zero logged measurements does not falsely claim any will be deleted", async () => {
+  const window = await bootApp();
+  window.document.getElementById("tabHistoryBtn").click();
+  await window.addMeasureType("Test Empty");
+  const type = (await window.dbLoadMeasureTypes()).find((t) => t.name === "Test Empty");
+  window.renderMeasureArea();
+
+  window.document.querySelector(`[data-action="delete-measure-type"][data-id="${type.id}"]`).click();
+  const dialogText = window.document.getElementById("appConfirmOverlay").textContent;
+  assert.match(dialogText, /Test Empty/);
+  assert.doesNotMatch(dialogText, /יימחקו גם/, "no measurements exist, so the dialog should not claim any will be deleted with it");
+});
+
 // Launch-readiness audit bug fix: applyRemotePrivateRecord() (app.js) had a
 // deleted branch for every synced record type except bodyweight - a
 // bodyweight row's remote deletion (e.g. deleted from another device, or by

@@ -1822,6 +1822,7 @@ function runAppConfirm() {
   if (!c) { render(); return; }
   if (c.action === "delete-entry") deleteEntry(c.payload.id);
   else if (c.action === "delete-wod-entry") deleteWodEntry(c.payload.id);
+  else if (c.action === "delete-measure-type") deleteMeasureType(c.payload.id);
   else if (c.action === "save-set") saveSet(true);
   else render();
 }
@@ -1999,16 +2000,49 @@ async function addMeasureType(name) {
   measureAddOpen = false;
   renderMeasureArea();
 }
+// Named for what it destroys, same as askDeleteEntry above: this was the
+// audit's own framing — the least-guarded destructive action left in the
+// app once the entry-delete path was fixed, since it cascades away every
+// measurement ever logged under a type with no confirmation at all.
+function askDeleteMeasureType(id) {
+  const type = measureTypes.find((t) => t.id === id);
+  if (!type) return;
+  const count = measureEntriesFor(id).length;
+  const countText = count > 0 ? ` יימחקו גם ${count} המדידות שנרשמו עבורו.` : "";
+  askAppConfirm({
+    title: "מחיקת מדד",
+    message: `${type.name}.${countText} המדד יימחק מהמכשיר; אפשר יהיה לבטל למשך כמה שניות.`,
+    confirmLabel: "מחיקה", destructive: true,
+    action: "delete-measure-type", payload: { id },
+    opener: { action: "delete-measure-type", id },
+  });
+}
 async function deleteMeasureType(id) {
+  const type = measureTypes.find((t) => t.id === id);
+  const removedEntries = measureEntriesFor(id);
   measureTypes = measureTypes.filter((t) => t.id !== id);
-  const toDelete = measureEntriesFor(id).map((e) => e.id);
   measureEntries = measureEntries.filter((e) => e.typeId !== id);
   if (measureExpandedId === id) measureExpandedId = null;
   try {
     await dbDeleteMeasureType(id);
-    for (const eid of toDelete) await dbDeleteMeasurement(eid);
+    for (const e of removedEntries) await dbDeleteMeasurement(e.id);
   } catch (e) { noteStorageError(e); }
-  renderMeasureArea();
+  if (type) offerUndo(`${type.name} נמחק`, () => restoreMeasureType(type, removedEntries));
+  render();
+}
+// Mirrors restoreEntry(): a plain re-put of the type and its measurements,
+// already held in memory, back into the same collections.
+async function restoreMeasureType(type, removedEntries) {
+  measureTypes = measureTypes.filter((t) => t.id !== type.id);
+  measureTypes.push(type);
+  measureEntries = measureEntries.filter((e) => e.typeId !== type.id);
+  for (const e of removedEntries) measureEntries.unshift(e);
+  try {
+    await dbAddMeasureType(type);
+    for (const e of removedEntries) await dbPutMeasurement(e);
+    storageOK = true;
+  } catch (e) { noteStorageError(e); }
+  render();
 }
 async function saveMeasurement(typeId) {
   const value = measureValues[typeId];
@@ -5789,7 +5823,7 @@ document.addEventListener("click", (e) => {
     measureExpandedId = measureExpandedId === el.dataset.id ? null : el.dataset.id;
     renderMeasureArea();
   }
-  else if (action === "delete-measure-type") { deleteMeasureType(el.dataset.id); }
+  else if (action === "delete-measure-type") { askDeleteMeasureType(el.dataset.id); }
   else if (action === "save-measurement") { saveMeasurement(el.dataset.id); }
   else if (action === "delete-measurement-entry") { deleteMeasurementEntry(el.dataset.id); }
   else if (action === "save-user-name") { saveWelcomeForm(document.getElementById("welcomeNameInput").value); }
