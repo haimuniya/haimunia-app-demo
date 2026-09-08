@@ -231,12 +231,12 @@ know what it actually promises before you need it in an emergency.
   reason/expiry~~ — **done**, see `PRE_LAUNCH_AUDIT.md`.
 - `challengeKeyExists()` being device-relative for unpublished custom WODs
   — still open, unowned.
-- **New, from commit `0e97746` (2026-09-08):** `PRIVACY.md`/`privacy.html`
-  (both languages) still describe the pre-fix abandoned-account purge
-  behavior — the fix (an account holding any training data is now excluded
-  outright) changed what actually happens, and a test asserts the old
-  copy. The commit says this explicitly as "still to follow" — needs the
-  copy update + test update to ship together before this is fully closed.
+- ~~`PRIVACY.md`/`privacy.html` still describing the pre-fix
+  abandoned-account purge behavior~~ — **done**, shipped in `60c7404`
+  ("Stop promising the deletion the database no longer performs"),
+  verified this session: both languages corrected in both files,
+  `test/community-backup-sync.test.mjs` 19/19 (asserts the new copy AND
+  that the old, wrong promise can't silently return).
 - Two newly-named, unowned items from 2026-09-08: the consent card
   promising device-change recovery an anonymous account can't yet deliver,
   and `admin_incomplete_signups.purgeable_after_reclaim` going stale now
