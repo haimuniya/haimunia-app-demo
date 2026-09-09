@@ -1,3 +1,47 @@
+## "Navy Stripe" extended to every scene screen — 2026-09-09
+
+Extended from Add-only to Calendar, Progress, Library and Community
+(app.js's `renderCalendarTab`/`renderHistoryTab`/`renderWodTab`, and
+cloud.js's Community scene) — both themes, all four. Kept: Add's own taller
+`--scene-photo-height` (that was tuned specifically against its own
+mockup pass; the other four screens' existing, separately-approved
+VISUAL_QA_PROTOCOL.md proportions are untouched). Not extended: the glass
+CTA treatment, since only Add has one dominant primary action - the other
+screens don't have an equivalent element to apply it to.
+
+**Generalized, not duplicated, using what the scenes already share**:
+- `.scene-page__ambient` now reads `var(--scene-image)`/
+  `var(--scene-position, center top)` - the same custom properties each
+  `.scene-page--*` class already sets for its own `.scene-page__media` -
+  instead of a second per-screen hardcoded URL. One rule, every screen
+  automatically gets its own photo.
+- The lighter scrim (previously Add-only) turned out to be a defect on
+  every scene, not just Add - they all shared the one original catch-all
+  scrim rule, so all of them were darkening to .62 opacity by the
+  halfway point.
+- The glass sheet (light .88 opacity / dark .8, both measured for
+  contrast, not eyeballed) extends the same way - the underlying question
+  was never Add-specific ("does translucent coral/navy/cream work under
+  nested opaque cards"), so the same verified values apply everywhere.
+
+**A real specificity bug caught while generalizing, before it shipped**:
+the naive generalized selector `.scene-page > .scene-page__scrim` computes
+to specificity (0,2,0) - weaker than the existing
+`:root[data-theme="dark"] .scene-page__scrim` rule already in this file at
+(0,3,0). Without noticing, the lighter-scrim fix would have silently lost
+in dark theme specifically - the exact theme it was reported against -
+while appearing to work in light theme, where the competing rule doesn't
+match. Fixed by adding `body[data-scene]` to the selector
+(specificity 0,3,1), computed and verified via getComputedStyle in a real
+browser, not assumed from source order.
+
+Verified: `npm test` 1512/1512, `run-all.mjs` 35/35, `desktop-layout.mjs`
+clean, axe clean across all 5 scene screens in both light and dark (10
+checks total), computed styles (sheet background/blur, ambient's
+background-image resolving to each screen's own photo, scrim gradient)
+confirmed per-screen via headless Chromium rather than assumed from the
+Add-screen result alone.
+
 ## "Navy Stripe" extended to light theme — Add screen — 2026-09-09
 
 The dark-theme ship below stayed dark-only deliberately, since that's all

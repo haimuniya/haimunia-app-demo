@@ -1858,58 +1858,82 @@
      actually guarantees these win instead of depending on staying the
      last rule forever. */
 
-  /* Taller photo, lighter through the middle - the first mockup pass
-     measured the original scrim darkening to .62 opacity by the halfway
-     point, which read as "the photo is almost not visible" even after
-     doubling its height; this only comes up to real darkness in the last
-     ~15%, right where the sheet overlaps it. */
+  /* Taller photo, lighter through the middle - kept Add-specific: the
+     56svh height is what that screen's own mockup pass tuned, and
+     Calendar/Progress/Library/Community's shorter --scene-photo-height
+     values (40svh/38svh/etc.) came from an earlier, separately-approved
+     VISUAL_QA_PROTOCOL.md pass this change isn't meant to relitigate. */
   .scene-page--add{ --scene-photo-height: clamp(360px, 56svh, 500px); }
-  body[data-scene="scene-page--add"] .scene-page--add > .scene-page__scrim{
+
+  /* The lighter scrim itself DOES extend to every scene, not just Add -
+     the original darkened to .62 opacity by the halfway point on every
+     scene screen (they all shared the one catch-all scrim rule above),
+     so whichever screen this was first reported on ("the photo is almost
+     not visible"), the same defect was sitting on all of them. Comes up
+     to real darkness only in the last ~15%, right where each screen's
+     sheet overlaps its own photo. body[data-scene] prefix, not just
+     .scene-page - the plain .scene-page > .scene-page__scrim form
+     (specificity 0,2,0) is actually WEAKER than the existing
+     :root[data-theme="dark"] .scene-page__scrim rule above (0,3,0), so
+     without it this would silently lose in dark theme specifically,
+     exactly the theme this was reported against - caught by computing
+     specificity, not by trusting source order alone. */
+  body[data-scene] .scene-page > .scene-page__scrim{
     background:
       radial-gradient(55% 40% at 15% 0%, rgba(255,107,61,.20), transparent 60%),
       linear-gradient(180deg, rgba(10,13,22,.22) 0%, rgba(10,13,22,.04) 22%, rgba(10,13,22,.10) 55%, rgba(15,20,35,.55) 85%, var(--club-navy) 100%);
   }
 
-  /* Ambient: the same photo again, heavily blurred and dimmed, covering
-     the FULL height of the page (not just the photo band) so the glass
-     sheet below has something real to show through the whole way down
-     instead of flat color - reported directly ("why put transparency on
-     cards if there's nothing behind them"). background-attachment:fixed
-     sizes background-size:cover against the VIEWPORT, not this element's
-     own (very tall, content-height) box - without it, cover would blow
-     the image up the same way the sharp .scene-page__media layer did
-     before that bug was fixed earlier in this project. Degrades gracefully
-     on engines that ignore fixed attachment (older iOS Safari) - the
-     layer simply scrolls with the page instead of staying put, not a
-     functional break. */
-  .scene-page--add .scene-page__ambient{
+  /* Ambient: the same photo each scene already shows in its own
+     .scene-page__media (var(--scene-image)/var(--scene-position), set
+     per .scene-page--* class - not re-specified per screen here), heavily
+     blurred and dimmed, covering the FULL height of the page (not just
+     the photo band) so the glass sheet below has something real to show
+     through the whole way down instead of flat color - reported directly
+     ("why put transparency on cards if there's nothing behind them").
+     background-attachment:fixed sizes background-size:cover against the
+     VIEWPORT, not this element's own (very tall, content-height) box -
+     without it, cover would blow the image up the same way the sharp
+     .scene-page__media layer did before that bug was fixed earlier in
+     this project. Degrades gracefully on engines that ignore fixed
+     attachment (older iOS Safari) - the layer simply scrolls with the
+     page instead of staying put, not a functional break. One rule for
+     every scene, not one per screen, since it reads the same custom
+     properties .scene-page__media already relies on. */
+  .scene-page__ambient{
     position:absolute; inset:0; z-index:-4; pointer-events:none;
-    background-image:url('./assets/club-photos/add-stripe-wall.jpg');
-    background-size:cover; background-attachment:fixed; background-position:center 30%;
+    background-image:var(--scene-image);
+    background-size:cover; background-attachment:fixed; background-position:var(--scene-position, center top);
     filter:blur(46px) saturate(1.15) brightness(.45); opacity:.55;
   }
 
-  /* Real, measured glass - not a token swap. .68 opacity chosen the same
-     way the CTA below was: computed contrast, not eyeballed. Light theme
-     now gets its own tuned value too (extended after the dark-only ship,
-     once dark had already been used/approved live) - unguarded, so it
-     follows this file's own convention that light is the default and
-     dark is the override (see the dark-guarded rule right below, which
-     wins over this on specificity whenever dark is actually resolved).
-     .88, not the dark sheet's .8: a light ground makes translucency
-     read very differently - measured this against real rendered pixels
-     (axe, both explicit and OS-driven light) rather than assumed safe
-     just because dark passed. */
-  body[data-scene="scene-page--add"] .scene-page--add > .scene-sheet{
+  /* Real, measured glass - not a token swap - extended to every scene
+     (was Add-only on first ship). Same values everywhere: they were
+     never actually about Add's specific content, only about "translucent
+     coral/navy/cream + nested opaque cards," which is identical on every
+     scene screen. .68 opacity chosen the same way the CTA below was:
+     computed contrast, not eyeballed. Light theme's .88 (vs. dark's .8) -
+     a light ground makes translucency read very differently, measured
+     against real rendered pixels rather than assumed safe just because
+     dark passed. Unguarded = light default, dark = the guarded override
+     below (this file's own established convention) - and
+     body[data-scene] .scene-page, not just .scene-sheet, because the
+     plain form is specificity 0,3,0, weaker than :root .scene-page >
+     .scene-sheet{background:var(--club-paper);} above at the same 0,3,0
+     - tied specificity means source order decides, which is fragile the
+     next time something gets inserted after this block. This form is
+     0,3,1, which wins outright. */
+  body[data-scene] .scene-page > .scene-sheet{
     background:rgba(255,253,248,.88); backdrop-filter:blur(18px) saturate(140%);
   }
-  /* Dark-theme override - specificity here exceeds the light rule above
-     via the extra :root[data-theme="dark"] compound, not source order. */
-  :root[data-theme="dark"] body[data-scene="scene-page--add"] .scene-page--add > .scene-sheet{
+  /* Dark-theme override - specificity here (0,5,1) exceeds the light rule
+     above via the extra :root[data-theme="dark"] compound, not source
+     order. */
+  :root[data-theme="dark"] body[data-scene] .scene-page > .scene-sheet{
     background:rgba(20,31,58,.8); backdrop-filter:blur(22px) saturate(160%);
   }
   @media(prefers-color-scheme:dark){
-    :root:not([data-theme="light"]) body[data-scene="scene-page--add"] .scene-page--add > .scene-sheet{
+    :root:not([data-theme="light"]) body[data-scene] .scene-page > .scene-sheet{
       background:rgba(20,31,58,.8); backdrop-filter:blur(22px) saturate(160%);
     }
   }

@@ -4202,12 +4202,14 @@ function renderCalendarTab() {
   return `
     <section class="scene-page ${PAGE_SCENES.calendar.className}" aria-labelledby="pageTitle-calendar">
       <div class="scene-page__media" aria-hidden="true"></div>
+      <div class="scene-page__ambient" aria-hidden="true"></div>
       <div class="scene-page__scrim" aria-hidden="true"></div>
       <div class="scene-page__intro">
         <div class="scene-page__brand">האימוניה</div>
         <h1 id="pageTitle-calendar" class="scene-page__title">היסטוריה</h1>
       </div>
       <div class="scene-sheet">
+    <div class="stripe-ribbon" aria-hidden="true"></div>
     <div class="cal-panel" data-calendar-view="${calView}">
       <div class="cal-header">
         <button class="cal-nav-btn" data-action="cal-prev" aria-label="חודש קודם">
@@ -4351,12 +4353,14 @@ function renderHistoryTab() {
   return `
     <section class="scene-page ${PAGE_SCENES.history.className}" aria-labelledby="pageTitle-history">
       <div class="scene-page__media" aria-hidden="true"></div>
+      <div class="scene-page__ambient" aria-hidden="true"></div>
       <div class="scene-page__scrim" aria-hidden="true"></div>
       <div class="scene-page__intro">
         <div class="scene-page__brand">האימוניה</div>
         <h1 id="pageTitle-history" class="scene-page__title">התקדמות</h1>
       </div>
       <div class="scene-sheet">
+    <div class="stripe-ribbon" aria-hidden="true"></div>
     ${!storageOK ? `<div class="footer-note" style="color:var(--red-text); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
     <div class="stat-row">
       <div class="stat-card stat-hero" style="text-align:center;"><div class="stat-value mono" style="color:var(--brass); font-size:20px;">${prCountThisMonth}</div><div class="stat-label">שיאים החודש</div></div>
@@ -5289,11 +5293,13 @@ function renderWodTab() {
   return `
     <section class="scene-page ${PAGE_SCENES.wod.className}" aria-labelledby="pageTitle-wod">
       <div class="scene-page__media" aria-hidden="true"></div>
+      <div class="scene-page__ambient" aria-hidden="true"></div>
       <div class="scene-page__scrim" aria-hidden="true"></div>
       <div class="scene-page__intro">
         <h1 id="pageTitle-wod" class="scene-page__title">ספריית אימונים</h1>
       </div>
       <div class="scene-sheet">
+    <div class="stripe-ribbon" aria-hidden="true"></div>
     ${!storageOK ? `<div class="footer-note" style="color:var(--red-text); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
     <div class="subtabbar" role="tablist">
       <button class="subtabbtn ${wodSubTab === "log" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="log" role="tab" aria-selected="${wodSubTab === "log"}" aria-controls="wodContent" tabindex="${wodSubTab === "log" ? "0" : "-1"}">רישום</button>

@@ -17099,12 +17099,14 @@
     // zone - same substitution every other scene-mapped tab already made.
     return `<section class="scene-page ${window.PAGE_SCENES.community.className}" aria-labelledby="pageTitle-community">
       <div class="scene-page__media" aria-hidden="true"></div>
+      <div class="scene-page__ambient" aria-hidden="true"></div>
       <div class="scene-page__scrim" aria-hidden="true"></div>
       <div class="scene-page__intro">
         <div class="scene-page__brand">האימוניה</div>
         <h1 id="pageTitle-community" class="scene-page__title">קהילה</h1>
       </div>
-      <div class="scene-sheet">`
+      <div class="scene-sheet">
+    <div class="stripe-ribbon" aria-hidden="true"></div>`
       + tabBar
       // Anchored to the viewport, not the document - see setMessage().
       // pointer-events:none so a toast can never swallow a tap meant for the
