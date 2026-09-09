@@ -320,7 +320,20 @@
      by this removal) still guards against anything actually bleeding past
      the viewport. */
   html,body{ margin:0; padding:0; background:var(--bg); color:var(--chalk); font-family:'Rubik',sans-serif; overscroll-behavior-y:contain; touch-action:pan-y; width:100%; }
-  body{ min-height:100dvh; }
+  /* svh, not dvh: reported live as "the screen vibrates when you switch
+     tabs" - the switch-tab handler (app.js) resets scroll to top on every
+     switch, and on a real mobile browser, scrolling to the top is exactly
+     the gesture that re-expands a collapsed address bar. dvh tracks that
+     address-bar animation frame by frame, so anything sized against it
+     visibly resizes in real time for the ~200-300ms the chrome takes to
+     animate - a genuine reflow, not a perception issue (confirmed no
+     abnormal layout-shift entries in headless Chromium, which has no
+     browser chrome to animate and so cannot reproduce this by itself).
+     svh is the viewport at its smallest (chrome fully expanded) and does
+     not change as the chrome animates, at the cost of some empty space
+     underneath when the chrome is actually hidden - a fixed, small trade
+     against a live, visible jank on every single tab switch. */
+  body{ min-height:100svh; }
   button, input, textarea { font-family:inherit; }
   button{ background:none; border:none; color:inherit; cursor:pointer; padding:0; }
   input{ font-size:16px; }
@@ -622,7 +635,10 @@
   .scene-page__brand{ font-size:12px; font-weight:700; letter-spacing:.5px; opacity:.85; margin-bottom:6px; }
   .scene-page__title{ font-family:'Secular One','Rubik',sans-serif; font-weight:400; font-size:36px; line-height:1.05; color:#fff; text-shadow:0 2px 16px rgba(0,0,0,.48); margin:0 0 6px; display:flex; align-items:center; gap:10px; }
   .scene-page__subtitle{ font-size:14px; font-weight:600; opacity:.92; margin:0; }
-  .scene-sheet{ position:relative; z-index:1; margin-inline:0; margin-block-start:calc(-1 * var(--scene-sheet-overlap)); min-height:calc(100dvh - var(--scene-photo-height) + var(--scene-sheet-overlap)); padding:22px var(--scene-inline) calc(var(--bottom-nav-reserve) + 24px); border-radius:var(--scene-sheet-radius) var(--scene-sheet-radius) 0 0; box-shadow:var(--scene-shadow); }
+  /* svh, not dvh - see body's own comment above for why: this is the rule
+     that actually caused the reported vibration, since every scene screen
+     (Add/History/Progress/Library/Community) hits it on every tab switch. */
+  .scene-sheet{ position:relative; z-index:1; margin-inline:0; margin-block-start:calc(-1 * var(--scene-sheet-overlap)); min-height:calc(100svh - var(--scene-photo-height) + var(--scene-sheet-overlap)); padding:22px var(--scene-inline) calc(var(--bottom-nav-reserve) + 24px); border-radius:var(--scene-sheet-radius) var(--scene-sheet-radius) 0 0; box-shadow:var(--scene-shadow); }
   /* CORRECTED (user report, live app): the sheet used to carry a per-PAGE
      tone (Add always cream, Calendar/Progress/Community always navy)
      fixed regardless of the device's light/dark theme - reasoned from

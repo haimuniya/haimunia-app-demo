@@ -1,3 +1,35 @@
+## Two bugs from live use, found after the reference-accuracy pass — 2026-09-09
+
+**1. The screen visibly "vibrated" on every tab switch.** Root cause was
+`100dvh` (dynamic viewport height) on `.scene-sheet` and `body` — the
+switch-tab handler resets scroll to the top on every switch, and on a real
+mobile browser, scrolling to the top is exactly the gesture that re-expands
+a collapsed address bar. `dvh` tracks that address-bar animation frame by
+frame, so anything sized against it visibly resized in real time for the
+~200-300ms the browser chrome took to animate. Confirmed no abnormal
+`layout-shift` entries in headless Chromium first (it has no browser chrome
+to animate, so it can't reproduce this by itself) before concluding it was
+a real, mobile-only reflow rather than a perception issue. Fixed: both
+rules now use `svh` (viewport at its smallest, chrome fully expanded),
+which does not change as the chrome animates.
+
+**2. "Management and practice [workouts] are hidden in the hamburger."**
+The reference-accuracy pass had demoted the WOD/Library tab's `main` flag
+to `false` to match `design-reference.jpg`'s literal 4-icon bottom nav —
+directly contradicting a comment three lines above it in `getNavItems()`
+explaining, in detail, why that tab specifically belongs in the bottom bar
+("has its own sub-nav" was already established as not disqualifying). The
+Manage tab (staff-only) had the same problem from the other direction: its
+own comment said "same footing as the other 5 (main: true)" while the code
+next to it said `main: false`. Both restored to `main: true` — WOD is back
+on the 5-tab bar, and staff/coach/admin accounts now get a 6th bottom-bar
+icon for Manage instead of finding it only through the hamburger. `.tabbtn`
+has no hardcoded child count (`flex:1`), so the 6th icon costs ~16.7% width
+each rather than 20%, confirmed at 60px per icon on a 390px screen (well
+above the 44px touch-target floor).
+
+Re-verified after both fixes: `npm test` 1512/1512, `run-all.mjs` 35/35.
+
 # Immersive club redesign — audit and implementation log — 2026-09-08
 
 Handoff: `haimunia-immersive-full-claude-handoff/haimunia-claude-handoff/`
