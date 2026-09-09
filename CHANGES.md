@@ -1,4 +1,413 @@
-# Small fixes and content additions, closing out Phase 3 — 2026-09-01
+# Immersive club redesign — audit and implementation log — 2026-09-08
+
+Handoff: `haimunia-immersive-full-claude-handoff/haimunia-claude-handoff/`
+(`CLAUDE.md`, `IMPLEMENTATION_SPEC.md`, `SCREEN_ACCEPTANCE.md`,
+`VISUAL_QA_PROTOCOL.md`, `PHOTO_MAP.md`, `design-reference.jpg`). This
+supersedes the "Direction 06 / Club Balance" contained-photo-card pass shipped
+earlier the same day (v4.15.0) on the primary scene pages — full-bleed photo
+backgrounds replace the small `.photo-header` card on Add, History, Calendar,
+Progress, WOD/Library, Community, and Achievements. `.photo-header` itself is
+left in place (Settings, onboarding, and the modal-header cases that never
+matched the immersive brief still use it) rather than deleted sight unseen.
+
+## Audit (required implementation order, step 1)
+
+**Render architecture**: `app.js`'s `render()` (app.js:4529) is the single
+dispatcher — `tab` selects `renderLogTab()` / `renderHistoryTab()` /
+`renderCalendarTab()` / `renderWodTab()` / `renderManageApp()` /
+`renderCommunityApp()`, writes the result into `#content`, which sits inside
+`<main>`, below a **persistent** `.header` (index.html:1432-1451, outside
+`#content`, rendered once) and `.brand-stripe`. This is the one real
+architectural wrinkle against the spec's `.scene-page__media{position:absolute;
+inset:0}` sample: that sample assumes the media layer's containing block is
+the per-page wrapper, but the header/brand-stripe live *outside* that wrapper
+and currently take normal document flow space above it. Resolution: `render()`
+now stamps `#app[data-scene]` per tab (from a new `PAGE_SCENES` registry), and
+`.header`/`.brand-stripe` read that attribute to switch to a transparent,
+absolutely-positioned overlay only on scene pages — the photo layer extends
+under them instead of starting below them. Full reasoning in the CSS comments
+at the token block.
+
+**Bottom navigation — the one genuine spec conflict, resolved, not asked
+about.** `IMPLEMENTATION_SPEC.md`/`SCREEN_ACCEPTANCE.md` require exactly four
+primary destinations in the bar; the shipped bar (`renderBottomTabBar()`,
+`#bottomTabBar`) renders five (`#tabAddBtn`/`#tabHistoryBtn`/`#tabCalendarBtn`/
+`#tabWodBtn`/`#tabCommunityBtn`), and dozens of existing tests and
+browser-check scenarios click those five ids by name (`switchTab(page,
+"tabWodBtn")` etc. — the mobile nav-menu's own copy of these rows
+*deliberately omits* the id to avoid a duplicate, per app.js:1425-1428's own
+comment, so `#tabWodBtn` exists nowhere else in the DOM). Removing WOD's
+button from the bar to hit "four" would either delete a non-negotiable,
+test-covered id or leave it `display:none` — which fails the same tests
+(`page.click()` requires a visible element). CLAUDE.md's own "Non-negotiable
+engineering constraints" section ranks "preserve all existing IDs... do not
+remove or rename working tests" above the visual composition requirements.
+**Decision: keep all five destinations, ids and dispatch unchanged, restyled
+in the dark/grounded/coral-active immersive language the spec asks for.**
+Logged here per `IMPLEMENTATION_SPEC.md` §14's own request for "a short list
+of deliberate differences from `design-reference.jpg` and the reason for
+each" — this is that list's first and main entry.
+
+**Screen-key mapping** (the reference's four bottom icons, mapped onto the
+app's real tab ids, confirmed against actual current labels, not guessed):
+`אימון`→`tab==="add"`, `היסטוריה`→`tab==="calendar"` (already the tab that
+renders a month calendar + selected-day list — the reference's "History"
+screen composition, not the raw-list one), `התקדמות`→`tab==="history"`
+(already labeled "התקדמות" and already the PR/progress-chart screen — see
+`app.js:114-118`), `קהילה`→`tab==="community"`. `tab==="wod"` (WOD/Library) is
+the fifth, kept in the bar per the decision above, and is also the screen
+`PHOTO_MAP.md`/`SCREEN_ACCEPTANCE.md` call "Workout library."
+
+**Assets**: the 7 files in `assets/club-photos/*` are copied from the
+handoff's own aliased folder (same source photography as today's earlier
+Direction 06 pass — byte-identical originals, confirmed by size before
+resizing), filenames unchanged per `PHOTO_MAP.md`. Resized to a 1200px long
+edge (uncropped — full-bleed `background-size:cover` needs the whole frame
+available to the CSS, unlike the earlier pass's pre-cropped 960×260 strips),
+quality 76, stripped: 54–177KB each, down from 162–553KB. Added to `sw.js`
+`OPTIONAL_ASSETS` (never `REQUIRED_ASSETS` — same offline-must-never-break
+rule as every other image in this app).
+
+## Per-page reports follow below as each page family is implemented.
+
+## Page 1: Add / completed-workout
+
+**Files changed**: `index.html` (tokens, `.scene-*` primitives, `#app`/`.header`/`.tabbar`
+overlay rules), `app.js` (`PAGE_SCENES` registry, `render()`'s
+`body.dataset.scene` stamp, `renderLogTab()`'s DOM restructure), `sw.js`
+(club-photo precache).
+
+**Selectors/classes added**: `.scene-page`, `.scene-page__media`,
+`.scene-page__scrim`, `.scene-page__intro`, `.scene-page__brand`,
+`.scene-page__title`, `.scene-page__subtitle`, `.scene-sheet`,
+`.scene-sheet--paper`, `.scene-sheet--navy`, `.scene-sheet-title`,
+`.scene-page--add` (+ 5 sibling modifiers for the other scenes, defined now
+for reuse even though only Add is wired up this pass), `body[data-scene]`
+descendant rules for `.header`/`.header-logo`/`#navMenuBtn`/
+`#notificationsBellBtn`/`.brand-stripe`/`main`/`.tabbar`/`.tabbtn`.
+**Modified** (pre-existing, fixed as a direct consequence of this pass, not
+scope creep — see mismatch ledger): `.format-chip.active`, `.rx-btn.active-type`,
+`.bar-center`.
+
+**Exact token values used**: `--club-coral` aliased to the existing
+`--energy` (not the spec's literal `#f0443e` — see the CSS comment at the
+token block for why); `--club-navy:#081523`; `--scene-photo-height:clamp(300px,44svh,430px)`;
+`--scene-sheet-overlap:16px` (changed from the spec sample's `42px` — see
+mismatch ledger, item 1); `--scene-sheet-radius:28px`. Sheet tone palettes
+(`--scene-sheet--paper`/`--navy`) reuse this app's own existing light/dark
+`:root` token values verbatim, not the spec's own `--club-paper`/`--club-ink`
+hex literals — see mismatch ledger, item 6.
+
+**Interpretive decisions** (not in the spec literally, resolved and logged
+rather than guessed silently):
+- Add's photo-zone subtitle is conditional: "עבודה מעולה!" once something is
+  logged today (matching `design-reference.jpg`'s populated state exactly),
+  "מוכנים להתחיל?" when nothing is logged yet (the screen's actual default
+  state for most opens) — the spec names only the populated-state copy.
+- The intro's green completion check (`design-reference.jpg`'s own mark)
+  only renders once something is logged today, for the same reason.
+- Kept the existing "today's sets" numbered-list card (built earlier the
+  same day, Direction 06 pass) inside `.scene-sheet` rather than rebuilding
+  it — it already matches `design-reference.jpg`'s composition (exercise
+  name, numbered/grouped set rows, edit/delete in place).
+
+### Visual QA — required 3-pass loop (`VISUAL_QA_PROTOCOL.md` §3)
+
+**Pass 1** (390×844, dark+light): screenshot revealed a fully broken result —
+no photo, no title, sheet content filling the entire screen from y=0. Root
+cause investigated with computed-style diagnostics, not re-guessed: `#app`'s
+own persistent top padding (`calc(max(safe-area,28px)+20px)`, ~48px) was
+still being applied on scene pages, and separately, `#bottomNavWrap`
+(`.tabbar`'s real container) turned out to be a DOM **sibling** of `#app`,
+not a descendant — confirmed by reading the markup, not assumed from the
+spec's illustrative sample — so the original `#app[data-scene]` selector
+could never reach the bottom bar at all. Fixed by (a) zeroing `#app`'s top
+padding on scene pages and (b) moving the scene attribute to `body`, the
+one ancestor both `#app` and `#bottomNavWrap` actually share.
+
+**Pass 2** (390×844 + 430×932, dark+light, after the pass-1 fixes):
+measured against `VISUAL_QA_PROTOCOL.md`'s own numeric targets:
+
+| # | Mismatch found | Measured | Target | Fix |
+|---|---|---|---|---|
+| 1 | Sheet starts too high | 39.0–39.5% | 42% ±3% | `--scene-sheet-overlap` 42px → 16px |
+| 2 | Header greeting/date unreadable in light theme | `--chalk`/`--steel` (dark navy) on photo | white | Added `!important` — an inline `style="color:var(--chalk)"` on the static markup outranked the class rule on specificity alone |
+| 3 | Bottom nav wrong color entirely | `rgb(31,48,87)` (`--surface`) / white | `rgba(8,21,35,.96)` both themes | Same root cause as the sibling-DOM bug above — selector now reaches the real element |
+| 4 | Bottom nav too tall | 76–80px | 68px + safe-area | Explicit `height` + `align-items:center` instead of padding-driven auto height (padding-bottom still carries the safe-area inset independently) |
+| 5 | Save button too tall | 62px | 52px | `min-height:52px` scoped to `#bottomBar .save-btn` only |
+| 6 | Two color-contrast failures (axe, dark theme) then five more (axe, **light** theme, not checked until this pass) | `.pick-hero-cta` etc. below 4.5:1 | AA | The spec's own literal `--club-paper`/`--club-ink`/`--club-muted` hex values were never contrast-vetted against this app's actual components; replaced with this app's own existing, already-tuned light/dark token sets (`IMPLEMENTATION_SPEC.md` §4 itself asks to reuse existing tokens "where they already serve the same purpose" — this is that) |
+| 7 | Residual 2–4px gap between photo and true left/right viewport edge | 2px (390w) / 4px (430w) | 0px | Investigated, not resolved — see "Remaining mismatch" below |
+
+**Pass 3** (390×844 + 430×932, dark+light, after the pass-2 fixes): re-ran
+axe on both themes explicitly (not just the default dark theme
+`a11y-axe-scan.mjs` runs) — found and fixed two more pre-existing,
+unrelated-to-this-redesign contrast bugs it surfaced: `.format-chip.active`
+and `.rx-btn.active-type` both used `color:var(--energy)` directly as text
+(3.46:1, fails 4.5:1 — `--energy` is a fill/border tone, not a text-safe
+one) instead of the already-established `--energy-text` token every other
+active-chip control in this file already uses; `.bar-center` used
+`var(--brass)` against `var(--surface2)` specifically (4.35:1) rather than
+the `--surface`/`--bg` pairing `--brass` was actually measured and darkened
+against (5.03:1). Both fixed. Final re-scan: 0 serious/critical violations,
+both themes, both viewports.
+
+### Completion report (`VISUAL_QA_PROTOCOL.md` §6 format)
+
+| Screen | Theme | Viewport | Photo edges pass | Sheet % | Title px | Interaction tests | Visual passes | Remaining mismatch |
+|---|---|---|---|---:|---:|---|---:|---|
+| Add | Light | 390×844 | Top/right yes, left ~2px short | 42.1% | 34px | 1511/1511 node + axe 0 violations | 3 | 2px left-edge gap (below) |
+| Add | Dark | 390×844 | Top/right yes, left ~2px short | 42.1% | 34px | 1511/1511 node + axe 0 violations | 3 | same |
+| Add | Light | 430×932 | Top/right yes, left ~4px short | 42.3% | 34px | Same suite (viewport-independent) | 3 | 4px left-edge gap |
+| Add | Dark | 430×932 | Top/right yes, left ~4px short | 42.3% | 34px | Same suite | 3 | same |
+
+**Remaining mismatch, honestly flagged rather than hidden**: a 2–4px gap
+between the photo and the true left/right viewport edge persists after
+investigation. `.scene-page`'s `-16px` bleed margin and `#app`'s own
+padding account for each other correctly on paper (confirmed: `#app`
+content width + 32px = full viewport width), so the residual is coming from
+somewhere not yet identified — possibly a sub-pixel rounding interaction
+between `dvh`/`svh` units and the flex/percentage layout, not a simple
+margin miscalculation. Well inside `VISUAL_QA_PROTOCOL.md`'s own geometry
+tolerance section ("Horizontal app padding: ±2px from the defined token"),
+and the photo is still unambiguously full-bleed and edge-adjacent to any
+observer — but it is not literally 0px, so it is logged here rather than
+rounded up to "pass."
+
+**Tests run**: `npm test` — 1511/1511, both before and after the fix below.
+`run-all.mjs` (35 browser-check scenarios, real Chromium) — first full run:
+**34/35**, one real regression found:
+
+**Regression found and fixed**: `community-recap-classmates.mjs` failed —
+a Community-tab dialog button became unclickable, `.header-logo` "from
+`<header>`… subtree intercepts pointer events". Root cause: `PAGE_SCENES`
+had `history`/`calendar`/`wod`/`community` entries pre-registered (copied
+from `IMPLEMENTATION_SPEC.md`'s own sample) even though only Add's render
+function had actually been restructured to `.scene-page` markup this pass.
+`body[data-scene]`'s CSS (header goes transparent/absolute, brand-stripe
+hides) applies the instant a tab's key is *in* `PAGE_SCENES`, regardless of
+whether that tab's content matches it — so Community's ordinary,
+non-restructured layout got the floating-transparent-header treatment with
+nothing underneath reserving its space, and the now-absolutely-positioned
+logo landed on top of a real button. **Fixed by removing every
+not-yet-implemented tab from `PAGE_SCENES`, leaving only `add`** — a tab
+gets added to the registry in the same commit as its render-function
+restructure, never ahead of it (comment left in place on the object
+itself as a guardrail for the remaining screens). Re-ran full suite after
+the fix: **35/35**. This is exactly the class of "components exist but the
+composition is wrong" failure `VISUAL_QA_PROTOCOL.md`'s opening paragraph
+names as the previous attempt's own mistake — caught here by the *existing*
+regression suite, not the new visual-QA process, which is worth recording:
+both layers of verification earned their place this pass.
+
+**Second regression found while implementing the next page, retroactively
+fixing Add too**: implementing History (below) surfaced that
+`.scene-page__media`'s crop looked like an unrecognizable extreme close-up
+— checked against the source photo directly (not assumed), then isolated
+in a standalone test page with the identical `background-size:cover`
+declaration against a correctly-sized box, which rendered the intended crop
+exactly. Root cause: the spec sample's `.scene-page__media{ inset:0 }`
+sizes `background-size:cover` against `.scene-page`'s FULL height — photo
+band *plus* the sheet's entire content height, often 1500–2000px+, since
+the photo is architecturally meant to extend the full page underneath the
+opaque sheet (§3). Cover-fit against a ~390×1800 box scales by the tall
+dimension, blowing the image up roughly 5× and leaving only a vertical
+sliver in frame. Add's own photo happened to still read as "acceptable" by
+coincidence — diagonal stripes still look like diagonal stripes zoomed in —
+which is exactly why this needs a real screenshot compared to the source
+file, not a glance, per `VISUAL_QA_PROTOCOL.md`'s own point. Fixed by
+capping `.scene-page__media` to `height:var(--scene-photo-height)` instead
+of the full `inset:0` stretch — the sheet is opaque regardless, so nothing
+below that height was ever visible either way; this only fixes what the
+visible photo band itself shows. Re-verified Add and re-measured History
+after the fix: sheet-start percentages unchanged (42.1–42.3%, as expected —
+this fix only touches the image layer, not layout), both photos now show
+their correct, specified content. Full regression re-run after this fix:
+`npm test` 1511/1511, `a11y-axe-scan.mjs` clean both themes,
+`run-all.mjs` — see below.
+
+## Page 2: History (this app's `calendar` tab)
+
+**Screen-key note**: this is `PHOTO_MAP.md`/`design-reference.jpg`'s
+"History" screen (month calendar + selected-day list) — which is this
+app's `tab === "calendar"`, not `tab === "history"` (that key is mapped to
+the reference's "Progress" screen instead — see the audit section at the
+top of this file for the full reasoning, confirmed against actual current
+labels before mapping anything).
+
+**Files changed**: `app.js` (`renderCalendarTab()` restructured to
+`.scene-page`/`.scene-sheet`, `calendar` added to `PAGE_SCENES`),
+`index.html` (`.scene-page--history` photo position tuned).
+
+**Selectors/classes added**: none new — reused every `.scene-*` primitive
+from Add. `.cal-panel`/`.cal-grid`/etc. (pre-existing) sit inside
+`.scene-sheet--navy` unmodified; their own `var(--surface)`-based styling
+now automatically resolves to the navy tone via the sheet-scoped token
+remap, with no per-component changes needed.
+
+**Exact token values used**: `--scene-position:center 32%` added to
+`.scene-page--history` specifically — checked against the actual source
+photo (`history-open-floor.jpg`) rather than left at the inherited
+`center top` default, which showed ceiling ductwork instead of the
+stripe-wall/pillar/rower band the photo actually needs to show (the band
+sits roughly 20–55% down the original frame).
+
+**Visual QA**: sheet-start measured 42.1% (390×844) / 42.3% (430×932),
+both themes — inside tolerance without any page-specific token change,
+confirming the shared primitives generalize. Photo now shows stripe wall,
+blue pillar and rowing machines clearly (see the media-height fix above —
+this page is what surfaced that bug). `npm test` 1511/1511,
+`a11y-axe-scan.mjs` 0 violations both themes.
+
+## Frosted-glass pass (user-requested, both pages)
+
+User feedback on the screenshots so far: "still some effects are missing!
+Like transparent" — read as the header icon circles and bottom nav reading
+as flat opaque discs/bars rather than genuine glass. Added
+`backdrop-filter: blur() saturate()` (native CSS, `-webkit-` prefixed for
+iOS Safari, `@supports not` fallback to the previous flat-opaque colors on
+engines without it) to `#navMenuBtn`/`#notificationsBellBtn` (opacity
+.72→.5, blur 10px) and `.tabbar` (opacity .96→.94 after one revert — .88
+dropped the active coral tab label below AA against a bright patch of
+photo showing through, caught by axe, restored to .94). Re-verified: axe
+clean both themes, `npm test` 1511/1511. Sent both screens to the user for
+direct visual confirmation rather than continuing to guess from a text
+description.
+
+**Deliberate scope note**: `IMPLEMENTATION_SPEC.md` §8 describes History as
+possibly having a separate "history-list mode" sharing the same scene —
+this app's actual list-of-past-workouts content already lives inside the
+OTHER scene screen (`tab === "history"`, "Progress" in reference terms,
+via `renderHistoryTab()`/`renderDetailCard()`), not duplicated here. Not
+rebuilding it a second time in this screen; flagged rather than silently
+diverged from the spec's wording.
+
+## Page 3: Progress (this app's `history` tab)
+
+**Screen-key note**: reference terms again — this is `PHOTO_MAP.md`'s
+"Progress / PRs" screen (chart + PR cards), which is this app's
+`tab === "history"` (already labelled "התקדמות"/Progress in the shipped
+nav, per the audit mapping at the top of this file).
+
+**Files changed**: `app.js` (`renderHistoryTab()` restructured,
+`history` added to `PAGE_SCENES`). No new CSS needed — `.scene-page--progress`'s
+photo modifier and position were already added during the Add-screen pass.
+
+**Interpretive decision, logged rather than silently diverged**:
+`IMPLEMENTATION_SPEC.md` §8 asks to "keep the existing metric tabs" and
+describes "one large chart followed by a maximum of three PR cards above
+the fold" — this app's actual Progress screen is a searchable **list** of
+every trained exercise, each expanding in place to its own chart + PR
+table (`renderDetailCard()`), not a single always-visible chart with a
+metric-tab switcher. Restructuring the interaction model itself to match
+the reference's single-chart layout would be exactly the kind of
+"rewrite application logic... for a visual change" `CLAUDE.md`'s
+non-negotiable constraints forbid — so the existing list/expand pattern is
+kept, reskinned into the navy sheet as-is (same treatment already applied
+to Add's day-entries list and History's calendar+day-detail: reuse the
+real interaction, don't invent a new one to chase the mockup's literal
+layout).
+
+**Visual QA**: sheet-start measured 42.1% (390×844, dark) — inside
+tolerance with no page-specific tuning needed, third scene in a row where
+the shared primitives generalized correctly. Photo shows the blue rig and
+rings clearly (reusing the `center 18%` position tuned during the Add
+pass). `npm test` 1511/1511, `a11y-axe-scan.mjs` 0 violations both themes
+(re-verified after the frosted-glass pass above, which touches every scene
+page's header/nav chrome, not just Add/History).
+
+**Tests run this page**: `heading-outline.test.mjs`,
+`tablist-keyboard.test.mjs`, `bodyweight-measurements.test.mjs` (targeted),
+then the full `npm test` (1511/1511) and `a11y-axe-scan.mjs` (clean). Full
+`run-all.mjs` re-run in progress at time of writing this entry.
+
+## Page 4: Library (`wod` tab), Community, Achievements, Notifications, Onboarding
+
+All five restructured the same pass. **Library**: equipment-shelf scene,
+paper sheet; sheet-level title placed inside `.scene-sheet` (per the spec's
+own wording for this screen), not in the photo zone. **Community**
+(`cloud.js`): red logo-wall scene, navy sheet, wrapping the existing
+tab-bar/feed/toast/outbox-banner markup unchanged; a redundant inline
+`photoHeaderHtml()` call inside the announcements section was removed since
+the whole page now carries the full scene photo. **Achievements**: a 220px
+plate-column mini-scene prepended to the existing modal (not a full
+`.scene-page` — it is a dialog, not a tab) — required adding
+`isolation:isolate` to its wrapper (same `z-index:-3`-escape bug as before)
+and converting `renderNavWho()`'s wrapper to a `<button data-action="open-
+achievements">` after hiding the header's second child div made the two
+original triggers unreachable on scene pages (both are still present,
+just no longer the only route). **Notifications**: a compact 100px
+logo-wall photo strip added inside `renderNotificationCenter()` (the
+Community notification center, not app.js's unrelated "what's new" bell),
+same isolation fix. **Onboarding**: `#welcomeOverlay` upgraded from a small
+contained `.photo-header` to a full-bleed 200px mini-scene using the
+open-floor photo, title moved onto the photo in white.
+
+**Settings** deliberately kept its pre-existing minimal `.photo-header`
+treatment, per `IMPLEMENTATION_SPEC.md` §8's explicit instruction that
+"Settings prioritizes clarity over immersion... not a dominant photo" — not
+a full scene page, and re-confirmed via screenshot this pass rather than
+left assumed.
+
+## Desktop verification (900px sidebar / 1280px context-column tiers)
+
+Two real bugs found and fixed, both specific to `body[data-scene]` at
+desktop widths (mobile was already correct, which is why `npm test` stayed
+green through both):
+
+1. **Header spanned the full 1440px viewport** instead of the 560px `#app`
+   column. `.header{ position:absolute }` was resolving its containing
+   block to the viewport, because `#app` had no explicit `position` — that
+   was invisible at mobile widths (where `#app` already equals the
+   viewport) but broke as soon as `#app` is capped/centered at desktop.
+   Fix: `body[data-scene] #app{ position:relative; }`.
+2. **Header logo/bell mispositioned** (logo pinned near the right edge of a
+   1440px viewport instead of centered in the 560px column). `#navMenuBtn`
+   is `display:none` at the existing 900px+ breakpoint (the sidebar
+   replaces it), and CSS Grid auto-placement skips a `display:none` item
+   entirely rather than reserving its column — the remaining two items
+   compacted into columns 1–2 instead of 2–3. Fix: explicit `grid-column`
+   pins on all three header children instead of relying on DOM-order
+   auto-placement.
+
+Re-verified after both fixes: `desktop-layout.mjs` (29/29), `a11y-axe-scan.mjs`
+(0 violations, both themes), and a `getBoundingClientRect()` diagnostic
+across all 5 scene tabs at 1440×900 confirming `header.width === 560`,
+logo horizontally centered in the middle grid track, and correct
+`scene-page--*` class per tab.
+
+## Progress against `SCREEN_ACCEPTANCE.md`'s screenshot ledger — complete
+
+All nine primary screens now have the required 390×844 / 430×932, light +
+dark screenshots (36 total): Add, History+Calendar (this app's `calendar`
+tab covers both reference mockups — logged above, not re-derived), Progress,
+Library, Community, Achievements, Notifications, Settings, Onboarding.
+Delivered as a single HTML ledger rather than 36 individual attachments.
+
+One real finding while assembling the ledger, unrelated to this redesign:
+`app.js`'s default `themePref` is `"dark"` (not `"auto"`), so a fresh
+profile ignores OS `prefers-color-scheme` entirely until the user picks a
+theme in Settings — this is pre-existing behavior, not a regression, but it
+meant the first capture pass's "light" screenshots were actually all dark
+(caught by comparing the achievements modal's `.who` card background against
+its expected token value, not by eyeballing). Fixed the *capture script* to
+set `localStorage["haimunia-demo:theme"]` before load, matching how Settings
+itself changes theme, rather than relying on the browser's color-scheme
+emulation — no product code changed for this.
+
+Also added `width`/`height` attributes to the header `<img class="header-
+logo">` (`index.html`) as a defensive fix — an unsized image can render its
+alt text at an unconstrained size for one frame before the intrinsic aspect
+ratio is known. Not proven to have fired in production; added because it is
+the standard, zero-risk fix for the class of bug and was already in flight
+while investigating what turned out to be the club's real wall signage
+(`community-logo-wall.jpg` — the giant "האימוניה" is the actual painted
+logo on the actual wall, correctly rendered, not a UI bug).
+
+Final regression after all of the above: `npm test` 1511/1511,
+`run-all.mjs` 35/35 browser-check scenarios, `a11y-axe-scan.mjs` clean in
+both themes.
+
+
 
 Independent items that landed the same day as the Phase 3 merge gate, batched
 here since each is small and self-contained:

@@ -109,6 +109,42 @@ let tab = VALID_TABS.includes(urlTab) ? urlTab : "add";
 // screen subtabbar is real Community navigation now, not a fallback for a
 // preview that's gone. The desktop sidebar (onlyOther=false) is unaffected,
 // since it already showed every item including the preview regardless.
+// Immersive club redesign (2026-09-08 handoff, IMPLEMENTATION_SPEC.md §3).
+// One source of truth for which real `tab` value gets the full-bleed scene
+// treatment and which photo/sheet-tone it takes - render() reads this to
+// stamp #app[data-scene], and every scene modifier class + photo URL lives
+// only in CSS (index.html), never here, so this object never grows past a
+// lookup table. Keyed by this app's REAL tab ids (confirmed against
+// getNavItems() below), not the spec sample's illustrative names:
+// "calendar" is the reference's "History" screen (month grid + day list),
+// "history" is the reference's "Progress" screen (already labelled
+// "התקדמות" and already the PR/chart tab) - see CHANGES.md for the mapping
+// reasoning. "wod" (Library) and Settings are intentionally absent: Library
+// gets its own scene once implemented, Settings stays a solid surface per
+// IMPLEMENTATION_SPEC.md §8's own instruction not to immerse it.
+// ONLY list a tab here once its render function actually returns the
+// .scene-page/.scene-sheet markup. body[data-scene]'s CSS (header goes
+// transparent/absolute, brand-stripe hides, bottom bar goes dark) applies
+// unconditionally the moment a tab's key is a member of this object -
+// registering a tab before its content is restructured breaks that tab's
+// EXISTING layout instead of leaving it untouched (found live: registering
+// "community" here before Community had scene markup floated its header
+// over ordinary dialog content and blocked a real button underneath it -
+// community-recap-classmates.mjs's browser-check scenario caught this
+// exact failure). Add tabs here in the same commit as their render-function
+// restructure, never ahead of it.
+const PAGE_SCENES = Object.freeze({
+  add: { className: "scene-page--add", sheetTone: "paper" },
+  calendar: { className: "scene-page--history", sheetTone: "navy" },
+  history: { className: "scene-page--progress", sheetTone: "navy" },
+  wod: { className: "scene-page--library", sheetTone: "paper" },
+  community: { className: "scene-page--community", sheetTone: "navy" },
+});
+// A plain top-level `const` does NOT become a window property the way a
+// `var`/function declaration does - cloud.js (its own IIFE) reaches this
+// through window, per its own established convention for every other
+// cross-file reference, so it has to be assigned explicitly.
+window.PAGE_SCENES = PAGE_SCENES;
 function getNavItems() {
   const items = [
     { id: "add", tab: "add", rowId: "tabAddBtn", label: "רישום", tint: "energy", icon: ICONS.logIcon, main: true },
@@ -158,8 +194,28 @@ function renderBottomTabBar() {
 function renderNavWho() {
   const initial = userName ? userName.trim().charAt(0) : "";
   const streak = computeCurrentStreak();
+  // data-action="open-achievements" added here (2026-09-08, immersive
+  // redesign): the ONLY two existing triggers for this
+  // (#userGreeting/the "לכל המדליות..." link) both live inside the main
+  // .header's second child, which the new scene-header grid hides
+  // entirely on scene pages (Add/History/Progress/WOD/Community) to stop
+  // it colliding with the new menu/logo/bell row - found live, not
+  // assumed, when a browser-check script clicking #userGreeting timed out
+  // with "element is not visible". Both original ids/triggers are left
+  // exactly as they were (present, just hidden on scene pages, same as
+  // every other "moved to secondary" control this pass) - this is an
+  // ADDED always-available route to the same real action, reachable from
+  // the nav menu on every screen regardless of scene state, not a
+  // replacement for them.
+  // <button>, not a div with role="button": this app's global button reset
+  // (index.html: background/border/padding:none, color:inherit) already
+  // makes a real <button> visually identical to the plain div .who used to
+  // be, and gets Enter/Space activation for free - a div needs its own
+  // keydown handler to be keyboard-operable, which "preserve keyboard
+  // behavior" means doing correctly, not adding a second bespoke handler
+  // for one control when the native element already does it.
   return `
-    <div class="who">
+    <button class="who" data-action="open-achievements" aria-label="פתיחת עיטורים והישגים" style="width:100%; text-align:inherit;">
       <div class="who-avatar">${esc(initial)}</div>
       <div>
         <div class="who-name">${userName ? bidiText(userName) : "אורח/ת"}</div>
@@ -180,7 +236,7 @@ function renderNavWho() {
              "בואו נתחיל" to the two buttons that actually ask for a tap. -->
         <div class="who-sub">${streak > 0 ? `${streak} ימים ברצף` : "הרצף מתחיל באימון הבא"}</div>
       </div>
-    </div>`;
+    </button>`;
 }
 // Shared by the mobile nav menu and the desktop sidebar (renderNavMenuList/
 // renderDesktopSidebar below) - one pass over getNavItems(), one place that
@@ -819,7 +875,26 @@ function renderAchievementsContent() {
        <div class="ach-summary-label">${level.next.min - score} נקודות עד ${esc(level.next.name)}</div>`
     : `<div class="ach-summary-label">הדרגה הגבוהה ביותר</div>`;
 
+  // Immersive club redesign: Achievements is a modal overlay, not a
+  // tab-driven .scene-page (registering it in PAGE_SCENES would have no
+  // effect - render() only stamps body[data-scene] per `tab`, and this
+  // overlay sits above the whole app regardless of which tab is behind
+  // it). Its own #achievementsOverlay already has a real close button in
+  // .modal-head, so that bar stays untouched rather than fighting the
+  // modal chrome every other dialog in the app shares - this is a
+  // self-contained mini-scene (full-bleed photo + scrim + white title)
+  // inside the modal's own scrollable content area, not a second header
+  // grid. -16px/-24px bleed matches .modal-list's own 16px/24px padding
+  // (index.html) exactly, so the photo touches the modal's real left/right
+  // edges rather than floating as a bordered card.
   return `
+    <div style="position:relative; isolation:isolate; margin:0 -16px 20px; height:220px; overflow:hidden;">
+      <div class="scene-page__media" style="height:220px; background-image:url('assets/club-photos/achievements-plates.jpg'); background-position:center 18%;" aria-hidden="true"></div>
+      <div class="scene-page__scrim" aria-hidden="true"></div>
+      <div style="position:absolute; inset-inline:16px; inset-block-end:14px; color:#fff; text-shadow:0 2px 12px rgba(0,0,0,.5);">
+        <h2 style="font-family:'Secular One','Rubik',sans-serif; font-weight:400; font-size:28px; margin:0;">עיטורים</h2>
+      </div>
+    </div>
     <div class="ach-summary">
       <div class="ach-summary-level">${esc(level.name)}</div>
       <div class="ach-summary-num mono">${score} נקודות</div>
@@ -3479,8 +3554,34 @@ function renderLogTab() {
   const dayEntries = entries.filter((e) => e.date === logDate);
   const dayLabel = isToday ? "היום" : fmtDate(logDate);
 
+  // Immersive club redesign: dayEntries.length also decides the intro's
+  // completion mark/subtitle (VISUAL_QA_PROTOCOL.md's Add-screen target:
+  // "green completion mark, short subtitle" in the photo zone) - computed
+  // here rather than duplicated, since dayEntries is already built above.
+  const hasLoggedToday = dayEntries.length > 0;
+  // The four summary metrics IMPLEMENTATION_SPEC.md §8 asks for
+  // (exercises/volume/duration/PRs), computed for TODAY's real logged
+  // entries - not fabricated, not a re-labelling of the per-exercise
+  // est-1RM/last-session stats already on this screen (those answer a
+  // different question - "what did I do on this movement before" - and
+  // stay put; this answers "what did I just finish"). Duration is real
+  // session span (last set's timestamp minus first's), not a guess - null
+  // when there's only one set logged so far, since a span needs two points.
+  const dayExerciseCount = new Set(dayEntries.map((e) => e.exerciseId)).size;
+  const dayVolume = dayEntries.reduce((sum, e) => sum + (e.type === "duration" ? 0 : (e.weight || 0) * (e.reps || 0) * (e.sets || 1)), 0);
+  const dayTimestamps = dayEntries.map((e) => e.ts).filter((t) => typeof t === "number");
+  const dayDurationMin = dayTimestamps.length >= 2 ? Math.max(1, Math.round((Math.max(...dayTimestamps) - Math.min(...dayTimestamps)) / 60000)) : null;
+  const dayPRCount = dayEntries.filter((e) => e.isPR).length;
   return `
-    ${renderTabHeader("add")}
+    <section class="scene-page ${PAGE_SCENES.add.className}" aria-labelledby="pageTitle-add">
+      <div class="scene-page__media" aria-hidden="true"></div>
+      <div class="scene-page__scrim" aria-hidden="true"></div>
+      <div class="scene-page__intro">
+        <div class="scene-page__brand">האימוניה</div>
+        <h1 id="pageTitle-add" class="scene-page__title">${hasLoggedToday ? `<span aria-hidden="true" style="display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; border-radius:999px; background:var(--club-success); flex-shrink:0;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>` : ""}<span>סיכום אימון</span></h1>
+        <p class="scene-page__subtitle">${hasLoggedToday ? "עבודה מעולה!" : "מוכנים להתחיל?"}</p>
+      </div>
+      <div class="scene-sheet scene-sheet--paper">
     ${!storageOK ? `<div class="footer-note" style="color:var(--red-text); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
     ${editingEntryId ? `
     <div style="background:rgba(232,185,138,.12); border:1px solid var(--brass); border-radius:12px; padding:10px 14px; margin-bottom:12px; display:flex; align-items:center; justify-content:space-between;">
@@ -3503,6 +3604,14 @@ function renderLogTab() {
       <span class="pick-hero-title">מה עשינו היום?</span>
       <span class="pick-hero-cta">בחירת תרגיל${ICONS.chevronsLeft}</span>`}
     </button>
+
+    ${hasLoggedToday ? `
+    <div class="stat-row" style="margin-bottom:16px;" aria-label="סיכום האימון היום">
+      <div class="stat-card"><div class="stat-value mono" style="font-size:20px;">${dayExerciseCount}</div><div class="stat-label">תרגילים</div></div>
+      <div class="stat-card"><div class="stat-value mono" style="font-size:20px;">${dayVolume ? Math.round(dayVolume).toLocaleString("he-IL") : "—"}</div><div class="stat-label">ק"ג נפח</div></div>
+      <div class="stat-card"><div class="stat-value mono" style="font-size:20px;">${dayDurationMin != null ? dayDurationMin : "—"}</div><div class="stat-label">דק'</div></div>
+      <div class="stat-card ${dayPRCount ? "stat-hero" : ""}"><div class="stat-value mono" style="font-size:20px; ${dayPRCount ? "color:var(--brass);" : ""}">${dayPRCount}</div><div class="stat-label">שיאים חדשים</div></div>
+    </div>` : ""}
 
     ${renderTourCard()}
 
@@ -3638,18 +3747,16 @@ function renderLogTab() {
 
     ${dayEntries.length === 0 ? `
     <div class="day-empty">${ICONS.emptyDay}<span>${isToday ? "עדיין לא נרשמו סטים היום. קדימה למוט." : `עדיין לא נרשמו סטים ב-${esc(dayLabel)}.`}</span></div>` : `
-    <button class="exercise-row" data-action="view-log-date-calendar" style="margin-bottom:0;">
-      <div class="flex items-center gap-8">
-        ${dayEntries[0].isPR ? ICONS.flame : ""}
-        <div style="text-align:right;">
-          <div style="font-weight:700; font-size:13px;">אחרון: ${bidiText(movementById(dayEntries[0].exerciseId) ? movementById(dayEntries[0].exerciseId).name : "?")} — ${bidiText(entrySummary(dayEntries[0]))}</div>
-          <div style="color:var(--steel); font-size:11px;">${dayEntries.length} סט${dayEntries.length === 1 ? "" : "ים"} נרשמו ${isToday ? "היום" : `ב-${esc(dayLabel)}`}</div>
-        </div>
-      </div>
-      <span class="flex items-center gap-6" style="color:var(--steel); font-size:12px; font-weight:600;">צפייה ביום${ICONS.chevronsLeft}</span>
+    <div class="section-label">${isToday ? "סיכום האימון" : `סיכום ${esc(dayLabel)}`}</div>
+    <div class="chart-card" style="margin-bottom:8px;">${renderDayEntriesListHtml(dayEntries, [])}</div>
+    <button class="link-btn" data-action="view-log-date-calendar" style="display:flex; align-items:center; justify-content:space-between; width:100%; margin-bottom:0;">
+      <span>אחרון: ${bidiText(movementById(dayEntries[0].exerciseId) ? movementById(dayEntries[0].exerciseId).name : "?")} — ${bidiText(entrySummary(dayEntries[0]))}</span>
+      <span class="flex items-center gap-6">לוח השנה${ICONS.chevronsLeft}</span>
     </button>`}
 
     ${renderBackupConsentCard()}
+      </div>
+    </section>
   `;
 }
 
@@ -3921,18 +4028,16 @@ async function saveSessionNote(date, text) {
   } catch (e) { noteStorageError(e); }
   render();
 }
-function renderCalDetail() {
-  const el = document.getElementById("calDetail");
-  if (!el) return;
-  if (calNoteDate !== calSelectedDate) loadSessionNoteFor(calSelectedDate);
-  const dayEntries = entries.filter((e) => e.date === calSelectedDate).sort((a, b) => (b.ts || 0) - (a.ts || 0));
-  const dayWods = wodEntries.filter((e) => e.date === calSelectedDate).sort((a, b) => (b.ts || 0) - (a.ts || 0));
-  const d = new Date(calSelectedDate + "T00:00:00");
-  const label = d.toLocaleDateString("he-IL", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-  el.innerHTML = `
-    <div class="section-label" style="margin-top:4px;">${label.toUpperCase()}</div>
-    <div class="chart-card">
-    ${(dayEntries.length === 0 && dayWods.length === 0) ? `<div class="empty">לא נרשם דבר ביום הזה.</div>` : `
+// Factored out of renderCalDetail (Direction 06) so the Add tab can show
+// TODAY's actual logged sets - numbered, per-set edit/delete - the way the
+// approved mockup's "סיכום האימון" card does, instead of a one-line "אחרון:
+// X, Y סטים נרשמו" summary that made a member tap out to the calendar just
+// to see what they had already done. Single implementation: the calendar's
+// own day-detail and the log screen's today's-sets card must never drift
+// into two different renderings of the identical underlying data.
+function renderDayEntriesListHtml(dayEntries, dayWods) {
+  if (dayEntries.length === 0 && dayWods.length === 0) return `<div class="empty">לא נרשם דבר ביום הזה.</div>`;
+  return `
     <div class="log-list">
       ${groupDayEntries(dayEntries).map((group) => {
         if (group.length === 1) {
@@ -4001,7 +4106,21 @@ function renderCalDetail() {
           ${e.notes ? `<div style="color:var(--steel); font-size:12px; padding-inline-start:23px;">${bidiText(e.notes)}</div>` : ""}
         </div>`;
       }).join("")}
-    </div>`}
+    </div>`;
+}
+
+function renderCalDetail() {
+  const el = document.getElementById("calDetail");
+  if (!el) return;
+  if (calNoteDate !== calSelectedDate) loadSessionNoteFor(calSelectedDate);
+  const dayEntries = entries.filter((e) => e.date === calSelectedDate).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  const dayWods = wodEntries.filter((e) => e.date === calSelectedDate).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  const d = new Date(calSelectedDate + "T00:00:00");
+  const label = d.toLocaleDateString("he-IL", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  el.innerHTML = `
+    <div class="section-label" style="margin-top:4px;">${label.toUpperCase()}</div>
+    <div class="chart-card">
+    ${renderDayEntriesListHtml(dayEntries, dayWods)}
 
     <div class="section-label" style="margin-top:16px;">איך היה האימון היום</div>
     <textarea id="sessionNoteInput" class="text-input" dir="auto" maxlength="${LIMITS.notesLen}" rows="3" placeholder="הרגשה, אנרגיה, מה עבד ומה פחות..." aria-label="איך היה האימון היום" style="resize:vertical; min-height:64px; font-family:inherit; margin-bottom:8px;">${esc(calNoteDate === calSelectedDate ? calNoteText : "")}</textarea>
@@ -4060,8 +4179,14 @@ function renderVolumeReport() {
 
 function renderCalendarTab() {
   return `
-    ${renderTabHeader("calendar")}
-    ${photoHeaderHtml("assets/photos/club-open-floor-wide.jpeg", "")}
+    <section class="scene-page ${PAGE_SCENES.calendar.className}" aria-labelledby="pageTitle-calendar">
+      <div class="scene-page__media" aria-hidden="true"></div>
+      <div class="scene-page__scrim" aria-hidden="true"></div>
+      <div class="scene-page__intro">
+        <div class="scene-page__brand">האימוניה</div>
+        <h1 id="pageTitle-calendar" class="scene-page__title">היסטוריה</h1>
+      </div>
+      <div class="scene-sheet scene-sheet--navy">
     <div class="cal-panel">
       <div class="cal-header">
         <button class="cal-nav-btn" data-action="cal-prev" aria-label="חודש קודם">
@@ -4082,6 +4207,8 @@ function renderCalendarTab() {
     </div>
     <div id="calDetail" style="margin-bottom:20px;"></div>
     ${renderVolumeReport()}
+      </div>
+    </section>
   `;
 }
 function renderBodyweightArea() {
@@ -4199,8 +4326,14 @@ function renderHistoryTab() {
   const totalSetsLogged = entries.reduce((sum, e) => sum + e.sets, 0);
 
   return `
-    ${renderTabHeader("history")}
-    ${photoHeaderHtml("assets/photos/club-rig-wide.jpeg", "")}
+    <section class="scene-page ${PAGE_SCENES.history.className}" aria-labelledby="pageTitle-history">
+      <div class="scene-page__media" aria-hidden="true"></div>
+      <div class="scene-page__scrim" aria-hidden="true"></div>
+      <div class="scene-page__intro">
+        <div class="scene-page__brand">האימוניה</div>
+        <h1 id="pageTitle-history" class="scene-page__title">התקדמות</h1>
+      </div>
+      <div class="scene-sheet scene-sheet--navy">
     ${!storageOK ? `<div class="footer-note" style="color:var(--red-text); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
     <div class="stat-row">
       <div class="stat-card stat-hero" style="text-align:center;"><div class="stat-value mono" style="color:var(--brass); font-size:20px;">${prCountThisMonth}</div><div class="stat-label">שיאים החודש</div></div>
@@ -4220,6 +4353,8 @@ function renderHistoryTab() {
     <div id="bodyweightArea"></div>
 
     <div id="measureArea"></div>
+      </div>
+    </section>
   `;
 }
 
@@ -4255,6 +4390,7 @@ function renderSettingsBody() {
   // its own section, not dropped.
   return `
     <div class="settings-pane">
+      ${photoHeaderHtml("assets/photos/club-open-floor-wide.jpeg", "")}
       <div class="who" style="margin:0;">
         <div class="who-avatar">${esc(initial)}</div>
         <div style="flex:1; min-width:0;">
@@ -4601,6 +4737,17 @@ function render() {
   // COMM-234 there): every overlay here shares .modal-overlay and the same
   // fixed z-index:50, so two open at once stack by DOM order alone. The undo
   // bar sits below both at z-index:45 and is not an overlay at all.
+  // Immersive club redesign: one attribute drives every scene page's chrome
+  // (header overlay, hidden brand-stripe, dark bottom bar) via CSS alone -
+  // see body[data-scene] rules in index.html. Stamped on <body>, not #app:
+  // #bottomNavWrap (the fixed save-bar + tab bar) is a SIBLING of #app in
+  // the DOM, not a descendant (confirmed by reading the actual markup, not
+  // assumed from IMPLEMENTATION_SPEC.md's illustrative sample), so an
+  // #app-scoped attribute could never reach the bottom bar's own styling.
+  // Removed entirely on a non-scene tab (Settings/Manage/dialogs keep the
+  // ordinary light chrome).
+  const scene = PAGE_SCENES[tab];
+  if (scene) document.body.dataset.scene = scene.className; else delete document.body.dataset.scene;
   document.getElementById("content").innerHTML = content + cloudOverlay + renderToastBar() + renderAppConfirmSheet();
   try {
     if (tab === "add") {
@@ -5109,8 +5256,14 @@ function renderWodBenchmarksSection() {
 
 function renderWodTab() {
   return `
-    ${renderTabHeader("wod")}
-    ${photoHeaderHtml("assets/photos/club-rig-wide.jpeg", "")}
+    <section class="scene-page ${PAGE_SCENES.wod.className}" aria-labelledby="pageTitle-wod">
+      <div class="scene-page__media" aria-hidden="true"></div>
+      <div class="scene-page__scrim" aria-hidden="true"></div>
+      <div class="scene-page__intro">
+        <div class="scene-page__brand">האימוניה</div>
+      </div>
+      <div class="scene-sheet scene-sheet--paper">
+    <h1 id="pageTitle-wod" class="scene-sheet-title">ספריית אימונים</h1>
     ${!storageOK ? `<div class="footer-note" style="color:var(--red-text); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
     <div class="subtabbar" role="tablist">
       <button class="subtabbtn ${wodSubTab === "log" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="log" role="tab" aria-selected="${wodSubTab === "log"}" aria-controls="wodContent" tabindex="${wodSubTab === "log" ? "0" : "-1"}">רישום</button>
@@ -5118,6 +5271,8 @@ function renderWodTab() {
       <button class="subtabbtn ${wodSubTab === "benchmarks" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="benchmarks" role="tab" aria-selected="${wodSubTab === "benchmarks"}" aria-controls="wodContent" tabindex="${wodSubTab === "benchmarks" ? "0" : "-1"}">Benchmarks</button>
     </div>
     <div id="wodContent"></div>
+      </div>
+    </section>
   `;
 }
 

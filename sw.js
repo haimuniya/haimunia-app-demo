@@ -81,6 +81,18 @@ const OPTIONAL_ASSETS = [
   "./assets/photos/club-rig-wide.jpeg",
   "./assets/photos/club-open-floor-wide.jpeg",
   "./assets/photos/club-rings-portrait.jpeg",
+  // Immersive club redesign (2026-09-08 handoff): full-bleed scene
+  // backgrounds for the primary tabs. Same optional/never-required
+  // reasoning as every photo above - a missed scene photo must never block
+  // the offline training log, it just leaves .scene-page__media showing the
+  // plain --club-navy background color underneath instead.
+  "./assets/club-photos/add-stripe-wall.jpg",
+  "./assets/club-photos/history-open-floor.jpg",
+  "./assets/club-photos/progress-blue-rig.jpg",
+  "./assets/club-photos/library-equipment.jpg",
+  "./assets/club-photos/community-logo-wall.jpg",
+  "./assets/club-photos/achievements-plates.jpg",
+  "./assets/club-photos/library-rings.jpg",
   "./assets/fonts/rubik-400-latin.woff2",
   "./assets/fonts/rubik-400-hebrew.woff2",
   "./assets/fonts/rubik-600-latin.woff2",

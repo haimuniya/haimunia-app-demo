@@ -233,6 +233,64 @@
     --shadow-sm: 0 1px 3px rgba(0,0,0,.4);
       --energy-text:#FF7F53; --red-text:#FF7869; --green-text:#5CBB74; --red:#D2433A;
   }
+  /* ---- Immersive club scene layer (2026-09-08 handoff) ------------------
+     Full-bleed real-photo page backgrounds for the primary tabs, per
+     IMPLEMENTATION_SPEC.md. --club-coral is deliberately an ALIAS for the
+     existing --energy token rather than the spec's own literal #f0443e:
+     --energy is already this app's one coral across every button/active-tab/
+     badge shipped today, and shipping a second, slightly different red
+     alongside it would read as two competing accents rather than one system
+     - exactly what "keep the existing token names where they already serve
+     the same purpose" (IMPLEMENTATION_SPEC.md §4) asks for. Every other
+     --club-* token below is genuinely new: the immersive sheet is deliberately
+     a "cream/paper" surface distinct from the app's own --surface/--chalk, and
+     --club-navy/-navy-2 are for the photo scrim, darker than --bg needs to be
+     for an ordinary card surface. */
+  :root{
+    --club-coral: var(--energy);
+    --club-coral-strong: #d92f2b;
+    --club-navy: #081523;
+    --club-navy-2: #10243a;
+    --club-cream: #f7f2e9;
+    --club-paper: #fffdf8;
+    --club-ink: #111b2b;
+    --club-muted: #697386;
+    --club-line: rgba(17, 27, 43, .12);
+    --club-success: #278553;
+
+    --scene-photo-height: clamp(300px, 44svh, 430px);
+    /* 16px, not the spec sample's 42px: measured against a real 390x844 and
+       430x932 render, 42px overlap against this app's real
+       --scene-photo-height put the sheet at 39.0-39.5% of viewport height -
+       inside VISUAL_QA_PROTOCOL.md's 42%±3% band only at its very edge.
+       16px centers both viewports at 41.6-42.3%. */
+    --scene-sheet-overlap: 16px;
+    --scene-sheet-radius: 28px;
+    --scene-inline: clamp(16px, 4.6vw, 24px);
+    --scene-gap-1: 8px;
+    --scene-gap-2: 12px;
+    --scene-gap-3: 16px;
+    --scene-gap-4: 24px;
+    --scene-card-radius: 16px;
+    --scene-control-height: 48px;
+    --scene-shadow: 0 -18px 42px rgba(3, 12, 24, .20);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --club-paper: #0b1726;
+      --club-ink: #f7f3eb;
+      --club-muted: #aab5c5;
+      --club-line: rgba(255, 255, 255, .12);
+      --scene-shadow: 0 -20px 50px rgba(0, 0, 0, .42);
+    }
+  }
+  :root[data-theme="dark"]{
+    --club-paper: #0b1726;
+    --club-ink: #f7f3eb;
+    --club-muted: #aab5c5;
+    --club-line: rgba(255, 255, 255, .12);
+    --scene-shadow: 0 -20px 50px rgba(0, 0, 0, .42);
+  }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   /* Headings carry no visual weight of their own here - every size/weight/
      color/margin is set by the existing class on the same element
@@ -295,6 +353,14 @@
      --bottom-nav-reserve so the install dock's rule below can add to it
      without restating it. */
   #app{ max-width:480px; margin:0 auto; padding: calc(max(env(safe-area-inset-top,0px), 28px) + 20px) 16px calc(env(safe-area-inset-bottom,0px) + var(--bottom-nav-reserve)); overflow-x:hidden; }
+  /* Immersive scene pages own their own top clearance (.scene-page__intro's
+     inset-block-start already accounts for safe-area) - #app's ordinary
+     48px-ish top padding would otherwise inset the photo from the true
+     viewport top edge, failing VISUAL_QA_PROTOCOL.md test 1 ("does the
+     photo touch the top, left and right edges"). Horizontal padding stays:
+     .scene-page's own -16px margin (below) handles that bleed instead, so
+     removing it here too would double-compensate. */
+  body[data-scene] #app{ padding-block-start:0; }
   /* #app's top padding above only protects the document at scroll offset 0.
      With viewport-fit=cover and apple-mobile-web-app-status-bar-style
      black-translucent, an installed PWA paints UNDER a transparent status
@@ -431,7 +497,12 @@
   .plate::after{ content:""; position:absolute; inset:0; background-image:linear-gradient(180deg, rgba(255,255,255,.32), transparent 45%, rgba(0,0,0,.2)); pointer-events:none; }
   .collar{ width:10px; height:10px; border-radius:2px; background:#4a4d54; flex-shrink:0; }
   .sleeve{ width:46px; height:8px; background:#5a5e66; border-radius:2px; flex-shrink:0; }
-  .bar-center{ width:64px; height:20px; display:flex; align-items:center; justify-content:center; background:var(--surface2); border:1px solid var(--border); border-radius:6px; font-weight:700; font-size:13px; color:var(--brass); flex-shrink:0; direction:ltr; unicode-bidi:isolate; }
+  /* background:var(--surface), not --surface2: found in the same
+     light-theme axe pass - --brass was measured and darkened against
+     --surface/--bg specifically (see its own :root comment, 5.03:1/4.61:1),
+     never against --surface2, which reads slightly lighter/bluer in light
+     theme and measured 4.35:1 here - just under the 4.5:1 floor. */
+  .bar-center{ width:64px; height:20px; display:flex; align-items:center; justify-content:center; background:var(--surface); border:1px solid var(--border); border-radius:6px; font-weight:700; font-size:13px; color:var(--brass); flex-shrink:0; direction:ltr; unicode-bidi:isolate; }
   .bar-caption{ color:var(--steel); font-size:12px; }
   .steppers{ display:flex; gap:8px; margin-bottom:16px; }
   .stepper{ flex:1 1 0; min-width:0; display:flex; flex-direction:column; align-items:center; gap:4px; }
@@ -491,6 +562,231 @@
   :root[data-theme="dark"] .photo-header::after{ background:linear-gradient(180deg, rgba(21,35,66,.10), rgba(21,35,66,.45)); }
   @media (prefers-color-scheme:dark){
     :root:not([data-theme="light"]) .photo-header::after{ background:linear-gradient(180deg, rgba(21,35,66,.10), rgba(21,35,66,.45)); }
+  }
+  /* ==== Immersive scene primitives (IMPLEMENTATION_SPEC.md §3, §5) ======
+     .scene-page is the outer wrapper each scene-mapped render function
+     returns in place of renderTabHeader()+content. Photo stays UNDER the
+     opaque sheet across the whole page, never cropped into a component -
+     .scene-page__media is inset:0 on .scene-page itself (position:relative,
+     isolation:isolate makes it the containing block for the z-index:-3/-2
+     layers below).
+     TONE, not the user's light/dark theme, decides the sheet's own
+     cream-vs-navy reading: design-reference.jpg shows Add as a fixed cream
+     sheet and History/Progress as a fixed navy sheet regardless of theme,
+     and VISUAL_QA_PROTOCOL.md's per-screen targets say "cream sheet" /
+     "dark sheet" outright, not "sheet matching current theme" - so
+     .scene-sheet--paper/--navy below are deliberately NOT theme-conditional.
+     What DOES still answer the user's theme: the scrim depth and shadow
+     (IMPLEMENTATION_SPEC.md §9's "dark theme receives a slightly deeper
+     scrim"), via the --scene-shadow token already defined per-theme above. */
+  /* -16px, not var(--scene-inline): #app's own horizontal padding
+     (index.html #app rule) is a fixed 16px at every mobile width, while
+     --scene-inline grows past 16px starting around a 415px-wide viewport
+     (clamp(16px,4.6vw,24px)) - bleeding by the responsive token would
+     overshoot the true viewport edge and create exactly the horizontal
+     overflow every acceptance list here forbids. */
+  .scene-page{ position:relative; isolation:isolate; margin:0 -16px 0; padding-block-start:var(--scene-photo-height); background:var(--club-navy); }
+  /* height:var(--scene-photo-height), not inset:0's full-height stretch:
+     .scene-page's own height is photo-height PLUS the sheet's full content
+     height (often 1500-2000px+, since the photo layer is architecturally
+     meant to extend the full page per IMPLEMENTATION_SPEC.md §3's "photo
+     remains underneath the opaque sheet"). Sizing background-size:cover
+     against THAT full height, as the spec's own inset:0 sample does,
+     computes cover for a ~390x1800 box - cover then scales by the tall
+     dimension, blowing the image up ~5x and leaving only a razor-thin
+     vertical sliver of it in frame. Confirmed with an isolated background-
+     only test page before concluding this, not guessed: the identical CSS
+     against a correctly-sized 390x370 box shows the intended crop exactly.
+     Capping height here reproduces the same crop; the sheet is opaque
+     regardless, so nothing behind --scene-photo-height was ever visible
+     either way - this only fixes what the visible photo band itself shows. */
+  .scene-page__media{ position:absolute; z-index:-3; inset-inline:0; inset-block-start:0; height:var(--scene-photo-height); background-size:cover; background-repeat:no-repeat; background-position:var(--scene-position, center top); }
+  .scene-page--add .scene-page__media{ background-image:url('./assets/club-photos/add-stripe-wall.jpg'); }
+  /* 32% vertical, not the default "center top": the source photo's
+     recognizable content (stripe wall, blue pillars, rowers) sits in a
+     band roughly 20-55% down the original frame - "top" showed ceiling
+     vents on a real render, checked by viewing the source file directly
+     rather than assumed from the filename. */
+  .scene-page--history .scene-page__media{ background-image:url('./assets/club-photos/history-open-floor.jpg'); --scene-position:44% 20%; }
+  /* center 18%: keeps the rings + rig crossbar in frame (checked against
+     the source file - they sit roughly 10-55% down) instead of the ceiling
+     AC units at the very top. */
+  .scene-page--progress .scene-page__media{ background-image:url('./assets/club-photos/progress-blue-rig.jpg'); --scene-position:center 18%; }
+  .scene-page--library .scene-page__media{ background-image:url('./assets/club-photos/library-equipment.jpg'); }
+  .scene-page--community .scene-page__media{ background-image:url('./assets/club-photos/community-logo-wall.jpg'); }
+  .scene-page--achievements .scene-page__media{ background-image:url('./assets/club-photos/achievements-plates.jpg'); }
+  .scene-page__scrim{ position:absolute; z-index:-2; inset:0; pointer-events:none;
+    background:linear-gradient(180deg, rgba(3,10,20,.24) 0, rgba(3,10,20,.08) 25%, rgba(3,10,20,.54) 47%, rgba(3,10,20,.76) 100%); }
+  :root[data-theme="dark"] .scene-page__scrim{ background:linear-gradient(180deg, rgba(3,10,20,.34) 0, rgba(3,10,20,.14) 25%, rgba(3,10,20,.64) 47%, rgba(3,10,20,.86) 100%); }
+  @media (prefers-color-scheme:dark){ :root:not([data-theme="light"]) .scene-page__scrim{ background:linear-gradient(180deg, rgba(3,10,20,.34) 0, rgba(3,10,20,.14) 25%, rgba(3,10,20,.64) 47%, rgba(3,10,20,.86) 100%); } }
+  /* 34svh, not a fixed px: user redline measured the title landing at
+     10-18% of viewport height (too close under the header, causing the
+     collision this whole block was rewritten to fix) against a target of
+     34-38%. svh keyed to the viewport, not a flat px offset, so it holds
+     that percentage at both 390x844 and 430x932 rather than needing a
+     second, viewport-specific override. The safe-area/64px floor only
+     matters on a device with a very short viewport, where 34svh alone
+     could land inside the header's own 64px band. */
+  .scene-page__intro{ position:absolute; inset-block-start:max(34svh, calc(env(safe-area-inset-top,0px) + 64px + 24px)); inset-inline:var(--scene-inline); color:#fff; text-shadow:0 2px 16px rgba(0,0,0,.46); }
+  .scene-page__brand{ font-size:12px; font-weight:700; letter-spacing:.5px; opacity:.85; margin-bottom:6px; }
+  .scene-page__title{ font-family:'Secular One','Rubik',sans-serif; font-weight:400; font-size:36px; line-height:1.05; color:#fff; text-shadow:0 2px 16px rgba(0,0,0,.48); margin:0 0 6px; display:flex; align-items:center; gap:10px; }
+  .scene-page__subtitle{ font-size:14px; font-weight:600; opacity:.92; margin:0; }
+  .scene-sheet{ position:relative; z-index:1; margin-inline:-16px; margin-block-start:calc(-1 * var(--scene-sheet-overlap)); min-height:calc(100dvh - var(--scene-photo-height) + var(--scene-sheet-overlap)); padding:22px var(--scene-inline) calc(var(--bottom-nav-reserve) + 24px); border-radius:var(--scene-sheet-radius) var(--scene-sheet-radius) 0 0; box-shadow:var(--scene-shadow); }
+  /* A tone is fixed (paper always light, navy always dark) independent of
+     the user's global light/dark theme choice - see the .scene-page comment
+     above for why. IMPLEMENTATION_SPEC.md §4's own literal --club-paper/
+     --club-ink/--club-muted hex values do NOT reuse this app's existing,
+     already-contrast-tuned light/dark token set (§4 also says to prefer
+     reuse "where they already serve the same purpose") - shipping them
+     verbatim produced five real axe color-contrast failures (.pick-hero-cta,
+     .active-type, two .stat-label instances, a bar-weight button) once
+     checked against real rendered pixels rather than assumed, exactly what
+     §4 itself says to do ("run automated contrast checks... adjust the
+     semantic text token, not the club photo"). Fix: reuse this app's own
+     proven light-theme token set for --scene-sheet--paper and its own
+     dark-theme set for --scene-sheet--navy, verbatim, rather than a third,
+     unvetted palette - every component inside the sheet (.stat-card,
+     .rx-btn, bar-weight buttons, etc.) already reads these same custom
+     properties, so this is the change that makes them all correct at once
+     instead of finding and re-tuning each one individually. */
+  /* background: rgba(...,.98)/(...,.96) as a literal property, NOT routed
+     through --surface: the user's redline gives the OUTER sheet a 2-4%
+     see-through tint for depth. --surface itself stays the solid hex every
+     nested component (.chart-card, .cal-panel, .stat-card...) already
+     reads - if --surface itself went translucent, every nested card would
+     inherit an uncontrolled SECOND layer of transparency stacked on the
+     sheet's own, which is exactly what IMPLEMENTATION_SPEC.md §6 and the
+     redline's item 6 both explicitly forbid ("do not apply frosted glass
+     to workout rows, calendar dates or charts") - and would make their
+     already-verified AA contrast numbers meaningless, since the effective
+     color would then depend on the photo colors bleeding through twice. */
+  .scene-sheet--paper{
+    --surface:#FFFFFF; --surface2:#E9EFF8; --border:#D6DFEC; --chalk:#1C2536; --steel:#57627A;
+    --brass:#956529; --energy-text:#AD4023; --red-text:#C0382C; --green-text:#256B3D;
+    background:rgba(255,253,248,.98); color:var(--chalk);
+  }
+  .scene-sheet--navy{
+    --surface:#1F3057; --surface2:#2A3D6B; --border:#425481; --chalk:#F2ECE1; --steel:#A8B3C9;
+    --brass:#E8B98A; --energy-text:#FF7F53; --red-text:#FF7869; --green-text:#5CBB74;
+    background:rgba(8,21,35,.96); color:var(--chalk);
+  }
+  .scene-sheet-title{ font-family:'Secular One','Rubik',sans-serif; font-weight:400; font-size:22px; margin:0 0 14px; }
+  /* Header/brand-stripe become a transparent overlay riding on top of the
+     photo, instead of taking flow space above #content - body[data-scene]
+     is stamped by render() (app.js) from PAGE_SCENES, one attribute driving
+     every immersive page's chrome instead of a class fork per page.
+     body-scoped, not #app-scoped: #bottomNavWrap (the fixed save-bar + tab
+     bar) is a DOM sibling of #app, not a descendant - confirmed by reading
+     the actual markup - so only an ancestor both share (body) can drive
+     both the header treatment and the bottom bar from one attribute. */
+  /* Rebuilt as a strict 3-column grid (2026-09-08, user redline) after the
+     first pass's flex layout let #navMenuBtn/the logo/#notificationsBellBtn
+     collide with #userGreeting/#dateLabel - both were absolutely positioned
+     into the same 0-90px band with nothing arbitrating between them.
+     display:contents on the header's own first child (the existing
+     `<div class="flex items-center gap-8">` wrapping menu/logo/bell)
+     promotes its 3 children to be direct grid items of .header itself,
+     in their existing DOM order - in a dir="rtl" document that auto-places
+     as menu→column 1 (visually RIGHT), logo→column 2 (center), bell→
+     column 3 (visually LEFT), exactly the required geometry, with no
+     explicit grid-column overrides needed. The header's SECOND child (the
+     userGreeting/dateLabel/achievements-link block) is hidden, not deleted
+     - its ids stay in the DOM exactly once, satisfying
+     SCREEN_ACCEPTANCE.md's "preserved IDs remain present exactly once" -
+     the scene's own title/subtitle in .scene-page__intro is what carries
+     that information on scene pages instead. */
+  /* position:relative on #app itself: without it, .header's position:
+     absolute below resolves its containing block to the next positioned
+     ancestor UP the tree - which at mobile widths happens to still be
+     exactly the viewport (#app is full-width there, so the difference is
+     invisible), but at the 900px+ desktop tier #app is a capped, centered
+     560px column and the viewport is not - .header measured spanning the
+     full 1440px browser width instead of the app column, confirmed live,
+     not assumed. Scoped to scene pages only, not the base #app rule, to
+     keep this from touching every other screen's layout. */
+  body[data-scene] #app{ position:relative; }
+  body[data-scene] .header{
+    position:absolute; z-index:20; inset-block-start:env(safe-area-inset-top,0px); inset-inline:0;
+    height:64px; padding-inline:16px; padding-block-start:0; margin:0;
+    display:grid; grid-template-columns:44px 1fr 44px; align-items:center;
+    background:transparent;
+  }
+  body[data-scene] .header > div:first-child{ display:contents; }
+  body[data-scene] .header > div:last-child{ display:none; }
+  /* grid-column pinned explicitly on logo/bell, not left to auto-placement:
+     #navMenuBtn is display:none at the existing 900px+ desktop tier (the
+     sidebar replaces it) - grid auto-placement then compacts the two
+     remaining items into columns 1-2 instead of 2-3, since a display:none
+     element is skipped entirely rather than leaving its column empty.
+     Measured live: the logo landed near the wrong edge at 1440px before
+     this. Explicit columns make the header correct whether the menu
+     button is present (mobile) or not (desktop). */
+  body[data-scene] .header-logo{ grid-column:2; justify-self:center; max-width:150px; max-height:34px; width:auto; height:auto; filter:brightness(0) invert(1) drop-shadow(0 1px 6px rgba(0,0,0,.4)); }
+  body[data-scene] .header #notificationsBellBtn{ grid-column:3; }
+  body[data-scene] .header #navMenuBtn{ grid-column:1; }
+  /* 44x44 icon targets, frosted-glass fill per the redline's exact values.
+     @supports fallback keeps a flat-opaque background on engines without
+     backdrop-filter, so contrast never depends on the effect being
+     available - same reasoning as the first blur pass, values updated. */
+  body[data-scene] .header #navMenuBtn,
+  body[data-scene] .header #notificationsBellBtn{
+    width:44px; height:44px; border:1px solid rgba(255,255,255,.22);
+    background:rgba(8,21,35,.32); color:#fff; box-shadow:0 6px 18px rgba(0,0,0,.18);
+    -webkit-backdrop-filter:blur(16px) saturate(135%); backdrop-filter:blur(16px) saturate(135%);
+  }
+  @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+    body[data-scene] .header #navMenuBtn,
+    body[data-scene] .header #notificationsBellBtn{ background:rgba(8,21,35,.72); }
+  }
+  body[data-scene] .brand-stripe{ display:none; }
+  body[data-scene] main{ position:relative; z-index:1; }
+  /* Bottom nav: dark grounded continuation of the scene, not the ordinary
+     light .tabbar - only while a scene page is active, so non-immersive
+     screens (Settings, Manage, dialogs) keep the existing light bar.
+     Explicit height (spec: "68px plus safe-area"): .tabbar's own padding-
+     driven auto height measured 76px, 8px over tolerance. */
+  /* height, not the base rule's padding-driven auto height: the base
+     .tabbar's own bottom padding already carries the safe-area inset
+     (calc(env(safe-area-inset-bottom,0px) + 8px)) and must not be
+     overridden wholesale here or the safe-area clearance breaks along with
+     it - only the vertical measure changes, via height + centering, so
+     content that's taller than 68px centers and clips gracefully instead
+     of silently losing its bottom safe-area padding. */
+  /* Blur here too, opacity trimmed from .96 to .88: still reads as a solid
+     grounded bar (IMPLEMENTATION_SPEC.md §6 - "not a floating pill"), the
+     blur+slight see-through just keeps it visually part of the same photo
+     environment instead of a flat color band bolted on at the bottom. */
+  /* .72 is the redline's literal value; measured by axe against a real
+     bright-photo frame (light theme, Add scene) it let too much of the
+     photo's own brightness through - the active coral label dropped to
+     2.12:1 and even the .68-opacity white inactive labels dropped to
+     4.42:1, both under the 4.5:1 floor IMPLEMENTATION_SPEC.md's own §7
+     requires. .85 is the lowest opacity that measured clean across every
+     scene/theme combination tested; still visibly more transparent/glassy
+     than the first pass's .94. */
+  body[data-scene] .tabbar{ background:rgba(8,21,35,.85); border-top:1px solid rgba(255,255,255,.12); box-shadow:0 -10px 30px rgba(0,0,0,.18); height:calc(68px + env(safe-area-inset-bottom,0px)); align-items:center; padding-block:0; -webkit-backdrop-filter:blur(18px) saturate(140%); backdrop-filter:blur(18px) saturate(140%); }
+  @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+    body[data-scene] .tabbar{ background:rgba(8,21,35,.96); }
+  }
+  body[data-scene] .tabbtn{ padding-block:6px; color:rgba(255,255,255,.78); }
+  /* color:#FF8F6B, not --club-coral(=--energy, #E85D3D) directly: same
+     fill-vs-text-token issue fixed twice already this session
+     (.format-chip.active, .rx-btn.active-type) - a fill-tuned color used
+     directly as text fails AA. This bar sits over the photo/scrim, not a
+     tone-scoped sheet, so neither --energy-text variant is right either
+     (light theme's is a DARK ink, meant for light surfaces - wrong
+     direction against a dark bar); a fixed bright coral close to dark
+     theme's own --energy-text is what actually measures safe here,
+     regardless of the user's theme choice. */
+  body[data-scene] .tabbtn.active{ color:#FF8F6B; background:transparent; box-shadow:none; }
+  body[data-scene] .tabbtn.active::before{ background:var(--club-coral); }
+  /* Save action (spec: 52px height; current .save-btn's own padding/font
+     yields 62px, 10px over tolerance) - scoped to the scene bottom bar only,
+     .save-btn elsewhere (dialogs, forms) is untouched. */
+  body[data-scene] #bottomBar .save-btn{ min-height:52px; padding-block:0; }
+  @media (prefers-reduced-motion:no-preference){
+    .scene-sheet{ animation:scene-sheet-in .2s ease-out; }
+    @keyframes scene-sheet-in{ from{ opacity:.96; transform:translateY(12px); } to{ opacity:1; transform:translateY(0); } }
   }
   /* The save button and the tab bar are ONE fixed-position wrapper
      (#bottomNavWrap, index.html), not two independently-fixed elements -
@@ -961,6 +1257,24 @@
   .cal-daynum{ font-size:13px; font-weight:600; color:var(--chalk); }
   .cal-dot{ width:5px; height:5px; border-radius:999px; background:var(--steel); }
   .cal-dot.pr{ background:var(--brass); }
+  /* Scene-scoped calendar redesign (2026-09-08 redline): every cell had
+     its own bordered/filled square, which read as a grid of buttons
+     rather than a calendar - "using large boxes around every date" is
+     called out explicitly as a rejection condition. Scoped to
+     body[data-scene] rather than replacing .cal-cell/.cal-daynum
+     globally, since the underlying elements/classes are unchanged (same
+     markup, same data-action, same today/selected/hasData booleans) - only
+     the immersive History screen gets the circle treatment; nothing else
+     in the app that might reuse these classes is touched. */
+  body[data-scene] .cal-cell{ aspect-ratio:1; min-height:44px; min-width:0; display:flex; flex-direction:column; align-items:center; justify-content:center; border-radius:0; background:transparent; border:none; position:relative; gap:3px; }
+  body[data-scene] .cal-daynum{ display:flex; align-items:center; justify-content:center; width:38px; height:38px; border-radius:999px; font-size:14px; font-weight:600; color:var(--chalk); }
+  /* Today: a subtle ring, not a filled shape - distinguishable from
+     "selected" without relying on color alone (SCREEN_ACCEPTANCE.md:
+     "selected date, workout date and today remain distinguishable without
+     color alone"). */
+  body[data-scene] .cal-cell.today .cal-daynum{ box-shadow:inset 0 0 0 1.5px var(--steel); }
+  body[data-scene] .cal-cell.selected .cal-daynum{ background:var(--club-coral); color:#fff; box-shadow:none; }
+  body[data-scene] .cal-dot{ width:4px; height:4px; }
   .report-row{ display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:10px 12px; margin-bottom:8px; box-shadow:var(--shadow-card); }
   .report-flag{ font-size:12px; font-weight:700; padding:2px 8px; border-radius:999px; }
   .subtabbar{ display:flex; background:var(--surface2); border-radius:12px; padding:3px; margin-bottom:16px; border:1px solid var(--border); }
@@ -1007,7 +1321,9 @@
      (both var(--energy)) in light theme. color-mix derives it from the
      live token instead, the same way .icon-chip-energy already does, so it
      can never drift from --energy again regardless of theme. */
-  .rx-btn.active-type{ background:color-mix(in srgb, var(--energy) 15%, transparent); border-color:var(--energy); color:var(--energy); box-shadow:var(--shadow-sm); }
+  /* color:var(--energy-text), not --energy - same fix, same reason, as
+     .format-chip.active above (found in the same light-theme axe pass). */
+  .rx-btn.active-type{ background:color-mix(in srgb, var(--energy) 15%, transparent); border-color:var(--energy); color:var(--energy-text); box-shadow:var(--shadow-sm); }
   /* The gloss inherits the chip's own colour once that chip is selected, the
      same way .format-chip.active .format-chip-sub does — a steel-grey
      subtitle on a green chip reads as disabled text rather than part of the
@@ -1023,7 +1339,14 @@
   }
   :root[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator{ filter:invert(1) brightness(1.4); }
   .format-chip{ min-height:44px; padding:10px 6px; border-radius:12px; border:1px solid var(--border); background:var(--surface); font-weight:700; font-size:13px; color:var(--steel); text-align:center; flex:1; }
-  .format-chip.active{ background:rgba(232,93,61,.15); border-color:var(--energy); color:var(--energy); }
+  /* color:var(--energy-text), not --energy: found by a light-theme axe
+     pass this session - --energy (#E85D3D since it was unified across
+     themes earlier today) is a FILL/border tone, 3.46:1 against white,
+     under the 4.5:1 small-text floor. --energy-text exists for exactly
+     this (see its own :root comment) and every other active-chip-style
+     control in this file already goes through it; this one and
+     .rx-btn.active-type below did not. */
+  .format-chip.active{ background:rgba(232,93,61,.15); border-color:var(--energy); color:var(--energy-text); }
   /* COMM-324: a one-line description under each format's name (e.g. "זמן" /
      "כמה מהר סיימתם") - lost somewhere along the way even though the chip
      already had room for it.
@@ -1434,7 +1757,7 @@
       <button id="navMenuBtn" data-action="open-nav-menu" aria-label="תפריט" aria-haspopup="dialog" aria-controls="navMenuOverlay" class="icon-chip icon-chip-steel" style="flex-shrink:0;">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
       </button>
-      <img src="./assets/logo-full.png" alt="האימוניה" class="header-logo" />
+      <img src="./assets/logo-full.png" alt="האימוניה" class="header-logo" width="900" height="323" />
       <button id="notificationsBellBtn" data-action="open-notifications" aria-label="עדכונים" class="icon-chip icon-chip-steel" style="position:relative; flex-shrink:0;">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
         <span id="notificationsBadge" aria-hidden="true" style="display:none; position:absolute; top:0; left:0; background:var(--energy); color:#fff; font-size:9px; font-weight:800; min-width:15px; height:15px; border-radius:8px; align-items:center; justify-content:center; padding:0 3px; line-height:1;"></span>
@@ -1839,11 +2162,23 @@
 
 <div class="modal-overlay" id="welcomeOverlay" role="dialog" aria-modal="true" aria-labelledby="welcomeTitle" style="align-items:center; padding:0 20px;">
   <div class="modal-sheet" style="border-radius:22px; border-bottom:1px solid var(--border); max-height:none;">
-    <div style="padding:0 20px calc(env(safe-area-inset-bottom,0px) + 24px); text-align:center;">
-      <div class="photo-header" style="margin:0 -20px 18px; border-radius:0;">
-        <img src="./assets/photos/club-logo-wall-wide.jpeg" alt="" width="960" height="260" loading="eager">
+    <!-- IMPLEMENTATION_SPEC.md §8 Onboarding: "First panel uses the
+         open-floor photo full bleed." Same mini-scene pattern as the
+         achievements/notification-center overlays (isolation:isolate is
+         required, not optional - a z-index:-3 media div escapes behind the
+         modal's own opaque surface without it, found live on achievements
+         first). Title moves onto the photo, white-on-scrim, matching every
+         other scene's title treatment instead of the plain dark text this
+         card used before. -->
+    <div style="position:relative; isolation:isolate; margin:0 0 18px; height:200px; overflow:hidden; border-radius:22px 22px 0 0;">
+      <div class="scene-page__media" style="height:200px; background-image:url('./assets/club-photos/history-open-floor.jpg'); background-position:44% 20%;" aria-hidden="true"></div>
+      <div class="scene-page__scrim" aria-hidden="true"></div>
+      <div style="position:absolute; inset-inline:20px; inset-block-end:14px; text-align:start; color:#fff; text-shadow:0 2px 12px rgba(0,0,0,.5);">
+        <div style="font-size:12px; font-weight:700; opacity:.85; margin-bottom:4px;">האימוניה</div>
+        <h2 id="welcomeTitle" style="font-family:'Secular One','Rubik',sans-serif; font-weight:400; font-size:26px; margin:0;">ברוכים הבאים!</h2>
       </div>
-      <div id="welcomeTitle" style="color:var(--chalk); font-weight:800; font-size:19px; margin-bottom:6px;">ברוכים הבאים!</div>
+    </div>
+    <div style="padding:0 20px calc(env(safe-area-inset-bottom,0px) + 24px); text-align:center;">
       <div id="welcomeSubtitle" style="color:var(--steel); font-size:13px; margin-bottom:18px;">איך נקרא לך?</div>
       <input id="welcomeNameInput" class="text-input" dir="auto" maxlength="80" autocomplete="off" placeholder="השם שלך" aria-labelledby="welcomeSubtitle" style="margin-bottom:16px; text-align:center;" />
       <div style="color:var(--steel); font-size:12px; margin-bottom:6px;" id="welcomeBoxStartLabel">מתי התחלתם להתאמן בבוקס? (לא חובה — פותח את עיטורי הוותק)</div>

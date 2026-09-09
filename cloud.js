@@ -15997,9 +15997,22 @@
       ? `<div class="chip-row" style="justify-content:center;margin-top:6px;"><button class="link-btn" data-community-action="notif-show-older">הצגת התראות ישנות יותר</button></div>`
       : "";
     const canMarkAll = c.rows.some((r) => !r.read_at);
+    // Immersive club redesign, IMPLEMENTATION_SPEC.md §8 Notifications:
+    // "reuse the Community scene, not a new photograph... club wall only in
+    // the header zone or beneath a solid scrim" - the community-logo-wall
+    // photo as a compact strip above the title, everything below (the
+    // actual notification rows) stays the plain opaque/scannable list the
+    // spec explicitly says is fine here. Same isolation:isolate fix the
+    // achievements mini-scene needed (z-index:-3 media otherwise escapes
+    // behind the modal's own opaque background).
+    const headerStrip = `<div style="position:relative; isolation:isolate; margin:-18px -18px 14px; height:100px; overflow:hidden;">
+      <div class="scene-page__media" style="height:100px; background-image:url('assets/club-photos/community-logo-wall.jpg');" aria-hidden="true"></div>
+      <div class="scene-page__scrim" aria-hidden="true"></div>
+    </div>`;
     return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="notifCenterTitle" data-notif-center data-cloud-dialog="notifCenter" style="align-items:flex-start;padding:20px 12px;">
       <div class="modal-sheet" style="border-radius:20px;max-height:88vh;overflow:auto;width:100%;max-width:520px;">
         <div style="padding:18px 18px calc(env(safe-area-inset-bottom,0px) + 16px);">
+          ${headerStrip}
           <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:6px;">
             <h2 id="notifCenterTitle" style="margin-top:0;font-weight:800;font-size:16px;margin-bottom:0;">התראות</h2>
             <button class="link-btn" data-community-action="notif-close" aria-label="סגירה">סגירה</button>
@@ -16674,7 +16687,12 @@
     // staff composer, which are reference material rather than the thing a
     // member opened the app to see - so this section now renders BELOW the
     // feed instead of above it. See the rail construction further down.
-    const announcementsHtml = `<div class="ach-section">${sectionHead("var(--brass)", "הודעות מהמועדון")}${window.photoHeaderHtml("assets/photos/club-logo-wall-wide.jpeg", "")}${announcementsList}${announceComposer}</div>`;
+    // No inline photo header here anymore (2026-09-08 immersive redesign):
+    // the whole Community screen is now a full-bleed scene
+    // (window.PAGE_SCENES.community), so a second decorative photo nested
+    // inside this de-emphasized "reference material" section would be
+    // redundant on top of it, not additive.
+    const announcementsHtml = `<div class="ach-section">${sectionHead("var(--brass)", "הודעות מהמועדון")}${announcementsList}${announceComposer}</div>`;
 
     // Sharing itself no longer lives here - it was a standing list of the
     // 8 most recent shareable results eating vertical space at the top of
@@ -17072,7 +17090,21 @@
     // renderTabHeader lives in app.js, loaded after cloud.js in index.html -
     // safe here since this whole function body only runs on an actual
     // render(), well after both scripts have executed.
-    return renderTabHeader("community")
+    // Immersive club redesign: same .scene-page/.scene-sheet wrapper as
+    // every other primary tab, keyed off window.PAGE_SCENES.community
+    // (app.js's registry - read off window since cloud.js is its own IIFE
+    // and this function only ever runs post-boot, same load-order
+    // reasoning documented on photoHeaderHtml()). renderTabHeader()'s own
+    // output is dropped in favor of the scene's own title in the photo
+    // zone - same substitution every other scene-mapped tab already made.
+    return `<section class="scene-page ${window.PAGE_SCENES.community.className}" aria-labelledby="pageTitle-community">
+      <div class="scene-page__media" aria-hidden="true"></div>
+      <div class="scene-page__scrim" aria-hidden="true"></div>
+      <div class="scene-page__intro">
+        <div class="scene-page__brand">האימוניה</div>
+        <h1 id="pageTitle-community" class="scene-page__title">קהילה</h1>
+      </div>
+      <div class="scene-sheet scene-sheet--navy">`
       + tabBar
       // Anchored to the viewport, not the document - see setMessage().
       // pointer-events:none so a toast can never swallow a tap meant for the
@@ -17080,7 +17112,8 @@
       // for an unreachable-control one.
       + (state.ui.message ? `<div role="status" aria-live="polite" style="position:fixed;left:0;right:0;bottom:calc(var(--bottom-nav-reserve) - 118px);display:flex;justify-content:center;padding:0 16px;z-index:60;pointer-events:none;"><div style="max-width:448px;background:var(--surface);border:1px solid var(--brass);color:var(--brass);border-radius:14px;padding:11px 16px;font-size:13px;font-weight:700;line-height:1.45;box-shadow:var(--shadow-card);text-align:center;">${esc(state.ui.message)}</div></div>` : "")
       + renderOutboxBanner()
-      + activeTab.html;
+      + activeTab.html
+      + `</div></section>`;
   };
 
   // Launch-readiness audit, RELIABILITY: "never lose a queued action

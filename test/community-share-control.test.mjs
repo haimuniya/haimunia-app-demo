@@ -33,12 +33,23 @@ test("publishing looks up the entry by id regardless of age (communityShareCandi
   assert.doesNotMatch(cloudJs, /window\.communityShareCandidates\(\)\.find/, "publishing must not rely on the recency-limited list anymore");
 });
 
-test("the share control is wired into Calendar's day-detail entries (strength and WOD) and into Progress's detail cards", () => {
-  const calDetailStart = appJs.indexOf("function renderCalDetail()");
-  const calDetailEnd = appJs.indexOf("\nfunction ", calDetailStart + 10);
-  const calBlock = appJs.slice(calDetailStart, calDetailEnd);
-  assert.match(calBlock, /window\.renderShareControl\("strength_entry", e\.id\)/);
-  assert.match(calBlock, /window\.renderShareControl\("wod_entry", e\.id\)/);
+test("the share control is wired into the day-entries list (Calendar's day-detail AND the Add tab's today's-sets card) and into Progress's detail cards", () => {
+  // Direction 06: renderCalDetail() used to build this markup inline; it now
+  // delegates to renderDayEntriesListHtml(), shared with renderLogTab()'s new
+  // "סיכום האימון" card so the Add tab shows today's actual logged sets
+  // instead of a one-line summary. Same underlying markup, one definition -
+  // assert against the shared function itself rather than either caller, so
+  // this doesn't silently stop covering one of them if a caller changes.
+  const listFnStart = appJs.indexOf("function renderDayEntriesListHtml(dayEntries, dayWods)");
+  assert.notEqual(listFnStart, -1, "renderDayEntriesListHtml must exist - Calendar's day-detail and the Add tab's today's-sets card share it");
+  const listFnEnd = appJs.indexOf("\nfunction ", listFnStart + 10);
+  const listBlock = appJs.slice(listFnStart, listFnEnd);
+  assert.match(listBlock, /window\.renderShareControl\("strength_entry", e\.id\)/);
+  assert.match(listBlock, /window\.renderShareControl\("wod_entry", e\.id\)/);
+
+  // Both callers actually delegate to it, rather than keeping their own copy.
+  assert.match(appJs.slice(appJs.indexOf("function renderCalDetail()")), /renderDayEntriesListHtml\(dayEntries, dayWods\)/);
+  assert.match(appJs.slice(appJs.indexOf("function renderLogTab()")), /renderDayEntriesListHtml\(dayEntries, \[\]\)/);
 
   assert.match(appJs, /window\.renderShareControl\("strength_entry", hEntries\[0\]\.id\)/);
   assert.match(appJs, /window\.renderShareControl\("strength_entry", durationEntries\[0\]\.id\)/);
