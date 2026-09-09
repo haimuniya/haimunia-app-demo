@@ -3592,7 +3592,7 @@ function renderLogTab() {
       <button data-action="cancel-edit-entry" style="color:var(--steel); font-size:12px; text-decoration:underline;">ביטול</button>
     </div>` : ""}
 
-    <div class="scene-summary-meta"><span>${movementExplicitlyChosen && !isDuration ? "אימון כוח" : "אימון שהושלם"}</span><bdi>${esc(fmtDate(logDate))}</bdi></div>
+    <div class="scene-summary-meta"><bdi>${esc(fmtDate(logDate))}</bdi></div>
 
     <div class="stat-row" style="margin-bottom:16px;" aria-label="סיכום האימון היום">
       <div class="stat-card"><div class="stat-value mono" style="font-size:20px;">${dayExerciseCount}</div><div class="stat-label">תרגילים</div></div>

@@ -1,3 +1,27 @@
+## Fourth jump report — a dvh instance that survived the original fix — 2026-09-10
+
+Reported specifically as jumping "getting in the app" (app launch), not a
+tab switch this time - a real, different instance of the same underlying
+class of bug. `#loading` (index.html) - the screen actually on-screen
+during that exact moment - still used `min-height:100dvh`, missed by the
+original dvh->svh sweep because it isn't a `.scene-page`. Fixed the same
+way: `100svh`. Also converted `#welcomeOverlay .welcome-scene` and
+`#achievementsOverlay .modal-sheet` (both `100dvh`) for the same reason -
+both are shown during/near the same "entering the app" window (first-run
+and, for achievements, a modal reachable from very early in a session).
+Left the desktop-only context-column `max-height:calc(100dvh - 56px)`
+alone - desktop browsers don't collapse an address bar on scroll, so it
+isn't the same failure mode, and changing it isn't free (a different
+intended behavior around the 56px offset).
+
+Also removed the "אימון כוח"/"אימון שהושלם" label from the Add screen's
+date row (`.scene-summary-meta`), per direct request - the row now shows
+just the date.
+
+Verified: `npm test` 1512/1512, `run-all.mjs` 35/35, `a11y-axe-scan.mjs`
+clean, confirmed via computed text content that the label is gone and
+only the date remains.
+
 ## Removed the ambient photo layer, per direct request — 2026-09-10
 
 `.scene-page__ambient` (the heavily blurred, dimmed copy of each scene's

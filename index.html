@@ -1773,7 +1773,7 @@
   #achievementsList .scene-sheet{padding-bottom:40px;}
   @media(min-width:415px){.scene-page--add .scene-page__media::after{background-position:44% top;}}
 
-  #welcomeOverlay .welcome-scene{margin:0 auto; border:0; border-radius:0; max-height:100dvh; height:100dvh; width:100%; overflow:auto; background:var(--club-navy); padding-top:var(--scene-photo-height);}
+  #welcomeOverlay .welcome-scene{margin:0 auto; border:0; border-radius:0; max-height:100svh; height:100svh; width:100%; overflow:auto; background:var(--club-navy); padding-top:var(--scene-photo-height);}
   #welcomeOverlay .scene-page__intro{top:calc(var(--scene-photo-height) - 136px);}
   #welcomeOverlay .scene-sheet{padding-bottom:32px;}
   #welcomeOverlay .scene-page__subtitle{max-width:34ch;}
@@ -1784,7 +1784,7 @@
   .scene-page__media::after{background-color:transparent;}
   .scene-page--achievements .scene-page__media::after{background-size:100% auto;}
   #achievementsOverlay{align-items:stretch; padding:0;}
-  #achievementsOverlay .modal-sheet{height:100dvh; max-height:100dvh; border-radius:0;}
+  #achievementsOverlay .modal-sheet{height:100svh; max-height:100svh; border-radius:0;}
   #achievementsOverlay .modal-title{color:#fff;}
   .scene-page--progress svg[role="img"] polyline{stroke:var(--club-coral);}
   .scene-page--progress svg[role="img"] circle{fill:var(--club-coral); stroke:var(--club-coral);}
@@ -1976,7 +1976,13 @@
      position:fixed;bottom:0 elements. They are children of #bottomNavWrap
      now, docked just above .bottom-bar - see the UX-audit comment on
      .install-dock in the stylesheet for why. -->
-<div id="loading" role="status" aria-live="polite" style="min-height:100dvh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;">
+<!-- svh, not dvh: reported live as a jump specifically "getting in the
+     app" - this loading screen is exactly what's on screen during that
+     moment, and dvh recomputes as the mobile browser's chrome animates,
+     which is common right as a page first loads/navigates. Same fix,
+     same reasoning as the .scene-sheet/body dvh fix earlier - this
+     instance was missed then because it isn't a scene page. -->
+<div id="loading" role="status" aria-live="polite" style="min-height:100svh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;">
   <img src="./assets/mark.png" alt="" width="40" height="46" style="opacity:.85;" />
   <div style="color:var(--steel); font-size:13px; font-weight:700;">טוען את היומן שלך…</div>
 </div>
