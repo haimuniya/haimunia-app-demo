@@ -1,3 +1,27 @@
+## "Navy Stripe" extended to light theme — Add screen — 2026-09-09
+
+The dark-theme ship below stayed dark-only deliberately, since that's all
+that had been reviewed. Extended now: computed light-theme contrast
+properly rather than reusing the dark values with a color swap, because
+the two grounds behave oppositely. On the dark navy sheet, translucent
+coral at .68 opacity measured ~3.9:1 for dark text vs. ~4.6:1 for light
+text (light wins). On the light cream sheet, the same idea at .75 opacity
+measured ~8.7:1 for dark text vs. ~2.2:1 for light text (white fails
+outright) - so light theme keeps this app's existing dark-text-on-energy
+convention (`#1a0d08`), not a copy of dark theme's light text. The sheet
+itself got its own light-appropriate opacity too (.88, not dark's .8 - a
+light ground reads translucency very differently, checked against real
+rendered pixels rather than assumed safe because dark already passed).
+Both new rules are unguarded (this file's established convention: light
+is the default, dark is the guarded override), and were checked to still
+have HIGHER specificity than the pre-existing unguarded rules they
+replace, not just rely on coming later in the file.
+
+Verified: `npm test` 1512/1512, `run-all.mjs` 35/35, axe clean on Add in
+light theme both with and without a movement selected (the CTA's two
+states), computed styles (background/backdrop-filter/color, not just a
+screenshot) confirmed via headless Chromium.
+
 ## "Navy Stripe" direction — Add screen, dark theme only — 2026-09-09
 
 Implemented after an interactive mockup exploration (six distinct future-

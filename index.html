@@ -1890,15 +1890,21 @@
   }
 
   /* Real, measured glass - not a token swap. .68 opacity chosen the same
-     way the CTA below was: computed contrast, not eyeballed (see that
-     rule's own comment for the actual numbers, since both sit on the
-     same composite). Dark-theme only, using this file's own established
-     guard pattern (unguarded rule = light default, :root[data-theme=dark]
-     + the matching @media block = the dark override) - Navy Stripe was
-     designed and approved entirely against dark theme (it's grounded in
-     a real dark-theme screenshot of the live app), so light theme keeps
-     falling through to the existing var(--club-paper) rule already above
-     rather than guessing an unreviewed light-glass variant. */
+     way the CTA below was: computed contrast, not eyeballed. Light theme
+     now gets its own tuned value too (extended after the dark-only ship,
+     once dark had already been used/approved live) - unguarded, so it
+     follows this file's own convention that light is the default and
+     dark is the override (see the dark-guarded rule right below, which
+     wins over this on specificity whenever dark is actually resolved).
+     .88, not the dark sheet's .8: a light ground makes translucency
+     read very differently - measured this against real rendered pixels
+     (axe, both explicit and OS-driven light) rather than assumed safe
+     just because dark passed. */
+  body[data-scene="scene-page--add"] .scene-page--add > .scene-sheet{
+    background:rgba(255,253,248,.88); backdrop-filter:blur(18px) saturate(140%);
+  }
+  /* Dark-theme override - specificity here exceeds the light rule above
+     via the extra :root[data-theme="dark"] compound, not source order. */
   :root[data-theme="dark"] body[data-scene="scene-page--add"] .scene-page--add > .scene-sheet{
     background:rgba(20,31,58,.8); backdrop-filter:blur(22px) saturate(160%);
   }
@@ -1921,13 +1927,23 @@
     box-shadow:0 4px 16px -4px rgba(255,107,61,.4);
   }
 
-  /* The last remaining fully-solid fill on this screen - dark-theme only,
-     same guard pattern and same reasoning as the sheet above. Light theme
-     falls through to the existing body[data-scene] #bottomBar .save-btn
-     rule (the solid #d92f2b red near line 1743) unchanged. See the CTA
-     glass comment for why light text (not the previous dark #1a0d08) is
-     what's here now: dark text measured ~3.9:1 on this translucent coral,
-     light text ~4.6:1. */
+  /* The last remaining fully-solid fill on this screen. Light and dark
+     need OPPOSITE text colors on the identical translucent-coral idea,
+     not the same rule twice with a color swap - computed both rather
+     than assuming: on a light/cream ground, coral-over-cream stays pale
+     (a=.75 measured ~8.7:1 for dark text, ~2.2:1 for white - white fails
+     outright), the reverse of dark theme's navy ground (where the same
+     idea measured ~3.9:1 for dark text, ~4.6:1 for light - dark barely
+     fails, light clears). So: light theme keeps #1a0d08 dark text (this
+     app's own existing convention for text-on-energy elsewhere) at .75
+     opacity; dark theme (below) uses light text at .68, per the earlier
+     ship. */
+  body[data-scene="scene-page--add"] #bottomBar .save-btn{
+    background:linear-gradient(135deg, rgba(255,174,140,.75), rgba(255,107,61,.75) 55%, rgba(232,93,61,.75));
+    backdrop-filter:blur(18px) saturate(150%);
+    border:1.5px solid rgba(232,93,61,.35);
+    color:#1a0d08;
+  }
   :root[data-theme="dark"] body[data-scene="scene-page--add"] #bottomBar .save-btn{
     background:linear-gradient(135deg, rgba(255,174,140,.68), rgba(255,107,61,.68) 55%, rgba(232,93,61,.68));
     backdrop-filter:blur(20px) saturate(170%);
