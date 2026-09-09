@@ -1,3 +1,20 @@
+## Removed the ambient photo layer, per direct request — 2026-09-10
+
+`.scene-page__ambient` (the heavily blurred, dimmed copy of each scene's
+photo sitting behind the whole glass sheet) is gone - the div from all
+five render paths (`renderLogTab`/`renderCalendarTab`/`renderHistoryTab`/
+`renderWodTab` in app.js, the Community scene in cloud.js) and its CSS
+rule, including the `position:fixed` fix from the entry above (moot once
+the element itself is gone). Everything else Navy Stripe added stays:
+the stripe ribbon, the lighter scrim, the glass sheet and glass CTA. The
+sheet's own translucency still reads as glass - it now shows a plain
+blurred navy/cream instead of a blurred photo behind it, which is a
+perfectly normal frosted-glass look on its own.
+
+Verified: `npm test` 1512/1512, `run-all.mjs` 35/35, `a11y-axe-scan.mjs`
+clean, confirmed via computed styles that `.scene-page__ambient` no
+longer exists in the DOM on any of the five screens.
+
 ## Third jump report — the ambient layer's fixed background, not dvh — 2026-09-09
 
 Reported again ("the page still jumping") immediately after Navy Stripe

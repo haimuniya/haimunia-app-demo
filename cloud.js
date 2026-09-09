@@ -17099,7 +17099,6 @@
     // zone - same substitution every other scene-mapped tab already made.
     return `<section class="scene-page ${window.PAGE_SCENES.community.className}" aria-labelledby="pageTitle-community">
       <div class="scene-page__media" aria-hidden="true"></div>
-      <div class="scene-page__ambient" aria-hidden="true"></div>
       <div class="scene-page__scrim" aria-hidden="true"></div>
       <div class="scene-page__intro">
         <div class="scene-page__brand">האימוניה</div>

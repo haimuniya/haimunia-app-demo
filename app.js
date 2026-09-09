@@ -3577,7 +3577,6 @@ function renderLogTab() {
   return `
     <section class="scene-page ${PAGE_SCENES.add.className}" aria-labelledby="pageTitle-add">
       <div class="scene-page__media" aria-hidden="true"></div>
-      <div class="scene-page__ambient" aria-hidden="true"></div>
       <div class="scene-page__scrim" aria-hidden="true"></div>
       <div class="scene-page__intro">
         <div class="scene-page__brand">האימוניה</div>
@@ -4202,7 +4201,6 @@ function renderCalendarTab() {
   return `
     <section class="scene-page ${PAGE_SCENES.calendar.className}" aria-labelledby="pageTitle-calendar">
       <div class="scene-page__media" aria-hidden="true"></div>
-      <div class="scene-page__ambient" aria-hidden="true"></div>
       <div class="scene-page__scrim" aria-hidden="true"></div>
       <div class="scene-page__intro">
         <div class="scene-page__brand">האימוניה</div>
@@ -4353,7 +4351,6 @@ function renderHistoryTab() {
   return `
     <section class="scene-page ${PAGE_SCENES.history.className}" aria-labelledby="pageTitle-history">
       <div class="scene-page__media" aria-hidden="true"></div>
-      <div class="scene-page__ambient" aria-hidden="true"></div>
       <div class="scene-page__scrim" aria-hidden="true"></div>
       <div class="scene-page__intro">
         <div class="scene-page__brand">האימוניה</div>
@@ -5293,7 +5290,6 @@ function renderWodTab() {
   return `
     <section class="scene-page ${PAGE_SCENES.wod.className}" aria-labelledby="pageTitle-wod">
       <div class="scene-page__media" aria-hidden="true"></div>
-      <div class="scene-page__ambient" aria-hidden="true"></div>
       <div class="scene-page__scrim" aria-hidden="true"></div>
       <div class="scene-page__intro">
         <h1 id="pageTitle-wod" class="scene-page__title">ספריית אימונים</h1>
