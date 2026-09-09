@@ -1887,23 +1887,34 @@
   /* Ambient: the same photo each scene already shows in its own
      .scene-page__media (var(--scene-image)/var(--scene-position), set
      per .scene-page--* class - not re-specified per screen here), heavily
-     blurred and dimmed, covering the FULL height of the page (not just
-     the photo band) so the glass sheet below has something real to show
-     through the whole way down instead of flat color - reported directly
-     ("why put transparency on cards if there's nothing behind them").
-     background-attachment:fixed sizes background-size:cover against the
-     VIEWPORT, not this element's own (very tall, content-height) box -
-     without it, cover would blow the image up the same way the sharp
-     .scene-page__media layer did before that bug was fixed earlier in
-     this project. Degrades gracefully on engines that ignore fixed
-     attachment (older iOS Safari) - the layer simply scrolls with the
-     page instead of staying put, not a functional break. One rule for
-     every scene, not one per screen, since it reads the same custom
-     properties .scene-page__media already relies on. */
+     blurred and dimmed, sitting behind the glass sheet the whole way down
+     instead of flat color - reported directly ("why put transparency on
+     cards if there's nothing behind them").
+     CORRECTED (reported live, again: "the page still jumping" - right
+     after this shipped to every screen, not just Add). The first version
+     used position:absolute + background-attachment:fixed to size
+     background-size:cover against the viewport instead of this element's
+     own very-tall (content-height) box. That was the wrong tool: a fixed-
+     attachment background on a tall scrolling element is a well-known
+     severe mobile scroll-jank pattern - most engines can't cheaply
+     composite it, since the browser has to reconsider the blurred
+     background's position against the *scrolled* box on every frame,
+     rather than treating it as a static layer. Extending it from one
+     screen to five made an existing but easy-to-miss cost impossible to
+     miss. position:fixed on the ELEMENT itself (not a fixed background
+     on an absolute element) is the cheap version of the same idea: a
+     small, viewport-sized layer the compositor can treat as static,
+     exactly like the .header/.dock chips already do. isolation:isolate
+     on .scene-page (its ancestor) does not turn it into a containing
+     block for position:fixed descendants - only transform/filter/
+     perspective/contain do, none of which .scene-page sets - so this
+     still fixes to the real viewport as intended, confirmed via
+     getBoundingClientRect after a scroll rather than assumed from the
+     spec text alone. */
   .scene-page__ambient{
-    position:absolute; inset:0; z-index:-4; pointer-events:none;
+    position:fixed; inset:0; height:100svh; z-index:-4; pointer-events:none;
     background-image:var(--scene-image);
-    background-size:cover; background-attachment:fixed; background-position:var(--scene-position, center top);
+    background-size:cover; background-position:var(--scene-position, center top);
     filter:blur(46px) saturate(1.15) brightness(.45); opacity:.55;
   }
 

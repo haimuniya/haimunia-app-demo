@@ -1,3 +1,46 @@
+## Third jump report — the ambient layer's fixed background, not dvh — 2026-09-09
+
+Reported again ("the page still jumping") immediately after Navy Stripe
+shipped to all five screens. The original dvh→svh fix (still correct,
+still in place, confirmed no dvh remains on anything in the tab-switch
+path) wasn't the culprit this time. Root cause: `.scene-page__ambient`
+used `position:absolute` + `background-attachment:fixed` to size
+`background-size:cover` against the viewport instead of its own very-tall
+(full page content height) box. `background-attachment:fixed` on a tall
+scrolling element with a heavy `filter:blur(46px)` on top is a well-known,
+severe mobile scroll-performance anti-pattern - most engines can't
+cheaply composite it, since the browser has to reconsider the blurred
+background's position against the scrolled box on every frame rather
+than treating it as a static layer. This existed on Add alone since the
+first Navy Stripe ship; extending it to all five screens turned an
+existing-but-easy-to-miss cost into something impossible to miss.
+
+Fixed the right way: `position:fixed` on the ambient ELEMENT itself
+(matching how `.header`/the dock chips already work), not a fixed
+background on an absolutely-positioned element. A small, viewport-sized
+fixed layer is cheap for the compositor to treat as static; a huge
+scrolling element with a fixed-attachment background is the expensive
+version of the same idea. Confirmed `isolation:isolate` on `.scene-page`
+(its ancestor) does NOT turn it into a containing block for
+`position:fixed` descendants - only transform/filter/perspective/contain
+do, and `.scene-page` sets none of them - so the layer still resolves
+against the real viewport, verified via `getBoundingClientRect()` before
+and after a scroll (identical position, as intended) rather than assumed
+from the spec text.
+
+**Honesty about verification limits**: headless Chromium's own
+`layout-shift` PerformanceObserver shows negligible CLS (~0.001) both
+before and after this fix - consistent with the whole project's earlier
+finding that this class of jank is a real-device GPU/compositor cost,
+not a layout reflow this sandbox can directly measure or reproduce. The
+fix is the standard, well-documented correction for the anti-pattern
+found; it has not been confirmed to eliminate the felt jank on an actual
+phone, because nothing in this environment can test that.
+
+Verified: `npm test` 1512/1512, `run-all.mjs` 35/35, `a11y-axe-scan.mjs`
+clean, ambient layer's position confirmed static across scroll via
+computed `getBoundingClientRect()`.
+
 ## "Navy Stripe" extended to every scene screen — 2026-09-09
 
 Extended from Add-only to Calendar, Progress, Library and Community
