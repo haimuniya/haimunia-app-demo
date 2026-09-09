@@ -1838,6 +1838,110 @@
   @media(min-width:1280px){
     body:has(.app-shell > .context-col > *) #bottomNavWrap{left:auto; right:calc((100vw - min(1376px,100vw - 40px))/2 + 272px);}
   }
+
+  /* ==== "Navy Stripe" direction — Add screen only (2026-09) ==============
+     Approved after several rounds of interactive mockups (glass, bold
+     contrast, HUD, holo-chrome, brutalist, then a synthesis of the real
+     live app's own navy/coral/red-white-stripe identity with glass depth
+     and motion pulled from those studies). Scoped to Add
+     (.scene-page--add / body[data-scene="scene-page--add"]) only - the
+     other scene screens (Calendar/Progress/Library/Community) were never
+     part of this exploration and keep their existing tuned treatment
+     until/unless the same direction is approved for them too.
+     Selectors here are deliberately over-specific (repeating
+     .scene-page--add, using the body[data-scene=...] attribute form)
+     because several earlier passes already layered multiple competing
+     .scene-sheet/#bottomBar .save-btn rules at lower-but-tied specificity
+     earlier in this file - see :root .scene-page > .scene-sheet above,
+     and body[data-scene] #bottomBar .save-btn near line 1743. Matching or
+     exceeding their specificity, not just appending after them, is what
+     actually guarantees these win instead of depending on staying the
+     last rule forever. */
+
+  /* Taller photo, lighter through the middle - the first mockup pass
+     measured the original scrim darkening to .62 opacity by the halfway
+     point, which read as "the photo is almost not visible" even after
+     doubling its height; this only comes up to real darkness in the last
+     ~15%, right where the sheet overlaps it. */
+  .scene-page--add{ --scene-photo-height: clamp(360px, 56svh, 500px); }
+  body[data-scene="scene-page--add"] .scene-page--add > .scene-page__scrim{
+    background:
+      radial-gradient(55% 40% at 15% 0%, rgba(255,107,61,.20), transparent 60%),
+      linear-gradient(180deg, rgba(10,13,22,.22) 0%, rgba(10,13,22,.04) 22%, rgba(10,13,22,.10) 55%, rgba(15,20,35,.55) 85%, var(--club-navy) 100%);
+  }
+
+  /* Ambient: the same photo again, heavily blurred and dimmed, covering
+     the FULL height of the page (not just the photo band) so the glass
+     sheet below has something real to show through the whole way down
+     instead of flat color - reported directly ("why put transparency on
+     cards if there's nothing behind them"). background-attachment:fixed
+     sizes background-size:cover against the VIEWPORT, not this element's
+     own (very tall, content-height) box - without it, cover would blow
+     the image up the same way the sharp .scene-page__media layer did
+     before that bug was fixed earlier in this project. Degrades gracefully
+     on engines that ignore fixed attachment (older iOS Safari) - the
+     layer simply scrolls with the page instead of staying put, not a
+     functional break. */
+  .scene-page--add .scene-page__ambient{
+    position:absolute; inset:0; z-index:-4; pointer-events:none;
+    background-image:url('./assets/club-photos/add-stripe-wall.jpg');
+    background-size:cover; background-attachment:fixed; background-position:center 30%;
+    filter:blur(46px) saturate(1.15) brightness(.45); opacity:.55;
+  }
+
+  /* Real, measured glass - not a token swap. .68 opacity chosen the same
+     way the CTA below was: computed contrast, not eyeballed (see that
+     rule's own comment for the actual numbers, since both sit on the
+     same composite). Dark-theme only, using this file's own established
+     guard pattern (unguarded rule = light default, :root[data-theme=dark]
+     + the matching @media block = the dark override) - Navy Stripe was
+     designed and approved entirely against dark theme (it's grounded in
+     a real dark-theme screenshot of the live app), so light theme keeps
+     falling through to the existing var(--club-paper) rule already above
+     rather than guessing an unreviewed light-glass variant. */
+  :root[data-theme="dark"] body[data-scene="scene-page--add"] .scene-page--add > .scene-sheet{
+    background:rgba(20,31,58,.8); backdrop-filter:blur(22px) saturate(160%);
+  }
+  @media(prefers-color-scheme:dark){
+    :root:not([data-theme="light"]) body[data-scene="scene-page--add"] .scene-page--add > .scene-sheet{
+      background:rgba(20,31,58,.8); backdrop-filter:blur(22px) saturate(160%);
+    }
+  }
+
+  /* The red/white stripe as a real UI element (this app's own identity,
+     not photo content) - a soft rounded ribbon, no sharp corners.
+     6px + 10px margin, not the mockup's 8px + 16px: at the mockup's sizing,
+     first-run-sequence.mjs's S2 check ("the tour card is above the fold on
+     a 390x844 screen") failed - the extra ~14px pushed the tour card 7px
+     past the fold. Sized down instead of adjusting spacing further below,
+     since this ribbon is the new element on the screen. */
+  .stripe-ribbon{
+    height:6px; margin:0 0 10px; border-radius:999px; overflow:hidden;
+    background:repeating-linear-gradient(115deg, #F3F7FF 0 14px, var(--energy) 14px 28px);
+    box-shadow:0 4px 16px -4px rgba(255,107,61,.4);
+  }
+
+  /* The last remaining fully-solid fill on this screen - dark-theme only,
+     same guard pattern and same reasoning as the sheet above. Light theme
+     falls through to the existing body[data-scene] #bottomBar .save-btn
+     rule (the solid #d92f2b red near line 1743) unchanged. See the CTA
+     glass comment for why light text (not the previous dark #1a0d08) is
+     what's here now: dark text measured ~3.9:1 on this translucent coral,
+     light text ~4.6:1. */
+  :root[data-theme="dark"] body[data-scene="scene-page--add"] #bottomBar .save-btn{
+    background:linear-gradient(135deg, rgba(255,174,140,.68), rgba(255,107,61,.68) 55%, rgba(232,93,61,.68));
+    backdrop-filter:blur(20px) saturate(170%);
+    border:1.5px solid rgba(255,174,140,.55);
+    color:#FFF6F1;
+  }
+  @media(prefers-color-scheme:dark){
+    :root:not([data-theme="light"]) body[data-scene="scene-page--add"] #bottomBar .save-btn{
+      background:linear-gradient(135deg, rgba(255,174,140,.68), rgba(255,107,61,.68) 55%, rgba(232,93,61,.68));
+      backdrop-filter:blur(20px) saturate(170%);
+      border:1.5px solid rgba(255,174,140,.55);
+      color:#FFF6F1;
+    }
+  }
 </style>
 </head>
 <body>

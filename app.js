@@ -3577,6 +3577,7 @@ function renderLogTab() {
   return `
     <section class="scene-page ${PAGE_SCENES.add.className}" aria-labelledby="pageTitle-add">
       <div class="scene-page__media" aria-hidden="true"></div>
+      <div class="scene-page__ambient" aria-hidden="true"></div>
       <div class="scene-page__scrim" aria-hidden="true"></div>
       <div class="scene-page__intro">
         <div class="scene-page__brand">האימוניה</div>
@@ -3584,6 +3585,7 @@ function renderLogTab() {
         <p class="scene-page__subtitle">עבודה מעולה!</p>
       </div>
       <div class="scene-sheet">
+    <div class="stripe-ribbon" aria-hidden="true"></div>
     ${!storageOK ? `<div class="footer-note" style="color:var(--red-text); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
     ${editingEntryId ? `
     <div style="background:rgba(232,185,138,.12); border:1px solid var(--brass); border-radius:12px; padding:10px 14px; margin-bottom:12px; display:flex; align-items:center; justify-content:space-between;">

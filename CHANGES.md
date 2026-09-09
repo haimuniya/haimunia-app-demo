@@ -1,3 +1,61 @@
+## "Navy Stripe" direction — Add screen, dark theme only — 2026-09-09
+
+Implemented after an interactive mockup exploration (six distinct future-
+facing directions, then two rounds of refinement on the one chosen —
+"combine Aurora Glass and HUD," then "make it the real navy/coral/
+red-white-stripe identity from a live screenshot, not a foreign palette")
+converged on: the actual live app's own colors and the red/white stripe as
+a real UI ribbon (not just photo content), with glass depth and motion
+borrowed from the other studies. Scoped to Add
+(`.scene-page--add`/`body[data-scene="scene-page--add"]`) and **dark theme
+only** — the whole exploration was reviewed against a dark-theme
+screenshot and dark-theme mockups; light theme keeps its existing
+`--club-paper` treatment unchanged rather than shipping an unreviewed
+light-glass guess. Calendar/Progress/Library/Community were never part of
+this exploration and are untouched.
+
+**index.html**: taller photo (`--scene-photo-height` on `.scene-page--add`,
+`clamp(360px, 56svh, 500px)` vs. the shared default), and a lighter scrim
+that only comes up to real darkness in the last ~15% — the original scrim
+darkened to .62 opacity by the halfway point, which is what made an
+earlier mockup pass of this same photo read as "almost not visible" even
+after doubling its height. A new `.scene-page__ambient` layer (heavily
+blurred, dimmed copy of the same photo, `background-attachment:fixed` so
+`background-size:cover` sizes against the viewport rather than the very
+tall content box — the same zoom bug fixed earlier this project for the
+sharp photo layer would otherwise reappear here) sits behind the *entire*
+scrollable sheet, not just the photo band, so cards further down the page
+have something real behind them instead of flat navy — reported directly
+("why put transparency on cards if there's nothing behind them"). The
+sheet itself and the primary save button (`#bottomBarBtn`) are both real
+frosted glass now (measured contrast, not eyeballed — the CTA's text
+flipped from dark to light because dark text on the translucent coral
+measured ~3.9:1, light text ~4.6:1). A new `.stripe-ribbon` element (the
+red/white stripe as an actual rounded UI ribbon, not photo content) sits
+at the top of the sheet.
+
+Selectors are deliberately over-specific
+(`body[data-scene="scene-page--add"] .scene-page--add > .scene-sheet`,
+not just `.scene-sheet`) because several earlier passes already left
+multiple `.scene-sheet`/`#bottomBar .save-btn` rules at tied specificity
+scattered through this file — matching or exceeding that specificity is
+what actually guarantees these rules win, not just source order.
+
+**app.js** (`renderLogTab`): added the `.scene-page__ambient` div and the
+`.stripe-ribbon` div to the real markup.
+
+**Regression found and fixed during this pass**: the stripe ribbon's first
+sizing (8px + 16px margin) pushed `first-run-sequence.mjs`'s onboarding
+tour card 7px below the fold on a 390×844 screen. Sized the ribbon down
+(6px + 10px margin) rather than touching the test or the tour card's own
+spacing, since the ribbon was the new element on the screen.
+
+Verified: `npm test` 1512/1512, `run-all.mjs` 35/35, targeted axe passes
+(both themes, with and without a movement selected — the CTA's two visual
+states) all clean, computed styles confirmed via headless Chromium (sheet
+background/blur, CTA gradient/color, ambient layer's background-image) in
+both themes, not just visually eyeballed.
+
 ## Two bugs from live use, found after the reference-accuracy pass — 2026-09-09
 
 **1. The screen visibly "vibrated" on every tab switch.** Root cause was
