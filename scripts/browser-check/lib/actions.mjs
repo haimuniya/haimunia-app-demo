@@ -250,6 +250,12 @@ export async function switchTab(page, tabId) {
     await page.click("#navMenuOverlay button[data-action='close-nav-menu']");
     await page.waitForFunction(() => !document.getElementById("navMenuOverlay")?.classList.contains("open"), { timeout: 5000 });
   }
+  // Library and staff tools retain their IDs in the secondary navigation.
+  // Follow the visible menu route when a destination is not in the four-tab bar.
+  if (!await page.locator(`#${tabId}`).isVisible()) {
+    await page.click("#navMenuBtn");
+    await page.waitForSelector("#navMenuOverlay.open");
+  }
   await page.click(`#${tabId}`);
 }
 

@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.15.0";
+const APP_VERSION = "4.15.1";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -134,11 +134,11 @@ let tab = VALID_TABS.includes(urlTab) ? urlTab : "add";
 // exact failure). Add tabs here in the same commit as their render-function
 // restructure, never ahead of it.
 const PAGE_SCENES = Object.freeze({
-  add: { className: "scene-page--add", sheetTone: "paper" },
-  calendar: { className: "scene-page--history", sheetTone: "navy" },
-  history: { className: "scene-page--progress", sheetTone: "navy" },
-  wod: { className: "scene-page--library", sheetTone: "paper" },
-  community: { className: "scene-page--community", sheetTone: "navy" },
+  add: { className: "scene-page--add" },
+  calendar: { className: "scene-page--history" },
+  history: { className: "scene-page--progress" },
+  wod: { className: "scene-page--library" },
+  community: { className: "scene-page--community" },
 });
 // A plain top-level `const` does NOT become a window property the way a
 // `var`/function declaration does - cloud.js (its own IIFE) reaches this
@@ -150,7 +150,7 @@ function getNavItems() {
     { id: "add", tab: "add", rowId: "tabAddBtn", label: "רישום", tint: "energy", icon: ICONS.logIcon, main: true },
     { id: "history", tab: "history", rowId: "tabHistoryBtn", label: "התקדמות", tint: "blue", icon: ICONS.chartIcon, main: true },
     { id: "calendar", tab: "calendar", rowId: "tabCalendarBtn", label: "לוח שנה", tint: "yellow", icon: ICONS.calendarIcon, main: true },
-    { id: "wod", tab: "wod", rowId: "tabWodBtn", label: "אימונים", tint: "purple", icon: ICONS.stopwatchIcon, main: true },
+    { id: "wod", tab: "wod", rowId: "tabWodBtn", label: "אימונים", tint: "purple", icon: ICONS.stopwatchIcon, main: false },
     { id: "community", tab: "community", rowId: "tabCommunityBtn", label: "קהילה", tint: "teal", icon: ICONS.communityIcon, main: true },
   ];
   // Redesign, Phase 1: a 6th tab, staff-only, same footing as the other 5
@@ -165,7 +165,7 @@ function getNavItems() {
     // on Community's own "חשבון" pill, which stopped meaning anything once
     // moderation moved to Manage - see cloud.js's pendingModerationCount().
     const badge = typeof window.communityPendingModerationCount === "function" ? window.communityPendingModerationCount() : 0;
-    items.push({ id: "manage", tab: "manage", rowId: "tabManageBtn", label: "ניהול", tint: "steel", icon: ICONS.manageTabIcon, main: true, badge });
+    items.push({ id: "manage", tab: "manage", rowId: "tabManageBtn", label: "ניהול", tint: "steel", icon: ICONS.manageTabIcon, main: false, badge });
   }
   return items;
 }
@@ -341,7 +341,7 @@ function renderNavSettingsRow() {
     </button>`;
 }
 function renderNavMenuList() {
-  return renderNavWho() + renderNavRows(true, true) + renderNavSettingsRow();
+  return renderNavWho() + `<div class="nav-destinations" role="tablist" aria-label="מסכים נוספים">${renderNavRows(true, true)}</div>` + renderNavSettingsRow();
 }
 // Desktop / wide-viewport sidebar (Phase 4) - same registry, same rows,
 // same settings entry, just without the mobile-only ids (see renderNavRows
@@ -349,7 +349,7 @@ function renderNavMenuList() {
 // every item (onlyOther=false) - there's no separate bottom bar at this
 // width for the main tabs to split against (COMM-327).
 function renderDesktopSidebar() {
-  return renderNavWho() + renderNavRows(false, false) + renderNavSettingsRow();
+  return renderNavWho() + `<div class="nav-destinations" role="tablist" aria-label="מסכי האפליקציה" aria-orientation="vertical">${renderNavRows(false, false)}</div>` + renderNavSettingsRow();
 }
 // COMM-229. sw.js's notificationclick handler opens a fresh window at
 // ?notif=<deep link> when no app window was already open to focus (see
@@ -411,6 +411,7 @@ const now0 = new Date();
 let calYear = now0.getFullYear();
 let calMonth = now0.getMonth();
 let calSelectedDate = todayISO();
+let calView = "calendar";
 
 // WOD tab state
 let wodEntries = [];
@@ -888,13 +889,11 @@ function renderAchievementsContent() {
   // (index.html) exactly, so the photo touches the modal's real left/right
   // edges rather than floating as a bordered card.
   return `
-    <div style="position:relative; isolation:isolate; margin:0 -16px 20px; height:220px; overflow:hidden;">
-      <div class="scene-page__media" style="height:220px; background-image:url('assets/club-photos/achievements-plates.jpg'); background-position:center 18%;" aria-hidden="true"></div>
+    <section class="scene-page scene-page--achievements" aria-labelledby="achievementsSceneTitle">
+      <div class="scene-page__media" aria-hidden="true"></div>
       <div class="scene-page__scrim" aria-hidden="true"></div>
-      <div style="position:absolute; inset-inline:16px; inset-block-end:14px; color:#fff; text-shadow:0 2px 12px rgba(0,0,0,.5);">
-        <h2 style="font-family:'Secular One','Rubik',sans-serif; font-weight:400; font-size:28px; margin:0;">עיטורים</h2>
-      </div>
-    </div>
+      <div class="scene-page__intro"><h2 id="achievementsSceneTitle" class="scene-page__title">עיטורים</h2></div>
+      <div class="scene-sheet">
     <div class="ach-summary">
       <div class="ach-summary-level">${esc(level.name)}</div>
       <div class="ach-summary-num mono">${score} נקודות</div>
@@ -903,6 +902,8 @@ function renderAchievementsContent() {
     </div>
     ${capstoneSection}
     ${prSections}${streakSection}${milestoneSection}${rxSection}
+      </div>
+    </section>
   `;
 }
 let achievementsOpenerEl = null;
@@ -3569,8 +3570,9 @@ function renderLogTab() {
   // when there's only one set logged so far, since a span needs two points.
   const dayExerciseCount = new Set(dayEntries.map((e) => e.exerciseId)).size;
   const dayVolume = dayEntries.reduce((sum, e) => sum + (e.type === "duration" ? 0 : (e.weight || 0) * (e.reps || 0) * (e.sets || 1)), 0);
-  const dayTimestamps = dayEntries.map((e) => e.ts).filter((t) => typeof t === "number");
-  const dayDurationMin = dayTimestamps.length >= 2 ? Math.max(1, Math.round((Math.max(...dayTimestamps) - Math.min(...dayTimestamps)) / 60000)) : null;
+  // Set-entry timestamps record when the member typed, not workout length.
+  // Keep the metric honest until a real session-duration field exists.
+  const dayDurationMin = null;
   const dayPRCount = dayEntries.filter((e) => e.isPR).length;
   return `
     <section class="scene-page ${PAGE_SCENES.add.className}" aria-labelledby="pageTitle-add">
@@ -3579,15 +3581,32 @@ function renderLogTab() {
       <div class="scene-page__intro">
         <div class="scene-page__brand">האימוניה</div>
         <h1 id="pageTitle-add" class="scene-page__title">${hasLoggedToday ? `<span aria-hidden="true" style="display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; border-radius:999px; background:var(--club-success); flex-shrink:0;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>` : ""}<span>סיכום אימון</span></h1>
-        <p class="scene-page__subtitle">${hasLoggedToday ? "עבודה מעולה!" : "מוכנים להתחיל?"}</p>
+        <p class="scene-page__subtitle">עבודה מעולה!</p>
       </div>
-      <div class="scene-sheet scene-sheet--paper">
+      <div class="scene-sheet">
     ${!storageOK ? `<div class="footer-note" style="color:var(--red-text); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
     ${editingEntryId ? `
     <div style="background:rgba(232,185,138,.12); border:1px solid var(--brass); border-radius:12px; padding:10px 14px; margin-bottom:12px; display:flex; align-items:center; justify-content:space-between;">
       <span style="color:var(--brass); font-weight:700; font-size:13px;">עריכת סט קיים</span>
       <button data-action="cancel-edit-entry" style="color:var(--steel); font-size:12px; text-decoration:underline;">ביטול</button>
     </div>` : ""}
+
+    <div class="scene-summary-meta"><span>${movementExplicitlyChosen && !isDuration ? "אימון כוח" : "אימון שהושלם"}</span><bdi>${esc(fmtDate(logDate))}</bdi></div>
+
+    <div class="stat-row" style="margin-bottom:16px;" aria-label="סיכום האימון היום">
+      <div class="stat-card"><div class="stat-value mono" style="font-size:20px;">${dayExerciseCount}</div><div class="stat-label">תרגילים</div></div>
+      <div class="stat-card"><div class="stat-value mono" style="font-size:20px;">${dayVolume ? Math.round(dayVolume).toLocaleString("he-IL") : "—"}</div><div class="stat-label">ק"ג נפח</div></div>
+      <div class="stat-card"><div class="stat-value mono" style="font-size:20px;">${dayDurationMin != null ? dayDurationMin : "—"}</div><div class="stat-label">דק'</div></div>
+      <div class="stat-card ${dayPRCount ? "stat-hero" : ""}"><div class="stat-value mono" style="font-size:20px; ${dayPRCount ? "color:var(--brass);" : ""}">${dayPRCount}</div><div class="stat-label">שיאים חדשים</div></div>
+    </div>
+    ${dayEntries.length === 0 ? `
+    <div class="day-empty">${ICONS.emptyDay}<span>${isToday ? "עדיין לא נרשמו סטים היום. כאן מתעדים את האימון שהושלם." : `עדיין לא נרשמו סטים ב-${esc(dayLabel)}.`}</span></div>` : `
+    <div class="section-label">${isToday ? "סיכום האימון" : `סיכום ${esc(dayLabel)}`}</div>
+    <div class="chart-card" style="margin-bottom:8px;">${renderDayEntriesListHtml(dayEntries, [])}</div>
+    <button class="link-btn" data-action="view-log-date-calendar" style="display:flex; align-items:center; justify-content:space-between; width:100%; margin-bottom:0;">
+      <span>הערות לאימון ופרטי היום · ${bidiText(entrySummary(dayEntries[0]))}</span>
+      <span class="flex items-center gap-6">לוח השנה${ICONS.chevronsLeft}</span>
+    </button>`}
 
     <!-- .pick-hero only while nothing is chosen - see index.html for why the
          chosen state deliberately stays a calm row. The chosen branch's
@@ -3605,13 +3624,7 @@ function renderLogTab() {
       <span class="pick-hero-cta">בחירת תרגיל${ICONS.chevronsLeft}</span>`}
     </button>
 
-    ${hasLoggedToday ? `
-    <div class="stat-row" style="margin-bottom:16px;" aria-label="סיכום האימון היום">
-      <div class="stat-card"><div class="stat-value mono" style="font-size:20px;">${dayExerciseCount}</div><div class="stat-label">תרגילים</div></div>
-      <div class="stat-card"><div class="stat-value mono" style="font-size:20px;">${dayVolume ? Math.round(dayVolume).toLocaleString("he-IL") : "—"}</div><div class="stat-label">ק"ג נפח</div></div>
-      <div class="stat-card"><div class="stat-value mono" style="font-size:20px;">${dayDurationMin != null ? dayDurationMin : "—"}</div><div class="stat-label">דק'</div></div>
-      <div class="stat-card ${dayPRCount ? "stat-hero" : ""}"><div class="stat-value mono" style="font-size:20px; ${dayPRCount ? "color:var(--brass);" : ""}">${dayPRCount}</div><div class="stat-label">שיאים חדשים</div></div>
-    </div>` : ""}
+
 
     ${renderTourCard()}
 
@@ -3626,7 +3639,7 @@ function renderLogTab() {
     <div class="log-empty" data-empty-state="log-choose-exercise">
       <span class="log-empty-medal" aria-hidden="true">${ICONS.emptyBarbell}</span>
       <div class="log-empty-text">
-        <div class="log-empty-head">כאן מתחיל האימון של היום</div>
+        <div class="log-empty-head">כאן מתעדים את האימון של היום</div>
         <div class="log-empty-body">בוחרים תרגיל בכרטיס שלמעלה, ומשקל, חזרות וסטים נפתחים בדיוק כאן.</div>
       </div>
       <div class="log-empty-when">מיד אחרי הבחירה יופיעו כאן גם השיא שלכם, האימון האחרון וההיסטוריה בתרגיל.</div>
@@ -3745,14 +3758,7 @@ function renderLogTab() {
     })()}
     `}
 
-    ${dayEntries.length === 0 ? `
-    <div class="day-empty">${ICONS.emptyDay}<span>${isToday ? "עדיין לא נרשמו סטים היום. קדימה למוט." : `עדיין לא נרשמו סטים ב-${esc(dayLabel)}.`}</span></div>` : `
-    <div class="section-label">${isToday ? "סיכום האימון" : `סיכום ${esc(dayLabel)}`}</div>
-    <div class="chart-card" style="margin-bottom:8px;">${renderDayEntriesListHtml(dayEntries, [])}</div>
-    <button class="link-btn" data-action="view-log-date-calendar" style="display:flex; align-items:center; justify-content:space-between; width:100%; margin-bottom:0;">
-      <span>אחרון: ${bidiText(movementById(dayEntries[0].exerciseId) ? movementById(dayEntries[0].exerciseId).name : "?")} — ${bidiText(entrySummary(dayEntries[0]))}</span>
-      <span class="flex items-center gap-6">לוח השנה${ICONS.chevronsLeft}</span>
-    </button>`}
+
 
     ${renderBackupConsentCard()}
       </div>
@@ -3862,7 +3868,10 @@ function renderHistoryListArea() {
     area.innerHTML = noneHtml;
     return;
   }
-  area.innerHTML = active.map((m) => {
+  // renderDetailCard escapes exercise names and formats numeric chart data.
+  // Compose with the same audited HTML renderer used for expanded rows.
+  const initialDetailHtml = !historyId ? `<div class="scene-progress-primary">${renderDetailCard(active[0])}</div>` : "";
+  area.innerHTML = initialDetailHtml + active.map((m) => {
     const row = `
       <button class="exercise-row ${historyId === m.id ? "active" : ""}" data-action="select-history" data-id="${esc(m.id)}" style="${historyId === m.id ? "margin-bottom:0; border-bottom-left-radius:0; border-bottom-right-radius:0;" : ""}">
         <div class="flex items-center gap-8">
@@ -3964,7 +3973,7 @@ function renderCalendarGrid() {
     if (iso === today) cls.push("today");
     if (iso === calSelectedDate) cls.push("selected");
     const dayAria = `${d}${hasData ? (hasPR ? " — שיא אישי" : " — יש נתונים") : ""}`;
-    cells += `<button class="${cls.join(" ")}" data-action="cal-select-day" data-date="${esc(iso)}" aria-label="${esc(dayAria)}">
+    cells += `<button class="${cls.join(" ")}" data-action="cal-select-day" data-date="${esc(iso)}" aria-label="${esc(dayAria)}" aria-pressed="${iso === calSelectedDate}" ${iso === today ? 'aria-current="date"' : ""}>
       <span class="cal-daynum" aria-hidden="true">${d}</span>
       ${hasData ? `<div class="cal-dot ${hasPR ? "pr" : ""}" aria-hidden="true"></div>` : ""}
     </button>`;
@@ -4151,10 +4160,17 @@ function renderVolumeReport() {
     const setsMonth = catEntries.filter((e) => e.date >= cutoff30ISO).reduce((s, e) => s + e.sets, 0);
     const lastDate = catEntries.length ? catEntries.map((e) => e.date).sort().slice(-1)[0] : null;
     const diff = lastDate ? Math.round((new Date(todayISO()) - new Date(lastDate)) / 86400000) : null;
-    let flagColor = "var(--steel)", flagBg = "rgba(138,143,151,.15)", flagText = daysAgoLabel(lastDate);
-    if (diff === null) { flagColor = "var(--red-text)"; flagBg = "rgba(216,69,60,.15)"; }
-    else if (diff <= 7) { flagColor = "var(--green-text)"; flagBg = "rgba(75,155,95,.15)"; }
-    else if (diff > 14) { flagColor = "var(--red-text)"; flagBg = "rgba(216,69,60,.15)"; }
+    // .10, not .15: this badge now also renders on a white scene-sheet
+    // (Calendar used to be a fixed-navy sheet - see .scene-sheet's own
+    // comment) where the red state measured 4.456:1 against --red-text,
+    // just under AA, and the dark-theme green state measured 4.505:1 -
+    // technically passing but with no real margin. .10 clears both with
+    // headroom (4.78/4.81) and improves every other state too, checked
+    // against both themes' real token values, not assumed.
+    let flagColor = "var(--steel)", flagBg = "rgba(138,143,151,.10)", flagText = daysAgoLabel(lastDate);
+    if (diff === null) { flagColor = "var(--red-text)"; flagBg = "rgba(216,69,60,.10)"; }
+    else if (diff <= 7) { flagColor = "var(--green-text)"; flagBg = "rgba(75,155,95,.10)"; }
+    else if (diff > 14) { flagColor = "var(--red-text)"; flagBg = "rgba(216,69,60,.10)"; }
     return `
       <div class="report-row">
         <div class="flex items-center gap-8">
@@ -4178,6 +4194,9 @@ function renderVolumeReport() {
 }
 
 function renderCalendarTab() {
+  const monthPrefix = `${calYear}-${String(calMonth + 1).padStart(2, "0")}-`;
+  const dates = [...new Set([...entries, ...wodEntries].filter(e => e.date.startsWith(monthPrefix)).map(e => e.date))].sort().reverse();
+  const listHtml = calView === "list" ? `<div class="history-month-list">${dates.length ? dates.map(date => `<section aria-label="${esc(fmtDate(date))}"><h2 class="section-label">${esc(fmtDate(date))}</h2>${renderDayEntriesListHtml(entries.filter(e => e.date === date), wodEntries.filter(e => e.date === date))}</section>`).join("") : `<div class="empty">לא נרשמו אימונים בחודש הזה.</div>`}</div>` : "";
   return `
     <section class="scene-page ${PAGE_SCENES.calendar.className}" aria-labelledby="pageTitle-calendar">
       <div class="scene-page__media" aria-hidden="true"></div>
@@ -4186,13 +4205,14 @@ function renderCalendarTab() {
         <div class="scene-page__brand">האימוניה</div>
         <h1 id="pageTitle-calendar" class="scene-page__title">היסטוריה</h1>
       </div>
-      <div class="scene-sheet scene-sheet--navy">
-    <div class="cal-panel">
+      <div class="scene-sheet">
+    <div class="cal-panel" data-calendar-view="${calView}">
       <div class="cal-header">
         <button class="cal-nav-btn" data-action="cal-prev" aria-label="חודש קודם">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--chalk)" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
         </button>
         <span class="cal-month-label" id="calMonthLabel"></span>
+        <button class="cal-view-btn" data-action="cal-toggle-view" aria-pressed="${calView === "list"}" aria-label="${calView === "list" ? "הצגת לוח שנה" : "הצגת רשימת אימונים"}">${calView === "list" ? "לוח" : "רשימה"}</button>
         <button class="cal-nav-btn" data-action="cal-next" aria-label="חודש הבא">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--chalk)" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
         </button>
@@ -4203,9 +4223,10 @@ function renderCalendarTab() {
         <span class="cal-legend-item"><span class="cal-dot" aria-hidden="true"></span>יש נתונים</span>
         <span class="cal-legend-item"><span class="cal-dot pr" aria-hidden="true"></span>שיא אישי</span>
       </div>
-      <div class="cal-month-stats" id="calMonthStats"></div>
     </div>
-    <div id="calDetail" style="margin-bottom:20px;"></div>
+    ${listHtml}
+    <div id="calDetail" ${calView === "list" ? "hidden" : ""} style="margin-bottom:20px;"></div>
+    <div class="cal-month-stats" id="calMonthStats"></div>
     ${renderVolumeReport()}
       </div>
     </section>
@@ -4333,7 +4354,7 @@ function renderHistoryTab() {
         <div class="scene-page__brand">האימוניה</div>
         <h1 id="pageTitle-history" class="scene-page__title">התקדמות</h1>
       </div>
-      <div class="scene-sheet scene-sheet--navy">
+      <div class="scene-sheet">
     ${!storageOK ? `<div class="footer-note" style="color:var(--red-text); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
     <div class="stat-row">
       <div class="stat-card stat-hero" style="text-align:center;"><div class="stat-value mono" style="color:var(--brass); font-size:20px;">${prCountThisMonth}</div><div class="stat-label">שיאים החודש</div></div>
@@ -4390,7 +4411,7 @@ function renderSettingsBody() {
   // its own section, not dropped.
   return `
     <div class="settings-pane">
-      ${photoHeaderHtml("assets/photos/club-open-floor-wide.jpeg", "")}
+      <div class="settings-club-edge" aria-hidden="true"></div>
       <div class="who" style="margin:0;">
         <div class="who-avatar">${esc(initial)}</div>
         <div style="flex:1; min-width:0;">
@@ -4664,7 +4685,7 @@ function render() {
       if (selected && movementExplicitlyChosen) {
         const prefix = editingEntryId ? "עדכון סט — " : ladderMode ? `הוספת סט ${currentLadderRounds().length + 1} ל${ladderPartnerId ? "סופרסט" : "סולם"} — ` : "רישום סט — ";
         document.getElementById("bottomBarBtn").dataset.action = "save-set";
-        document.getElementById("saveBtnLabel").textContent = prefix + selected.name;
+        document.getElementById("saveBtnLabel").textContent = editingEntryId || ladderMode ? prefix + selected.name : "שמירת אימון";
       } else {
         // The bar is hidden in this state (see the display rule below), but
         // #bottomBarBtn/#saveBtnLabel are long-lived DOM nodes that survive
@@ -4686,6 +4707,14 @@ function render() {
       content = typeof renderManageApp === "function" ? renderManageApp() : `<div class="empty">בטעינה</div>`;
     } else {
       content = typeof renderCommunityApp === "function" ? renderCommunityApp() : `<div class="empty">הקהילה בטעינה</div>`;
+      // Signed-out, loading and recovery branches share the same scene as
+      // the signed-in feed, without changing their forms or auth flow.
+      if (!content.includes('class="scene-page ')) {
+        content = `<section class="scene-page ${PAGE_SCENES.community.className}" aria-labelledby="pageTitle-community">
+          <div class="scene-page__media" aria-hidden="true"></div><div class="scene-page__scrim" aria-hidden="true"></div>
+          <div class="scene-page__intro"><h1 id="pageTitle-community" class="scene-page__title">קהילה</h1></div>
+          <div class="scene-sheet">${content}</div></section>`;
+      }
     }
   } catch (err) {
     console.error("render error:", err);
@@ -5260,10 +5289,9 @@ function renderWodTab() {
       <div class="scene-page__media" aria-hidden="true"></div>
       <div class="scene-page__scrim" aria-hidden="true"></div>
       <div class="scene-page__intro">
-        <div class="scene-page__brand">האימוניה</div>
+        <h1 id="pageTitle-wod" class="scene-page__title">ספריית אימונים</h1>
       </div>
-      <div class="scene-sheet scene-sheet--paper">
-    <h1 id="pageTitle-wod" class="scene-sheet-title">ספריית אימונים</h1>
+      <div class="scene-sheet">
     ${!storageOK ? `<div class="footer-note" style="color:var(--red-text); background:rgba(216,69,60,.1); border:1px solid var(--red); border-radius:12px; padding:10px 14px; margin-bottom:12px;" role="alert">${esc(storageErrMsg)}</div>` : ""}
     <div class="subtabbar" role="tablist">
       <button class="subtabbtn ${wodSubTab === "log" ? "active" : ""}" data-action="switch-wod-subtab" data-subtab="log" role="tab" aria-selected="${wodSubTab === "log"}" aria-controls="wodContent" tabindex="${wodSubTab === "log" ? "0" : "-1"}">רישום</button>
@@ -5861,12 +5889,13 @@ document.addEventListener("click", (e) => {
   else if (action === "install-app") { installApp(); }
   else if (action === "dismiss-install-hint") { dismissInstallBanner(); }
   else if (action === "dismiss-ios-install-hint") { dismissIOSInstallBanner(); }
-  else if (action === "switch-tab") { tab = el.dataset.tab; closeNavMenu(); render(); }
+  else if (action === "switch-tab") { tab = el.dataset.tab; closeNavMenu(); render(); window.scrollTo(0, 0); }
   else if (action === "switch-tab-community-sub") {
     tab = "community";
     closeNavMenu();
     if (typeof window.setCommunityTab === "function") window.setCommunityTab(el.dataset.subtab);
     else render();
+    window.scrollTo(0, 0);
   }
   else if (action === "open-nav-menu") { openNavMenu(); }
   else if (action === "close-nav-menu") {
@@ -5887,6 +5916,7 @@ document.addEventListener("click", (e) => {
     render();
   }
   else if (action === "view-log-date-calendar") {
+    calView = "calendar";
     tab = "calendar";
     const d = new Date(logDate + "T00:00:00");
     calYear = d.getFullYear();
@@ -5940,8 +5970,9 @@ document.addEventListener("click", (e) => {
     closeAppConfirm();
   }
   else if (action === "toast-action") { runToastAction(); }
-  else if (action === "cal-prev") { calMonth--; if (calMonth < 0) { calMonth = 11; calYear--; } renderCalendarGrid(); }
-  else if (action === "cal-next") { calMonth++; if (calMonth > 11) { calMonth = 0; calYear++; } renderCalendarGrid(); }
+  else if (action === "cal-prev") { calMonth--; if (calMonth < 0) { calMonth = 11; calYear--; } if (calView === "list") render(); else renderCalendarGrid(); }
+  else if (action === "cal-next") { calMonth++; if (calMonth > 11) { calMonth = 0; calYear++; } if (calView === "list") render(); else renderCalendarGrid(); }
+  else if (action === "cal-toggle-view") { calView = calView === "list" ? "calendar" : "list"; render(); }
   else if (action === "cal-select-day") { calSelectedDate = el.dataset.date; renderCalendarGrid(); }
   else if (action === "save-session-note") {
     const text = document.getElementById("sessionNoteInput");

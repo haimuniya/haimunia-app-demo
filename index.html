@@ -132,6 +132,7 @@
      before. Same self-hosted, offline-precached treatment as every other face
      here - font-src is 'self' and stays that way. 7.9 KB. */
   @font-face{ font-family:'Secular One'; font-style:normal; font-weight:400; font-display:swap; src:url('./assets/fonts/secularone-400-hebrew.woff2') format('woff2'); unicode-range:U+0307-0308,U+0590-05FF,U+200C-2010,U+20AA,U+25CC,U+FB1D-FB4F; }
+
 </style>
 <style>
   /* Theme tokens, light-first: bare :root is the light palette (the CSS-spec
@@ -570,13 +571,14 @@
      .scene-page__media is inset:0 on .scene-page itself (position:relative,
      isolation:isolate makes it the containing block for the z-index:-3/-2
      layers below).
-     TONE, not the user's light/dark theme, decides the sheet's own
-     cream-vs-navy reading: design-reference.jpg shows Add as a fixed cream
-     sheet and History/Progress as a fixed navy sheet regardless of theme,
-     and VISUAL_QA_PROTOCOL.md's per-screen targets say "cream sheet" /
-     "dark sheet" outright, not "sheet matching current theme" - so
-     .scene-sheet--paper/--navy below are deliberately NOT theme-conditional.
-     What DOES still answer the user's theme: the scrim depth and shadow
+     The sheet itself follows the user's real light/dark theme (see the
+     .scene-sheet rule below) - an earlier pass fixed it to a per-page tone
+     instead (Add always cream, Calendar/Progress always navy, regardless
+     of theme), reasoned from design-reference.jpg's own screenshots, but a
+     member using dark theme actually hit a blinding white summary card,
+     which is exactly the "no page stuck in one theme" behavior this app's
+     other rules already forbid. Corrected; see .scene-sheet's own comment.
+     The scrim depth and shadow also still answer the user's theme
      (IMPLEMENTATION_SPEC.md §9's "dark theme receives a slightly deeper
      scrim"), via the --scene-shadow token already defined per-theme above. */
   /* -16px, not var(--scene-inline): #app's own horizontal padding
@@ -586,35 +588,24 @@
      overshoot the true viewport edge and create exactly the horizontal
      overflow every acceptance list here forbids. */
   .scene-page{ position:relative; isolation:isolate; margin:0 -16px 0; padding-block-start:var(--scene-photo-height); background:var(--club-navy); }
-  /* height:var(--scene-photo-height), not inset:0's full-height stretch:
-     .scene-page's own height is photo-height PLUS the sheet's full content
-     height (often 1500-2000px+, since the photo layer is architecturally
-     meant to extend the full page per IMPLEMENTATION_SPEC.md §3's "photo
-     remains underneath the opaque sheet"). Sizing background-size:cover
-     against THAT full height, as the spec's own inset:0 sample does,
-     computes cover for a ~390x1800 box - cover then scales by the tall
-     dimension, blowing the image up ~5x and leaving only a razor-thin
-     vertical sliver of it in frame. Confirmed with an isolated background-
-     only test page before concluding this, not guessed: the identical CSS
-     against a correctly-sized 390x370 box shows the intended crop exactly.
-     Capping height here reproduces the same crop; the sheet is opaque
-     regardless, so nothing behind --scene-photo-height was ever visible
-     either way - this only fixes what the visible photo band itself shows. */
-  .scene-page__media{ position:absolute; z-index:-3; inset-inline:0; inset-block-start:0; height:var(--scene-photo-height); background-size:cover; background-repeat:no-repeat; background-position:var(--scene-position, center top); }
-  .scene-page--add .scene-page__media{ background-image:url('./assets/club-photos/add-stripe-wall.jpg'); }
+  /* Full-page media remains behind the reading surface. The background's
+     visible architectural crop is viewport-sized; its navy base continues
+     beneath the opaque sheet without tying the crop to the number of rows. */
+  .scene-page__media{ position:absolute; z-index:-3; inset:0; background-size:cover; background-repeat:no-repeat; background-position:var(--scene-position, center top); background-image:var(--scene-image); }
+  .scene-page--add{ --scene-image:url('./assets/club-photos/add-stripe-wall.jpg'); }
   /* 32% vertical, not the default "center top": the source photo's
      recognizable content (stripe wall, blue pillars, rowers) sits in a
      band roughly 20-55% down the original frame - "top" showed ceiling
      vents on a real render, checked by viewing the source file directly
      rather than assumed from the filename. */
-  .scene-page--history .scene-page__media{ background-image:url('./assets/club-photos/history-open-floor.jpg'); --scene-position:44% 20%; }
+  .scene-page--history{ --scene-image:url('./assets/club-photos/history-open-floor.jpg'); --scene-position:44% 20%; }
   /* center 18%: keeps the rings + rig crossbar in frame (checked against
      the source file - they sit roughly 10-55% down) instead of the ceiling
      AC units at the very top. */
-  .scene-page--progress .scene-page__media{ background-image:url('./assets/club-photos/progress-blue-rig.jpg'); --scene-position:center 18%; }
-  .scene-page--library .scene-page__media{ background-image:url('./assets/club-photos/library-equipment.jpg'); }
-  .scene-page--community .scene-page__media{ background-image:url('./assets/club-photos/community-logo-wall.jpg'); }
-  .scene-page--achievements .scene-page__media{ background-image:url('./assets/club-photos/achievements-plates.jpg'); }
+  .scene-page--progress{ --scene-image:url('./assets/club-photos/progress-blue-rig.jpg'); --scene-position:center 18%; }
+  .scene-page--library{ --scene-image:url('./assets/club-photos/library-equipment.jpg'); }
+  .scene-page--community{ --scene-image:url('./assets/club-photos/community-logo-wall.jpg'); }
+  .scene-page--achievements{ --scene-image:url('./assets/club-photos/achievements-plates.jpg'); }
   .scene-page__scrim{ position:absolute; z-index:-2; inset:0; pointer-events:none;
     background:linear-gradient(180deg, rgba(3,10,20,.24) 0, rgba(3,10,20,.08) 25%, rgba(3,10,20,.54) 47%, rgba(3,10,20,.76) 100%); }
   :root[data-theme="dark"] .scene-page__scrim{ background:linear-gradient(180deg, rgba(3,10,20,.34) 0, rgba(3,10,20,.14) 25%, rgba(3,10,20,.64) 47%, rgba(3,10,20,.86) 100%); }
@@ -631,45 +622,42 @@
   .scene-page__brand{ font-size:12px; font-weight:700; letter-spacing:.5px; opacity:.85; margin-bottom:6px; }
   .scene-page__title{ font-family:'Secular One','Rubik',sans-serif; font-weight:400; font-size:36px; line-height:1.05; color:#fff; text-shadow:0 2px 16px rgba(0,0,0,.48); margin:0 0 6px; display:flex; align-items:center; gap:10px; }
   .scene-page__subtitle{ font-size:14px; font-weight:600; opacity:.92; margin:0; }
-  .scene-sheet{ position:relative; z-index:1; margin-inline:-16px; margin-block-start:calc(-1 * var(--scene-sheet-overlap)); min-height:calc(100dvh - var(--scene-photo-height) + var(--scene-sheet-overlap)); padding:22px var(--scene-inline) calc(var(--bottom-nav-reserve) + 24px); border-radius:var(--scene-sheet-radius) var(--scene-sheet-radius) 0 0; box-shadow:var(--scene-shadow); }
-  /* A tone is fixed (paper always light, navy always dark) independent of
-     the user's global light/dark theme choice - see the .scene-page comment
-     above for why. IMPLEMENTATION_SPEC.md §4's own literal --club-paper/
-     --club-ink/--club-muted hex values do NOT reuse this app's existing,
-     already-contrast-tuned light/dark token set (§4 also says to prefer
-     reuse "where they already serve the same purpose") - shipping them
-     verbatim produced five real axe color-contrast failures (.pick-hero-cta,
-     .active-type, two .stat-label instances, a bar-weight button) once
-     checked against real rendered pixels rather than assumed, exactly what
-     §4 itself says to do ("run automated contrast checks... adjust the
-     semantic text token, not the club photo"). Fix: reuse this app's own
-     proven light-theme token set for --scene-sheet--paper and its own
-     dark-theme set for --scene-sheet--navy, verbatim, rather than a third,
-     unvetted palette - every component inside the sheet (.stat-card,
-     .rx-btn, bar-weight buttons, etc.) already reads these same custom
-     properties, so this is the change that makes them all correct at once
-     instead of finding and re-tuning each one individually. */
-  /* background: rgba(...,.98)/(...,.96) as a literal property, NOT routed
-     through --surface: the user's redline gives the OUTER sheet a 2-4%
-     see-through tint for depth. --surface itself stays the solid hex every
-     nested component (.chart-card, .cal-panel, .stat-card...) already
-     reads - if --surface itself went translucent, every nested card would
-     inherit an uncontrolled SECOND layer of transparency stacked on the
-     sheet's own, which is exactly what IMPLEMENTATION_SPEC.md §6 and the
-     redline's item 6 both explicitly forbid ("do not apply frosted glass
-     to workout rows, calendar dates or charts") - and would make their
-     already-verified AA contrast numbers meaningless, since the effective
-     color would then depend on the photo colors bleeding through twice. */
-  .scene-sheet--paper{
+  .scene-sheet{ position:relative; z-index:1; margin-inline:0; margin-block-start:calc(-1 * var(--scene-sheet-overlap)); min-height:calc(100dvh - var(--scene-photo-height) + var(--scene-sheet-overlap)); padding:22px var(--scene-inline) calc(var(--bottom-nav-reserve) + 24px); border-radius:var(--scene-sheet-radius) var(--scene-sheet-radius) 0 0; box-shadow:var(--scene-shadow); }
+  /* CORRECTED (user report, live app): the sheet used to carry a per-PAGE
+     tone (Add always cream, Calendar/Progress/Community always navy)
+     fixed regardless of the device's light/dark theme - reasoned from
+     design-reference.jpg showing those colors in its own screenshots, but
+     wrong in practice: a member with the app set to dark theme got a
+     blinding white "workout summary" card, which is exactly the "no page
+     in one theme only" behavior CLAUDE.md's non-negotiables already forbid
+     (this sheet WAS a page stuck in one theme). Every scene sheet now
+     follows the app's real theme like every other themed surface - light
+     theme reuses the proven light token set below, dark theme reuses the
+     proven dark set, both already axe-verified (see the retained values
+     below, unchanged from the tone-based version - only which one applies
+     changed). background: rgba(...) as a literal property, not routed
+     through --surface, is unchanged too - the user's redline gives the
+     outer sheet its own 2-4% see-through tint for depth, and letting
+     --surface itself go translucent would stack an uncontrolled second
+     transparency layer onto every nested card (.chart-card, .stat-card,
+     bar-weight buttons...), which IMPLEMENTATION_SPEC.md §6 and the
+     redline's item 6 both explicitly forbid and would make their
+     already-verified AA contrast numbers meaningless. */
+  .scene-sheet{
     --surface:#FFFFFF; --surface2:#E9EFF8; --border:#D6DFEC; --chalk:#1C2536; --steel:#57627A;
     --brass:#956529; --energy-text:#AD4023; --red-text:#C0382C; --green-text:#256B3D;
     background:rgba(255,253,248,.98); color:var(--chalk);
   }
-  .scene-sheet--navy{
+  :root[data-theme="dark"] .scene-sheet{
     --surface:#1F3057; --surface2:#2A3D6B; --border:#425481; --chalk:#F2ECE1; --steel:#A8B3C9;
     --brass:#E8B98A; --energy-text:#FF7F53; --red-text:#FF7869; --green-text:#5CBB74;
     background:rgba(8,21,35,.96); color:var(--chalk);
   }
+  @media (prefers-color-scheme:dark){ :root:not([data-theme="light"]) .scene-sheet{
+    --surface:#1F3057; --surface2:#2A3D6B; --border:#425481; --chalk:#F2ECE1; --steel:#A8B3C9;
+    --brass:#E8B98A; --energy-text:#FF7F53; --red-text:#FF7869; --green-text:#5CBB74;
+    background:rgba(8,21,35,.96); color:var(--chalk);
+  } }
   .scene-sheet-title{ font-family:'Secular One','Rubik',sans-serif; font-weight:400; font-size:22px; margin:0 0 14px; }
   /* Header/brand-stripe become a transparent overlay riding on top of the
      photo, instead of taking flow space above #content - body[data-scene]
@@ -1715,6 +1703,125 @@
     .invite-print-code-label{ font-size:10pt; }
     .invite-print-code{ font-family:'JetBrains Mono', monospace; font-size:9pt; word-break:break-all; max-width:120mm; }
   }
+  /* Approved immersive composition — shared by the existing render paths. */
+  :root{ --club-coral:#f0443e; --club-blue:#1455b8; }
+  .scene-page{ min-height:100svh; --scene-photo-height:calc(42svh + 16px); }
+  .scene-page--history{ --scene-photo-height:calc(40svh + 16px); }
+  .scene-page--progress{ --scene-photo-height:calc(38svh + 16px); }
+  .scene-page__media{ background-size:cover; background-color:var(--club-navy); }
+  .scene-page__media::after{ content:""; position:absolute; inset:0; background:inherit; background-size:auto max(450px, 54svh); background-position:center top; background-repeat:no-repeat; }
+  .scene-page__intro{ inset-block-start:auto; top:calc(var(--scene-photo-height) - 100px); }
+  .scene-page__brand{ display:none; }
+  .scene-page__title{ font-size:34px; }
+  .scene-page__subtitle{ margin-top:4px; }
+  .scene-sheet{ background:var(--club-paper); }
+  .scene-page--history .cal-panel{ padding:0; border:0; background:transparent; box-shadow:none; }
+  .scene-page--history .cal-grid{ gap:2px; margin-bottom:12px; }
+  .scene-page--history .cal-cell{ aspect-ratio:auto; min-height:44px; }
+  .scene-page--history .cal-month-stats{ margin-top:8px; }
+  .scene-page--add .stat-row[aria-label]{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+  .scene-page--add .stat-row[aria-label] .stat-card{ padding:10px 3px; min-height:76px; border:0; }
+  .scene-page--add .stat-row[aria-label] .stat-label{ font-size:11px; }
+  body[data-scene] .header #navMenuBtn, body[data-scene] .header #notificationsBellBtn{ background:rgba(8,21,35,.72); border-radius:50%; }
+  body[data-scene] #bottomTabBar{ background:rgba(8,21,35,.96); }
+  body[data-scene] #bottomBar .save-btn{ background:#d92f2b; color:#fff; border-radius:16px; }
+  body[data-scene] .cal-cell.selected .cal-daynum{ background:#d92f2b; }
+  @media(min-width:900px){ .scene-page{margin-inline:-16px;} }
+  .scene-summary-meta{ display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:12px; font-weight:700; margin-bottom:12px; }
+  .scene-page--add .pick-hero{ background:var(--surface); border-color:var(--border); margin-top:16px; }
+  .scene-page--add .pick-hero::before,.scene-page--add .pick-hero::after{ display:none; }
+  .scene-page--add .chart-card{ padding:8px 12px; }
+  .scene-page--add .log-row{ min-height:52px; }
+
+  .scene-page > .scene-sheet{background:var(--club-paper);}
+  .scene-page > .scene-page__scrim{background:linear-gradient(180deg,rgba(3,10,20,.32),rgba(3,10,20,.06) 20svh,rgba(3,10,20,.7) 43svh,#081523 85svh);}
+  .scene-page--add .log-row{padding:6px 8px; border:0; background:var(--surface2); border-radius:12px; box-shadow:none;}
+  .scene-page--add .log-row button{min-width:44px; min-height:44px;}
+  .scene-page--add .log-row > .flex{flex-wrap:wrap;}
+  body[data-scene] #app{padding-bottom:0;}
+
+  body[data-scene] .scene-page--history .cal-cell{aspect-ratio:auto; height:44px;}
+  .scene-page--history .cal-month-stats{margin-bottom:20px;}
+  .scene-page--history #calDetail > .chart-card{background:transparent; border:0; padding:0; box-shadow:none;}
+  .scene-page--history .cal-nav-btn{background:transparent; border:0;}
+  .scene-page--progress .scene-sheet{display:flex; flex-direction:column;}
+  .scene-page--progress .scene-sheet > .stat-row{order:2; margin-top:16px;}
+  .scene-progress-primary{margin-bottom:16px;}
+  .scene-progress-primary > .chart-card{border-radius:16px !important; border:1px solid var(--border) !important;}
+  .settings-club-edge{height:5px; background:linear-gradient(110deg,var(--club-blue) 0 65%,var(--club-cream) 65% 72%,var(--club-coral) 72% 80%,var(--club-cream) 80%);}
+  #achievementsOverlay .modal-sheet{position:relative;}
+  #achievementsOverlay .modal-head{position:absolute; top:0; inset-inline:0; z-index:3; background:rgba(8,21,35,.85); color:#fff;}
+  #achievementsOverlay .modal-head .icon-btn{color:#fff !important;}
+  #achievementsList{padding:0;}
+  #achievementsList .scene-page{margin:0;}
+  #achievementsList .scene-sheet{padding-bottom:40px;}
+  @media(min-width:415px){.scene-page--add .scene-page__media::after{background-position:44% top;}}
+
+  #welcomeOverlay .welcome-scene{margin:0 auto; border:0; border-radius:0; max-height:100dvh; height:100dvh; width:100%; overflow:auto; background:var(--club-navy); padding-top:var(--scene-photo-height);}
+  #welcomeOverlay .scene-page__intro{top:calc(var(--scene-photo-height) - 136px);}
+  #welcomeOverlay .scene-sheet{padding-bottom:32px;}
+  #welcomeOverlay .scene-page__subtitle{max-width:34ch;}
+  #notificationsOverlay .modal-sheet{background:var(--club-paper);}
+  #notificationsOverlay .modal-head{background:linear-gradient(rgba(8,21,35,.75),rgba(8,21,35,.9)),var(--scene-image) center 40%/cover; color:#fff; min-height:100px;}
+  #notificationsOverlay .modal-head .icon-btn{color:#fff !important;}
+
+  .scene-page__media::after{background-color:transparent;}
+  .scene-page--achievements .scene-page__media::after{background-size:100% auto;}
+  #achievementsOverlay{align-items:stretch; padding:0;}
+  #achievementsOverlay .modal-sheet{height:100dvh; max-height:100dvh; border-radius:0;}
+  #achievementsOverlay .modal-title{color:#fff;}
+  .scene-page--progress svg[role="img"] polyline{stroke:var(--club-coral);}
+  .scene-page--progress svg[role="img"] circle{fill:var(--club-coral); stroke:var(--club-coral);}
+
+  @media(max-width:320px){
+    .scene-page--add .stat-row[aria-label]{grid-template-columns:repeat(2,minmax(0,1fr));}
+    .scene-page__intro{top:calc(var(--scene-photo-height) - 140px);}
+    .scene-page__title{overflow-wrap:anywhere;}
+    .scene-page--history .cal-panel{overflow-x:auto;}
+    .scene-page--history .cal-grid,.scene-page--history .cal-weekdays{min-width:294px;}
+    .scene-summary-meta,.scene-page--add .log-row{flex-wrap:wrap;}
+  }
+
+  .scene-page__intro{text-align:center;}
+  .scene-page__title{justify-content:center;}
+  .scene-page--add .scene-page__title > span:has(svg){order:1;}
+  .scene-sheet{--surface:#f5f1ea; --surface2:#efebe5; --border:#ded9d1;}
+  :root[data-theme="dark"] .scene-sheet{--surface:#10243a; --surface2:#193047; --border:#3c4d61;}
+  @media(prefers-color-scheme:dark){:root:not([data-theme="light"]) .scene-sheet{--surface:#10243a; --surface2:#193047; --border:#3c4d61;}}
+  .scene-sheet .log-row button[data-action="edit-entry"],.scene-sheet .log-row button[data-action="delete-entry"]{min-width:44px; min-height:44px;}
+  .scene-sheet .log-row > .flex{flex-wrap:wrap;}
+
+  .scene-sheet{--brass:#80551f; --red-text:#ad3025;}
+  :root[data-theme="dark"] .scene-sheet{--brass:#e8b98a; --red-text:#ff7869;}
+  @media(prefers-color-scheme:dark){:root:not([data-theme="light"]) .scene-sheet{--brass:#e8b98a; --red-text:#ff7869;}}
+  .nav-destinations{display:flex; flex-direction:column; gap:8px;}
+  .navrow.active .nav-label{color:var(--energy-text);}
+  .scene-page--add .steppers{display:grid; grid-template-columns:repeat(2,minmax(0,1fr));}
+  .scene-page--add .steppers .stepper:last-child:nth-child(3){grid-column:1/-1;}
+  .scene-page--add .stepper-val,.scene-page--add .stepper-btn{min-width:44px; min-height:44px;}
+  @media(min-width:900px){.scene-page--add .steppers{grid-template-columns:repeat(3,minmax(0,1fr));}.scene-page--add .steppers .stepper:last-child:nth-child(3){grid-column:auto;}}
+  .scene-page--gymnastics{--scene-image:url('./assets/club-photos/library-rings.jpg');}
+  body[data-scene] .cal-cell.today .cal-daynum{text-decoration:underline; text-underline-offset:4px;}
+
+  :root .scene-page > .scene-sheet{background:var(--club-paper);}
+  .scene-page__intro{top:calc(var(--scene-photo-height) - 68px);}
+  .scene-page--add .scene-page__intro{top:calc(var(--scene-photo-height) - 94px);}
+  .scene-page--add .log-list{gap:4px;}
+
+  .scene-page--achievements .ach-summary-level{color:var(--energy-text);}
+  .scene-page--achievements .medal-rule{opacity:1; color:var(--steel);}
+  .cal-view-btn{min-height:44px; min-width:44px; padding:4px; color:var(--steel); font-size:12px; font-weight:700;}
+  .cal-panel[data-calendar-view="list"] .cal-grid,.cal-panel[data-calendar-view="list"] .cal-weekdays,.cal-panel[data-calendar-view="list"] .cal-legend{display:none;}
+  .history-month-list section{margin-bottom:20px;}
+
+  /* Match the existing desktop shell's 560px reading column. Its save
+     action stays in that column in both two- and three-column layouts. */
+  @media(min-width:900px){
+    #bottomNavWrap{left:max(24px,calc(50% - 420px)); right:auto; width:560px;}
+  }
+  @media(min-width:1280px){
+    body:has(.app-shell > .context-col > *) #bottomNavWrap{left:auto; right:calc((100vw - min(1376px,100vw - 40px))/2 + 272px);}
+  }
 </style>
 </head>
 <body>
@@ -2085,7 +2192,7 @@
   </div>
 </div>
 
-<div class="modal-overlay" id="notificationsOverlay" data-action="close-notifications" role="dialog" aria-modal="true" aria-labelledby="notificationsTitle">
+<div class="modal-overlay scene-page--community" id="notificationsOverlay" data-action="close-notifications" role="dialog" aria-modal="true" aria-labelledby="notificationsTitle">
   <div class="modal-sheet">
     <div class="modal-head">
       <span class="modal-title" id="notificationsTitle">מה חדש</span>
@@ -2100,14 +2207,7 @@
 <div class="modal-overlay" id="onboardingOverlay" role="dialog" aria-modal="true" aria-labelledby="onboardingTitle" style="align-items:center; padding:0 20px;">
   <div class="modal-sheet" style="border-radius:22px; border-bottom:1px solid var(--border); max-height:none;">
     <div style="padding:0 20px calc(env(safe-area-inset-bottom,0px) + 24px);">
-      <!-- Direction 06: photo-header is markup-only here (not routed through
-           photoHeaderHtml() since this whole overlay is static index.html,
-           never re-rendered by app.js) - same asset/crop/overlay rules, just
-           written by hand once. eager-loaded: this overlay's first paint IS
-           the photo, not something scrolled to. -->
-      <div class="photo-header" style="margin:0 -20px 18px; border-radius:0;">
-        <img src="./assets/photos/club-logo-wall-wide.jpeg" alt="" width="960" height="260" loading="eager">
-      </div>
+      <div class="settings-club-edge" aria-hidden="true" style="margin-bottom:18px;"></div>
       <div id="onboardingTitle" style="color:var(--chalk); font-weight:800; font-size:19px; margin-bottom:4px; text-align:center;">כמה מילים על האפליקציה</div>
       <div style="color:var(--steel); font-size:13px; margin-bottom:22px; text-align:center;">חמישה מסכים, כל אחד למטרה שלו</div>
       <div style="display:flex; flex-direction:column; gap:14px; margin-bottom:24px;">
@@ -2160,25 +2260,15 @@
   </div>
 </div>
 
-<div class="modal-overlay" id="welcomeOverlay" role="dialog" aria-modal="true" aria-labelledby="welcomeTitle" style="align-items:center; padding:0 20px;">
-  <div class="modal-sheet" style="border-radius:22px; border-bottom:1px solid var(--border); max-height:none;">
-    <!-- IMPLEMENTATION_SPEC.md §8 Onboarding: "First panel uses the
-         open-floor photo full bleed." Same mini-scene pattern as the
-         achievements/notification-center overlays (isolation:isolate is
-         required, not optional - a z-index:-3 media div escapes behind the
-         modal's own opaque surface without it, found live on achievements
-         first). Title moves onto the photo, white-on-scrim, matching every
-         other scene's title treatment instead of the plain dark text this
-         card used before. -->
-    <div style="position:relative; isolation:isolate; margin:0 0 18px; height:200px; overflow:hidden; border-radius:22px 22px 0 0;">
-      <div class="scene-page__media" style="height:200px; background-image:url('./assets/club-photos/history-open-floor.jpg'); background-position:44% 20%;" aria-hidden="true"></div>
-      <div class="scene-page__scrim" aria-hidden="true"></div>
-      <div style="position:absolute; inset-inline:20px; inset-block-end:14px; text-align:start; color:#fff; text-shadow:0 2px 12px rgba(0,0,0,.5);">
-        <div style="font-size:12px; font-weight:700; opacity:.85; margin-bottom:4px;">האימוניה</div>
-        <h2 id="welcomeTitle" style="font-family:'Secular One','Rubik',sans-serif; font-weight:400; font-size:26px; margin:0;">ברוכים הבאים!</h2>
-      </div>
+<div class="modal-overlay" id="welcomeOverlay" role="dialog" aria-modal="true" aria-labelledby="welcomeTitle" style="align-items:stretch; padding:0;">
+  <div class="modal-sheet scene-page scene-page--history welcome-scene">
+    <div class="scene-page__media" aria-hidden="true"></div>
+    <div class="scene-page__scrim" aria-hidden="true"></div>
+    <div class="scene-page__intro">
+      <h2 id="welcomeTitle" class="scene-page__title">ברוכים הבאים!</h2>
+      <p class="scene-page__subtitle">מתעדים אימונים שהושלמו, רואים התקדמות ונשארים מחוברים.</p>
     </div>
-    <div style="padding:0 20px calc(env(safe-area-inset-bottom,0px) + 24px); text-align:center;">
+    <div class="scene-sheet" style="text-align:center;">
       <div id="welcomeSubtitle" style="color:var(--steel); font-size:13px; margin-bottom:18px;">איך נקרא לך?</div>
       <input id="welcomeNameInput" class="text-input" dir="auto" maxlength="80" autocomplete="off" placeholder="השם שלך" aria-labelledby="welcomeSubtitle" style="margin-bottom:16px; text-align:center;" />
       <div style="color:var(--steel); font-size:12px; margin-bottom:6px;" id="welcomeBoxStartLabel">מתי התחלתם להתאמן בבוקס? (לא חובה — פותח את עיטורי הוותק)</div>

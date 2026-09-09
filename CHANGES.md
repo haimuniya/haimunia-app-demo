@@ -407,6 +407,53 @@ Final regression after all of the above: `npm test` 1511/1511,
 `run-all.mjs` 35/35 browser-check scenarios, `a11y-axe-scan.mjs` clean in
 both themes.
 
+## Two bugs found from live use, after the ledger was already delivered
+
+**1. Switching tabs jumped/snapped the page.** `data-action="switch-tab"`
+never reset scroll (`app.js`, the click delegator's `switch-tab` /
+`switch-tab-community-sub` branches) — invisible before this redesign, when
+every tab was roughly the same height, but scene pages vary wildly (a
+scrolled-down Progress list vs. a short Add page), so the browser visibly
+snapping the old scroll offset onto much shorter/taller new content read as
+a jump. Fixed: both branches now call `window.scrollTo(0, 0)` after
+rendering. Keyboard tablist navigation (`ArrowLeft/Right`, arrow-key roving
+tabindex) routes through `next.click()` into the same delegator, so it's
+covered by the same fix without a separate change.
+
+**2. Scene sheets were stuck in one tone regardless of the device's theme**
+— reported directly: "dark theme, [workout] summary is white." The sheet
+tone (`.scene-sheet--paper` cream / `.scene-sheet--navy` dark) was built
+deliberately theme-independent, reasoned from `design-reference.jpg`
+showing Add as fixed cream and History/Progress as fixed navy in its own
+screenshots — but that is exactly the "no page stuck in one theme" behavior
+`CLAUDE.md`'s own non-negotiables forbid, and in practice meant a member
+using dark theme hit a blinding white card on the screen they use most.
+Fixed: collapsed `--paper`/`--navy` into one `.scene-sheet` that follows the
+device's real theme like every other themed surface — light theme reuses
+the same (already contrast-tuned) light values the "paper" tone had, dark
+theme reuses the same dark values the "navy" tone had, so no new palette
+was introduced, only which one applies. Removed the now-dead `sheetTone`
+field from `PAGE_SCENES` (it was never actually read to build a class name
+— the 5 render call sites had the tone hardcoded independently).
+
+This is the first time Calendar/Progress/Community render in light theme
+and Add/Library render in dark theme — a genuinely new combination, so it
+was axe-checked explicitly rather than assumed safe by inheritance. Found
+one real pre-existing bug this exposed: `renderVolumeReport()`'s
+`.report-flag` badge (last-trained-this-category chip) used a fixed `.15`
+opacity tint behind `--red-text`/`--green-text`, tuned only against the
+navy surface Calendar always had before. Measured against the real token
+values: the light-theme red state was 4.456:1 (just under AA), and the
+dark-theme green state was 4.505:1 (technically passing, no real margin).
+Dropped the tint to `.10` for all three flag states — 4.78/4.81 in the two
+failing/marginal cases, improved everywhere else, verified against both
+themes' actual hex values before shipping, not assumed.
+
+Re-verified after both fixes: `npm test` 1511/1511, `a11y-axe-scan.mjs`
+clean (dark, the default theme), plus a targeted light-theme axe pass
+across Add/Calendar/Progress/WOD (the combinations that had never
+rendered in light theme before this fix) — all clean.
+
 
 
 Independent items that landed the same day as the Phase 3 merge gate, batched
@@ -2116,3 +2163,32 @@ persisted, the picker crashed on every load until "clear all data".
 - Added setup, privacy, terms, and CI documentation. The Community tab remains
   in safe setup mode until `cloud-config.js` contains a project URL and public
   publishable key.
+
+## 2026-09-09 — immersive reference reimplementation, audit and pass 1
+
+Authority: external haimunia-claude-handoff/CLAUDE.md, IMPLEMENTATION_SPEC.md,
+SCREEN_ACCEPTANCE.md, PHOTO_MAP.md, ALL_PHOTOS_MANIFEST.md, VISUAL_QA_PROTOCOL.md,
+and design-reference.jpg. No applicable AGENTS.md exists in workspace/handoff/parents.
+Existing dirty app.js, cloud.js, index.html and CHANGES.md are retained.
+Route inventory: renderLogTab/add; renderCalendarTab/calendar (History);
+renderHistoryTab/history (Progress); renderWodTab/wod; cloud.js/community.
+Achievements, notifications, settings and welcome are existing modal render paths.
+Preserve all delegated actions and IDs, cloud/storage logic, theme initialization and CSP.
+Photo aliases already exist locally; source originals remain in external handoff.
+
+Baseline actual Chromium screenshots: /tmp/immersive-qa/before/{add,calendar,history}-{light,dark}-{390,430}.png.
+Baseline measurements: Add/History/Progress sheet 42.10% at 390 and 42.28% at 430;
+36px titles; 68px nav; no document overflow. Media ends at 371/410px while pages
+extend 954–1841px, violating full-page media. Five nav destinations instead of four.
+Negative sheet margin reduces effective inner padding to 2/4px; target 17.94/19.78px.
+Add subtitle is occluded by sheet. Calendar nests a blue bordered panel inside sheet.
+Progress sheet must move to 38%; target 36–40%. These are failing baseline results.
+
+
+## Final QA ledger — 2026-09-09
+
+Three correction passes were completed for Add, History/Calendar and Progress at 390x844 and 430x932. Screenshots and measured geometry are in `docs/visual-qa/immersive/final/`; isolated HEAD baseline capture is in `before-head/` (the existing dirty-tree baseline is in `before/`). Final scene measurements: Add sheet 42.0% (390), 42.3% (430); History/Calendar 40.0% / 40.2%; Progress 38.0% / 38.2%; title 34px; 17.94–24px sheet padding; mobile bottom nav 68px; photo media touches all scene edges and continues under the sheet; no horizontal overflow.
+
+Final verification: `scripts/visual-qa/verify.mjs` — 72 cases, 0 axe issue groups, 0 overflow cases; `scripts/visual-qa/community.mjs` — 8 populated Community/Notifications cases, 0 axe issues; isolated `community-render-cost.mjs` — 5.5ms at 4x; `npm test` — 1512/1512; `npm run check-version` and `npm run check-vendor-version` pass; `test/calendar-view-mode.test.mjs` and `scripts/browser-check/duration.mjs` pass. Full sequential run logs are in `docs/visual-qa/immersive/logs/`.
+
+Deliberate differences: the production app keeps its existing fixed IDs and delegated save bar, so Add’s `שמירת אימון` label is written into the existing `#saveBtnLabel`; desktop retains the existing sidebar/context semantics; Settings and dense dialogs remain solid reading surfaces while their scene edge treatment uses local club photography.

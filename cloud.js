@@ -1556,7 +1556,7 @@
     const dots = INTRO_CAROUSEL_STEPS.map((_, i) => `<span style="display:inline-block;height:8px;width:${i === stepIdx ? "22px" : "8px"};border-radius:4px;background:${i === stepIdx ? "var(--brass)" : "var(--border)"};transition:width .2s;"></span>`).join(" ");
     return `<div class="chart-card" data-intro-carousel="1" data-intro-step="${step}" style="text-align:center;padding:0;overflow:hidden;">
       <div style="padding:16px 16px 0;text-align:start;">${renderJoinProgress(2)}</div>
-      ${window.photoHeaderHtml("assets/photos/club-logo-wall-wide.jpeg", "")}
+
       <div style="padding:0 16px 16px;">
       <div style="display:flex;justify-content:center;gap:6px;margin-bottom:16px;">${dots}</div>
       <div style="font-weight:800;font-size:20px;margin-bottom:10px;">${esc(introStepTitle(step))}</div>
@@ -16005,8 +16005,8 @@
     // spec explicitly says is fine here. Same isolation:isolate fix the
     // achievements mini-scene needed (z-index:-3 media otherwise escapes
     // behind the modal's own opaque background).
-    const headerStrip = `<div style="position:relative; isolation:isolate; margin:-18px -18px 14px; height:100px; overflow:hidden;">
-      <div class="scene-page__media" style="height:100px; background-image:url('assets/club-photos/community-logo-wall.jpg');" aria-hidden="true"></div>
+    const headerStrip = `<div class="scene-page--community" style="position:relative; isolation:isolate; margin:-18px -18px 14px; height:100px; overflow:hidden;">
+      <div class="scene-page__media" style="height:100px;" aria-hidden="true"></div>
       <div class="scene-page__scrim" aria-hidden="true"></div>
     </div>`;
     return `<div class="modal-overlay open" role="dialog" aria-modal="true" aria-labelledby="notifCenterTitle" data-notif-center data-cloud-dialog="notifCenter" style="align-items:flex-start;padding:20px 12px;">
@@ -16530,7 +16530,7 @@
       // to happen at all. The real fix is app.js's, and is reported there.
       if (!state.signupStarted && state.ui.gateView !== "login") {
         return `<div class="chart-card" style="padding:0;overflow:hidden;">
-          ${window.photoHeaderHtml("assets/photos/club-logo-wall-wide.jpeg", "", { eager: true })}
+
           <div style="padding:16px;">
           <div style="font-weight:800;font-size:20px;margin-bottom:8px;">קהילת המועדון</div>
           <div style="color:var(--chalk);font-size:15px;line-height:1.5;margin-bottom:12px;">${bidiText("כאן רואים מה קורה במועדון: אימונים ושיאים של חברי המועדון, הודעות מהמאמנים ולוחות תוצאות.")}</div>
@@ -17104,7 +17104,7 @@
         <div class="scene-page__brand">האימוניה</div>
         <h1 id="pageTitle-community" class="scene-page__title">קהילה</h1>
       </div>
-      <div class="scene-sheet scene-sheet--navy">`
+      <div class="scene-sheet">`
       + tabBar
       // Anchored to the viewport, not the document - see setMessage().
       // pointer-events:none so a toast can never swallow a tap meant for the
