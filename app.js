@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.15.8";
+const APP_VERSION = "4.15.9";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -3560,20 +3560,6 @@ function renderLogTab() {
   // "green completion mark, short subtitle" in the photo zone) - computed
   // here rather than duplicated, since dayEntries is already built above.
   const hasLoggedToday = dayEntries.length > 0;
-  // The four summary metrics IMPLEMENTATION_SPEC.md §8 asks for
-  // (exercises/volume/duration/PRs), computed for TODAY's real logged
-  // entries - not fabricated, not a re-labelling of the per-exercise
-  // est-1RM/last-session stats already on this screen (those answer a
-  // different question - "what did I do on this movement before" - and
-  // stay put; this answers "what did I just finish"). Duration is real
-  // session span (last set's timestamp minus first's), not a guess - null
-  // when there's only one set logged so far, since a span needs two points.
-  const dayExerciseCount = new Set(dayEntries.map((e) => e.exerciseId)).size;
-  const dayVolume = dayEntries.reduce((sum, e) => sum + (e.type === "duration" ? 0 : (e.weight || 0) * (e.reps || 0) * (e.sets || 1)), 0);
-  // Set-entry timestamps record when the member typed, not workout length.
-  // Keep the metric honest until a real session-duration field exists.
-  const dayDurationMin = null;
-  const dayPRCount = dayEntries.filter((e) => e.isPR).length;
   return `
     <section class="scene-page ${PAGE_SCENES.add.className}" aria-labelledby="pageTitle-add">
       <div class="scene-page__media" aria-hidden="true"></div>
@@ -3594,13 +3580,6 @@ function renderLogTab() {
 
     <div class="scene-summary-meta"><bdi>${esc(fmtDate(logDate))}</bdi></div>
 
-    ${hasLoggedToday ? `
-    <div class="stat-row" style="margin-bottom:16px;" aria-label="סיכום האימון היום">
-      <div class="stat-card"><div class="stat-value mono" style="font-size:20px;">${dayExerciseCount}</div><div class="stat-label">תרגילים</div></div>
-      <div class="stat-card"><div class="stat-value mono" style="font-size:20px;">${dayVolume ? Math.round(dayVolume).toLocaleString("he-IL") : "—"}</div><div class="stat-label">ק"ג נפח</div></div>
-      <div class="stat-card"><div class="stat-value mono" style="font-size:20px;">${dayDurationMin != null ? dayDurationMin : "—"}</div><div class="stat-label">דק'</div></div>
-      <div class="stat-card ${dayPRCount ? "stat-hero" : ""}"><div class="stat-value mono" style="font-size:20px; ${dayPRCount ? "color:var(--brass);" : ""}">${dayPRCount}</div><div class="stat-label">שיאים חדשים</div></div>
-    </div>` : ""}
     ${dayEntries.length === 0 ? `
     <div class="day-empty">${ICONS.emptyDay}<span>${isToday ? "עדיין לא נרשמו סטים היום. כאן מתעדים את האימון שהושלם." : `עדיין לא נרשמו סטים ב-${esc(dayLabel)}.`}</span></div>` : `
     <div class="section-label">${isToday ? "סיכום האימון" : `סיכום ${esc(dayLabel)}`}</div>

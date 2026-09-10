@@ -1,3 +1,21 @@
+## The 4-stat summary row is deleted, not conditional — 2026-09-10
+
+The previous pass made it show only when `hasLoggedToday` - reported
+back directly: "The circled in red still there, I don't want it at all.
+Remove delete." Making it conditional was the wrong level of fix; removed
+the block entirely from `renderLogTab()` instead, regardless of state.
+Also removed what it leaves behind rather than leaving it half-cleaned:
+`dayExerciseCount`/`dayVolume`/`dayDurationMin`/`dayPRCount` (computed
+only to feed the row, now unused) and the three
+`.scene-page--add .stat-row[aria-label]` CSS rules (including the
+`max-width:320px` narrow-phone override) that styled markup which no
+longer exists.
+
+Verified: `npm test` 1512/1512, `run-all.mjs` 35/35, `a11y-axe-scan.mjs`
+clean, confirmed via DOM query that `.stat-row[aria-label]` is absent
+both before AND after logging a set (the previous pass's conditional
+only checked the "before" case). `APP_VERSION` bumped to `4.15.9`.
+
 ## Fifth jump report was a real, different bug — plus a corrected fix and two more from a marked-up screenshot — 2026-09-10
 
 **The actual "box jumps" cause.** Not a page-scroll issue at all this time
