@@ -188,6 +188,52 @@ select is(
 delete from public.coach_engagement_flags where user_id = tests.uid('coach');
 delete from public.notifications where type = 'engagement_decline_flagged';
 
+-- 202609100004 burst guard. "What's next" research: engagement_alerts
+-- disabled for a while (the admin toggle this feature shipped specifically
+-- so an owner could turn it off) and re-enabled accumulates un-notified
+-- flags silently - re-enabling must not dump N separate immediate pings
+-- per recipient for N simultaneously-due flags. Three flags at once, on
+-- three different members (m2, m3, and the coach themselves - deliberately
+-- including a self-flagged recipient so the per-recipient count and the
+-- self-exclusion rule both have to hold at the same time).
+insert into public.coach_engagement_flags (user_id, level, baseline_sessions_per_week, recent_sessions_per_week)
+values
+  (tests.uid('m2'), 'significant', 3.0, 1.0),
+  (tests.uid('m3'), 'inactive', 2.5, 0),
+  (tests.uid('coach'), 'mild', 3.0, 1.8);
+select is(tests.run_engagement_notify_job(), 3, 'three simultaneous flags still fire exactly one notification per recipient (coach, admin, owner) - nine individual pings collapsed to three');
+select is(
+  (select count(*)::int from public.notifications n join public.profiles p on p.id = n.user_id
+   where n.type = 'engagement_decline_flagged' and p.handle = 'coach_x'), 1,
+  'the coach gets exactly one notification, not three');
+select is(
+  (select title from public.notifications n join public.profiles p on p.id = n.user_id
+   where n.type = 'engagement_decline_flagged' and p.handle = 'coach_x'),
+  '2 חברים עשויים להתרחק',
+  'the coach''s single notification counts only the 2 flags that apply to them (m2, m3) - their own flag is excluded from their own count too, same self-notify rule as before');
+select is(
+  (select title from public.notifications n join public.profiles p on p.id = n.user_id
+   where n.type = 'engagement_decline_flagged' and p.handle = 'admin_x'),
+  '3 חברים עשויים להתרחק',
+  'admin has no flag of their own to exclude, so their count is the full 3');
+select is(
+  (select title from public.notifications n join public.profiles p on p.id = n.user_id
+   where n.type = 'engagement_decline_flagged' and p.handle = 'owner_x'),
+  '3 חברים עשויים להתרחק',
+  'and so does owner');
+select ok(
+  not exists (
+    select 1 from public.notifications
+    where type = 'engagement_decline_flagged'
+      and (title ~ '(Member|member_[bc])' or body ~ '(Member|member_[bc])')
+  ),
+  'the consolidated burst notification still carries no member name or handle, same as the single-flag case');
+select is(
+  (select count(*)::int from public.coach_engagement_flags where status = 'open' and notified_at is null), 0,
+  'all three flags are stamped notified_at after the burst run, not just the first one processed');
+delete from public.coach_engagement_flags where user_id in (tests.uid('m2'), tests.uid('m3'), tests.uid('coach'));
+delete from public.notifications where type = 'engagement_decline_flagged';
+
 -- =====================================================================
 -- 3. The toggles exist and are on by default (what the owner asked for)
 -- =====================================================================

@@ -1,3 +1,44 @@
+## Closed the last flagged-but-unfixed item: an engagement-alert burst guard — 2026-09-10
+
+Asked to fix everything still open. The one remaining item from this session's research
+passes: `coach_notify_engagement_flags()` fans out one immediate notification per (flag ×
+recipient) pair. Production had zero open flags when this was first flagged, so the very
+first real run was a non-event - but the underlying shape stays a real risk going forward:
+`coach_detect_engagement_decline()` runs daily regardless of whether anyone's listening,
+so any stretch with `engagement_alerts` disabled (the admin toggle this feature shipped
+specifically so an owner could turn it off) silently accumulates un-notified flags, and
+re-enabling it would dump the whole backlog as N separate pings in one run.
+
+Considered and rejected reusing the generic cross-type `notification_batches`/
+`notif_queue_batched()` mechanism (`reaction`/`comment_also`/`feed_activity` already use
+it): it pools by (user, category), and this type shares category `community` with casual
+social batched types - mixing "a member may be drifting away, a human should reach out"
+into the same rolled-up digest as reaction counts would bury exactly the thing meant to
+stand out. Built a narrower fix instead: per run, per recipient, count how many due flags
+actually apply to *them* (after the self-exclusion fix from earlier today) - exactly one
+gets today's specific per-flag wording and deep link, unchanged; more than one gets ONE
+consolidated notification naming the count ("3 חברים עשויים להתרחק"), never N separate
+pings. The everyday case (flags trickle in roughly one per day, matching the detection
+job's own cadence) is untouched; only a genuine burst is affected. Also added
+`serverTitle: true` to the client's `engagement_decline_flagged` entry - the server now
+sends a genuinely different title for the single-vs-many case, and without that flag the
+client's static string would have silently overridden it.
+
+Caught one real bug while building this: the first draft tried `max(uuid)` to find a
+representative `club_id` across several flags - Postgres has no such aggregate. Simplified
+to `default_club_id()` directly, matching this schema's own established single-club
+architecture rather than aggregating something that never varies anyway.
+
+New pgTAP scenario proves the burst case directly: three simultaneous flags (including one
+on the coach themselves, to exercise the count-per-recipient logic and the self-exclusion
+rule at the same time) produce exactly one notification per recipient, with each
+recipient's count independently correct (2 for the self-flagged coach, 3 for admin and
+owner) - not nine separate pings.
+
+Verified: `supabase test db` 95/95 files (3299 tests), `check-migration-immutability`
+clean, full JS suite 1515/1515, full browser-check 35/35. Pushed to GitHub main and
+applied to the live Supabase production project.
+
 ## Button/interaction consistency pass — 2026-09-10
 
 Asked to check that every button/interactive element is polished and clean, app-wide.

@@ -15297,7 +15297,13 @@
     // practice (only ever created for mod_alert_recipients()), same
     // audience as new_report.
     streak_at_risk:             { category: "training",  mode: "immediate", pref: "streak_at_risk",             icon: "🔥", title: "הרצף שלך בסכנה" },
-    engagement_decline_flagged: { category: "community", mode: "immediate", pref: "engagement_decline_flagged", icon: "📉", title: "חבר/ה עשוי/ה להתרחק" },
+    // serverTitle: true (burst guard, 202609100004) - coach_notify_
+    // engagement_flags() now sends a genuinely different title depending
+    // on whether one flag or several apply to a given recipient ("חבר/ה
+    // עשוי/ה להתרחק" vs. "N חברים עשויים להתרחק"), so unlike every other
+    // non-serverTitle type here, the server's real string has to win -
+    // same reason `announcement` above is the one other exception.
+    engagement_decline_flagged: { category: "community", mode: "immediate", pref: "engagement_decline_flagged", serverTitle: true, icon: "📉", title: "חבר/ה עשוי/ה להתרחק" },
   };
   function notifTypeDef(type) { return NOTIF_TYPES[type] || null; }
 
