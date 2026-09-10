@@ -3,9 +3,12 @@
 // same pattern as featureFlags.coachEngage - see community-coach-tools.test.mjs).
 //
 // WHAT THIS FILE VERIFIES
-// - The flag stays off by default: Push renders "בקרוב"-disabled and no
-//   browser Push API call happens, even when the browser would support it -
-//   this is what "default off in production" actually means client-side.
+// - The flag stays off by default: the push option does not render on the
+//   preferences panel at all (real device feedback: a disabled "בקרוב"
+//   button used to sit there, unbalancing the row next to in_app/off -
+//   omitted entirely now, not just visually de-emphasized) and no browser
+//   Push API call happens, even when the browser would support it - this
+//   is what "default off in production" actually means client-side.
 // - With the flag on and the browser supporting push: choosing Push for a
 //   type triggers Notification.requestPermission, then
 //   pushManager.subscribe with the VAPID applicationServerKey, then a
@@ -99,20 +102,18 @@ function stubIOSNonStandalone(window) {
 
 // ===== the flag stays off by default ==================================
 
-test("with the flag off (V1 default), Push stays disabled even on a browser that supports it, and no Push API call is ever made", async () => {
+test("with the flag off (V1 default), the push option does not render at all - real device feedback: a disabled 'בקרוב' button unbalanced the row next to in_app/off", async () => {
   const mock = seeded();
   const window = await bootCommunity(mock, { syncEnabled: false });
   stubPushApis(window);
   await openAccount(window);
 
   const push = window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_on_post"][data-channel="push"]');
-  assert.ok(push.disabled, "Push is disabled while the flag is off");
-  assert.match(window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_on_post"]').closest(".log-row").textContent, /בקרוב/);
-
-  push.click();
-  await new Promise((r) => setTimeout(r, 30));
-  assert.equal(mock.db.push_subscriptions.length, 0, "no subscription is written while the flag is off");
-  assert.equal(mock.db.notification_preferences.length, 0, "no preference is written by a disabled control");
+  assert.equal(push, null, "no push button in the DOM at all while the flag is off - not merely disabled");
+  const row = window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_on_post"]').closest(".log-row");
+  assert.doesNotMatch(row.textContent, /בקרוב|דחיפה/, "no push mention anywhere on the row");
+  assert.equal(mock.db.push_subscriptions.length, 0, "no subscription exists while the flag is off");
+  assert.equal(mock.db.notification_preferences.length, 0, "nothing was written");
 });
 
 // ===== flag on, happy path =============================================

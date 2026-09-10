@@ -404,9 +404,13 @@ test("the Account panel lists every type with Push (disabled), In-app and Off", 
   assert.ok(!types.has("new_report"), "the moderator-only type is not shown to a plain member");
   assert.ok(!types.has("engagement_decline_flagged"), "the staff-only engagement alert type is not shown to a plain member");
 
+  // Real device feedback: a disabled push button ("התראת דחיפה · בקרוב")
+  // used to still render in V1, unbalancing the row next to in_app/off -
+  // the option is omitted entirely now while the flag is off, not merely
+  // disabled. See test/community-web-push.test.mjs for the dedicated
+  // coverage of this and the flag-on case.
   const push = window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_on_post"][data-channel="push"]');
-  assert.ok(push.disabled, "Push is disabled in V1");
-  assert.equal(push.getAttribute("aria-disabled"), "true");
+  assert.equal(push, null, "push is not offered at all in V1, not just disabled");
   const inApp = window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_on_post"][data-channel="in_app"]');
   assert.ok(!inApp.disabled, "In-app works");
   assert.ok(inApp.className.includes("selected"), "the default selection is In-app");
@@ -502,17 +506,22 @@ test("the announcements row states plainly that important/urgent still reach a m
 
 // ===== push path is feature-flagged off ==============================
 
-test("no push subscription is created and push stays disabled in V1", async () => {
+test("no push subscription is created and push offers no control at all in V1", async () => {
   const mock = seeded([notif(1)]);
   const seenTables = [];
   const realFrom = mock.client.from.bind(mock.client);
   mock.client.from = (table) => { seenTables.push(table); return realFrom(table); };
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openAccount(window);
-  window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_on_post"][data-channel="push"]').click();
+  // Real device feedback: this used to click a disabled push button - now
+  // there is no button to click at all while the flag is off (see
+  // community-web-push.test.mjs for the dedicated coverage of both states).
+  assert.equal(
+    window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_on_post"][data-channel="push"]'), null,
+    "no push control exists in the DOM in V1");
   await new Promise((r) => setTimeout(r, 40));
   assert.ok(!seenTables.includes("push_subscriptions"), "nothing writes push_subscriptions in V1");
-  assert.equal(mock.db.notification_preferences.length, 0, "a disabled Push control writes nothing");
+  assert.equal(mock.db.notification_preferences.length, 0, "nothing was written");
 });
 
 // ===== Launch-readiness fix 1: new_report / monthly_club_recap registered ==

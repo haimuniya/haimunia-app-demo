@@ -8844,6 +8844,32 @@
   // rarer option. The disclosure opens itself when the ACTIVE filter is one
   // of the hidden ones, so a selected chip is never invisible.
   const AUDIT_COMMON_TYPES = ["report_review", "content_delete", "member_restrict", "role_change"];
+  // Real device feedback: the audit log used to render one full row per
+  // admin_actions record, so a genuinely repeated action on the same
+  // target (a coach toggling one shared code's status several times while
+  // testing, say) painted the whole screen with near-identical rows -
+  // same action label, same target, same actor, same relative-time
+  // bucket, nothing to tell them apart at a glance. Rows already arrive
+  // ordered by created_at desc (admin_actions_page's own ORDER BY), so a
+  // single linear pass collapses a CONSECUTIVE run of the exact same
+  // (action_type, target_type, target_id, admin_id) into one entry with a
+  // count - genuinely different targets, actors or action types never
+  // merge, only true repeats do. The collapsed entry keeps the most
+  // recent row's timestamp (relativeTime of the newest occurrence) since
+  // that is what "how long ago did this last happen" actually means.
+  function groupConsecutiveAuditActions(rows) {
+    const groups = [];
+    for (const a of rows) {
+      const last = groups[groups.length - 1];
+      if (last && last.action_type === a.action_type && last.target_type === a.target_type
+          && last.target_id === a.target_id && last.admin_id === a.admin_id) {
+        last.count++;
+      } else {
+        groups.push({ action_type: a.action_type, target_type: a.target_type, target_id: a.target_id, admin_id: a.admin_id, created_at: a.created_at, count: 1 });
+      }
+    }
+    return groups;
+  }
   function renderAuditLog() {
     if (!hasPerm(PERM.ANALYTICS_VIEW)) return "";
     const selected = state.admin.auditFilters.action_type;
@@ -8865,8 +8891,9 @@
     } else if (!state.admin.auditLog.length) {
       body = `<div class="empty">עדיין לא נרשמו פעולות ניהול.</div>`;
     } else {
-      body = `<div class="log-list">${state.admin.auditLog.map((a) => `<div class="log-row" style="flex-direction:column;align-items:flex-start;gap:3px;">
-        <div style="font-weight:700;">${esc(auditActionLabel(a.action_type))} · ${esc(auditTargetLabel(a.target_type))}</div>
+      const grouped = groupConsecutiveAuditActions(state.admin.auditLog);
+      body = `<div class="log-list">${grouped.map((a) => `<div class="log-row" style="flex-direction:column;align-items:flex-start;gap:3px;">
+        <div style="font-weight:700;">${esc(auditActionLabel(a.action_type))} · ${esc(auditTargetLabel(a.target_type))}${a.count > 1 ? ` <span class="mono" style="color:var(--steel);font-weight:400;">× ${a.count}</span>` : ""}</div>
         <div style="color:var(--steel);font-size:11px;">מנהל/ת ${esc(String(a.admin_id || "").slice(0, 8))} · ${relativeTime(a.created_at)}</div>
       </div>`).join("")}</div>${state.admin.auditEnd ? "" : `<div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="audit-more"${state.admin.auditLoading ? " disabled" : ""}>${state.admin.auditLoading ? "טוען…" : "טעינת עוד"}</button></div>`}`;
     }
@@ -16153,15 +16180,27 @@
   // COMM-144/229. The Preferences panel, rendered in the Account tab.
   function renderNotifPrefsPanel() {
     // COMM-229. pushOn mirrors the state.featureFlags.notifPush check every
-    // other push code path uses; pushReason is null when push can actually
-    // be offered right now, "בקרוב" when the flag itself is off (the V1
-    // default - unchanged copy/behavior from before this ticket), and a
-    // real Hebrew explanation (unsupported browser, or iOS Safari without
-    // an installed PWA) when the flag is on but this browser can't do it -
-    // rendered as visible text, not just a title, so it is never a
-    // silent failed prompt.
+    // other push code path uses.
+    //
+    // Real device feedback: while the flag is off (V1 default, today),
+    // the push button used to still render - disabled, labelled "התראת
+    // דחיפה · בקרוב" - and that one long, non-functional label was roughly
+    // 3x the width of "באפליקציה"/"כבוי" beside it, unbalancing every row
+    // on the panel. The push OPTION itself is now omitted entirely while
+    // the flag is off, not just visually de-emphasized: two buttons
+    // (in_app/off), not three, and no "coming soon" mention anywhere on
+    // the panel. THE SUBSCRIBE/REVOKE/DEEP-LINK MACHINERY BELOW THIS
+    // FUNCTION IS UNTOUCHED - notifPushEnabled(), notifPushUnsupportedReason(),
+    // registerPushSubscription, disableNotifPush, sw.js's push/
+    // notificationclick handlers, communityHandlePushDeepLink - all of it
+    // stays exactly as built and exactly as tested. The moment
+    // state.featureFlags.notifPush is ever flipped on, this function's
+    // `pushOn` branch below renders the full three-button row again,
+    // badge/revoke-control/browser-unsupported-explanation included,
+    // unchanged from before this pass - nothing here is a deletion of
+    // that engineering, only of a button with nothing behind it yet.
     const pushOn = notifPushEnabled();
-    const pushReason = pushOn ? notifPushUnsupportedReason() : "בקרוב";
+    const pushReason = pushOn ? notifPushUnsupportedReason() : null;
     const pushDisabled = !!pushReason;
     const rowFor = (t) => {
       const stored = state.notif.prefs[t.key] || "in_app";
@@ -16177,15 +16216,16 @@
       // other channel, per the ticket's own wording.
       const pushBadge = (pushOn && eff === "push" && state.notif.pushSub)
         ? `<span style="color:var(--green);font-size:11px;">פעיל</span>` : "";
-      // Explanatory text, visible (not just a tooltip), only when the flag
-      // is on but this browser genuinely cannot do push right now.
-      const explainHtml = (pushOn && pushDisabled)
+      // Only reachable once pushOn is true (a browser-unsupported reason
+      // cannot exist while the flag itself is off) - the V1-default "בקרוב"
+      // case that used to live here has no button to explain any more.
+      const explainHtml = pushDisabled
         ? `<span style="color:var(--steel);font-size:11px;">${esc(pushReason)}</span>` : "";
       return `<div class="log-row" style="flex-direction:column;align-items:stretch;gap:6px;">
         <span style="font-size:13px;">${esc(t.label)}</span>
         ${noteHtml}
         <div class="chip-row" role="group" aria-label="${esc(t.label)}" style="margin-top:0;">
-          ${btn("push", pushOn ? "התראת דחיפה" : "התראת דחיפה · בקרוב", pushDisabled, pushDisabled ? pushReason : null)}
+          ${pushOn ? btn("push", "התראת דחיפה", pushDisabled, pushDisabled ? pushReason : null) : ""}
           ${pushBadge}
           ${btn("in_app", "באפליקציה", false)}
           ${btn("off", "כבוי", false)}
@@ -16210,9 +16250,11 @@
     const deviceStatusHtml = (pushOn && state.notif.pushSub)
       ? `<div class="chip-row" style="margin-top:0;margin-bottom:8px;align-items:center;"><span style="font-size:12px;color:var(--steel);">התראות דחיפה פעילות במכשיר זה.</span><button type="button" class="link-btn" data-community-action="notif-push-disable">כיבוי במכשיר זה</button></div>`
       : "";
-    const introHtml = pushOn
-      ? "בחרו איך כל סוג התראה מגיע אליכם. הודעות תפעוליות מהמועדון תמיד יופיעו כאן, גם אם כיביתם אותן."
-      : "בחרו איך כל סוג התראה מגיע אליכם. התראות דחיפה יגיעו בגרסה הבאה. הודעות תפעוליות מהמועדון תמיד יופיעו כאן, גם אם כיביתם אותן.";
+    // The "push is coming in a future version" sentence only makes sense
+    // next to a push option a member can actually see - with the flag off
+    // (V1 default) there is no such option on this panel any more, so the
+    // copy no longer promises one.
+    const introHtml = "בחרו איך כל סוג התראה מגיע אליכם. הודעות תפעוליות מהמועדון תמיד יופיעו כאן, גם אם כיביתם אותן.";
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--brass)", "העדפות התראות")}
       <div style="color:var(--steel);font-size:12px;line-height:1.6;margin-bottom:8px;">${introHtml}</div>
       ${deviceStatusHtml}

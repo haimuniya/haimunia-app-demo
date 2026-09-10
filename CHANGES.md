@@ -1,3 +1,43 @@
+## Real device feedback, two visual fixes — 2026-09-10
+
+Five screenshots from the actual production app on a phone, with three complaints:
+no toggle for every feature, the audit log takes over the whole screen, and some text
+sits out of place. Two of the three had concrete, fixable causes; the third (a specific
+missing toggle on the club-modules panel) needs the member to point at the exact
+feature - the panel already renders all eight `CLUB_MODULE_TOGGLES` entries, so nothing
+was silently dropped from it.
+
+- **The notification-preferences push button was disabled and unlabeled to nothing
+  ("התראת דחיפה · בקרוב")** but still rendered at roughly 3x the width of its
+  `in_app`/`off` siblings, unbalancing every row on the panel - the exact "text getting
+  not in place" screenshot. `state.featureFlags.notifPush` is off by default in V1 and
+  the button did nothing while off, so `renderNotifPrefsPanel()` now omits the push
+  option from the DOM entirely while the flag is off, rather than rendering it disabled.
+  The subscribe/revoke/deep-link machinery underneath - `notifPushEnabled()`,
+  `registerPushSubscription`, `disableNotifPush`, sw.js's push/notificationclick
+  handlers, `communityHandlePushDeepLink` - is untouched and still fully covered by
+  `test/community-web-push.test.mjs`'s flag-on tests; the moment the flag flips on, the
+  same three-button row (push/in_app/off) renders again unchanged.
+- **The admin audit log rendered one full row per `admin_actions` record**, so a
+  genuinely repeated action on one target (a coach toggling one shared code's status
+  several times, say) painted the whole screen with near-identical rows - same label,
+  same target, same actor, nothing to tell them apart at a glance. A new
+  `groupConsecutiveAuditActions()` collapses a CONSECUTIVE run of the exact same
+  `(action_type, target_type, target_id, admin_id)` - rows already arrive newest-first
+  from `admin_actions_page()` - into one row carrying a "× N" count and the most recent
+  occurrence's timestamp. A genuinely different action, target or actor interleaved
+  between two otherwise-identical rows is never merged into either neighbor.
+
+Verified before shipping, not assumed: full JS suite 1527/1527 (one new test seeds a
+genuine 3-in-a-row repeat, a different action on the same target, and the same action
+on a different target in one seed, proving the grouping neither over- nor
+under-collapses; two existing push-preference tests updated from "renders disabled" to
+"absent from the DOM"), full browser-check 34/35 (`community-person-invite-lifecycle.mjs`
+reconfirmed flaky under `run-all.mjs`'s parallel load, not a regression - passed 3/3 on
+its own), and a direct visual check (real Chromium) of the notification panel with no
+push button/mention and the audit log collapsing 9 seeded rows to 4 with correct "× 3"
+and "× 4" counts.
+
 ## A fresh-eyes UX audit, verified and shipped — 2026-09-10
 
 A batch of small, self-contained findings from a genuine first-time hands-on tour of the

@@ -394,6 +394,64 @@ test("every admin_actions action_type and target_type the schema allows has a He
   assert.ok(window.document.querySelector('[data-community-action="audit-filter"][data-type="member_password_reset"]'), "the new type has its own filter chip");
 });
 
+// Real device feedback: a genuinely repeated action on the same target (a
+// coach toggling one shared code's status three times while testing, say)
+// used to paint the whole audit log with near-identical rows - same label,
+// same target, same actor, nothing to tell them apart at a glance. The log
+// now collapses a CONSECUTIVE run of the exact same (action_type,
+// target_type, target_id, admin_id) into one row with a "× N" count. This
+// seeds a genuine 3-in-a-row repeat, a lone different action interleaved on
+// the SAME target (must not merge into either neighboring group), and the
+// same action_type repeated on a DIFFERENT target (must not merge with the
+// first group even though the label text is identical) - so both
+// under-collapsing and over-collapsing are covered by the same test.
+test("consecutive repeats of the same action on the same target collapse into one row with a count, without merging distinct actions or targets", async () => {
+  const t0 = new Date(Date.parse(VERIFIED) - 5 * 60000).toISOString();
+  const t1 = new Date(Date.parse(VERIFIED) - 4 * 60000).toISOString();
+  const t2 = new Date(Date.parse(VERIFIED) - 3 * 60000).toISOString();
+  const t3 = new Date(Date.parse(VERIFIED) - 2 * 60000).toISOString();
+  const t4 = new Date(Date.parse(VERIFIED) - 1 * 60000).toISOString();
+  const mock = baseMock({
+    profiles: [
+      { id: "adm-1", handle: "adm", display_name: "מנהל", is_admin: true, recovery_verified_at: VERIFIED, visible_to_club: true },
+    ],
+    invite_redemptions: [
+      { user_id: "adm-1", invite_id: "i1", role: "member", redeemed_at: VERIFIED },
+    ],
+    admin_actions: [
+      // Group A: three consecutive toggles of the same shared code.
+      { id: "aa-1", admin_id: "adm-1", action_type: "shared_code_status_changed", target_type: "invite_code", target_id: "code-8", before_data: null, after_data: null, created_at: t0 },
+      { id: "aa-2", admin_id: "adm-1", action_type: "shared_code_status_changed", target_type: "invite_code", target_id: "code-8", before_data: null, after_data: null, created_at: t1 },
+      { id: "aa-3", admin_id: "adm-1", action_type: "shared_code_status_changed", target_type: "invite_code", target_id: "code-8", before_data: null, after_data: null, created_at: t2 },
+      // A different action_type on the SAME target, interleaved right after
+      // group A - must not extend group A's count.
+      { id: "aa-4", admin_id: "adm-1", action_type: "shared_code_created", target_type: "invite_code", target_id: "code-8", before_data: null, after_data: null, created_at: t3 },
+      // The same action_type as group A again, but on a DIFFERENT target -
+      // must not merge with group A even though the label text matches.
+      { id: "aa-5", admin_id: "adm-1", action_type: "shared_code_status_changed", target_type: "invite_code", target_id: "code-7", before_data: null, after_data: null, created_at: t4 },
+    ],
+  });
+  mock.setUser({ id: "adm-1", is_anonymous: false, email: "adm@members.haimuniya.invalid" });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openManageModeration(window);
+  await waitFor(() => /יומן פעולות ניהול/.test(window.document.body.textContent), 3000);
+  // The filter chips render their static label list before the log itself
+  // loads, so "שינוי סטטוס קוד שיתוף" appears as a chip well before
+  // admin_actions_page() resolves - wait for a row's actor text instead,
+  // which only exists once the real (grouped) rows have rendered.
+  await waitFor(() => /מנהל\/ת adm-1/.test(window.document.body.textContent), 3000);
+  const auditSection = Array.from(window.document.querySelectorAll(".ach-section")).find((s) => /יומן פעולות ניהול/.test(s.textContent));
+  const rows = Array.from(auditSection.querySelectorAll(".log-list .log-row"));
+  // Newest first: aa-5 (lone), aa-4 (lone), group A collapsed (aa-3/aa-2/aa-1).
+  assert.equal(rows.length, 3, "5 raw rows collapse to 3 rendered rows");
+  assert.match(rows[0].textContent, /שינוי סטטוס קוד שיתוף/);
+  assert.doesNotMatch(rows[0].textContent, /×/, "the different-target row is not counted");
+  assert.match(rows[1].textContent, /יצירת קוד שיתוף/);
+  assert.doesNotMatch(rows[1].textContent, /×/, "the single interleaved action is not counted");
+  assert.match(rows[2].textContent, /שינוי סטטוס קוד שיתוף/);
+  assert.match(rows[2].textContent, /×\s*3/, "the 3 consecutive same-target toggles collapse with a × 3 count");
+});
+
 // ===== COMM-155 pins ================================================
 
 test("the pinned strip renders at the top of the feed and a fourth pin is refused with a clear message", async () => {
