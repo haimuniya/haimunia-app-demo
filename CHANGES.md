@@ -1,3 +1,20 @@
+## Re-audited the three just-fixed screens — 2026-09-10
+
+Asked to re-audit after the previous fix. Forked one pass over the same
+three areas (Calendar, Progress's body-measurements section, Add tab)
+to check the fixes themselves and look for anything left. Two of three
+fixes were clean; the third left one harmless dead ternary from the
+refactor - `renderLogTab()`'s ladder/superset panel had
+`${ladderMode ? \`...\` : ""}` wrapping the round-detail block, but by
+that point in the function `ladderMode` is always `true` (the inactive
+case already returned earlier). Collapsed to a plain template literal;
+no behavior change, since the `: ""` branch could never have run.
+Nothing else in the three areas cleared the bar.
+
+`test/bodyweight-measurements.test.mjs`, `duration-entries.test.mjs`,
+`superset-blocks.test.mjs`, `clear-data.test.mjs`, `app-flow.test.mjs`
+(43/43), full suite (1512/1512), full browser-check (35/35) all pass.
+
 ## Three real gaps from a full member-facing UX sweep — 2026-09-10
 
 Asked to run the same "more complicated than it needs to be" audit across

@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.16.2";
+const APP_VERSION = "4.16.3";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -3717,7 +3717,6 @@ function renderLogTab() {
         </div>
         <span style="color:var(--brass); font-size:12px; font-weight:700; flex-shrink:0;">סיום</span>
       </button>
-      ${ladderMode ? `
       <div style="border:1px solid var(--brass); border-top:none; border-radius:0 0 12px 12px; padding:10px 12px; margin-bottom:12px; margin-top:-1px;">
         <div class="flex items-center gap-8" style="margin-bottom:10px;" role="radiogroup" aria-label="תווית בלוק (לא חובה)">
           <span style="color:var(--steel); font-size:11px; font-weight:700;">בלוק:</span>
@@ -3742,7 +3741,7 @@ function renderLogTab() {
               </button>
             </span>`).join("")}
         </div>` : `<div style="color:var(--steel); font-size:12px;">אפשר לשנות משקל וחזרות לכל סט בנפרד — לחצו על כפתור השמירה בכל פעם שסט מוכן</div>`}
-      </div>` : ""}`;
+      </div>`;
     })()}
     `}
 
