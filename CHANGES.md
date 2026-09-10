@@ -1,3 +1,40 @@
+## Button/interaction consistency pass — 2026-09-10
+
+Asked to check that every button/interactive element is polished and clean, app-wide.
+Forked a systematic audit (not a general review - correctness/security have already
+been covered exhaustively this session) across app.js, cloud.js, and index.html's shared
+CSS: ad-hoc inline-styled buttons, missing icon-button labels, inconsistent busy/disabled
+states, `:focus-visible` coverage gaps, tap-target sizing, and off-token colors. Two real
+findings, one minor:
+
+- **The Community search box had zero visible keyboard-focus state.** `.search-box input`
+  sets `outline:none` (correct - the input is meant to look borderless inside its own
+  decorated pill) with nothing compensating, silently breaking the one input in an
+  otherwise-universal `:focus-visible` pattern. Added `.search-box:focus-within` on the
+  container instead - highlights the whole pill, not the invisible input inside it.
+- **Eight edit/delete icon buttons rendered ~23px tap targets** (log-entry, WOD-entry, and
+  measurement edit/delete, app.js) - a raw `padding:4px` around a 15px SVG, never given
+  the 44px floor the rest of the app converged on. The app already has a fix for this
+  exact shape of problem (a transparent `::after` expanding the hit area without growing
+  the visible element, used on the header's hamburger/bell) - deliberately NOT reused
+  here: edit and delete sit right next to each other, and two overlapping invisible 44px
+  boxes would make the one real risk (a tap meant for "edit" landing on "delete" instead)
+  worse, not better. Grew the real box instead via a new shared `.icon-btn-sm` class,
+  accepting a slightly taller row as the correct trade for a destructive control sitting
+  this close to a non-destructive one. Checked visually before and after, both themes -
+  clean spacing, no layout breakage.
+- **Minor**: a "reset to today" date button's full inline style was byte-identical,
+  copy-pasted between the Add and WOD tabs - promoted to a shared `.reset-date-btn` class
+  so the next tweak to one actually reaches both.
+
+Everything else checked out clean: icon-only buttons are all correctly labeled, busy/
+disabled-state handling is appropriately differentiated (Community's real network calls
+show it, app.js's local IndexedDB writes correctly don't need to), and off-token color
+usage is limited to a handful of deliberate fixed-contrast badge colors, not accidental
+theme breaks.
+
+Verified: full JS suite 1515/1515, full browser-check 35/35 including `a11y-axe-scan.mjs`.
+
 ## A real privacy bug in this morning's engagement alerts, found by asking for a second opinion — 2026-09-10
 
 Asked to do a full fresh research round across the whole app, reconciling against

@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.18.1";
+const APP_VERSION = "4.18.2";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -3633,7 +3633,7 @@ function renderLogTab() {
 
     <div class="flex items-center gap-8" style="margin-bottom:12px;">
       <input type="date" id="logDateInput" value="${esc(logDate)}" max="${todayISO()}" aria-label="תאריך רישום הסט" style="flex:1; min-width:0; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 14px; color:var(--chalk); font-size:14px; font-weight:700; font-family:inherit;" />
-      ${logDate !== todayISO() ? `<button data-action="reset-log-date" style="background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 16px; color:var(--steel); font-weight:700; font-size:13px; white-space:nowrap;">היום</button>` : ""}
+      ${logDate !== todayISO() ? `<button data-action="reset-log-date" class="reset-date-btn">היום</button>` : ""}
     </div>
 
     ${(est || bestHold || last) ? `
@@ -4070,8 +4070,8 @@ function renderDayEntriesListHtml(dayEntries, dayWods) {
           <div class="flex items-center gap-10">
             <span class="mono" style="color:var(--steel); font-size:13px;">${esc(entrySummary(e))}</span>
             ${typeof window.renderShareControl === "function" ? window.renderShareControl("strength_entry", e.id) : ""}
-            <button data-action="edit-entry" data-id="${esc(e.id)}" aria-label="עריכת סט" style="color:var(--steel); padding:4px;">${ICONS.edit}</button>
-            <button data-action="delete-entry" data-id="${esc(e.id)}" aria-label="מחיקת סט" style="color:var(--steel); padding:4px;">${ICONS.trash}</button>
+            <button data-action="edit-entry" data-id="${esc(e.id)}" aria-label="עריכת סט" class="icon-btn-sm">${ICONS.edit}</button>
+            <button data-action="delete-entry" data-id="${esc(e.id)}" aria-label="מחיקת סט" class="icon-btn-sm">${ICONS.trash}</button>
           </div>
         </div>`;
         }
@@ -4098,8 +4098,8 @@ function renderDayEntriesListHtml(dayEntries, dayWods) {
             <div class="flex items-center justify-between">
               <span class="mono flex items-center gap-6" style="color:var(--steel); font-size:13px;">${i + 1}. ${esc(ladderRoundSummary(e, isSuperset))}${e.isPR ? ICONS.flame : ""}</span>
               <div class="flex items-center gap-6">
-                <button data-action="edit-entry" data-id="${esc(e.id)}" aria-label="עריכת סט ${i + 1}" style="color:var(--steel); padding:4px;">${ICONS.edit}</button>
-                <button data-action="delete-entry" data-id="${esc(e.id)}" aria-label="מחיקת סט ${i + 1}" style="color:var(--steel); padding:4px;">${ICONS.trash}</button>
+                <button data-action="edit-entry" data-id="${esc(e.id)}" aria-label="עריכת סט ${i + 1}" class="icon-btn-sm">${ICONS.edit}</button>
+                <button data-action="delete-entry" data-id="${esc(e.id)}" aria-label="מחיקת סט ${i + 1}" class="icon-btn-sm">${ICONS.trash}</button>
               </div>
             </div>`).join("")}
           </div>
@@ -4118,8 +4118,8 @@ function renderDayEntriesListHtml(dayEntries, dayWods) {
             <div class="flex items-center gap-10">
               <span class="mono" style="color:var(--steel); font-size:13px;">${formatWodEntry(e)}</span>
               ${typeof window.renderShareControl === "function" ? window.renderShareControl("wod_entry", e.id) : ""}
-              <button data-action="edit-wod-entry" data-id="${esc(e.id)}" aria-label="עריכת אימון" style="color:var(--steel); padding:4px;">${ICONS.edit}</button>
-              <button data-action="delete-wod-entry" data-id="${esc(e.id)}" aria-label="מחיקת אימון" style="color:var(--steel); padding:4px;">${ICONS.trash}</button>
+              <button data-action="edit-wod-entry" data-id="${esc(e.id)}" aria-label="עריכת אימון" class="icon-btn-sm">${ICONS.edit}</button>
+              <button data-action="delete-wod-entry" data-id="${esc(e.id)}" aria-label="מחיקת אימון" class="icon-btn-sm">${ICONS.trash}</button>
             </div>
           </div>
           ${e.notes ? `<div style="color:var(--steel); font-size:12px; padding-inline-start:23px;">${bidiText(e.notes)}</div>` : ""}
@@ -4312,7 +4312,7 @@ function renderMeasureArea() {
       <div class="chart-card" style="margin-top:-4px; border-top-left-radius:0; border-top-right-radius:0; border-top:none;">
         <div class="flex items-center justify-between" style="margin-bottom:${chartData.length ? "12px" : "0"};">
           ${last ? `<span style="color:var(--steel); font-size:12px;">עודכן לאחרונה: ${fmtDate(last.date)}</span>` : `<span style="color:var(--steel); font-size:12px;">אין עדיין מדידות</span>`}
-          <button data-action="delete-measure-type" data-id="${esc(t.id)}" aria-label="מחיקת מדד" style="color:var(--steel); padding:4px;">${ICONS.trash}</button>
+          <button data-action="delete-measure-type" data-id="${esc(t.id)}" aria-label="מחיקת מדד" class="icon-btn-sm">${ICONS.trash}</button>
         </div>
         ${chartData.length ? renderChart(chartData) : ""}
         <div class="steppers" style="margin-top:14px; margin-bottom:0;">
@@ -4326,7 +4326,7 @@ function renderMeasureArea() {
               <span style="color:var(--steel); font-size:12px;">${fmtDate(e.date)}</span>
               <div class="flex items-center gap-10">
                 <span class="mono" style="font-size:13px;">${e.value} ס"מ</span>
-                <button data-action="delete-measurement-entry" data-id="${esc(e.id)}" aria-label="מחיקת מדידה" style="color:var(--steel); padding:4px;">${ICONS.trash}</button>
+                <button data-action="delete-measurement-entry" data-id="${esc(e.id)}" aria-label="מחיקת מדידה" class="icon-btn-sm">${ICONS.trash}</button>
               </div>
             </div>`).join("")}
         </div>` : ""}
@@ -5098,7 +5098,7 @@ function renderWodLogSection() {
 
     <div class="flex items-center gap-8" style="margin-bottom:12px;">
       <input type="date" id="wodLogDateInput" value="${esc(wodLogDate)}" max="${todayISO()}" aria-label="תאריך רישום האימון" style="flex:1; min-width:0; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 14px; color:var(--chalk); font-size:14px; font-weight:700; font-family:inherit;" />
-      ${wodLogDate !== todayISO() ? `<button data-action="reset-wod-log-date" style="background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 16px; color:var(--steel); font-weight:700; font-size:13px; white-space:nowrap;">היום</button>` : ""}
+      ${wodLogDate !== todayISO() ? `<button data-action="reset-wod-log-date" class="reset-date-btn">היום</button>` : ""}
     </div>
 
     ${history.length > 0 ? `
