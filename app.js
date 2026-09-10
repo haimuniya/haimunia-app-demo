@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.18.3";
+const APP_VERSION = "4.18.4";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -234,7 +234,7 @@ function renderNavWho() {
              who land here - someone who has never trained and someone whose
              streak lapsed - which "בואו נתחיל להתאמן" was not, and it leaves
              "בואו נתחיל" to the two buttons that actually ask for a tap. -->
-        <div class="who-sub">${streak > 0 ? `${streak} ימים ברצף` : "הרצף מתחיל באימון הבא"}</div>
+        <div class="who-sub">${streak > 0 ? `${streak} ${streak === 1 ? "יום" : "ימים"} ברצף` : "הרצף מתחיל באימון הבא"}</div>
       </div>
     </button>`;
 }
@@ -332,8 +332,16 @@ function photoHeaderHtml(assetPath, altText, opts) {
 // be a wasted extra render.
 window.switchToCommunityTopTab = function () { tab = "community"; };
 function renderNavSettingsRow() {
+  // Fresh-eyes audit: on the desktop sidebar (renderDesktopSidebar below)
+  // this section header renders in the same persistent column as
+  // Community's own "חשבון" subtab (cloud.js, the member's profile/privacy
+  // tab) once Community is open - two rows reading "חשבון" a few pixels
+  // apart, naming two different things. This one is a single link to
+  // app-level Settings, not an account, so the label changes rather than
+  // Community's - that one is a normal, unambiguous name for itself on
+  // every OTHER screen it appears on.
   return `
-    <div class="divider-label">חשבון</div>
+    <div class="divider-label">כללי</div>
     <button class="navrow" data-action="open-settings">
       <span class="icon-chip icon-chip-steel">${ICONS.settingsIcon}</span>
       <span class="nav-label">הגדרות</span>
@@ -341,7 +349,14 @@ function renderNavSettingsRow() {
     </button>`;
 }
 function renderNavMenuList() {
-  return renderNavWho() + `<div class="nav-destinations" role="tablist" aria-label="מסכים נוספים">${renderNavRows(true, true)}</div>` + renderNavSettingsRow();
+  // Fresh-eyes audit: for a regular member every main destination already
+  // lives in the bottom tab bar (renderNavRows' onlyOther=true correctly
+  // renders nothing extra), so this sheet was profile row + one settings
+  // link + a full screen of empty navy below it - not a bug, but not a
+  // finished screen either. A footer line gives the space a reason to be
+  // there without inventing a duplicate action Settings already owns.
+  return renderNavWho() + `<div class="nav-destinations" role="tablist" aria-label="מסכים נוספים">${renderNavRows(true, true)}</div>` + renderNavSettingsRow()
+    + `<div class="footer-note" style="text-align:center; margin-top:auto; padding-top:24px;">האימוניה · v${APP_VERSION}</div>`;
 }
 // Desktop / wide-viewport sidebar (Phase 4) - same registry, same rows,
 // same settings entry, just without the mobile-only ids (see renderNavRows
@@ -675,21 +690,46 @@ function athleteLevel(score) {
   return { name: level.name, min: level.min, next };
 }
 
+// Fresh-eyes audit: a brand-new member's very first set unlocked "השיא
+// הראשון" (First PR) and the Progress tab read "3 שיאים החודש" after
+// exactly one session — because e.isPR (set in saveSet()) is honest
+// against everything on file, and with nothing on file yet a movement's
+// first few entries trivially beat "nothing". saveSet()'s own
+// MIN_ENTRIES_BEFORE_PR already encodes the right rule for the full-screen
+// celebration ("nothing is a personal record until there is something to
+// beat"); this applies that same rule to every OTHER place a PR gets
+// counted or badged, instead of each reading the raw flag independently
+// and drifting from it. Referenced before its declaration further down
+// this file — safe, since this only runs inside a function body, well
+// after MIN_ENTRIES_BEFORE_PR's const binding exists.
+function celebratablePrEntryIds() {
+  const ids = new Set();
+  const byMovement = bag();
+  // Duration entries carry est1RM: 0 (see sanitizeEntry) — skip them so a
+  // hold-only movement (e.g. a dead hang under Pull) can't register a
+  // phantom 0kg "PR" the first time it's logged.
+  for (const e of entries) { if (e.type !== "duration") (byMovement[e.exerciseId] ||= []).push(e); }
+  for (const movId of Object.keys(byMovement)) {
+    const list = byMovement[movId].sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    let max = -Infinity;
+    for (let i = 0; i < list.length; i++) {
+      const e = list[i];
+      if (e.est1RM > max) {
+        if (i >= MIN_ENTRIES_BEFORE_PR) ids.add(e.id);
+        max = e.est1RM;
+      }
+    }
+  }
+  return ids;
+}
 function categoryPRCounts() {
   const counts = bag();
-  const byMovement = bag();
-  for (const e of entries) { (byMovement[e.exerciseId] ||= []).push(e); }
-  for (const movId of Object.keys(byMovement)) {
-    const mov = movementById(movId);
+  const celebratable = celebratablePrEntryIds();
+  for (const e of entries) {
+    if (!celebratable.has(e.id)) continue;
+    const mov = movementById(e.exerciseId);
     if (!mov || !ACHIEVEMENT_PR_CATEGORIES.includes(mov.category)) continue;
-    // Duration entries carry est1RM: 0 (see sanitizeEntry) — skip them so a
-    // hold-only movement (e.g. a dead hang under Pull) can't register a
-    // phantom 0kg "PR" the first time it's logged.
-    const list = byMovement[movId].filter((e) => e.type !== "duration").sort((a, b) => (a.ts || 0) - (b.ts || 0));
-    let max = -Infinity;
-    for (const e of list) {
-      if (e.est1RM > max) { max = e.est1RM; counts[mov.category] = (counts[mov.category] || 0) + 1; }
-    }
+    counts[mov.category] = (counts[mov.category] || 0) + 1;
   }
   return counts;
 }
@@ -1237,12 +1277,36 @@ function renderNotificationsList() {
       </ul>
     </div>`).join("");
 }
+// Fresh-eyes audit: this one always-visible header control used to be
+// wired only to the offline "what's new" release notes, so a member could
+// have unread reactions/comments/achievement notifications and no signal
+// for them anywhere outside the Community tab's own small bell chip - the
+// least exciting thing in the app (a changelog) had the most prominent,
+// every-screen real estate, and the most exciting thing (someone responded
+// to you) had none. Real community notifications now take priority here;
+// release notes moved into Settings (see the "מה חדש" row there) as a
+// permanent link that no longer needs to fight for header space to stay
+// discoverable.
 function updateNotificationsBadge() {
   const badge = document.getElementById("notificationsBadge");
+  const btn = document.getElementById("notificationsBellBtn");
   if (!badge) return;
-  const count = unseenReleaseNotes().length;
+  const social = typeof window.communityUnreadCount === "function" ? window.communityUnreadCount() : 0;
+  const count = social > 0 ? social : unseenReleaseNotes().length;
   badge.textContent = count > 9 ? "9+" : String(count);
   badge.style.display = count > 0 ? "flex" : "none";
+  if (btn) btn.setAttribute("aria-label", social > 0 ? `התראות, ${social} חדשות` : "עדכוני גרסה");
+}
+// Prefers the real community notification center when there's something
+// unread there; falls back to the offline release-notes overlay otherwise
+// (including when Community isn't configured at all, or the member isn't
+// signed into it - window.openCommunityNotifCenter simply isn't a function
+// yet in either case, same guard used everywhere else this app checks for
+// cloud.js).
+function openHeaderNotifications() {
+  const social = typeof window.communityUnreadCount === "function" ? window.communityUnreadCount() : 0;
+  if (social > 0 && typeof window.openCommunityNotifCenter === "function" && window.openCommunityNotifCenter()) return;
+  openNotifications();
 }
 // A real, user-reported bug: on Chrome/Android, "every time I open the app
 // it looks a bit up, then a scroll fixes it" - the bottom tab bar
@@ -1566,6 +1630,12 @@ function emitCommunityPrCreated(entry, mov, detail) {
   const record = {
     record_id: entry.id, movement: mov.name, new_result: newResult,
     new_value_numeric: detail.repRecordPR ? detail.weight : detail.est,
+    // See the comment on emitPR at the call site: onPrCreated (the
+    // share-prompt) must not open for a trivial record; onPrCreatedForChallenges
+    // must not care. Defaults true (treat as trivial / don't praise) if the
+    // caller ever forgets to set priorForExercise, since silence is the
+    // safe failure here, not an unearned invitation to share.
+    trivial: !(detail.priorForExercise >= MIN_ENTRIES_BEFORE_PR),
   };
   if (prevResult) record.previous_result = prevResult;
   if (improvement) record.improvement = improvement;
@@ -1672,20 +1742,32 @@ async function saveSet(sanityConfirmed) {
   //    history every set is trivially a record, which is exactly how a
   //    member earns five medals before they have done anything.
   // The stored isPR flag stays honest under all of this (against everything
-  // else on file this really is the best set, and the chart, the flame and
-  // the "שיאים החודש" count read that flag); only the praise is withheld.
+  // else on file this really is the best set, and the chart and the flame
+  // read that flag); only the praise is withheld. celebratablePrEntryIds()
+  // (above) applies this same MIN_ENTRIES_BEFORE_PR rule wherever a PR gets
+  // counted or badged instead — "שיאים החודש" and the achievement engine's
+  // prTotal both read through it now, not the raw flag.
   const priorForExercise = entriesFor(selectedId, editId).filter((e) => (e.type === "duration") === (logEntryType === "duration")).length;
   const celebratePR = isPR && !existing && priorForExercise >= MIN_ENTRIES_BEFORE_PR;
   // The community PR event deliberately does NOT take the >= 3 gate, only
   // the never-on-an-edit half. Two reasons, both functional rather than
   // editorial: PR_CREATED also drives an individual_performance challenge's
   // numeric progress (see onPrCreatedForChallenges in cloud.js), so gating
-  // it would silently make challenge scoring depend on how many prior sets
-  // happen to be on file - a different bug, not a fix; and the event only
-  // ever OFFERS a share, it never posts and never congratulates anyone on
-  // its own. The devaluation this section is about is the unearned
-  // full-screen card, which celebratePR above is what governs.
+  // the EVENT would silently make challenge scoring depend on how many
+  // prior sets happen to be on file - a different bug, not a fix.
+  //
+  // Fresh-eyes audit: the event's OTHER consumer, cloud.js's PR-share
+  // prompt ("שיא חדש זוהה. לשתף עם המועדון?"), has no such excuse - it is
+  // pure praise/invitation-to-share, the exact thing celebratePR above
+  // exists to withhold, and a brand-new member hit it on their literal
+  // first-ever set, back to back with the achievement-unlock celebration
+  // for the same non-event. So the record now carries `trivial` (computed
+  // from this same priorForExercise, attached below) for that ONE consumer
+  // to check before opening its dialog - onPrCreatedForChallenges ignores
+  // the field entirely and keeps reading new_value_numeric unconditionally,
+  // so challenge progress is untouched by this.
   const emitPR = isPR && !existing;
+  if (emitPR && prDetail) prDetail.priorForExercise = priorForExercise;
   // 3. And when an edit takes a row that WAS the record below the bar, say
   //    so once, plainly, in the smallest surface available — the member is
   //    owed the correction, not an apology and not a second party.
@@ -3456,12 +3538,22 @@ function renderChart(data) {
   // the app's own best habit is telling the member what a number is built
   // from. Only worth saying once there are two points to have a direction.
   const axisNote = n >= 2 ? `<div style="color:var(--steel); font-size:11px; text-align:center; margin-top:4px;">מימין לשמאל: מהישן לחדש.</div>` : "";
+  // Fresh-eyes audit: one or two dots on the same full-height plot area a
+  // ten-point trend uses read as broken/sparse, not as "you're new here" -
+  // nothing in the chart itself said which. Below the axisNote (n>=2 already
+  // gets that one instead) rather than replacing the real dot(s): the data
+  // is genuine and stays, this only sets the expectation for why the line
+  // isn't a trend yet.
+  // "נתונים" (data points), not "אימונים" (workouts) - this same function
+  // also renders bodyweight and body-measurement charts, neither of which
+  // is a workout.
+  const growNote = n < 3 ? `<div style="color:var(--steel); font-size:11.5px; text-align:center; margin-top:6px;">עוד ${3 - n} ${3 - n === 1 ? "נתון" : "נתונים"} ותראו כאן מגמה</div>` : "";
   // dir="ltr" on the scroll box only, never on the SVG: a wide chart in an
   // RTL container opens scrolled to its right edge, which after the mirror
   // above is the OLDEST data. Flipping the scroll container's own direction
   // lands the initial scroll position on the newest end, where the member
   // actually wants to be.
-  return (wide ? `<div dir="ltr" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">${svg}</div>` : svg) + axisNote;
+  return (wide ? `<div dir="ltr" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">${svg}</div>` : svg) + axisNote + growNote;
 }
 
 // One-line summary for an entry regardless of its type — used anywhere a
@@ -3946,7 +4038,7 @@ function updateStreakLabel() {
   if (streak <= 0) { el.style.display = "none"; return; }
   el.innerHTML = `${ICONS.flame}<span>${streak}</span>`;
   el.style.display = "flex";
-  el.setAttribute("aria-label", `${streak} ימים ברצף`);
+  el.setAttribute("aria-label", `${streak} ${streak === 1 ? "יום" : "ימים"} ברצף`);
 }
 // COMM-341. Training days / total sets / PR days for the month currently
 // shown - a real feature (a monthly summary), not just decoration, so it
@@ -4354,7 +4446,8 @@ function renderMeasureArea() {
 function renderHistoryTab() {
   const now = new Date();
   const monthPrefix = localISODate(now).slice(0, 7);
-  const prCountThisMonth = entries.filter((e) => e.isPR && e.date.startsWith(monthPrefix)).length;
+  const celebratablePrIds = celebratablePrEntryIds();
+  const prCountThisMonth = entries.filter((e) => celebratablePrIds.has(e.id) && e.date.startsWith(monthPrefix)).length;
   const start = new Date(now); start.setDate(now.getDate() - now.getDay());
   const startISO = localISODate(start);
   const sessionsThisWeek = new Set(entries.filter((e) => e.date >= startISO).map((e) => e.date)).size;
@@ -4454,6 +4547,16 @@ function renderSettingsBody() {
         <button class="exercise-row" data-action="open-onboarding" style="margin-bottom:8px;">
           <span style="font-weight:700; font-size:13.5px;">סיור באפליקציה</span>
           <span style="color:var(--steel); flex-shrink:0;">${ICONS.chevronsLeft}</span>
+        </button>
+        <!-- Fresh-eyes audit: this used to be the header's always-visible
+             icon, which meant the least exciting thing in the app (a
+             changelog) had the most prominent real estate on every screen.
+             Settings is its permanent home now - still one tap away, just
+             not competing with the community notification badge for the
+             one slot every screen shares. -->
+        <button class="exercise-row" data-action="open-release-notes" style="margin-bottom:8px;">
+          <span style="font-weight:700; font-size:13.5px;">מה חדש באפליקציה</span>
+          <span class="flex items-center gap-6" style="flex-shrink:0;">${unseenReleaseNotes().length ? `<span class="tab-badge" aria-hidden="true">${unseenReleaseNotes().length}</span>` : ""}<span style="color:var(--steel);">${ICONS.chevronsLeft}</span></span>
         </button>
         ${isStandalone() ? "" : `
         <button class="exercise-row" data-action="show-install-hint" style="margin-bottom:8px;">
@@ -4772,6 +4875,12 @@ function render() {
   // moment the browser offered it. No-op unless all four conditions hold.
   maybeShowInstallBanner();
   updateStreakLabel();
+  // Cloud.js's rerender() is literally window.render (see its own
+  // definition) - so a community notification arriving, or being read,
+  // already reaches here on the very next render with no separate event
+  // wiring needed. Keeps the header badge honest on every tab, not only
+  // while Community is open.
+  updateNotificationsBadge();
   // Rendered after every tab's own content, not just Community's, so a
   // share triggered from Calendar/Progress can still show its confirm
   // dialog regardless of which tab is currently active.
@@ -6185,7 +6294,12 @@ document.addEventListener("click", (e) => {
     if (el.id === "achievementsOverlay" && e.target !== el) return;
     closeAchievements();
   }
-  else if (action === "open-notifications") { openNotifications(); }
+  else if (action === "open-notifications") { openHeaderNotifications(); }
+  // Settings' own "מה חדש" row (fresh-eyes audit) always means release
+  // notes specifically, never the smart header routing above - a member
+  // tapping it to read the changelog must not land in Community's
+  // notification center just because they happen to have unread there.
+  else if (action === "open-release-notes") { openNotifications(); }
   else if (action === "close-notifications") {
     if (el.id === "notificationsOverlay" && e.target !== el) return;
     closeNotifications();
@@ -6379,8 +6493,8 @@ async function init() {
     navigator.storage.persist().catch(() => {});
   }
 
-  updateNotificationsBadge();
-
+  // render() above already calls updateNotificationsBadge() on every pass
+  // (fresh-eyes audit) - no separate call needed here any more.
   if (userName === null) openWelcomeModal();
   else if (unseenReleaseNotes().length) openNotifications();
 

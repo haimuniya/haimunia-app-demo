@@ -100,6 +100,15 @@ test("end to end: a logged lift drives the PR share prompt and posts nothing on 
   await waitFor(() => window.isCommunitySignedIn && window.isCommunitySignedIn(), 3000);
 
   await window.addMovement("Prompt Deadlift", "Deadlift");
+  // Fresh-eyes audit fix: the share prompt only opens for a record with
+  // something real to beat (record.trivial === false, MIN_ENTRIES_BEFORE_PR
+  // in app.js) — a baseline is logged first, same pattern as the
+  // "not signed in" test above. See the new test below this one for the
+  // trivial-record case the fix actually closes.
+  for (const kg of [100, 105, 110]) {
+    await logReps(window, kg);
+    window.closeCelebration();
+  }
   await logReps(window, 140);
 
   await waitFor(() => !!window.document.getElementById("prPrompt"), 3000);
@@ -108,4 +117,33 @@ test("end to end: a logged lift drives the PR share prompt and posts nothing on 
   assert.match(prompt.textContent, /Prompt Deadlift/);
   assert.match(prompt.textContent, /140/);
   assert.equal(mock.callsTo("pr_share").length, 0, "the event alone never publishes");
+});
+
+test("fresh-eyes audit: a brand-new movement's first-ever set still emits PR_CREATED but never opens the share prompt", async () => {
+  const mock = createMockSupabase({
+    profiles: [{ id: "u1", handle: "dana", display_name: "דנה", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true }],
+    invite_redemptions: [{ user_id: "u1", invite_id: "inv-1", role: "member", redeemed_at: VERIFIED }],
+    community_feed: [],
+  });
+  mock.setUser({ id: "u1", is_anonymous: false, email: "dana@members.haimuniya.invalid" });
+
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await waitFor(() => window.isCommunitySignedIn && window.isCommunitySignedIn(), 3000);
+
+  const seen = [];
+  window.HaimuniaEvents.on(window.PRODUCT_EVENTS.PR_CREATED, (p) => seen.push(p));
+
+  await window.addMovement("Trivial Deadlift", "Deadlift");
+  await logReps(window, 100);
+
+  // The event itself still fires — onPrCreatedForChallenges needs it
+  // regardless of how many prior sets exist for this exercise.
+  assert.equal(seen.length, 1, "PR_CREATED still fires for challenge progress");
+  assert.equal(seen[0].record.trivial, true, "a first-ever entry is marked trivial");
+
+  // But nothing invites a share for it: give the dialog every chance to
+  // have opened, then confirm it didn't.
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(window.document.getElementById("prPrompt"), null,
+    "a member's literal first-ever set must not prompt to share it as a PR");
 });

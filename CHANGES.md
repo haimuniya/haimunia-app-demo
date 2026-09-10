@@ -1,3 +1,48 @@
+## A fresh-eyes UX audit, verified and shipped — 2026-09-10
+
+A batch of small, self-contained findings from a genuine first-time hands-on tour of the
+shipped app (not a code read) had been sitting uncommitted in the working tree - a
+concurrent session's own work, left untouched while it was in progress per this
+session's own discipline. Asked to finish it: read every diff in full, verified it
+against the real test suite rather than assuming it was done, and shipped it.
+
+- **A member's literal first-ever logged set unlocked "First PR" and the Progress tab
+  read "3 שיאים החודש" after one session** - `e.isPR` is honest against everything on
+  file, and with nothing on file yet a movement's first few entries trivially beat
+  "nothing." `saveSet()`'s own `MIN_ENTRIES_BEFORE_PR` already encoded the right rule for
+  the full-screen celebration; a new `celebratablePrEntryIds()` applies that same rule
+  everywhere else a PR gets counted or badged (the Progress tab's monthly count, the
+  achievement engine's `prTotal`) instead of each reading the raw flag independently and
+  drifting from it. The same brand-new-movement's set also used to trigger cloud.js's
+  "share this PR with the club?" prompt - a `trivial` flag threads through the
+  `PR_CREATED` event so that one consumer skips it, while `onPrCreatedForChallenges`
+  (which must stay correct regardless of how many prior sets are on file) ignores the
+  field entirely and is untouched.
+- **The header's one always-visible bell was wired only to the offline "what's new"
+  release notes** - a member could have unread reactions/comments/achievement
+  notifications sitting behind Community's own small bell chip with no signal anywhere
+  else. Real community notifications now take priority on the header (falling back to
+  release notes when nothing's unread there); release notes moved into Settings as a
+  permanent row so they don't need header space to stay discoverable. `render()` now
+  calls `updateNotificationsBadge()` on every pass, not just once at init, so the badge
+  stays honest on every tab.
+- **The nav menu sheet was a profile row, one settings link, and a full screen of empty
+  navy below it** for a regular member (every real destination already lives in the
+  bottom tab bar) - now closes with a quiet "האימוניה · vX.X.X" footer instead of trailing
+  into nothing.
+- **The desktop sidebar's settings-section header and Community's own "חשבון" subtab both
+  read "חשבון"** a few pixels apart, naming two different things once Community is open -
+  relabeled to "כללי" (a single settings link is not an account).
+- Two grammar fixes ("1 ימים" → "1 יום" on the streak label) and a near-empty progress
+  chart (1-2 points) now explains itself ("עוד 2 נתונים ותראו כאן מגמה") instead of just
+  looking sparse.
+
+Verified before shipping, not assumed: full JS suite 1526/1526 (11 new/updated tests
+covering the PR-triviality fix from both app.js's and cloud.js's side, the header-bell
+routing in all four states, and the nav-menu footer/grammar/chart-hint fixes), full
+browser-check 35/35 including `a11y-axe-scan.mjs`, and a direct visual check (real
+Chromium) of the header bell showing a real unread count and the nav menu's new footer.
+
 ## Closed the last flagged-but-unfixed item: an engagement-alert burst guard — 2026-09-10
 
 Asked to fix everything still open. The one remaining item from this session's research

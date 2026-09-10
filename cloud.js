@@ -1350,7 +1350,16 @@
       // resolver defaults "on" until a row loads) for the brief window
       // before the deferred batch finishes - loading both together closes
       // that gap instead of leaving it to self-correct after a flash.
-      await Promise.all([loadProfile(), loadChallenges(), loadClubFeatures()]);
+      // loadNotifUnread() joins this eager batch too (fresh-eyes audit):
+      // the main header's notification badge (app.js, every tab, not only
+      // Community) reads window.communityUnreadCount() and needs a real
+      // number from the very first paint after a restored session, not
+      // only once the member happens to visit Community and triggers
+      // ensureCommunityDataLoaded()'s deferred batch. It is one cheap RPC
+      // (notif_unread_count), not the ~15-call bundle PERF-1 deliberately
+      // keeps deferred, so promoting only this one call here does not
+      // reopen that tradeoff.
+      await Promise.all([loadProfile(), loadChallenges(), loadClubFeatures(), loadNotifUnread()]);
       // Push pending local edits before pulling the remote copy - without
       // this, reopening the app with an unflushed outbox (e.g. a set
       // logged offline seconds ago) pulls the still-stale server record
@@ -13692,9 +13701,22 @@
   }
   // Consumes PR_CREATED from the event bus (COMM-012). Detection itself is the
   // achievements agent's COMM-132; this only reacts to the record it passes.
+  //
+  // Fresh-eyes audit: this used to open unconditionally, so a member's
+  // literal first-ever logged set - nothing yet to compare against - got
+  // offered a "share this PR with the club?" prompt, stacked right behind
+  // the achievement-unlock celebration for the same non-event. app.js now
+  // marks a record `trivial` using the identical MIN_ENTRIES_BEFORE_PR rule
+  // its own full-screen celebration already applies (see saveSet()); this
+  // is the one consumer of PR_CREATED that must honor it, since it is pure
+  // praise/invitation-to-share. onPrCreatedForChallenges, the event's other
+  // consumer, deliberately does not check this field - challenge progress
+  // must stay correct regardless of how many prior sets happen to be on
+  // file.
   function onPrCreated(payload) {
     const record = payload && (payload.record || payload);
     if (!record) return;
+    if (record.trivial) return;
     const recordId = record.record_id || record.id;
     if (!recordId) return;
     if (prPromptDismissedSet().has(String(recordId))) return;
@@ -15563,12 +15585,17 @@
   }
 
   // --- COMM-140 the centre: open, page, mark read --------------------
-  async function openNotifCenter() {
+  // returnFocusSelector: a full CSS selector for the control focus should
+  // return to on close, defaulting to the feed's own bell chip. The header
+  // bell (app.js's window.openCommunityNotifCenter, fresh-eyes audit) is
+  // not a [data-community-action] element and passes its own id instead,
+  // since it can open this from any screen, not only Community's feed.
+  async function openNotifCenter(returnFocusSelector) {
     if (!state.user || !client) return;
     state.notif.center = {
       loading: true, error: false, rows: [], cursor: null, end: false, hasOlder: false,
       loadingMore: false, moreError: false, expanded: {}, showOlder: false, _focused: false,
-      returnFocus: "feed-notifications",
+      returnFocus: returnFocusSelector || '[data-community-action="feed-notifications"]',
     };
     rerender();
     await fetchNotifPage(true);
@@ -15578,7 +15605,7 @@
     state.notif.center = null;
     rerender();
     if (back) {
-      const el = document.querySelector('[data-community-action="' + back + '"]');
+      const el = document.querySelector(back);
       if (el && el.focus) el.focus();
     }
   }
@@ -18565,6 +18592,23 @@
     else if (action === "coach-monthly-recap-publish") publishMonthlyRecap(el.dataset.id);
   };
   window.isCommunitySignedIn = function () { return !!(state.user && state.profile); };
+  // Fresh-eyes audit: the main header's always-visible bell used to be
+  // wired to app.js's own offline "what's new" release notes only — a
+  // member could have unread reactions/comments/achievement notifications
+  // sitting behind the Community tab's own small bell chip and never see
+  // any signal for it outside Community. These two let app.js's header
+  // (which renders on every screen, not just Community) show and open the
+  // real thing instead. rerender() already runs app.js's own render() (see
+  // its definition above), so any state.notif.unread change already
+  // reaches the header on the next paint with no new plumbing needed.
+  window.communityUnreadCount = function () {
+    return state.notif.unreadLoaded ? (Number(state.notif.unread) || 0) : 0;
+  };
+  window.openCommunityNotifCenter = function () {
+    if (!window.isCommunitySignedIn()) return false;
+    openNotifCenter("#notificationsBellBtn");
+    return true;
+  };
   // Redesign, Phase 1: app.js's getNavItems() needs to know whether to emit
   // the "ניהול" (Manage) bottom-tab item at all - the same isStaff() check
   // renderManageApp() itself re-checks internally (defense in depth against

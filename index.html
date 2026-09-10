@@ -1034,6 +1034,13 @@
   .search-box:focus-within{ outline:2px solid var(--brass); outline-offset:2px; }
   .search-box input{ background:transparent; border:none; color:var(--chalk); flex:1; outline:none; }
   .modal-list{ overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch; padding:0 16px 24px; flex:1; min-height:0; }
+  /* Fresh-eyes audit: a regular member's nav menu is profile row + one
+     settings link, since every main destination already lives in the
+     bottom tab bar - renderNavMenuList()'s own version-footer line reads
+     as an afterthought stuck right under "הגדרות" without this, instead of
+     the deliberate close to the sheet it's meant to be. Scoped to this one
+     id, not the shared .modal-list class every other overlay also uses. */
+  #navMenuList{ display:flex; flex-direction:column; }
   /* Nav menu (replaces the old top tabbar) and its user-info card. */
   .who{ display:flex; align-items:center; gap:12px; background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:14px; margin:4px 0 18px; box-shadow:var(--shadow-card); }
   .who-avatar{ width:42px; height:42px; border-radius:50%; background:linear-gradient(160deg, color-mix(in srgb, var(--brass) 45%, white), var(--brass)); color:#241a0d; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:15px; flex-shrink:0; }

@@ -111,6 +111,52 @@ test("celebration never offers a community share button when cloud.js hasn't loa
   assert.equal(window.document.getElementById("celebrationShare").innerHTML, "", "with no window.isCommunitySignedIn (cloud.js absent), the share slot must stay empty");
 });
 
+test("fresh-eyes audit: categoryPRCounts and the first_pr milestone don't count a movement's first few (trivial) entries", async () => {
+  const window = await bootApp();
+  await window.addMovement("Trivial Count Squat", "Squat");
+  window.applyFieldValue("step", "reps", 5);
+  window.applyFieldValue("step", "sets", 1);
+
+  // Same MIN_ENTRIES_BEFORE_PR=3 the celebration already enforces: the
+  // first 3 entries for a movement have nothing to beat, so none of them
+  // should register in categoryPRCounts() or communityMilestoneCodes()'s
+  // prTotal — this used to unlock "first_pr" and show "שיאים החודש: 3" for
+  // a member's very first-ever session (three sets, one movement).
+  for (const kg of [40, 45, 50]) {
+    window.applyFieldValue("step", "weight", kg);
+    await window.saveSet();
+    window.closeCelebration();
+    assert.equal(window.categoryPRCounts().Squat || 0, 0,
+      `entry at ${kg}kg is one of the first ${window.MIN_ENTRIES_BEFORE_PR ?? 3} for this movement and must not count as a PR`);
+    assert.ok(!window.communityMilestoneCodes().includes("first_pr"),
+      `first_pr must not unlock on entry #${[40, 45, 50].indexOf(kg) + 1} of a brand-new movement`);
+  }
+
+  // The 4th entry has three real prior entries to beat — a genuine PR.
+  window.applyFieldValue("step", "weight", 55);
+  await window.saveSet();
+  assert.equal(window.categoryPRCounts().Squat, 1, "the 4th entry, beating 3 real priors, is the movement's first real PR");
+  assert.ok(window.communityMilestoneCodes().includes("first_pr"), "first_pr unlocks once a real comparison-based PR exists");
+});
+
+test("fresh-eyes audit: the Progress tab's this-month PR count excludes a movement's trivial first entries", async () => {
+  const window = await bootApp();
+  await window.addMovement("Trivial Count Press", "Press");
+  window.applyFieldValue("step", "reps", 5);
+  window.applyFieldValue("step", "sets", 1);
+  for (const kg of [20, 25, 30]) {
+    window.applyFieldValue("step", "weight", kg);
+    await window.saveSet();
+    window.closeCelebration();
+  }
+  window.document.getElementById("tabHistoryBtn").click();
+  const prCard = [...window.document.querySelectorAll(".stat-hero")]
+    .find((el) => el.querySelector(".stat-label")?.textContent === "שיאים החודש");
+  assert.ok(prCard, "the this-month PR stat card renders");
+  const prValue = prCard.querySelector(".stat-value").textContent.trim();
+  assert.equal(prValue, "0", "three trivial first-of-movement entries in one session must read as 0 PRs, not 3");
+});
+
 test("celebration offers a per-badge community share button once signed in, wired to shareAchievementToCommunity", async () => {
   const window = await bootApp();
   window.isCommunitySignedIn = () => true;
