@@ -166,6 +166,28 @@ select is_empty(
   'and no row exists for anyone');
 update public.club_features set enabled = true where module_key = 'engagement_alerts';
 
+-- 202609100003 self-notify fix. A coach who is ALSO the flag's own subject
+-- - realistic in a small gym, where the coach is often also a training
+-- member - must never be notified about their own decline. Per
+-- coach_engagement_flags' founding guarantee (202608280011): "a member
+-- reading that about themselves - including a member who is themselves a
+-- coach, an admin or the owner - is the exact outcome the feature must
+-- never produce."
+delete from public.notifications where type = 'engagement_decline_flagged';
+delete from public.coach_engagement_flags where user_id in (tests.uid('m2'), tests.uid('m3'));
+insert into public.coach_engagement_flags (user_id, level, baseline_sessions_per_week, recent_sessions_per_week)
+values (tests.uid('coach'), 'mild', 3.0, 1.8);
+select is(tests.run_engagement_notify_job(), 2, 'fans out to admin and owner only - one fewer than the earlier m2 case, because the flagged coach is excluded from their own alert');
+select is(
+  (select count(*)::int from public.notifications where type = 'engagement_decline_flagged' and user_id = tests.uid('coach')), 0,
+  'the flagged coach never receives a notification about their own decline');
+select is(
+  (select count(*)::int from public.notifications n join public.profiles p on p.id = n.user_id
+   where n.type = 'engagement_decline_flagged' and p.handle in ('admin_x', 'owner_x')), 2,
+  'admin and owner still get notified about the coach''s decline');
+delete from public.coach_engagement_flags where user_id = tests.uid('coach');
+delete from public.notifications where type = 'engagement_decline_flagged';
+
 -- =====================================================================
 -- 3. The toggles exist and are on by default (what the owner asked for)
 -- =====================================================================

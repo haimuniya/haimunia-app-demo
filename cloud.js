@@ -18621,7 +18621,14 @@
     const staff = isStaff();
     const tabs = [];
     if (isModuleEnabled("feed")) tabs.push({ id: "feed", label: "פיד" });
-    tabs.push({ id: "boards", label: "לוחות" });
+    // 202609100002/what's-next follow-up: the real tabs array's own Boards
+    // badge (challenges ending within 48h) was missing here, so a member on
+    // a 900px+ desktop viewport saw no signal in the sidebar preview until
+    // they actually clicked into Community - same computation, byte-for-byte,
+    // as renderCommunityApp()'s own boardsBadgeCount just below in this file.
+    const boardsBadgeCount = (state.challenges.items || [])
+      .filter((c) => c.status === "active" && daysRemaining(c.end_at) !== null && daysRemaining(c.end_at) <= 2).length;
+    tabs.push({ id: "boards", label: "לוחות", badge: boardsBadgeCount || undefined });
     if (isModuleEnabled("directory")) tabs.push({ id: "directory", label: "חברים" });
     tabs.push({ id: "account", label: "חשבון" });
     if (staff && isModuleEnabled("coach_tools")) tabs.push({ id: "coach", label: "לוח מאמנים" });

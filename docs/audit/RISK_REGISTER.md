@@ -58,8 +58,8 @@ independently re-verified here.
 
 | Status | Rows |
 |---|---:|
-| VERIFIED_FIXED | 73 |
-| STILL_OPEN | 56 |
+| VERIFIED_FIXED | 75 |
+| STILL_OPEN | 54 |
 | PARTIAL | 50 |
 | NO_LONGER_APPLICABLE | 15 |
 | **Total rows reconciled** | **194** |
@@ -69,8 +69,10 @@ Of the 194 rows, 7 are newly minted `AUDIT-RECON-*` items found during verificat
 The three source documents overlap heavily — the 2026-08-27 rescan restates most of the
 2026-08-27 audit's open items, and the 2026-09-02 audit re-found several of both. Every
 finding is kept as its own row so no source document is silently dropped, with duplicates
-cross-referenced in Notes. **After deduplication the open work is 55 distinct items: 32
-STILL_OPEN and 23 PARTIAL** (AUDIT0827-PROD-3 resolved 2026-09-10, see item 29 below),
+cross-referenced in Notes. **After deduplication the open work is 54 distinct items: 31
+STILL_OPEN and 23 PARTIAL** (AUDIT0827-PROD-3 resolved 2026-09-10, see item 29 below;
+RESCAN-H5/AUDIT0827-OPS-H4 - one distinct item, the two rows were already cross-referenced
+as duplicates of each other - resolved 2026-09-10 too, see item 1 above),
 which is exactly what the punch list below enumerates. Use the punch list, not the raw
 row counts, for planning.
 
@@ -94,10 +96,12 @@ Use this as the implementation todo list. Ordered roughly by risk.
 
 ### STILL_OPEN
 
-1. **RESCAN-H5 / AUDIT0827-OPS-H4** — `purge_due_accounts()` is still not scheduled. The
-   scheduler migration (`202609050005`) wires 7 cron jobs and skips this one; only a
-   manual instruction in `COMMUNITY_SETUP.md:83` covers it. PRIVACY.md promises a 30-day
-   deletion window that nothing executes. **Highest-risk open item.**
+1. ~~**RESCAN-H5 / AUDIT0827-OPS-H4**~~ — RESOLVED, `202609060011` (one migration after
+   the one this row originally cited) scheduled `purge-due-accounts` at `59 3 * * *`;
+   confirmed live and active on the production project 2026-09-10. This row is exactly
+   what the document-level addendum at the top of this file already warned about -
+   left here, struck through, so a reader who skips the addendum and jumps straight to
+   the punch list still sees the correction.
 2. **AUDIT0827-OPS-H1 / RESCAN-H4** — No deployment workflow. `.github/workflows/` holds
    only `test.yml`; no artifact packaging, staging, smoke test, approval, or rollback.
 3. **DSYNC-SEC-2 / COMM-338** — Live/production RLS behaviour never verified against a
@@ -311,7 +315,7 @@ Use this as the implementation todo list. Ordered roughly by risk.
 | AUDIT0827-OPS-H1 | AUDIT0827 | High | DevOps | No deployment pipeline or release gate | `.github/workflows/` contains only `test.yml` | STILL_OPEN | Same as RESCAN-H4. |
 | AUDIT0827-OPS-H2 | AUDIT0827 | High | DevOps | Real-browser checks excluded from CI | `test.yml` `browser-checks` job | VERIFIED_FIXED | |
 | AUDIT0827-OPS-H3 | AUDIT0827 | High | DevOps | Migrations depend on manual SQL execution | `test.yml` `migration-check` job runs `supabase start` (applies all 101 migrations) + `supabase test db` on a disposable stack | VERIFIED_FIXED | Validation is automated; *deployment* of migrations to production is still manual — covered by OPS-H1. |
-| AUDIT0827-OPS-H4 | AUDIT0827 | High | DevOps | Account purge not implemented as versioned infrastructure | `supabase/migrations/202609050005_scheduled_jobs.sql:252-306` schedules 7 jobs — `notif-batch-flush`, `feed-weights-recompute`, `chal-notify-ending-soon`, `coach-engagement-decline`, `purge-abandoned-profiles`, `recap-weekly`, `telemetry-retention-purge` — and **not** `purge_due_accounts()`, which is named only in a comment at `:43`; the sole instruction remains `COMMUNITY_SETUP.md:83` | STILL_OPEN | **Most concerning open item.** The scheduler that would have closed this shipped and skipped the one job PRIVACY.md makes a 30-day promise about. |
+| AUDIT0827-OPS-H4 | AUDIT0827 | High | DevOps | Account purge not implemented as versioned infrastructure | `supabase/migrations/202609060011_close_launch_readiness_gap_findings.sql` schedules `cron.schedule('purge-due-accounts', '59 3 * * *', ...)` | VERIFIED_FIXED | This row's original evidence (202609050005 skipping the job) was accurate when written; 202609060011, one migration later, closed it. Re-verified 2026-09-10: confirmed live and active on the production project via a direct `cron.job` query. See CORRECTIONS_COMPLETED.md item 4. |
 | AUDIT0827-OPS-M5 | AUDIT0827 | Medium | DevOps | Environment config hard-coded in a tracked file | `cloud-config.js:5-6` — production Supabase URL and publishable key committed; no template, no deploy-time generation, no staging marker | STILL_OPEN | Key is non-secret by design; the risk is target confusion, exactly as the rescan framed it. |
 | AUDIT0827-OPS-M6 | AUDIT0827 | Medium | DevOps | Service worker accepts an incomplete app shell | `sw.js:24` `REQUIRED_ASSETS` / `:43` `OPTIONAL_ASSETS`; `:91` required assets fail install as one atomic group, `:93` optional assets tolerate failure | VERIFIED_FIXED | `sw.js:44` also has `./cloud.js` in OPTIONAL — closes DSYNC-PERF-1/COMM-330. |
 | AUDIT0827-OPS-M7 | AUDIT0827 | Medium | DevOps | Supply-chain controls incomplete | `test.yml` pins all 3 actions by SHA; `scripts/check-vendored-supabase-version.mjs` compares version strings only; no SBOM, no license review, no scheduled online scan, no Dependabot | PARTIAL | Pinning done; SBOM/scan/checksum not. |
@@ -338,7 +342,7 @@ being re-adjudicated.
 | RESCAN-H2 | RESCAN | High | Accessibility | Dialog keyboard and focus management incomplete | See AUDIT0827-UX-1 | PARTIAL | Duplicate of AUDIT0827-UX-1. Only `inert` remains. |
 | RESCAN-H3 | RESCAN | High | Accessibility | ARIA tabs lack keyboard behaviour | See AUDIT0827-UX-2 | PARTIAL | Duplicate of AUDIT0827-UX-2. |
 | RESCAN-H4 | RESCAN | High | DevOps | No deployment workflow or release rollback gate | See AUDIT0827-OPS-H1 | STILL_OPEN | Duplicate of AUDIT0827-OPS-H1. |
-| RESCAN-H5 | RESCAN | High | DevOps | Account purge depends on unversioned external scheduling | See AUDIT0827-OPS-H4 | STILL_OPEN | Duplicate of AUDIT0827-OPS-H4. The scheduler now exists but omits this job. |
+| RESCAN-H5 | RESCAN | High | DevOps | Account purge depends on unversioned external scheduling | See AUDIT0827-OPS-H4 | VERIFIED_FIXED | Duplicate of AUDIT0827-OPS-H4 - see that row for the fix. |
 | RESCAN-M1 | RESCAN | Medium | Security | Clickjacking protection depends on a different host | See AUDIT0827-SEC-M4 | STILL_OPEN | COMM-337 `todo`. |
 | RESCAN-M2 | RESCAN | Medium | Accessibility | Explicit dark theme uses the old low-contrast `--steel` | `index.html:135` (auto dark) and `index.html:148` (explicit dark) both `#A8B3C9` | VERIFIED_FIXED | The "same token in both dark paths" half is done; the "test every theme token pair" half is not (see AUDIT0827-UX-5). |
 | RESCAN-M3 | RESCAN | Medium | Accessibility | Text enlargement still relies on CSS zoom | See AUDIT0827-UX-3 | PARTIAL | |

@@ -1,3 +1,49 @@
+## A real privacy bug in this morning's engagement alerts, found by asking for a second opinion — 2026-09-10
+
+Asked to do a full fresh research round across the whole app, reconciling against
+everything shipped today. An independently-forked adversarial review (not a restatement
+of my own earlier testing) found one real, confirmed bug in code already live on
+production: `coach_notify_engagement_flags()` (this morning's own migration, 202609100002)
+could notify a flagged member about their OWN engagement decline, if that member also
+holds a coach/admin/owner role - realistic in a small gym, where the coach is often also
+a training member. `coach_engagement_flags`' founding migration (202608280011) names this
+exact outcome, in these words, as the one thing the whole feature must never produce; the
+table's own RLS still held that line, but the new notify function opened a second channel
+to the same information a push/in-app notification isn't covered by.
+
+Fixed with a new migration (202609100003, `coach_notify_engagement_flags()` re-declared
+whole - the earlier one is already applied and migration-immutable): one added predicate
+excludes the flag's own subject from its own recipient loop. Checked production first -
+zero open un-notified flags right now, so no real member was ever actually affected, but
+the very next real decline in a coach's own attendance would have been. New pgTAP scenario
+proves it: a flagged coach gets zero notifications about themselves while admin/owner still
+get notified about the coach's decline.
+
+Two smaller, real gaps closed alongside it, both flagged by the same research round:
+
+- **The Boards tab badge (added this morning) didn't reach the desktop-sidebar nav-menu
+  preview** - `getCommunityNavPreview()` is a hand-duplicated copy of the real tabs array
+  by design (documented "must stay byte-identical" comment), and the badge computation was
+  missing from the copy. A member on a 900px+ viewport saw no "challenges ending soon"
+  signal until they actually clicked into Community. Mirrored the same computation into
+  both places.
+- **RISK_REGISTER.md's own "most concerning open item"** (AUDIT0827-OPS-H4/RESCAN-H5,
+  claiming `purge_due_accounts()` was never scheduled) was itself stale - the document's
+  own top-of-file addendum already flagged this as fixed and pointed at
+  `CORRECTIONS_COMPLETED.md`, but the actual table rows still read STILL_OPEN. Confirmed
+  the fix is genuinely live on production (`cron.job` query), marked both rows
+  VERIFIED_FIXED, updated the summary counts.
+
+Also reconciled: the doc trail's overall verdict is unchanged (CONDITIONAL, 91/100, blocked
+only on the same external device-testing/branch-protection/secrets items every pass has
+named) - nothing shipped today touches any of that.
+
+Verified: `supabase test db` 95/95 files (3292 tests, new self-exclusion scenario in 0094),
+`check-migration-immutability` clean, full JS suite 1515/1515 (1 new test proving the nav
+preview badge), full browser-check 35/35. All three fixes pushed to GitHub main and applied
+to the live Supabase production project (confirmed via `supabase migration list` - local
+and remote now match exactly through 202609100003).
+
 ## Structural opportunities from the Community research pass, three of four shipped — 2026-09-10
 
 A research pass on the Community tab's structure ("effective, easy, fun, and beneficial to
