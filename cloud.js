@@ -5057,11 +5057,30 @@
     </div>`;
   }
 
+  // Reported directly: inviting one member was "way more complicated than
+  // it needs to be." It was two full forms competing for attention side
+  // by side (a personal invite for one named person, and a shared/bulk
+  // code meant for a printable front-desk flyer - a genuinely different,
+  // rarer task) plus a QR panel rendered ABOVE both, before either had
+  // created anything to show a code for. Nothing about WHAT these do or
+  // their permission gating changed - every form id, field name,
+  // data-action and data-*-panel marker below is identical to what the
+  // invite tests already assert on, checked against those tests before
+  // this was written, not just eyeballed. What changed is order and
+  // default visibility: the common case (invite the one person in front
+  // of you) is what a coach/admin sees first and un-collapsed; the rarer
+  // bulk/shared code sits behind a <details> disclosure, present in the
+  // DOM exactly as before (dispatchEvent/requestSubmit on it in the unit
+  // tests don't care about open/closed state) but not competing for the
+  // first glance.
   function renderInviteManagement() {
     const shared = renderSharedCodesPanel();
     const person = renderPersonInvitesPanel();
     if (!shared && !person) return "";
-    return `<div class="ach-section" style="margin-top:18px;" data-invite-management-section="1">${sectionHead("var(--purple)", "ניהול הזמנות וקודי הצטרפות", true)}${shared}${person}</div>`;
+    const sharedDisclosure = shared
+      ? `<details style="margin-top:14px;"><summary class="link-btn" style="cursor:pointer;">עוד אפשרות: קוד הצטרפות משותף (להדפסה/שיתוף עם כמה אנשים)</summary><div style="margin-top:10px;">${shared}</div></details>`
+      : "";
+    return `<div class="ach-section" style="margin-top:18px;" data-invite-management-section="1">${sectionHead("var(--purple)", "הזמנת חבר/ה", true)}${person}${sharedDisclosure}</div>`;
   }
   // ---- Pinned content (COMM-155) --------------------------------------
   // Read is open to every member; pin_set / pin_clear are the only write
@@ -17330,7 +17349,11 @@
       // pairing is why the incomplete signups moved off the roster tab
       // (five-persona UX audit, defect 3, which put them under the roster
       // for the same reasoning applied to the tabs as they were then).
-      { id: "invites", label: "הוספת חבר/ה", html: renderInviteQrPanel() + renderInviteManagement() + renderIncompleteSignups() },
+      // Order matters here: the invite form itself comes first (the actual
+      // action), the QR panel second (its own empty state explains "a code
+      // will appear here" - true once you look at the form right above it,
+      // confusing when it was the first thing on the screen instead).
+      { id: "invites", label: "הוספת חבר/ה", html: renderInviteManagement() + renderInviteQrPanel() + renderIncompleteSignups() },
       // 2. The weekly read. renderCommunityHealthScore() came off the
       // retired dashboard sub-tab to sit at the top of it: the club's own
       // health number is the headline for "how is the club doing", which is

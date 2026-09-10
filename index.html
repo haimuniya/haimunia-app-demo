@@ -145,11 +145,17 @@
     --bg:#F2F5FA; --surface:#FFFFFF; --surface2:#E9EFF8; --border:#D6DFEC;
     --chalk:#1C2536; --steel:#57627A; --red:#C2392C; --blue:#2E5AA8;
     /* --brass darkened from #A6702E (measured 4.22:1 on --surface, 3.86:1 on
-       --bg - below the 4.5:1 AA floor for normal text) to this value
+       --bg - below the 4.5:1 AA floor for normal text) to #956529
        (5.03:1 / 4.61:1) since it's used at 13-14px bold for PR/1RM figures
        and leaderboard/badge/priority text - real numeric data, not
-       decoration. Dark-theme --brass already clears AA and is untouched. */
-    --yellow:#B07E12; --green:#2E7A48; --purple:#7A4FC2; --brass:#956529;
+       decoration. Darkened again to this value after an invite-tab axe
+       pass caught .chip-btn.selected specifically: #956529 measured
+       4.35:1 on --surface2 (#E9EFF8, a background that first pass never
+       happened to check) - just under the floor. #8a5d25 clears it
+       (4.95:1 on --surface2, 5.72:1 on --surface, both improved, since
+       darkening a color only ever helps its contrast against something
+       lighter). Dark-theme --brass already clears AA and is untouched. */
+    --yellow:#B07E12; --green:#2E7A48; --purple:#7A4FC2; --brass:#8a5d25;
     --teal:#1E7D76;
     /* Direction 06 "Club Balance" handoff (README1.md): light --energy moves
        to the same coral the dark theme already ships (#E85D3D) instead of
@@ -1558,7 +1564,14 @@
   button:disabled, input:disabled, textarea:disabled, select:disabled{ opacity:.45; cursor:default; }
   input[type="checkbox"]{ accent-color:var(--energy); }
   .chip-row{ display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
-  .admin-tag{ display:inline-flex; align-items:center; font-size:10px; font-weight:800; letter-spacing:.3px; color:var(--energy); background:rgba(232,93,61,.12); border:1px solid var(--energy); border-radius:999px; padding:2px 9px; margin-inline-start:8px; }
+  /* color:var(--energy-text), not --energy - found via axe while touching
+     an unrelated invite-tab restructure, but pre-existing and shared: this
+     class renders on every admin sectionHead() across the app (moderation,
+     analytics, incomplete-signups, the invite panels...), not just here.
+     --energy is contrast-safe as a fill/border (this rule's own background/
+     border-color), never as small text - the exact distinction this file's
+     token comments already establish elsewhere. */
+  .admin-tag{ display:inline-flex; align-items:center; font-size:10px; font-weight:800; letter-spacing:.3px; color:var(--energy-text); background:rgba(232,93,61,.12); border:1px solid var(--energy); border-radius:999px; padding:2px 9px; margin-inline-start:8px; }
   /* Generic small status pill for non-admin badges (challenge/event "joined",
      completed) - previously these overrode .admin-tag's background only,
      leaving its energy-orange text/border in place underneath a brass fill:

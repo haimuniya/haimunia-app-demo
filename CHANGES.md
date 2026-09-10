@@ -1,3 +1,63 @@
+## Simplified inviting a member; two real contrast bugs found along the way — 2026-09-10
+
+Reported directly: inviting one member was "way more complicated than it
+needs to be." Read the actual code before proposing anything - the
+"הוספת חבר/ה" (Add Member) tab stacked three systems: a QR panel
+rendered ABOVE everything (its own empty state explains itself before
+either form below it has created anything), and two full forms side by
+side under one combined header - a personal invite (the common case: one
+named person) and a shared/bulk join code (a genuinely rarer case, meant
+for a printable front-desk flyer). A coach just wanting to invite the
+person standing in front of them had to first work out which of two
+forms was the right one.
+
+**Nothing about what these do, or who can see them, changed** - checked
+against `test/community-invite-code-management.test.mjs`,
+`community-invite-qr.test.mjs`, and
+`scripts/browser-check/community-person-invite-lifecycle.mjs` before
+writing anything, not after: every form id (`#communityInviteCodeCreate`,
+`#communityInviteCreate`), field name, `data-action`, and
+`data-*-panel`/`data-*-section` marker those tests assert on is
+byte-identical. What changed is order and default visibility:
+`renderInviteManagement()` now puts the personal-invite panel first,
+retitled from "ניהול הזמנות וקודי הצטרפות" to "הזמנת חבר/ה" (the section
+itself, not a new one - see the test-file comment explaining exactly
+that), with the shared/bulk-code panel moved into a `<details>`
+disclosure ("עוד אפשרות: קוד הצטרפות משותף...") - present in the DOM
+exactly as before (the unit tests `dispatchEvent`/`requestSubmit()`
+directly on it, which doesn't care about open/closed state) but not
+competing for the first glance. The QR panel and incomplete-signups
+tracker now render AFTER the invite form instead of before it, so the
+form - the actual action - is what a coach sees and can act on
+immediately.
+
+**Two real, pre-existing WCAG failures found while axe-checking the
+restructured tab**, both the same `--token-as-text` class of bug fixed
+several times earlier this session: `.admin-tag` (the "ניהול" pill on
+every `sectionHead()` across the app, not just invites) used
+`color:var(--energy)` - a fill/border-safe token, never text-safe -
+switched to `--energy-text`. `.chip-btn.selected` used `--brass` at
+4.35:1 against `--surface2` (`#E9EFF8`), just under AA - the token's own
+comment already documented one earlier darkening pass that verified it
+against `--surface`/`--bg` but never happened to check `--surface2`.
+Darkened again, `#956529` → `#8a5d25` (4.95:1 on `--surface2`, 5.72:1 on
+`--surface` - darkening only ever helps against something lighter, so
+every other pairing improved too, not just the one that was failing).
+
+A regression-guard test (`community-manage-tab.test.mjs`, "every section
+the seven-tab Manage rendered is still reachable") legitimately needed
+updating - it hardcoded the old section heading text as a marker; updated
+to the new heading with a comment explaining it's the same section, not
+proof of a silently orphaned one.
+
+Verified: `npm test` 1512/1512, `run-all.mjs` 35/35, `a11y-axe-scan.mjs`
+clean, a targeted axe pass on the invite tab specifically (both themes,
+disclosure open and closed - 4 checks, all previously failing on
+`.admin-tag`/`.selected`, now clean), confirmed via DOM query that the
+shared-code form exists before the disclosure is opened and becomes
+visible after. `APP_VERSION` bumped to `4.16.0` (a real feature/UX
+change, not a patch-level fix).
+
 ## The 4-stat summary row is deleted, not conditional — 2026-09-10
 
 The previous pass made it show only when `hasLoggedToday` - reported

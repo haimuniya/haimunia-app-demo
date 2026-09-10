@@ -120,7 +120,12 @@ test("every section the seven-tab Manage rendered is still reachable from one of
   const expected = [
     // 1. הוספת חבר/ה
     ["invites", "קוד QR להצטרפות"],
-    ["invites", "ניהול הזמנות וקודי הצטרפות"],
+    // "ניהול הזמנות וקודי הצטרפות" was the section header until the invite
+    // tab was reworked (reported live as "way more complicated than it
+    // needs to be" - two full forms competing for attention, deliberately
+    // collapsed into one prominent action + a disclosure) - "הזמנת חבר/ה"
+    // is that same section's real current heading, not a new section.
+    ["invites", "הזמנת חבר/ה"],
     ["invites", "הרשמות שלא הושלמו"],
     // 2. המועדון
     ["members", "ציון בריאות הקהילה (מנהלים בלבד)"],
