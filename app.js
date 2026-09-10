@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.15.1";
+const APP_VERSION = "4.15.7";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -3787,6 +3787,26 @@ function renderStepper(field, label, value, step, min, action) {
     </div>`;
 }
 
+// A progress chart plots progress over TIME (day to day), not every set —
+// several sets logged in one session are reps of the same workout, not
+// separate data points, and plotting one per set put multiple points on
+// the exact same date (reported directly, screenshots showing "10.09"
+// three times on one chart). Standard practice in every fitness tracker
+// that does this well (Strong, Hevy, ...): one point per day, the best
+// set of that day. Collapses `entries` to at most one per distinct date,
+// keeping whichever entry scores highest under `valueOf` — the trend/PR
+// math downstream already only cares about one number per day, so this
+// is the one place that needs to change, not renderChart or the RM table
+// (bestEst1RM/repRecordFor already take a global max across all sets
+// regardless of day, which was never the part that was wrong).
+function bestPerDay(entries, valueOf) {
+  const byDate = new Map();
+  for (const e of entries) {
+    const current = byDate.get(e.date);
+    if (!current || valueOf(e) > valueOf(current)) byDate.set(e.date, e);
+  }
+  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
 function renderDetailCard(m) {
   const hEntries = entriesFor(m.id);
   if (hEntries.length === 0) return "";
@@ -3796,7 +3816,7 @@ function renderDetailCard(m) {
   const isDuration = hEntries[0].type === "duration";
   if (isDuration) return renderDurationDetailCard(m, hEntries.filter((e) => e.type === "duration"));
   let max = -Infinity;
-  const chartData = hEntries.filter((e) => e.type !== "duration").slice().sort((a, b) => a.date.localeCompare(b.date) || a.ts - b.ts).map((e) => {
+  const chartData = bestPerDay(hEntries.filter((e) => e.type !== "duration"), (e) => e.est1RM).map((e) => {
     const isPR = e.est1RM >= max;
     if (e.est1RM > max) max = e.est1RM;
     return { dateLabel: fmtDate(e.date), est1RM: e.est1RM, isPR };
@@ -3833,7 +3853,7 @@ function renderDetailCard(m) {
 // STANDARD_REPS grid (a rep-record table means nothing for a timed hold).
 function renderDurationDetailCard(m, durationEntries) {
   let max = -Infinity;
-  const chartData = durationEntries.slice().sort((a, b) => a.date.localeCompare(b.date) || a.ts - b.ts).map((e) => {
+  const chartData = bestPerDay(durationEntries, (e) => e.durationSeconds).map((e) => {
     const isPR = e.durationSeconds >= max;
     if (e.durationSeconds > max) max = e.durationSeconds;
     return { dateLabel: fmtDate(e.date), est1RM: e.durationSeconds, isPR };
@@ -3869,10 +3889,13 @@ function renderHistoryListArea() {
     area.innerHTML = noneHtml;
     return;
   }
-  // renderDetailCard escapes exercise names and formats numeric chart data.
-  // Compose with the same audited HTML renderer used for expanded rows.
-  const initialDetailHtml = !historyId ? `<div class="scene-progress-primary">${renderDetailCard(active[0])}</div>` : "";
-  area.innerHTML = initialDetailHtml + active.map((m) => {
+  // No exercise auto-expands - reported directly: the first exercise's
+  // full chart used to render open before any tap, which also meant it
+  // was the FIRST thing on the page even when the member wanted a
+  // completely different exercise's history. Every row starts collapsed;
+  // only the one actually tapped (historyId === m.id, same as every
+  // other row below) ever shows renderDetailCard's chart/RM table.
+  area.innerHTML = active.map((m) => {
     const row = `
       <button class="exercise-row ${historyId === m.id ? "active" : ""}" data-action="select-history" data-id="${esc(m.id)}" style="${historyId === m.id ? "margin-bottom:0; border-bottom-left-radius:0; border-bottom-right-radius:0;" : ""}">
         <div class="flex items-center gap-8">

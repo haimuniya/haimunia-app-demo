@@ -1,3 +1,64 @@
+## The real reason nothing looked updated: APP_VERSION never moved — 2026-09-10
+
+Reported directly: "Didn't see any update on app. And screen still jumps."
+Investigated rather than assumed - `git log -p` on `app.js` shows
+`APP_VERSION` was bumped to `4.15.1` at the reference-accuracy-pass commit
+and then **never bumped again** across the five real fix commits that
+shipped after it (the nav-jump fix, the full Navy Stripe ship, light
+theme, extending it to all five screens, and both jump-investigation
+fixes). `sw.js`'s own comment states the mechanism plainly: "bumping
+APP_VERSION in app.js is what ships an update" - the service worker has
+no other signal that a new version exists. Every fix in this file below
+was correct in the repository the whole time; none of them had a way to
+reach an already-installed client, because the cache-busting version
+identifier stayed frozen at 4.15.1 through all of it.
+
+Bumped to `4.15.7` (one per real change since 4.15.1) and re-synced
+`SW_VERSION` via `npm run sync-version`. Verified `npm run check-version`
+passes.
+
+## Three real fixes from a live screenshot, once actually visible — 2026-09-10
+
+**1. Progress screen no longer auto-expands an exercise on load.**
+`renderHistoryListArea()` unconditionally rendered
+`renderDetailCard(active[0])` - the first exercise's full chart - open
+before any tap, whenever nothing was explicitly selected. Reported
+directly ("progress should be open only when the user is pressing an
+exercise"). Removed; every row now starts collapsed, matching the
+`historyId === m.id` condition every other row already used. Verified: 0
+charts render on load, tapping a row still opens exactly that one.
+
+**2. Progress chart no longer plots one point per SET.**
+`renderDetailCard`/`renderDurationDetailCard` fed `renderChart` one data
+point per logged entry - several sets in one session landed as several
+points on the exact same date (the reported screenshots showed "10.09"
+repeated three times and "27.08" repeated six). Researched rather than
+guessed at the right behavior: every mainstream strength-tracking app
+that plots 1RM-over-time (Strong, Hevy, ...) shows one point per session
+day, the best set of that day - a progress chart tracks day-to-day
+change, and multiple sets in one session are reps of the same workout,
+not separate progress. Added `bestPerDay(entries, valueOf)`, used by
+both chart builders; the RM-table/bestEst1RM/repRecordFor were already
+correct (a global max across all sets is unaffected by how many sets
+happened on any one day) and are untouched. Verified: three same-day sets
+at 80/90/100kg now render exactly one chart point (100kg, the best).
+
+**3. Exercise rows in the day-entries list no longer wrap mid-row.**
+`.scene-page--add .log-row > .flex{flex-wrap:wrap;}` forced wrapping with
+no truncation fallback - reported directly with a screenshot showing the
+edit/delete icons and exercise name landing on two misaligned lines.
+Classic flexbox gap: flex items default to a content-based minimum width,
+so once a row's total content exceeded the available width, wrapping was
+the only way the browser could fit it. Removed the forced wrap; both
+flex halves now get `min-width:0` (so they can actually shrink) and the
+exercise name gets real `text-overflow:ellipsis` truncation instead, so
+a long name shortens with "…" and the 44px edit/delete targets never
+lose their size to make room. Verified: three logged sets render three
+uniform 56px-tall single-line rows.
+
+Verified together: `npm test` 1512/1512, `run-all.mjs` 35/35,
+`a11y-axe-scan.mjs` clean, `npm run check-version` passes.
+
 ## Fourth jump report — a dvh instance that survived the original fix — 2026-09-10
 
 Reported specifically as jumping "getting in the app" (app launch), not a

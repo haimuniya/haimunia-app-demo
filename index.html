@@ -1753,7 +1753,18 @@
   .scene-page > .scene-page__scrim{background:linear-gradient(180deg,rgba(3,10,20,.32),rgba(3,10,20,.06) 20svh,rgba(3,10,20,.7) 43svh,#081523 85svh);}
   .scene-page--add .log-row{padding:6px 8px; border:0; background:var(--surface2); border-radius:12px; box-shadow:none;}
   .scene-page--add .log-row button{min-width:44px; min-height:44px;}
-  .scene-page--add .log-row > .flex{flex-wrap:wrap;}
+  /* Reported directly: the exercise name/icons wrapped onto a second line
+     mid-row instead of staying on one. flex-wrap:wrap was masking the
+     real fix (nothing here could shrink below its own content size,
+     the classic flexbox gotcha - flex items default to a content-based
+     min-width, so once the row's total content exceeded the available
+     width, wrapping was the browser's only way to fit it, landing icons
+     and text on two misaligned lines). min-width:0 on both halves lets
+     them actually shrink; the name itself gets real ellipsis truncation
+     instead, so a long exercise name shortens with "…" and the
+     edit/delete buttons never lose their 44px targets to make room. */
+  .log-row > .flex{ min-width:0; }
+  .log-row > .flex:first-child span:last-child{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
   body[data-scene] #app{padding-bottom:0;}
 
   body[data-scene] .scene-page--history .cal-cell{aspect-ratio:auto; height:44px;}
