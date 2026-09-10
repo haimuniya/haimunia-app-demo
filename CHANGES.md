@@ -1,3 +1,55 @@
+## The Community feed "feels cheap" — a scoped polish pass, checked against the approved mockup — 2026-09-10
+
+Reported directly. Compared the current feed markup/CSS against the already-approved
+Direction 06 reference design (`mockups/06-community.png`) instead of guessing at a new
+direction, then forked a second, deeper research pass on top of the first fix to find
+anything still worth doing. Five real, low-risk gaps, all CSS/markup-only - no new
+data, no new fetches, no schema/RLS touched:
+
+- **The composer entry point read as a utility button**, same weight as "טעינת עוד"
+  below the feed - easy to miss as the one thing on the screen that starts something.
+  Now the standard "fake input row" every social feed uses for the same tap target:
+  the member's own avatar + a greyed "מה קורה היום?" placeholder, full width. Same
+  `data-community-action="open-composer"`, so every existing composer test still
+  targets the same element.
+- **The announcement card was indistinguishable from any other card** except a badge
+  string and an emoji typed into the title. Now a visibly separate voice in the feed -
+  a warm brass-tinted card background plus a 📣 icon badge replacing the generic "ח"
+  club mark every other authorless post type still shares. Contrast computed against
+  the actual tinted background, not the untinted surface, before shipping: 5.13:1
+  light / 6.19:1 dark.
+- **The reaction/comment row was two identical grey chip buttons** - a reaction and a
+  comment count looked exactly like any filter chip or subtab elsewhere in the app.
+  Cheer now gets the same filled warm-pill treatment `.pick-hero-cta` already
+  established for a primary CTA (--energy-text on an 8% tint: 5.41:1 light / 4.83:1
+  dark, computed, not assumed); comments stays a plain, quieter icon+count since it
+  opens a thread rather than registering a reaction.
+- **PR/achievement/attendance-milestone, challenge, and event cards had no visual
+  weight of their own** - a thin colored top accent instead of a repainted card
+  (brass for PR/achievement/milestone, teal for challenges, blue for events - the
+  same hues `sectionHead()` already uses for those categories elsewhere).
+- **Feed head avatars were 36px**, a touch small against the mockup's heavier avatar
+  weight - bumped to 40px at the one call site that's actually the main feed card
+  head, not a blanket change to every 36px avatar in the app (comments, directory
+  rows keep their own deliberate sizing).
+
+Verified: the exact `community-render-cost.mjs` frame-budget trip-wire this touches
+directly (the feed's own hot path) still passes with margin - 5ms at 4x CPU throttle
+against a 16ms budget. Full suite 1512/1512, full browser-check 35/35 including
+`a11y-axe-scan.mjs` and `community-post-composition.mjs` (the composer flow itself).
+Checked visually in a real Chromium page, both themes, before calling it done - not
+just by CSS reasoning.
+
+**Flagged, not implemented - product decisions, not styling:** the mockup's
+weekly-leaderboard preview card sits inside the feed itself; today it's a fully
+separate "Boards" sub-tab with its own, already-reasonable styling. Folding a
+leaderboard preview into the feed is real work (a new render path, plus confirming
+the data is even loaded while the Feed sub-tab is active) - a scope call for the
+owner, not something to bundle into a CSS pass. Feed personalization/ranking
+(`docs/audit/FEATURE_RECOMMENDATIONS.md` FEAT-010) is a longer-term, separate-track
+item that also contributes to a feed reading as generic over time, independent of
+card styling.
+
 ## Closed the one real onboarding gap: what becomes visible when you join — 2026-09-10
 
 A full end-to-end audit (every screen, every feature, prepared for board review) gave

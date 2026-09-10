@@ -10155,13 +10155,24 @@
   }
   function findFeedPost(id) { return Array.isArray(state.feed.items) ? state.feed.items.find((p) => p && p.id === id) : null; }
   // Authorless posts render the club mark, never a broken avatar (COMM-107).
-  const CLUB_MARK_HTML = `<span aria-hidden="true" class="avatar-badge" style="width:36px;height:36px;font-size:15px;background:var(--brass);">ח</span>`;
+  const CLUB_MARK_HTML = `<span aria-hidden="true" class="avatar-badge" style="width:40px;height:40px;font-size:16px;background:var(--brass);">ח</span>`;
 
   function postHeadHtml(post, opts) {
     opts = opts || {};
     const authorless = !!opts.authorless;
     const name = authorless ? (opts.clubName || "המועדון") : (postAuthorName(post) || "חבר/ה");
-    const avatar = authorless ? CLUB_MARK_HTML : avatarHtml(name, 36, post && post.author ? post.author.avatar_url : (post && post.avatar_url));
+    // opts.markIcon lets one authorless post type stand out from the generic
+    // "ח" club mark every other authorless type (system, new-member) still
+    // shares - used by the announcement card so a club notice reads at a
+    // glance instead of looking like any other club-voice row in the feed.
+    const avatar = opts.markIcon
+      ? `<span aria-hidden="true" class="avatar-badge post-mark-icon" style="width:40px;height:40px;font-size:17px;">${opts.markIcon}</span>`
+      // Feed polish pass: 36px -> 40px, matching the reference mockup's
+      // heavier avatar weight relative to the rest of the card - scoped to
+      // just this one call site (the main feed card's own head), not every
+      // other 36px avatar in the app (comments, directory rows, etc. keep
+      // their own deliberate, smaller-context sizing).
+      : authorless ? CLUB_MARK_HTML : avatarHtml(name, 40, post && post.author ? post.author.avatar_url : (post && post.avatar_url));
     const authorId = !authorless && post && post.author_id;
     // COMM-160. Same coach badge the comments carry, on the post author.
     const roleBadge = authorId ? coachBadgeHtml(memberRole(authorId)) : "";
@@ -10394,8 +10405,13 @@
   function renderAnnouncementPostCard(post) {
     const m = post.metadata || {};
     const title = m.title || post.title || "";
-    const inner = `${title ? `<div class="post-title" style="color:var(--brass);">📣 ${bidiText(title)}</div>` : ""}${postBodyHtml(post)}${postMediaHtml(post)}`;
-    return postCardShell(post, inner, { badge: "הודעת מועדון", authorless: !postAuthorName(post) });
+    const inner = `${title ? `<div class="post-title" style="color:var(--brass);">${bidiText(title)}</div>` : ""}${postBodyHtml(post)}${postMediaHtml(post)}`;
+    // data-post-type="POST_ANNOUNCEMENT" (postCardShell, unchanged) is what
+    // the card-level tint/border in index.html keys off - markIcon here only
+    // replaces the head's own avatar mark, the two together are what makes a
+    // club notice actually read as one at a glance instead of just another
+    // .chart-card with an emoji typed into its title.
+    return postCardShell(post, inner, { badge: "הודעת מועדון", authorless: !postAuthorName(post), markIcon: "📣" });
   }
   function renderCoachPostCard(post) {
     return postCardShell(post, postBodyHtml(post) + postMediaHtml(post), { badge: "מאמן/ת" });
@@ -16888,7 +16904,18 @@
       : `<div id="communityFeedSentinel" style="height:1px;"></div>
         ${state.feed.moreError ? `<div class="footer-note" role="alert" style="text-align:center;color:var(--red-text);">לא ניתן היה לטעון עוד.</div>` : ""}
         <div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="feed-load-more"${state.feed.loadingMore ? " disabled" : ""}>${state.feed.loadingMore ? "טוען…" : state.feed.moreError ? "ניסיון חוזר" : "טעינת עוד"}</button></div>`;
-    const composeBtn = `<button class="chip-btn primary" data-community-action="open-composer" style="margin:0 0 10px;">כתיבת פוסט</button>`;
+    // Feed polish pass. Was a plain .chip-btn reading "כתיבת פוסט" - the
+    // same weight as "טעינת עוד" below the feed, easy to miss as the one
+    // thing on this screen that starts something rather than continues it.
+    // Now the standard "fake input row" every social feed uses for the same
+    // tap target: the member's own avatar (avatarHtml, same helper every
+    // other identity in this file uses - no new photo-loading path) beside
+    // a greyed placeholder that reads like an unfilled text field. Same
+    // data-action, so open-composer's own handler is untouched.
+    const composeBtn = `<button class="post-composer-trigger" data-community-action="open-composer">
+      ${avatarHtml(selfDisplayName(), 40, state.profile && state.profile.avatar_url)}
+      <span class="post-composer-trigger-text">מה קורה היום?</span>
+    </button>`;
     // classmatesTodayHtml and upcomingEventHtml are no longer concatenated
     // here. Both are now rail cards. The event card in particular used to
     // render AFTER ${feed} - the one time-sensitive item on the screen sat

@@ -1676,6 +1676,43 @@
   .post-media-grid{ display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:10px; }
   .post-media-grid .post-photo{ margin-top:0; max-height:200px; }
   .post-actions{ margin-top:12px; }
+  /* Feed polish pass. The action row used to be two identical grey
+     .chip-btn boxes - a reaction and a comment count looked exactly like
+     any utility toggle elsewhere in the app (a filter chip, a subtab).
+     Cheer gets the same filled-pill treatment .pick-hero-cta already
+     established for a primary warm CTA (color-mix at 8%/50%). --energy-text
+     on this exact 8% tint measures 5.41:1 light / 4.83:1 dark - computed
+     against the actual tinted background, not the untinted --surface -
+     both still AA; comments stays a plain, quieter icon+count since it
+     opens a thread rather than registering a reaction. */
+  .post-actions .chip-btn[data-community-action="cheer"]{ background:color-mix(in srgb, var(--energy) 8%, var(--surface)); border-color:color-mix(in srgb, var(--energy) 50%, transparent); color:var(--energy-text); font-weight:800; }
+  .post-actions .chip-btn[data-community-action="toggle-comments"]{ background:transparent; border-color:transparent; color:var(--steel); font-weight:600; }
+  /* A club-wide notice used to be indistinguishable from any other card
+     except for a badge string and an emoji typed into the title - now a
+     visibly separate voice in the feed, the same color-mix pattern as the
+     cheer pill above. Contrast computed against the ACTUAL tinted
+     background this text sits on, not the untinted --surface: --brass
+     .post-title text on this 8% tint measures 5.13:1 light / 6.19:1 dark -
+     both still comfortably AA. */
+  .post-card[data-post-type="POST_ANNOUNCEMENT"]{ background:color-mix(in srgb, var(--brass) 8%, var(--surface)); border-color:color-mix(in srgb, var(--brass) 35%, var(--border)); }
+  .post-mark-icon{ background:color-mix(in srgb, var(--brass) 22%, var(--surface)); border:1px solid color-mix(in srgb, var(--brass) 45%, transparent); }
+  /* A thin top accent instead of a repainted card - a PR or achievement is
+     still an ordinary post, just one worth a half-second longer glance
+     scrolling past it, not a second visual language. */
+  .post-card[data-post-type="POST_PR"],.post-card[data-post-type="POST_ACHIEVEMENT"],.post-card[data-post-type="POST_ATTENDANCE_MILESTONE"]{ border-top:3px solid color-mix(in srgb, var(--brass) 55%, transparent); }
+  /* Same accent, the two other link-card types that shipped with only a
+     bare emoji in their title and nothing else - challenge/event get their
+     own hues rather than reusing brass, matching sectionHead("var(--teal)",
+     ...)/("var(--blue)", ...) already used for these exact categories
+     elsewhere in Community. */
+  .post-card[data-post-type="POST_CHALLENGE"]{ border-top:3px solid color-mix(in srgb, var(--teal) 55%, transparent); }
+  .post-card[data-post-type="POST_EVENT"]{ border-top:3px solid color-mix(in srgb, var(--blue) 55%, transparent); }
+  /* The composer trigger - was a plain .chip-btn, now the fake-input row
+     every social feed uses for the same tap target: own avatar + a
+     placeholder-styled label, full-width, left-aligned text (RTL: text
+     starts at the trailing edge, same reading direction as a real input). */
+  .post-composer-trigger{ display:flex; align-items:center; gap:10px; width:100%; background:var(--surface); border:1px solid var(--border); border-radius:999px; padding:8px 14px 8px 8px; margin:0 0 10px; box-shadow:var(--shadow-card); text-align:start; }
+  .post-composer-trigger-text{ color:var(--steel); font-size:13.5px; }
   .comment-row{ display:flex; align-items:flex-start; gap:8px; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:8px 10px; }
   .tab-badge{ display:inline-flex; align-items:center; justify-content:center; min-width:16px; height:16px; padding:0 4px; margin-inline-start:6px; border-radius:999px; background:var(--red); color:#fff; font-size:10px; font-weight:800; }
   /* Promoted from ~19 classless, inline-styled cloud.js elements (COMM-347):
