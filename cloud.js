@@ -11612,7 +11612,14 @@
     } else if (env.free_selection) {
       body = renderMemberOfWeekPickForm(env);
     } else if (env.candidates && env.candidates.length) {
-      body = `<div class="log-list">${env.candidates.map((c) => renderMemberOfWeekCandidate(c, env.category)).join("")}</div>${renderMemberOfWeekPickForm(env)}`;
+      // Same complication the invite flow had: a form that's always fully
+      // open competes for attention with the actual suggestions above it.
+      // Collapsed by <details> here, not removed - the coach's-pick form
+      // stays exactly as reachable (same ids/data-actions, same DOM), just
+      // tucked behind a summary when there's already something to publish
+      // with one tap. The empty/free_selection/coachs_pick branches below
+      // leave it open, since there it's the only action on screen.
+      body = `<div class="log-list">${env.candidates.map((c) => renderMemberOfWeekCandidate(c, env.category)).join("")}</div><details style="margin-top:8px;"><summary class="link-btn" style="cursor:pointer;">בחירה ידנית של חבר/ת השבוע</summary>${renderMemberOfWeekPickForm(env)}</details>`;
     } else {
       // NO BUTTON IN SLOT 4 - because the action already exists, three
       // elements further down. renderMemberOfWeekPickForm() renders directly

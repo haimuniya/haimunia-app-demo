@@ -1,3 +1,28 @@
+## Same fix, second surface: Member of the Week's coach's-pick form — 2026-09-10
+
+Follow-up to the invite-flow simplification below - a fork audited the
+rest of the Community/admin surfaces for the same "more complicated than
+it needs to be" pattern and found one clean match: the coach dashboard's
+Member of the Week section. Whenever computed candidates exist,
+`renderCoachMemberOfWeekSection()` rendered the candidate list AND a
+full always-open "coach's pick" form (username, reason textarea, submit)
+directly beneath it - a free-text manual override sitting in equal
+visual weight next to the one-tap "פרסום" button on each actual
+candidate, for what COMM-315 itself treats as a fallback path.
+
+Checked `test/community-member-of-week.test.mjs` first: every assertion
+on the populated-candidates case uses `querySelector('[data-mow-pick-*]')`
+presence, not visibility, so the same `<details>` disclosure already
+used for the invite flow's shared-code panel applies here unchanged -
+the form stays in the DOM with the same ids/data-actions, now tucked
+behind a "בחירה ידנית של חבר/ת השבוע" summary instead of always-open.
+Left it open in every OTHER branch (empty candidates, free_selection,
+coachs_pick) - there it's the only action on screen, so collapsing it
+would just add a click with nothing to hide it from.
+
+`test/community-member-of-week.test.mjs` (14/14) and the full suite
+(1512/1512) both pass unchanged.
+
 ## Simplified inviting a member; two real contrast bugs found along the way — 2026-09-10
 
 Reported directly: inviting one member was "way more complicated than it
