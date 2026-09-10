@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.15.7";
+const APP_VERSION = "4.15.8";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -3581,7 +3581,7 @@ function renderLogTab() {
       <div class="scene-page__intro">
         <div class="scene-page__brand">האימוניה</div>
         <h1 id="pageTitle-add" class="scene-page__title">${hasLoggedToday ? `<span aria-hidden="true" style="display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; border-radius:999px; background:var(--club-success); flex-shrink:0;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>` : ""}<span>סיכום אימון</span></h1>
-        <p class="scene-page__subtitle">עבודה מעולה!</p>
+        <p class="scene-page__subtitle">${hasLoggedToday ? "עבודה מעולה!" : "מוכנים להתחיל?"}</p>
       </div>
       <div class="scene-sheet">
     <div class="stripe-ribbon" aria-hidden="true"></div>
@@ -3594,12 +3594,13 @@ function renderLogTab() {
 
     <div class="scene-summary-meta"><bdi>${esc(fmtDate(logDate))}</bdi></div>
 
+    ${hasLoggedToday ? `
     <div class="stat-row" style="margin-bottom:16px;" aria-label="סיכום האימון היום">
       <div class="stat-card"><div class="stat-value mono" style="font-size:20px;">${dayExerciseCount}</div><div class="stat-label">תרגילים</div></div>
       <div class="stat-card"><div class="stat-value mono" style="font-size:20px;">${dayVolume ? Math.round(dayVolume).toLocaleString("he-IL") : "—"}</div><div class="stat-label">ק"ג נפח</div></div>
       <div class="stat-card"><div class="stat-value mono" style="font-size:20px;">${dayDurationMin != null ? dayDurationMin : "—"}</div><div class="stat-label">דק'</div></div>
       <div class="stat-card ${dayPRCount ? "stat-hero" : ""}"><div class="stat-value mono" style="font-size:20px; ${dayPRCount ? "color:var(--brass);" : ""}">${dayPRCount}</div><div class="stat-label">שיאים חדשים</div></div>
-    </div>
+    </div>` : ""}
     ${dayEntries.length === 0 ? `
     <div class="day-empty">${ICONS.emptyDay}<span>${isToday ? "עדיין לא נרשמו סטים היום. כאן מתעדים את האימון שהושלם." : `עדיין לא נרשמו סטים ב-${esc(dayLabel)}.`}</span></div>` : `
     <div class="section-label">${isToday ? "סיכום האימון" : `סיכום ${esc(dayLabel)}`}</div>

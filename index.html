@@ -788,10 +788,17 @@
      yields 62px, 10px over tolerance) - scoped to the scene bottom bar only,
      .save-btn elsewhere (dialogs, forms) is untouched. */
   body[data-scene] #bottomBar .save-btn{ min-height:52px; padding-block:0; }
-  @media (prefers-reduced-motion:no-preference){
-    .scene-sheet{ animation:scene-sheet-in .2s ease-out; }
-    @keyframes scene-sheet-in{ from{ opacity:.96; transform:translateY(12px); } to{ opacity:1; transform:translateY(0); } }
-  }
+  /* REMOVED (reported live: "the box where you put your exercise jumps").
+     This animation was meant to play once, entering a scene tab. It
+     actually replayed on every single re-render within the SAME tab -
+     render() rebuilds #content's innerHTML wholesale on nearly every
+     interaction (typing a weight, tapping a stepper, anything), so the
+     browser saw a "new" .scene-sheet matching this selector each time
+     and restarted the 12px-translateY + fade from scratch - a visible
+     jump on the most frequently-interacted-with element on the screen,
+     not a one-time entrance. No state exists today to distinguish "just
+     switched into this tab" from "re-rendered within it", so removed
+     rather than half-fixed. */
   /* The save button and the tab bar are ONE fixed-position wrapper
      (#bottomNavWrap, index.html), not two independently-fixed elements -
      each computing its own `bottom` offset from env(safe-area-inset-bottom)
@@ -1889,10 +1896,16 @@
      without it this would silently lose in dark theme specifically,
      exactly the theme this was reported against - caught by computing
      specificity, not by trusting source order alone. */
+  /* The coral radial-gradient glow this used to also carry is removed -
+     reported directly (a screenshot of a warm/reddish tint still visible
+     behind the stat cards, after the ambient photo layer itself was
+     already removed). It wasn't the ambient layer bleeding through a
+     second time; it was this scrim's OWN added glow, bleeding through
+     the translucent glass sheet near the photo/sheet seam. Plain
+     darkening gradient only now, same as before any Navy Stripe color
+     was added to it. */
   body[data-scene] .scene-page > .scene-page__scrim{
-    background:
-      radial-gradient(55% 40% at 15% 0%, rgba(255,107,61,.20), transparent 60%),
-      linear-gradient(180deg, rgba(10,13,22,.22) 0%, rgba(10,13,22,.04) 22%, rgba(10,13,22,.10) 55%, rgba(15,20,35,.55) 85%, var(--club-navy) 100%);
+    background: linear-gradient(180deg, rgba(10,13,22,.22) 0%, rgba(10,13,22,.04) 22%, rgba(10,13,22,.10) 55%, rgba(15,20,35,.55) 85%, var(--club-navy) 100%);
   }
 
   /* Real, measured glass - not a token swap - extended to every scene

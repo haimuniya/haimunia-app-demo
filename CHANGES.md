@@ -1,4 +1,59 @@
-## The real reason nothing looked updated: APP_VERSION never moved — 2026-09-10
+## Fifth jump report was a real, different bug — plus a corrected fix and two more from a marked-up screenshot — 2026-09-10
+
+**The actual "box jumps" cause.** Not a page-scroll issue at all this time
+- reported precisely: "it's the box where you can put your exercise that
+jumps." `.scene-sheet{ animation:scene-sheet-in .2s ease-out; }` (gated
+behind `prefers-reduced-motion:no-preference`, so it wasn't a motion-
+accessibility bug) was meant to play once, entering a scene tab. It
+actually replayed on every single re-render *within* the tab -
+`render()` rebuilds `#content`'s innerHTML wholesale on nearly every
+interaction (typing a weight, tapping a stepper, anything), so the
+browser saw a "new" `.scene-sheet` matching the selector each time and
+restarted the 12px-translateY + fade from scratch. No state exists today
+to distinguish "just switched into this tab" from "re-rendered within
+it," so removed rather than half-fixed.
+
+**A wrong turn, corrected the same session.** Also reported (with a
+screenshot circled in red): a warm/reddish tint still visible behind the
+stat cards, after the ambient photo layer was already removed. First
+guess wrong: assumed it was the scrim's own added coral radial-gradient
+and removed that - genuinely a real contributor, correctly removed. But
+then also raised the sheet's opacity from `.8` to `.95` to kill the
+*remaining* bleed (the backdrop-filter blur sampling the actual red-
+striped photo through the translucent sheet, inherent to glass sitting
+near a colorful photo) - which was NOT wanted. Corrected immediately:
+"I liked the transparency" - reverted to `.8`. The circled screenshot
+turned out to mean something narrower than either guess: remove the
+4-stat summary row itself, not reduce transparency anywhere. Recorded
+here as a real example of two guesses in a row on ambiguous visual
+feedback, corrected in full as soon as the actual intent was clarified,
+rather than left half-applied.
+
+**The 4-stat summary row (תרגילים/ק"ג נפח/דק'/שיאים חדשים) is
+conditional again.** It used to be gated on `hasLoggedToday` (the same
+flag the completion checkmark already uses) before the reference-
+accuracy pass made it unconditional - showing four zero/dash cards
+before a member has logged anything today was exactly the clutter the
+circled screenshot was pointing at. Restored: `${hasLoggedToday ? ... :
+""}`.
+
+**"עבודה מעולה!" (great job!) is conditional too, for the same reason.**
+Reported directly: it shouldn't show all the time, only right after
+logging something, then disappear again. It had the identical
+unconditional-regression as the stat row - restored to the same
+`hasLoggedToday` check the title's completion badge already uses, with
+"מוכנים להתחיל?" (ready to start?) as the before-logging state, matching
+this session's very first pass at this screen (which had exactly this
+conditional, lost somewhere in a later rewrite).
+
+Verified together: `npm test` 1512/1512, `run-all.mjs` 35/35,
+`a11y-axe-scan.mjs` clean, every state change (subtitle text, stat-row
+presence, sheet opacity) confirmed via computed DOM content in headless
+Chromium before and after logging a set, not just visually. `APP_VERSION`
+bumped again to `4.15.8` and re-synced - see the entry directly below for
+why that step is not optional on any pass that touches production code.
+
+**The real reason nothing looked updated: APP_VERSION never moved.**
 
 Reported directly: "Didn't see any update on app. And screen still jumps."
 Investigated rather than assumed - `git log -p` on `app.js` shows
