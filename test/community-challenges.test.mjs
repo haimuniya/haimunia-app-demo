@@ -579,6 +579,41 @@ test("the same form edits an existing challenge (title, target) and can publish 
   await waitFor(() => mock.db.challenges.find((c) => c.id === "c1").status === "archived", 3000);
 });
 
+// Real bug found by a role-coverage audit: pin_set()/pinTargetLabel() have
+// always modeled "challenge" as a pinnable target (same as announcement/
+// event/post), but no challenge surface ever rendered a pin button - the
+// only way to reach pin_set for a challenge was a direct handler call, not
+// a real click. community.content.pin starts at head_coach, one tier above
+// the CHALLENGE_CREATE a plain coach holds, so the two controls (edit vs.
+// pin) are gated separately and a coach should see edit but never pin.
+test("a head_coach can pin a challenge to club home from its own detail view, and a plain coach (who can edit but not pin) never sees the control", async () => {
+  const mock = seeded({
+    invite_redemptions: [
+      { user_id: "u1", invite_id: "inv-1", role: "head_coach", redeemed_at: VERIFIED },
+      { user_id: "u2", invite_id: "inv-1", role: "member", redeemed_at: VERIFIED },
+    ],
+    challenges: [{ id: "c1", challenge_type: "individual_target", title: "12 אימונים החודש", description: "", metric_type: "session_count", target_value: 12, start_at: iso(-5), end_at: iso(20), status: "active", join_mode: "open", visibility: "club", created_by: "u1", config: {} }],
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openBoards(window);
+  await waitFor(() => !!window.document.querySelector('[data-challenge-id="c1"]'), 3000);
+  openChallengeCard(window, "c1");
+  await waitFor(() => !!window.document.querySelector('[data-community-action="pin"][data-type="challenge"][data-id="c1"]'), 3000);
+  window.document.querySelector('[data-community-action="pin"][data-type="challenge"][data-id="c1"]').click();
+  await waitFor(() => mock.db.pins.some((p) => p.target_type === "challenge" && p.target_id === "c1"), 3000);
+  await waitFor(() => !!window.document.querySelector('[data-community-action="unpin"][data-type="challenge"][data-id="c1"]'), 3000);
+
+  const mock2 = seeded({
+    challenges: [{ id: "c1", challenge_type: "individual_target", title: "12 אימונים החודש", description: "", metric_type: "session_count", target_value: 12, start_at: iso(-5), end_at: iso(20), status: "active", join_mode: "open", visibility: "club", created_by: "coach1", config: {} }],
+  }, true);
+  const w2 = await bootCommunity(mock2, { syncEnabled: false });
+  await openBoards(w2);
+  await waitFor(() => !!w2.document.querySelector('[data-challenge-id="c1"]'), 3000);
+  openChallengeCard(w2, "c1");
+  await waitFor(() => !!w2.document.querySelector('[data-community-action="challenge-edit"]'), 3000);
+  assert.equal(w2.document.querySelector('[data-community-action="pin"][data-type="challenge"]'), null, "a plain coach can edit but never sees a pin control");
+});
+
 // Launch-readiness audit item 4. submitChallengeForm's edit path used to
 // write `config` built fresh from only the CURRENT form type's fields
 // straight over the whole config column, so any key that form does not

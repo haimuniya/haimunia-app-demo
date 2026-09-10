@@ -15,10 +15,14 @@ import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 // Migration 202608280003 defaults: private-leaning for anything that
 // exposes numbers, on for anything that only makes a member reachable
 // inside the invited club.
+// allow_messages was removed from this panel by a role-coverage audit fix:
+// it toggled a privacy preference for a direct-messaging feature that does
+// not exist anywhere in the app. The column stays in the schema (harmless,
+// ready for the day DMs ship); only the misleading client control is gone.
 const DEFAULTS = {
   visible_to_club: true, show_workout_results: false, show_prs: false, show_achievements: true,
   show_attendance: false, show_upcoming_booking: false, show_in_attendee_lists: true,
-  in_leaderboards: true, allow_follows: true, allow_mentions: true, allow_messages: false,
+  in_leaderboards: true, allow_follows: true, allow_mentions: true,
 };
 
 function seededMember(overrides = {}) {
@@ -38,15 +42,14 @@ async function openAccountTab(window) {
 }
 
 test("the panel renders one checkbox per privacy column, each reflecting the stored value", async () => {
-  const mock = seededMember({ show_prs: true, allow_messages: true, in_leaderboards: false });
+  const mock = seededMember({ show_prs: true, in_leaderboards: false });
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openAccountTab(window);
 
   const boxes = [...window.document.querySelectorAll('[data-privacy-field]')];
   const byField = Object.fromEntries(boxes.map((b) => [b.dataset.privacyField, b]));
-  assert.deepEqual(boxes.map((b) => b.dataset.privacyField).sort(), Object.keys(DEFAULTS).sort(), "all 11 columns present, no show_birthday");
+  assert.deepEqual(boxes.map((b) => b.dataset.privacyField).sort(), Object.keys(DEFAULTS).sort(), "all 10 columns present, no show_birthday, no allow_messages (no DM feature exists)");
   assert.equal(byField.show_prs.checked, true);
-  assert.equal(byField.allow_messages.checked, true);
   assert.equal(byField.in_leaderboards.checked, false);
   assert.equal(byField.visible_to_club.checked, true);
 });
@@ -101,13 +104,13 @@ test("a failed save reverts the toggle and shows the Hebrew error", async () => 
     return chain;
   };
 
-  const box = window.document.querySelector('[data-privacy-field="allow_messages"]');
+  const box = window.document.querySelector('[data-privacy-field="show_prs"]');
   box.checked = true;
   box.dispatchEvent(new window.Event("change", { bubbles: true }));
 
   await waitFor(() => /לא ניתן לשמור הגדרה זו/.test(window.document.getElementById("content").textContent), 3000);
-  assert.equal(mock.db.profiles[0].allow_messages, false, "the failed write did not change the stored value");
-  assert.equal(window.document.querySelector('[data-privacy-field="allow_messages"]').checked, false, "the checkbox reverted");
+  assert.equal(mock.db.profiles[0].show_prs, false, "the failed write did not change the stored value");
+  assert.equal(window.document.querySelector('[data-privacy-field="show_prs"]').checked, false, "the checkbox reverted");
 });
 
 test("allow_follows=false on another member hides the follow button but keeps block", async () => {

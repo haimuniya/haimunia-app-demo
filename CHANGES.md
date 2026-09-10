@@ -1,3 +1,51 @@
+## A role-coverage audit — two real bugs found and fixed, one dead control removed — 2026-09-10
+
+Asked to verify the app is actually ready per role, not just told so. Four parallel research
+passes each audited one of the four reachable roles (`member`, `coach`, `head_coach`, `admin` —
+`staff`/`owner` are seeded in the schema but have no path to being granted, confirmed
+out of scope) against `AUTHORIZATION_MATRIX.md`'s own permission truth, reading the actual
+render code rather than trusting prior audit docs. Two real, previously-unverified defects
+came back, both fixed and covered by new tests, both confirmed live in a real Chromium
+session (not just jsdom) before shipping:
+
+- **A plain `coach` saw two moderation-queue buttons that always failed.** `renderModeration()`
+  showed all five decisions - including "הגבלת פרסום זמנית"/"הגבלת פרסום קבועה" (restrict,
+  temp/permanent) - to any holder of `community.comment.moderate`, which every coach holds.
+  But `mod_restrict_member()` independently requires `community.member.restrict`, seeded only
+  to `head_coach` and up. A coach clicking either button got a hard, unexplained "not
+  authorized" every time - a broken control, not a missing one. The two decisions are now
+  filtered on `hasPerm(PERM.MEMBER_RESTRICT)` before they render at all.
+- **Content pinning had no real button anywhere except the announcements list.**
+  `pin_set()`/`pinTargetLabel()` have modeled four pinnable types (announcement/challenge/
+  event/post) since COMM-155 shipped, but only announcements ever grew a pin control - every
+  existing pin test for the other three types went through a direct `window.eval` handler
+  call because there was no button to click, in this codebase or in production. A shared
+  `isPinnedTarget()`/`pinToggleHtml()` pair now backs a real pin/unpin control on a
+  challenge's and event's detail-view toolbar and on a post's own "⋯" overflow menu, gated
+  on `community.content.pin` (head_coach+) same as it always should have been.
+- **A dead privacy toggle removed.** The Account tab's privacy panel offered "אפשר הודעות
+  פרטיות אליי" (allow private messages) - a preference for a direct-messaging feature that
+  does not exist anywhere in the app. The `profiles.allow_messages` column stays in the
+  schema untouched (harmless, ready the day DMs ship); only the misleading client control
+  and its now-unnecessary fetch are gone.
+- **Investigated and closed, no code change:** the club-modules panel ("no toggle for every
+  feature") was re-verified toggle-by-toggle against every `module_key` the schema seeds -
+  all 13 (8 community + 5 coach-tools) render as real checkboxes, none missing. The two
+  groups sit in one continuous scroll; the most likely explanation is the original screenshot
+  simply hadn't scrolled to the second group yet.
+
+Verified before shipping, not assumed: full JS suite 1531/1531 (4 new tests - a coach seeing
+the right 3-of-5 decisions, a head_coach pinning a challenge from a real click while a coach
+never sees the control, the same for an event, and a post pinned through its real overflow
+menu instead of `window.eval`), full browser-check 36/36 tracked scenarios (the 37th failure,
+`zz-trainee-tour.mjs`, is untracked WIP left by a concurrent session in this working tree,
+reproduced failing identically with none of this pass's changes applied - not a regression,
+left untouched), and a live 4-role Chromium walkthrough (member/coach/head_coach/admin,
+light and dark) screenshotting the actual fixes working end to end: the coach queue with
+only 3 buttons, the head_coach queue with all 5, a challenge going from no-pin-button
+(coach) to a working pin→unpin round trip with a real confirmation toast (head_coach), and
+the privacy panel's 10 remaining toggles with no dead 11th.
+
 ## Real device feedback, two visual fixes — 2026-09-10
 
 Five screenshots from the actual production app on a phone, with three complaints:

@@ -437,6 +437,41 @@ test("editing an event without touching its time fields preserves the exact stor
   assert.equal(saved.start_at, originalStart, "an untouched edit round-trips the exact same instant");
 });
 
+// Real bug found by a role-coverage audit: pin_set()/pinTargetLabel() have
+// always modeled "event" as a pinnable target (same as announcement/
+// challenge/post), but no event surface ever rendered a pin button - the
+// only way to reach pin_set for an event was a direct handler call, not a
+// real click. community.content.pin starts at head_coach, one tier above
+// the EVENT_MANAGE a plain coach holds, so edit and pin are gated
+// separately and a coach should see edit but never pin.
+test("a head_coach can pin an event to club home from its own detail view, and a plain coach (who can edit but not pin) never sees the control", async () => {
+  const mock = seeded({
+    invite_redemptions: [
+      { user_id: "u1", invite_id: "inv-1", role: "head_coach", redeemed_at: VERIFIED },
+      { user_id: "u2", invite_id: "inv-1", role: "member", redeemed_at: VERIFIED },
+    ],
+    events: [{ id: "e1", event_type: "workshop", title: "סדנת גמישות", description: "", status: "published", start_at: iso(24), end_at: null, location: "אולם 1", capacity: null, registration_deadline: null, created_by: "u1" }],
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openBoards(window);
+  await waitFor(() => !!window.document.querySelector('[data-event-id="e1"]'), 3000);
+  openEventCard(window, "e1");
+  await waitFor(() => !!eventViewDialog(window)?.querySelector('[data-community-action="pin"][data-type="event"][data-id="e1"]'), 3000);
+  eventViewDialog(window).querySelector('[data-community-action="pin"][data-type="event"][data-id="e1"]').click();
+  await waitFor(() => mock.db.pins.some((p) => p.target_type === "event" && p.target_id === "e1"), 3000);
+  await waitFor(() => !!eventViewDialog(window).querySelector('[data-community-action="unpin"][data-type="event"][data-id="e1"]'), 3000);
+
+  const mock2 = seeded({
+    events: [{ id: "e1", event_type: "workshop", title: "סדנת גמישות", description: "", status: "published", start_at: iso(24), end_at: null, location: "אולם 1", capacity: null, registration_deadline: null, created_by: "coach1" }],
+  }, true);
+  const w2 = await bootCommunity(mock2, { syncEnabled: false });
+  await openBoards(w2);
+  await waitFor(() => !!w2.document.querySelector('[data-event-id="e1"]'), 3000);
+  openEventCard(w2, "e1");
+  await waitFor(() => !!eventViewDialog(w2)?.querySelector('[data-community-action="event-edit"]'), 3000);
+  assert.equal(eventViewDialog(w2).querySelector('[data-community-action="pin"][data-type="event"]'), null, "a plain coach can edit but never sees a pin control");
+});
+
 test("editing an event opened from the feed top area (not Boards) closes the detail dialog and lands on the reachable Boards form", async () => {
   const mock = seeded({
     events: [{ id: "e1", event_type: "workshop", title: "סדנת ריצה", description: "", status: "published", start_at: iso(6), end_at: null, location: null, capacity: null, registration_deadline: null, created_by: "coach1" }],

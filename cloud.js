@@ -1388,7 +1388,7 @@
   // recovery_verified_at drives the COMM-016 gate; the privacy columns
   // (COMM-018) drive the Account > Privacy panel and are read straight off
   // state.profile, so they have to be selected here too.
-  const PROFILE_COLUMNS = "id,handle,display_name,bio,avatar_url,is_admin,recovery_verified_at,visible_to_club,show_workout_results,show_prs,show_achievements,show_attendance,show_upcoming_booking,show_in_attendee_lists,in_leaderboards,allow_follows,allow_mentions,allow_messages";
+  const PROFILE_COLUMNS = "id,handle,display_name,bio,avatar_url,is_admin,recovery_verified_at,visible_to_club,show_workout_results,show_prs,show_achievements,show_attendance,show_upcoming_booking,show_in_attendee_lists,in_leaderboards,allow_follows,allow_mentions";
   // Launch-readiness audit, CQ-006. loadProfile()/loadRedemption() used to
   // drop `error` and collapse "the fetch failed" into "the row doesn't
   // exist" (`data || null`, unconditionally). The join funnel below reads
@@ -7371,7 +7371,14 @@
     { key: "in_leaderboards", label: "הכללה בטבלאות המובילים" },
     { key: "allow_follows", label: "אפשר לחברי המועדון לעקוב אחריי" },
     { key: "allow_mentions", label: "אפשר אזכור שלי בתגובות (@)" },
-    { key: "allow_messages", label: "אפשר הודעות פרטיות אליי" },
+    // Real bug found by a role-coverage audit: this panel offered a toggle
+    // for "allow private messages to me" (allow_messages) with no direct-
+    // messaging feature anywhere in the app to gate - a member could set a
+    // privacy preference for something that doesn't exist. The
+    // `profiles.allow_messages` column and its RLS clause stay in the
+    // schema (harmless, and ready the day DMs actually ship); only the
+    // misleading client control is removed. PROFILE_COLUMNS below no
+    // longer fetches it either, since nothing reads it now.
   ];
   const PRIVACY_KEYS = PRIVACY_FIELDS.map((f) => f.key);
   async function savePrivacyField(field, value) {
@@ -8783,7 +8790,15 @@
           ${r.note ? `<div style="color:var(--steel);font-size:12px;margin-top:4px;">״${esc(String(r.note).slice(0, 240))}״</div>` : ""}
           <div class="chip-row" style="margin-top:10px;">
             <button class="chip-btn" data-community-action="mod-context" data-id="${esc(r.report_id)}">צפייה בהקשר</button>
-            ${done ? "" : MOD_DECISIONS.filter((d) => d.id !== "remove" || r.target_type !== "profile").map((d) =>
+            ${done ? "" : MOD_DECISIONS.filter((d) => d.id !== "remove" || r.target_type !== "profile")
+              // Real bug found by a role-coverage audit: comment.moderate
+              // (coach and up) rendered these two decisions same as every
+              // other one, but mod_restrict_member() independently requires
+              // community.member.restrict, seeded to head_coach and up only
+              // - a coach clicking either restrict button got a hard
+              // "not authorized" failure every time, with no indication why.
+              .filter((d) => (d.id !== "restrict_temp" && d.id !== "restrict_permanent") || hasPerm(PERM.MEMBER_RESTRICT))
+              .map((d) =>
               `<button class="chip-btn${d.destructive ? " danger" : ""}" data-community-action="mod-action" data-id="${esc(r.report_id)}" data-decision="${d.id}">${d.label}</button>`).join("")}
           </div>
         </div>`;
@@ -10084,6 +10099,22 @@
   // club top card. Up to three chips; staff with community.content.pin get
   // an unpin control on each.
   function pinTargetLabel(t) { return { announcement: "הודעה", challenge: "אתגר", event: "אירוע", post: "פוסט" }[t] || t; }
+  // Real bug found by a role-coverage audit: the backend and pinTargetLabel()
+  // both model four pinnable target types, but the only place that ever
+  // rendered a "pin" (as opposed to "unpin") control was the announcements
+  // list - a head_coach/admin wanting to pin a challenge, event or post to
+  // club home had no button anywhere, only a raw window.eval escape hatch
+  // (which is exactly how this file's own test suite exercised the "pin a
+  // post" path, having no real button to click). isPinnedTarget() and
+  // pinToggleHtml() are the one shared implementation every target-type
+  // surface below now calls, instead of each screen re-deriving its own
+  // (and, as happened here, three of the four forgetting to).
+  function isPinnedTarget(type, id) { return state.admin.pins.some((p) => p.target_type === type && p.target_id === id); }
+  function pinToggleHtml(type, id, note) {
+    if (!hasPerm(PERM.CONTENT_PIN)) return "";
+    const pinned = isPinnedTarget(type, id);
+    return `<button class="link-btn" data-community-action="${pinned ? "unpin" : "pin"}" data-type="${esc(type)}" data-id="${esc(id)}"${note ? ` data-note="${esc(note)}"` : ""} style="margin:2px 0 0;">${pinned ? "ביטול הצמדה" : "הצמדה למעלה"}</button>`;
+  }
   // ONE RAIL. The single owner of "how much may sit between a member and the
   // first thing another member wrote".
   //
@@ -10250,6 +10281,13 @@
       items += mi("post-hide", "הסתרת הפוסט", post.id);
       items += mi("report", "דיווח", post.id);
       if (post.author_id) items += mi("block", "חסימת החבר/ה", post.author_id, true);
+    }
+    // Real bug found by a role-coverage audit: content.pin covers posts too
+    // (pinTargetLabel() has always listed "post"), but until now no post
+    // surface offered a pin control at all - see isPinnedTarget()'s comment.
+    if (hasPerm(PERM.CONTENT_PIN)) {
+      const pinned = isPinnedTarget("post", post.id);
+      items += `<button class="post-menu-item" role="menuitem" data-community-action="${pinned ? "unpin" : "pin"}" data-type="post" data-id="${id}">${pinned ? "ביטול הצמדה" : "הצמדה למעלה"}</button>`;
     }
     return `<div class="post-menu-wrap">
       <button class="chip-btn" data-community-action="toggle-post-menu" data-id="${id}" aria-haspopup="true" aria-expanded="${open ? "true" : "false"}" aria-label="עוד פעולות">⋯</button>
@@ -12252,7 +12290,14 @@
     const meta = `<div style="color:var(--steel);font-size:12px;margin-bottom:10px;">${esc(def.label)} · ${formatChallengeDate(c.start_at)}–${formatChallengeDate(c.end_at)} · ${esc(challengeStatusLabel(c))}</div>`;
     const description = c.description ? `<div style="font-size:13.5px;line-height:1.6;margin-bottom:10px;white-space:pre-wrap;">${bidiText(c.description)}</div>` : "";
     const rules = (c.config && c.config.rules_text) ? `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">חוקי האתגר</div><div style="font-size:13px;white-space:pre-wrap;">${bidiText(c.config.rules_text)}</div></div>` : "";
-    const staffToolbar = staff ? `<div class="chip-row" style="margin-bottom:10px;"><button class="chip-btn" data-community-action="challenge-edit" data-id="${esc(c.id)}">עריכה</button></div>` : "";
+    // Real bug found by a role-coverage audit: content.pin covers challenges
+    // (pinTargetLabel() has always listed "challenge"), but until now no
+    // challenge surface offered a pin control - see isPinnedTarget()'s
+    // comment. Gated separately from `staff` (CHALLENGE_CREATE, coach+):
+    // CONTENT_PIN starts at head_coach, so a plain coach who can edit this
+    // challenge still won't see a pin toggle, correctly.
+    const pinBtn = hasPerm(PERM.CONTENT_PIN) ? `<button class="chip-btn" data-community-action="${isPinnedTarget("challenge", c.id) ? "unpin" : "pin"}" data-type="challenge" data-id="${esc(c.id)}" data-note="${esc(c.title)}">${isPinnedTarget("challenge", c.id) ? "ביטול הצמדה" : "הצמדה למעלה"}</button>` : "";
+    const staffToolbar = (staff || pinBtn) ? `<div class="chip-row" style="margin-bottom:10px;">${staff ? `<button class="chip-btn" data-community-action="challenge-edit" data-id="${esc(c.id)}">עריכה</button>` : ""}${pinBtn}</div>` : "";
     const myProgress = renderMyChallengeProgress(v);
     const typePanel = c.challenge_type === "cooperative" ? renderCooperativePanel(v)
       : c.challenge_type === "team" ? renderTeamPanel(v)
@@ -12837,10 +12882,18 @@
     const deadlineHtml = e.registration_deadline ? `<div style="font-size:12px;color:var(--steel);margin-bottom:4px;">מועד אחרון להרשמה: ${esc(formatEventDate(e.registration_deadline))} ${esc(formatEventTime(e.registration_deadline))}</div>` : "";
     const organizerName = v.organizer ? (v.organizer.display_name || (v.organizer.handle ? "@" + v.organizer.handle : "")) : "";
     const organizerHtml = organizerName ? `<div style="font-size:12px;color:var(--steel);margin-bottom:10px;">מארגנ/ת: ${esc(organizerName)}</div>` : "";
-    const staffToolbar = staff ? `<div class="chip-row" style="margin-bottom:10px;">
-        <button class="chip-btn" data-community-action="event-edit" data-id="${esc(e.id)}">עריכה</button>
-        ${e.status === "draft" ? `<button class="chip-btn" data-community-action="event-publish" data-id="${esc(e.id)}">פרסום</button>` : ""}
-        ${e.status === "published" ? `<button class="chip-btn danger" data-community-action="event-cancel-confirm" data-id="${esc(e.id)}">ביטול האירוע</button>` : ""}
+    // Real bug found by a role-coverage audit: content.pin covers events
+    // (pinTargetLabel() has always listed "event"), but until now no event
+    // surface offered a pin control - see isPinnedTarget()'s comment. Gated
+    // separately from `staff` (EVENT_MANAGE, coach+): CONTENT_PIN starts at
+    // head_coach, so a plain coach who can edit this event still won't see
+    // a pin toggle, correctly.
+    const pinBtn = hasPerm(PERM.CONTENT_PIN) ? `<button class="chip-btn" data-community-action="${isPinnedTarget("event", e.id) ? "unpin" : "pin"}" data-type="event" data-id="${esc(e.id)}" data-note="${esc(e.title)}">${isPinnedTarget("event", e.id) ? "ביטול הצמדה" : "הצמדה למעלה"}</button>` : "";
+    const staffToolbar = (staff || pinBtn) ? `<div class="chip-row" style="margin-bottom:10px;">
+        ${staff ? `<button class="chip-btn" data-community-action="event-edit" data-id="${esc(e.id)}">עריכה</button>` : ""}
+        ${staff && e.status === "draft" ? `<button class="chip-btn" data-community-action="event-publish" data-id="${esc(e.id)}">פרסום</button>` : ""}
+        ${staff && e.status === "published" ? `<button class="chip-btn danger" data-community-action="event-cancel-confirm" data-id="${esc(e.id)}">ביטול האירוע</button>` : ""}
+        ${pinBtn}
       </div>` : "";
     const actions = renderEventActions(v);
     const icsBtn = `<div class="chip-row" style="margin:8px 0;"><button class="chip-btn" data-community-action="event-ics" data-id="${esc(e.id)}"${v.icsBusy ? " disabled" : ""}>${v.icsBusy ? "יוצר…" : "הוספה ליומן"}</button></div>${v.icsError ? `<div class="field-error" role="alert">${esc(v.icsError)}</div>` : ""}`;
@@ -16844,9 +16897,7 @@
     // each announcement. Post, challenge and event pin affordances live on
     // their own surfaces (posts and Phase 2 clusters); the strip and unpin
     // control render for every one of the four target types.
-    const canPinContent = hasPerm(PERM.CONTENT_PIN);
-    const isPinned = (type, id) => state.admin.pins.some((p) => p.target_type === type && p.target_id === id);
-    const announcementsList = otherAnnouncements.length ? `<div class="log-list">${otherAnnouncements.map((a) => `<div class="log-row" data-announcement-id="${esc(a.id)}" style="align-items:flex-start;flex-direction:column;gap:4px;${announcementAccentStyle(a)}"><div style="font-weight:700;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">${bidiText(a.title)}${announcementPriorityBadge(a)}</div><div style="color:var(--steel);font-size:13px;">${bidiText(a.body)}</div><div style="color:var(--steel);font-size:11px;">${esc(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div>${canPinContent ? `<button class="link-btn" data-community-action="${isPinned("announcement", a.id) ? "unpin" : "pin"}" data-type="announcement" data-id="${esc(a.id)}" data-note="${esc(a.title)}" style="margin:2px 0 0;">${isPinned("announcement", a.id) ? "ביטול הצמדה" : "הצמדה למעלה"}</button>` : ""}</div>`).join("")}</div>` : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
+    const announcementsList = otherAnnouncements.length ? `<div class="log-list">${otherAnnouncements.map((a) => `<div class="log-row" data-announcement-id="${esc(a.id)}" style="align-items:flex-start;flex-direction:column;gap:4px;${announcementAccentStyle(a)}"><div style="font-weight:700;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">${bidiText(a.title)}${announcementPriorityBadge(a)}</div><div style="color:var(--steel);font-size:13px;">${bidiText(a.body)}</div><div style="color:var(--steel);font-size:11px;">${esc(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div>${pinToggleHtml("announcement", a.id, a.title)}</div>`).join("")}</div>` : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
     // ONE RAIL. pinnedHtml has moved OUT of this section and into the rail
     // above the feed, where it competes for a slot on merit like everything
     // else. What is left here is the archive: older announcements and the

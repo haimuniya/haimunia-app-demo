@@ -314,6 +314,40 @@ test("dismiss closes the report through mod_review with a dismissed status and a
   assert.ok(mock.db.admin_actions.some((a) => a.action_type === "report_review"));
 });
 
+// Real bug found by a role-coverage audit: comment.moderate (held by plain
+// `coach`, rank 20) is enough to see the moderation queue at all
+// (renderModeration()'s own gate), but mod_restrict_member() independently
+// requires community.member.restrict, seeded only to head_coach (rank 30)
+// and up. Before this fix the queue rendered both restrict buttons to any
+// coach exactly like every other decision - a coach clicking either one hit
+// a hard, unexplained "not authorized" failure from the RPC every single
+// time. remove/warn/dismiss all route through checks a coach genuinely
+// passes, so only the two restrict decisions should ever be hidden.
+test("a plain coach (below head_coach) sees remove/warn/dismiss in the moderation queue but not the two restrict decisions, which would fail server-side", async () => {
+  const mock = baseMock({
+    profiles: [
+      { id: "coach-1", handle: "coach", display_name: "מאמן", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true },
+      { id: "author-1", handle: "kobi", display_name: "קובי", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true },
+      { id: "reporter-1", handle: "noa", display_name: "נועה", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true },
+    ],
+    invite_redemptions: [
+      { user_id: "coach-1", invite_id: "i1", role: "coach", redeemed_at: VERIFIED },
+      { user_id: "author-1", invite_id: "i2", role: "member", redeemed_at: VERIFIED },
+    ],
+    reports: [{ id: "rep-1", reporter_id: "reporter-1", target_type: "post", target_id: "post-1", reason: "harassment", note: "", status: "open", created_at: VERIFIED }],
+  });
+  mock.setUser({ id: "coach-1", is_anonymous: false, email: "coach@members.haimuniya.invalid" });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openManageModeration(window);
+  await waitFor(() => !!window.document.querySelector('[data-community-action="mod-action"]'), 3000);
+  const offered = Array.from(window.document.querySelectorAll('[data-community-action="mod-action"]')).map((b) => b.dataset.decision);
+  assert.ok(offered.includes("remove"), "coach can remove content (comment.moderate covers this)");
+  assert.ok(offered.includes("warn"), "coach can warn");
+  assert.ok(offered.includes("dismiss"), "coach can dismiss");
+  assert.ok(!offered.includes("restrict_temp"), "restrict_temp hidden - a coach holds no community.member.restrict");
+  assert.ok(!offered.includes("restrict_permanent"), "restrict_permanent hidden - a coach holds no community.member.restrict");
+});
+
 // ===== COMM-154 audit view ==========================================
 
 test("the audit view is gated on community.analytics.view and reads admin_actions_page()", async () => {
@@ -485,6 +519,28 @@ test("pin_set and pin_clear both write an admin_actions row", async () => {
   await window.eval('window.handleCommunityClick({ dataset: { communityAction: "unpin", type: "post", id: "post-1" } })');
   await waitFor(() => mock.db.pins.length === 0, 3000);
   assert.ok(mock.db.admin_actions.some((a) => a.action_type === "content_unpin"), "content_unpin audit row");
+});
+
+// Real bug found by a role-coverage audit: every pin test above (and every
+// pin this app has ever created, in production, until this fix) went
+// through `window.eval('window.handleCommunityClick(...)')` - a direct
+// handler call, not a real button - because no post surface ever rendered
+// one. pinTargetLabel() has listed "post" as a pinnable type since COMM-155
+// shipped; postMenuHtml()'s "⋯" overflow menu now carries a real
+// pin/unpin item for any community.content.pin holder, on both own and
+// others' posts (a head_coach pinning a great post to club home is not
+// restricted to their own content).
+test("a head_coach can pin a post to club home from its real overflow menu, not just a direct handler call", async () => {
+  const mock = baseMock();
+  mock.setUser({ id: "mod-1", is_anonymous: false, email: "mod@members.haimuniya.invalid" });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCommunity(window);
+  await waitFor(() => !!window.document.querySelector('[data-community-action="toggle-post-menu"][data-id="post-1"]'), 3000);
+  window.document.querySelector('[data-community-action="toggle-post-menu"][data-id="post-1"]').click();
+  await waitFor(() => !!window.document.querySelector('[data-community-action="pin"][data-type="post"][data-id="post-1"]'), 3000);
+  window.document.querySelector('[data-community-action="pin"][data-type="post"][data-id="post-1"]').click();
+  await waitFor(() => mock.db.pins.some((p) => p.target_type === "post" && p.target_id === "post-1"), 3000);
+  assert.ok(mock.db.admin_actions.some((a) => a.action_type === "content_pin" && a.target_id === "post-1"), "a real click produced the same content_pin audit row the eval-based tests assert on");
 });
 
 // ===== COMM-156 head_coach ==========================================
