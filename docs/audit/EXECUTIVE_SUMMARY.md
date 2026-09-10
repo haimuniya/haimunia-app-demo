@@ -1,6 +1,60 @@
 # Executive summary
 
-## Final verdict
+## 2026-09-10 re-verification pass (current)
+
+Independent lead-auditor pass, run after the Direction 06 / immersive visual
+redesign. At the start of this pass, `app.js`/`index.html`/`sw.js` carried
+an uncommitted diff (version bump 4.15.1→4.15.7, a progress-chart
+one-point-per-day fix, a history-list auto-expand fix, and a flexbox
+truncation fix — no Supabase/RLS/security-relevant surface touched);
+reviewed line by line before verification, and committed + pushed to
+`origin/main` as `9735838` by another actor in this shared working tree
+partway through this pass — not by this session. This pass did not re-derive
+the prior audits; it re-ran them against the current tree and independently
+red-teamed the newest migrations. See `AGENT_REPORTS.md` for the full method.
+
+**Verdict: still CONDITIONAL / NO-GO on the strict letter of "zero
+UNVERIFIED critical items"** — for the same reasons every prior pass in this
+repo has named, not a new regression. Everything re-checked from inside this
+repository is clean:
+
+| Check | Result |
+|---|---|
+| `npm test` (clean rerun) | **1512 / 1512**, 0 fail, 0 skipped |
+| `supabase test db` (local Postgres 17.6, 124 migrations) | **Files=94, Tests=3265, PASS** |
+| Browser-check suite (real Chromium, isolated runs) | **35 / 35** incl. axe-core (0 serious/critical), desktop layout, RTL, text-scale |
+| `npm audit --audit-level=high` | 0 vulnerabilities |
+| `check-version` / `check-vendor-version` / migration-immutability | All OK |
+| Secret / TODO / FIXME / skipped-test sweep | Clean — nothing found |
+| Independent red-team fork, newest 13 migrations + all 3 Edge Functions | **Zero confirmed concerns.** RLS present and correctly gated on every reviewed table, `search_path` pinned on every reviewed SECURITY DEFINER function, no client-controlled ownership, `timingSafeEqualStrings` genuinely used (not just claimed) in both Edge Functions that need it. No exploit scenario could be constructed. |
+| Uncommitted working-tree diff | Reviewed directly — 3 files, 43 insertions, cosmetic/rendering-logic only, no security or data-layer surface |
+
+One flaky result during this pass, run down to ground and confirmed
+**not** a regression: `community-render-cost.mjs`'s COMM-366 frame-budget
+trip-wire (< 16ms at 4x CPU throttle) read 18.6ms when run concurrently
+with a 150-second `npm test` run on the same machine; isolated, it reads
+**5.3ms** — comfortably under budget. Machine contention, not a defect.
+Same for one `npm test` run showing 1511/1512 — a clean immediate rerun
+was 1512/1512.
+
+**What remains open is exactly what every prior pass already named**, and
+none of it is a code defect: real iOS/Android device testing (never
+performed in any pass — the single largest standing gap), GitHub repo
+settings (branch protection enforcement, the 3 alert-workflow secrets),
+and Supabase dashboard items (Auth settings mirror, PITR restore drill).
+This pass had `supabase` CLI access to the linked production project and
+explicitly asked the repo owner whether to run read-only production
+verification queries to try to close the two ambiguous items
+(scheduled-job health, branch protection); **the owner chose not to**, so
+those stay `NOT VERIFIED` rather than being asserted either way. See
+`LAUNCH_CHECKLIST.md`'s 2026-09-10 addendum and `GO_LIVE_GUIDE.md` §A for
+the exact, unchanged action list.
+
+No new P0, P1, or P2 finding came out of this pass.
+
+---
+
+## Final verdict (2026-09-06/07 pass — preserved for history)
 
 **Release blocked, external verification required.**
 

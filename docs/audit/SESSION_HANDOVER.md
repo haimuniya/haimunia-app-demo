@@ -1,3 +1,36 @@
+# Session handover — 2026-09-10 (top of file, most recent)
+
+Lead-auditor re-verification pass, not a new feature session. Full detail
+in `EXECUTIVE_SUMMARY.md`'s 2026-09-10 section and `AGENT_REPORTS.md`.
+
+**One-line summary:** nothing broke. `npm test` 1512/1512, `supabase test db`
+94/3265 PASS against the current 124 migrations, browser-check 35/35
+isolated, `npm audit` clean, an independent red-team fork found zero
+concerns in the 13 newest migrations and all 3 Edge Functions. The
+redesign diff present-but-uncommitted at the start of this session (version
+4.15.1→4.15.7, a progress-chart dedup fix, a history-list auto-expand fix,
+a CSS truncation fix) is cosmetic/rendering-only and was reviewed line by
+line before verification — no security or data-layer surface. **It was
+committed and pushed to `origin/main` as `9735838` partway through this
+session by another actor sharing this working tree — not by this
+session.** This session made no commits of its own (not asked to; only
+`docs/audit/*` files were edited).
+
+**Still open, unchanged, all external:** real iOS/Android device testing
+(never done in any pass — the largest standing gap), GitHub branch
+protection enforcement + the 3 alert-workflow secrets, Supabase dashboard
+Auth-settings mirror and PITR drill. This session had live `supabase` CLI
+credentials to the linked production project and explicitly asked the repo
+owner whether to run read-only queries to close two of those rows — **the
+owner said no**, so they remain `NOT VERIFIED` rather than asserted either
+way. Whoever picks this up next: don't re-ask lightly, the owner already
+gave a clear answer this session.
+
+**Verdict this pass: same as every prior pass — CONDITIONAL, blocked only
+on the external items above, zero open P0/P1 inside the repository.**
+
+---
+
 # Session handover — 2026-09-08
 
 Written for whoever (human or Claude session) picks this up next. This

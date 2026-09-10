@@ -1,3 +1,31 @@
+## 2026-09-10 addendum — re-verified against current tree, not a new pass
+
+Rows 1–14 (everything checkable from this repository) re-run fresh against
+the current working tree (which, partway through this pass, gained a
+commit — `9735838`, made by another actor sharing this working tree, not
+this session — carrying exactly the redesign diff this pass had already
+reviewed: version 4.15.7, chart/history/CSS fixes only) and all still
+**PASS**: `npm test`
+1512/1512, `supabase test db` Files=94/Tests=3265 PASS (124 migrations, up
+from 118), `npm audit` 0 vulnerabilities, version/vendor/migration-immutability
+all OK, browser-check 35/35 isolated including axe-core. An independent
+red-team fork reviewed the 13 newest migrations and all 3 Edge Functions
+line-by-line looking specifically for RLS gaps, unpinned `search_path`, and
+client-controlled ownership — found none. Full method and evidence in
+`AGENT_REPORTS.md` and `EXECUTIVE_SUMMARY.md`'s 2026-09-10 section.
+
+Rows 15–24 (external/dashboard-only) are **unchanged by this pass** — this
+session had `supabase` CLI access to the linked production project and
+asked the repo owner whether to run read-only production checks to resolve
+rows 16 and 19; the owner declined, so both remain exactly as last recorded
+rather than being asserted in either direction. Row 22 (alert secrets) and
+row 20 (real device testing) were not attempted this pass for the same
+reason — they need account/device access this session was not authorized
+to use. Nothing here should be read as "improved" or "regressed" since
+2026-09-08; it is the same list, freshly confirmed still accurate.
+
+---
+
 # Launch checklist — pass/fail gate
 
 Every row is exactly one of **PASS**, **FAIL**, or **NOT VERIFIED**.

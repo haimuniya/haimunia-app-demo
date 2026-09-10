@@ -8818,12 +8818,27 @@
     }[t] || t;
   }
   const AUDIT_ACTION_TYPES = ["content_delete", "content_hide", "member_restrict", "member_unrestrict", "role_change", "challenge_edit", "achievement_edit", "privacy_config", "content_pin", "content_unpin", "report_review", "member_of_week_publish", "monthly_recap_publish", "club_feature_toggle", "invite_created", "invite_revoked", "shared_code_created", "shared_code_status_changed", "onboarding_content_updated", "member_password_reset", "invite_reclaimed"];
+  // Usability pass: 21 chips plus "הכול" wrapped across several rows - noisy
+  // for a tool staff open occasionally, not weekly. These four stay visible
+  // (what a moderator's actual filtering reaches for: a report decision, a
+  // deletion, a restriction, a role change); the rest sit behind the same
+  // <details> disclosure renderInviteManagement() already uses for its own
+  // rarer option. The disclosure opens itself when the ACTIVE filter is one
+  // of the hidden ones, so a selected chip is never invisible.
+  const AUDIT_COMMON_TYPES = ["report_review", "content_delete", "member_restrict", "role_change"];
   function renderAuditLog() {
     if (!hasPerm(PERM.ANALYTICS_VIEW)) return "";
+    const selected = state.admin.auditFilters.action_type;
+    const restTypes = AUDIT_ACTION_TYPES.filter((t) => !AUDIT_COMMON_TYPES.includes(t));
+    const auditChip = (t) => `<button class="chip-btn${selected === t ? " selected" : ""}" data-community-action="audit-filter" data-type="${t}">${auditActionLabel(t)}</button>`;
     const filterChips = `<div class="chip-row" style="margin:0 0 10px;">
-      <button class="chip-btn${!state.admin.auditFilters.action_type ? " selected" : ""}" data-community-action="audit-filter" data-type="">הכול</button>
-      ${AUDIT_ACTION_TYPES.map((t) => `<button class="chip-btn${state.admin.auditFilters.action_type === t ? " selected" : ""}" data-community-action="audit-filter" data-type="${t}">${auditActionLabel(t)}</button>`).join("")}
-    </div>`;
+      <button class="chip-btn${!selected ? " selected" : ""}" data-community-action="audit-filter" data-type="">הכול</button>
+      ${AUDIT_COMMON_TYPES.map(auditChip).join("")}
+    </div>
+    <details style="margin:0 0 10px;"${selected && restTypes.includes(selected) ? " open" : ""}>
+      <summary class="link-btn" style="cursor:pointer;">עוד סינונים</summary>
+      <div class="chip-row" style="margin-top:8px;">${restTypes.map(auditChip).join("")}</div>
+    </details>`;
     let body;
     if (state.admin.auditLoading && !state.admin.auditLog.length) {
       body = `<div class="log-list" aria-busy="true">${`<div class="log-row" aria-hidden="true"><span style="height:12px;width:55%;background:var(--border);border-radius:6px;display:inline-block;"></span></div>`.repeat(4)}</div>`;
@@ -9101,12 +9116,21 @@
   // signups. Plain warm register, and explicit about what reclaiming does NOT
   // do - which is the part an admin will otherwise assume wrongly, in the
   // more alarming direction.
+  // Usability pass: three always-visible paragraphs above a list an admin
+  // opens to reclaim one stalled invite - real content (the "not spam, not
+  // a bug" reassurance matters the first time), but it doesn't need to cost
+  // three paragraphs of height on every later visit. Same <details>
+  // disclosure renderInviteManagement() already uses for its own rarer
+  // option, closed by default; the explanation is one tap away, not gone.
   function ghostExplainerHtml() {
-    return `<div style="color:var(--steel);font-size:12.5px;line-height:1.7;margin:-2px 0 12px;">
-      <div>${bidiText("אלה חשבונות שנעצרו באמצע ההרשמה. מישהו הזין קוד הזמנה והתחיל להירשם, ואז עצר לפני שהשלים פרופיל - סגר את האפליקציה, נקרא לאימון, התחרט. זו לא תקלה ואלה לא חשבונות ספאם.")}</div>
-      <div style="margin-top:6px;">${bidiText("בלי פרופיל הם לא מופיעים ברשימת החברים ולא בשום מקום אחר באפליקציה, אבל ההזמנה שלהם כבר נוצלה - ולכן הם כאן.")}</div>
-      <div style="margin-top:6px;">${bidiText("שחרור ההזמנה מחזיר אותה למחזור: קוד משותף מקבל בחזרה שימוש אחד, והזמנה אישית חוזרת להמתנה כך שאפשר להשתמש שוב באותו קוד. השחרור לא מוחק את החשבון של מי שהתחיל להירשם, לא שולח לו שום הודעה, ולא מונע ממנו להירשם שוב.")}</div>
-    </div>`;
+    return `<details style="margin:-2px 0 12px;">
+      <summary class="link-btn" style="cursor:pointer;">מה זה?</summary>
+      <div style="color:var(--steel);font-size:12.5px;line-height:1.7;margin-top:8px;">
+        <div>${bidiText("אלה חשבונות שנעצרו באמצע ההרשמה. מישהו הזין קוד הזמנה והתחיל להירשם, ואז עצר לפני שהשלים פרופיל - סגר את האפליקציה, נקרא לאימון, התחרט. זו לא תקלה ואלה לא חשבונות ספאם.")}</div>
+        <div style="margin-top:6px;">${bidiText("בלי פרופיל הם לא מופיעים ברשימת החברים ולא בשום מקום אחר באפליקציה, אבל ההזמנה שלהם כבר נוצלה - ולכן הם כאן.")}</div>
+        <div style="margin-top:6px;">${bidiText("שחרור ההזמנה מחזיר אותה למחזור: קוד משותף מקבל בחזרה שימוש אחד, והזמנה אישית חוזרת להמתנה כך שאפשר להשתמש שוב באותו קוד. השחרור לא מוחק את החשבון של מי שהתחיל להירשם, לא שולח לו שום הודעה, ולא מונע ממנו להירשם שוב.")}</div>
+      </div>
+    </details>`;
   }
   // The result card. admin_reclaim_invite() returns exactly what it did, and
   // an admin who has just taken a destructive-sounding action deserves to
@@ -17038,7 +17062,16 @@
     // literal in prose too): a restriction is the member's own business, and
     // staff read restrictions in Manage › מודרציה, not here.
     const restrictionPanel = renderMyRestrictionPanel();
-    const accountTab = restrictionPanel + account + recapEntry + monthlyRecapEntry + privacyPanel + termMarkPanel + people + newMembersHtml + inactiveHtml + renderMyAchievements() + renderNotifPrefsPanel() + movedToManageNote
+    // Usability pass: achievements and notification prefs used to render
+    // dead last, after profile/recaps/privacy/glossary/search and (for
+    // staff) two more sections - a headline feature reading as a 22nd
+    // setting. Achievements now sits right after the profile form, same
+    // "order states priority" idiom restrictionPanel's own placement above
+    // already uses. Notification prefs moves up next to its nearer thematic
+    // neighbour (privacy), ahead of the glossary/search/staff sections
+    // rather than trailing all of them - still a settings-style panel, just
+    // no longer the very last thing on the screen.
+    const accountTab = restrictionPanel + account + renderMyAchievements() + recapEntry + monthlyRecapEntry + privacyPanel + renderNotifPrefsPanel() + termMarkPanel + people + newMembersHtml + inactiveHtml + movedToManageNote
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red-text);">בקשת מחיקת חשבון</button>`;
 
@@ -17274,6 +17307,26 @@
   function manageArea(id, html) {
     return `<div id="${esc(id)}" data-manage-area="${esc(id)}">${html}</div>`;
   }
+  // Usability pass: the five MANAGE_ADMIN_AREAS below used to all be plain
+  // manageArea() divs, stacked one after another with nothing separating
+  // them - moderation queue, audit log, club settings, analytics, onboarding
+  // content, one continuous ~5000px scroll. A real sub-tab bar for these
+  // five was tried and rejected once already (see this whole section's
+  // "WHAT CHANGED AND WHY" comment above - that is exactly the seven-tab
+  // problem the operator-depth rework fixed). <details> gets the same
+  // "work on one thing at a time" result without adding a second tab layer:
+  // native, keyboard- and screen-reader-operable with no extra JS, and the
+  // jump row's data-scroll still lands on this element's own id (see
+  // afterRenderManage, which now also flips `open` before scrolling).
+  // openByDefault is true only for moderation - the one area carrying a
+  // time-sensitive count (pendingReports) - so arriving on this tab still
+  // shows something rather than five closed rows.
+  function manageAdminArea(area, html, openByDefault) {
+    return `<details id="${esc(area.id)}" class="manage-area" data-manage-area="${esc(area.id)}"${openByDefault ? " open" : ""}>
+      <summary>${esc(area.label)}</summary>
+      <div class="manage-area-body">${html}</div>
+    </details>`;
+  }
   function renderManageAttention() {
     // Redesign, Phase 3 fix: this row used to be gated on canModerate alone
     // (truthy for any moderator regardless of the actual count), so a
@@ -17333,12 +17386,13 @@
     //
     // renderAdminAnalyticsDashboard() still includes renderRegistrationFunnel()
     // nested inside itself (see that function's own comment).
+    const [areaModeration, areaAudit, areaSettings, areaAnalytics, areaOnboarding] = MANAGE_ADMIN_AREAS;
     const adminAreas = [
-      manageArea("manageArea-moderation", renderRestrictionsPanel() + renderModeration()),
-      manageArea("manageArea-audit", renderAuditLog()),
-      manageArea("manageArea-settings", renderClubModulesPanel() || `<div class="empty">אין לך הרשאה לצפות בהגדרות המודולים.</div>`),
-      manageArea("manageArea-analytics", (renderAdminAnalyticsDashboard() + renderRetentionCorrelations()) || `<div class="empty">אין לך הרשאה לצפות באנליטיקס.</div>`),
-      manageArea("manageArea-onboarding", renderOnboardingContentEditor() + renderIntroCarouselContentEditor()),
+      manageAdminArea(areaModeration, renderRestrictionsPanel() + renderModeration(), true),
+      manageAdminArea(areaAudit, renderAuditLog()),
+      manageAdminArea(areaSettings, renderClubModulesPanel() || `<div class="empty">אין לך הרשאה לצפות בהגדרות המודולים.</div>`),
+      manageAdminArea(areaAnalytics, (renderAdminAnalyticsDashboard() + renderRetentionCorrelations()) || `<div class="empty">אין לך הרשאה לצפות באנליטיקס.</div>`),
+      manageAdminArea(areaOnboarding, renderOnboardingContentEditor() + renderIntroCarouselContentEditor()),
     ].join("");
     // The "I know where this used to be" row. Old sub-tab names, one tap,
     // scrolls to the section. Every button here is a real destination - the
@@ -17965,6 +18019,12 @@
     if (state.ui.manageScrollTo) {
       const target = document.getElementById(state.ui.manageScrollTo);
       state.ui.manageScrollTo = "";
+      // manageAdminArea()'s five areas are now <details>, closed by default
+      // except moderation - a jump-row tap has to open its target before
+      // scrolling to it, or it lands on a collapsed row showing nothing.
+      // `"open" in target` is false for the plain manageArea() divs
+      // (roster, on the "members" tab), so this is a no-op there.
+      if (target && "open" in target) target.open = true;
       if (target && typeof target.scrollIntoView === "function") target.scrollIntoView({ block: "start" });
     }
   };
