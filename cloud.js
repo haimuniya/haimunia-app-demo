@@ -787,12 +787,21 @@
     { key: "feed", label: "פיד (כולל תגובות ותגובות חיזוק)" },
     { key: "leaderboards", label: "טבלאות מובילים" },
     { key: "directory", label: "ספריית חברים", clientOnly: true },
+    // 202609100002. Not clientOnly: gated inside notif_streak_at_risk()
+    // itself (club_feature_enabled('streak_risk_nudges')), a real
+    // server-enforced off switch on a scheduled job, not a UI hide.
+    { key: "streak_risk_nudges", label: "תזכורות רצף אימונים לחברים" },
   ];
   const COACH_MODULE_TOGGLES = [
     { key: "coach_tools", label: "לוח מאמנים (הכל)", clientOnly: true },
     { key: "member_of_week", label: "חבר/ת השבוע", clientOnly: true },
     { key: "welcome_flow", label: "קבלת פנים", clientOnly: true },
     { key: "monthly_recap", label: "סיכום חודשי", clientOnly: true },
+    // 202609100002. Not clientOnly: gated inside coach_notify_engagement_flags()
+    // itself (club_feature_enabled('engagement_alerts')) - coach_engagement_flags
+    // detection keeps running either way (coach-engagement-decline is a
+    // separate, untouched job), this only silences the push/in-app alert.
+    { key: "engagement_alerts", label: "התראות ירידה במעורבות חבר/ה לצוות" },
   ];
   const CLUB_MODULE_KEYS = CLUB_MODULE_TOGGLES.concat(COACH_MODULE_TOGGLES).map((m) => m.key);
   function hasPerm(code) { return !!state.permissions && state.permissions.indexOf(code) >= 0; }
@@ -15280,6 +15289,15 @@
     announcement:          { category: "club",       mode: "immediate", pref: "announcements", operational: true, serverTitle: true, icon: "📢", title: "הודעה חשובה מהמועדון" },
     weekly_recap:          { category: "club",       mode: "batched",   pref: "weekly_recap",        icon: "📅", title: "הסיכום השבועי שלך" },
     monthly_club_recap:    { category: "club",       mode: "immediate", pref: "monthly_club_recap",  icon: "🗓️", title: "סיכום החודש של הקהילה" },
+    // Community structure research, 2026-09-10 (202609100002). Same
+    // no-server-pref-arm shape as new_report/monthly_club_recap above: each
+    // pref key is the type's own literal name, matching notif_pref_key()'s
+    // identity fallback for an unmapped type. streak_at_risk is a plain
+    // member-facing type; engagement_decline_flagged is staff-only in
+    // practice (only ever created for mod_alert_recipients()), same
+    // audience as new_report.
+    streak_at_risk:             { category: "training",  mode: "immediate", pref: "streak_at_risk",             icon: "🔥", title: "הרצף שלך בסכנה" },
+    engagement_decline_flagged: { category: "community", mode: "immediate", pref: "engagement_decline_flagged", icon: "📉", title: "חבר/ה עשוי/ה להתרחק" },
   };
   function notifTypeDef(type) { return NOTIF_TYPES[type] || null; }
 
@@ -15318,6 +15336,8 @@
     { key: "weekly_recap",        label: "סיכום שבועי" },
     { key: "monthly_club_recap",  label: "סיכום חודשי" },
     { key: "new_report",          label: "דיווחים חדשים לבדיקה", staffOnly: true },
+    { key: "streak_at_risk",              label: "תזכורת רצף אימונים" },
+    { key: "engagement_decline_flagged",  label: "התרעת ירידה במעורבות חבר/ה", staffOnly: true },
   ];
   const NOTIF_PREF_KEYS = new Set(NOTIF_PREF_TYPES.map((t) => t.key));
   const NOTIF_CHANNELS = ["push", "in_app", "off"];
@@ -15688,6 +15708,11 @@
     if (q.month || st === "monthly_club_recap" || /\/recap\/monthly(\/|$)/.test(path)) return { tab: "account", recapMonth: q.month || null };
     // COMM-220/221. weekly_recap's own deep link is /community/recap?week=<monday>.
     if (q.week || st === "weekly_recap" || /\/recap(\/|$)/.test(path)) return { tab: "account", recapWeek: q.week || null };
+    // 202609100002. coach_notify_engagement_flags()'s own deep link is
+    // /community/coach - lands a staff member on the sub-tab
+    // renderCoachTab() already lists open coach_engagement_flags rows on,
+    // same tab id the "coach" sub-tab push uses (tabs.push({id:"coach",...})).
+    if (st === "coach_engagement_flag" || /\/coach(\/|$)/.test(path)) return { tab: "coach" };
     return { tab: "feed" };
   }
   // COMM-140/COMM-229. The one place that actually navigates once a target
@@ -17117,7 +17142,22 @@
     // profile/settings, nobody's content to hide.
     const tabs = [];
     if (isModuleEnabled("feed")) tabs.push({ id: "feed", label: "פיד", html: feedTab });
-    tabs.push({ id: "boards", label: "לוחות", html: boardsTab });
+    // Community structure research, 2026-09-10: the ranked-opportunities
+    // list's #1 item - challenges/the leaderboard are real, working "fun"
+    // mechanics, but the Boards pill carried no ambient signal at all,
+    // unlike Manage's own pendingReports badge two tabs over, so a member
+    // has to already think to tap it. state.challenges.items is loaded
+    // eagerly at boot (loadChallenges() inside the same Promise.all as
+    // loadProfile/loadClubFeatures) regardless of which sub-tab is active,
+    // so this is a zero-new-fetch count: active challenges ending within
+    // 48h, the same window chal_notify_ending_soon() (202608290006) already
+    // uses server-side, so the badge and the notification a member may
+    // already have received agree on what "ending soon" means. Gated on
+    // isModuleEnabled("challenges") implicitly - a disabled module means
+    // loadChallenges() itself returns nothing to count.
+    const boardsBadgeCount = (state.challenges.items || [])
+      .filter((c) => c.status === "active" && daysRemaining(c.end_at) !== null && daysRemaining(c.end_at) <= 2).length;
+    tabs.push({ id: "boards", label: "לוחות", html: boardsTab, badge: boardsBadgeCount || undefined, badgeLabel: "אתגרים מסתיימים בקרוב" });
     if (isModuleEnabled("directory")) tabs.push({ id: "directory", label: "חברים", html: directoryTab });
     // Redesign, Phase 1 fix: the pendingReports badge used to sit here
     // because moderation itself lived in this Account pill. It moved to
@@ -17164,7 +17204,11 @@
     // has no way to move to the region it governs, and the panel itself
     // had no accessible name at all. afterRenderCommunity() completes the
     // pair by pointing #content's aria-labelledby back at the active tab.
-    const tabBar = `<div class="subtabbar" role="tablist" aria-label="ניווט בקהילה">${tabs.map((t) => `<button class="subtabbtn${t.id === activeTab.id ? " active" : ""}" id="commTab-${t.id}" aria-controls="content" data-community-action="set-tab" data-tab="${t.id}" role="tab" aria-selected="${t.id === activeTab.id}" tabindex="${t.id === activeTab.id ? "0" : "-1"}">${t.label}${t.badge ? `<span class="tab-badge" aria-label="${t.badge} דיווחים ממתינים">${t.badge}</span>` : ""}</button>`).join("")}</div>`;
+    // t.badgeLabel (202609100002): the count on this bar is no longer only
+    // ever "pending reports" (Boards now carries "challenges ending soon"
+    // too) - defaults to the original string so every existing badge-less
+    // or unlabelled producer keeps reading exactly as before.
+    const tabBar = `<div class="subtabbar" role="tablist" aria-label="ניווט בקהילה">${tabs.map((t) => `<button class="subtabbtn${t.id === activeTab.id ? " active" : ""}" id="commTab-${t.id}" aria-controls="content" data-community-action="set-tab" data-tab="${t.id}" role="tab" aria-selected="${t.id === activeTab.id}" tabindex="${t.id === activeTab.id ? "0" : "-1"}">${t.label}${t.badge ? `<span class="tab-badge" aria-label="${t.badge} ${esc(t.badgeLabel || "דיווחים ממתינים")}">${t.badge}</span>` : ""}</button>`).join("")}</div>`;
 
     // COMM-329 (remaining scope). The Community tab was the one solo tab
     // with no top-level <h1> of its own - it never calls renderTabHeader(),

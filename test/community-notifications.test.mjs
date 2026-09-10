@@ -389,17 +389,20 @@ test("the Account panel lists every type with Push (disabled), In-app and Off", 
 
   // "comments"/"replies"/"achievements" were re-keyed to their real server
   // notif_pref_key() names (comment_on_post/comment_reply/achievement_
-  // unlocked, COMM-218/219) and monthly_club_recap was added (COMM-309).
-  // new_report is staff/moderator-only (mod_alert_recipients()) and is
-  // deliberately absent here: this seeded member holds no moderation
-  // permission, so its row is gated out - see the dedicated staff test
-  // below.
+  // unlocked, COMM-218/219), monthly_club_recap was added (COMM-309), and
+  // streak_at_risk was added by the community structure research pass
+  // (202609100002) - a plain, member-visible reminder type. new_report and
+  // engagement_decline_flagged are both staff/moderator-only
+  // (mod_alert_recipients()) and are deliberately absent here: this seeded
+  // member holds no moderation permission, so both rows are gated out -
+  // see the dedicated staff test below.
   const types = new Set([...window.document.querySelectorAll('[data-community-action="notif-pref"]')].map((b) => b.dataset.type));
   assert.deepEqual([...types].sort(), [
     "achievement_unlocked", "announcements", "challenges", "comment_on_post", "comment_reply",
-    "events", "friend_achievements", "mentions", "monthly_club_recap", "reactions", "weekly_recap",
-  ], "all eleven member-visible preference types are listed");
+    "events", "friend_achievements", "mentions", "monthly_club_recap", "reactions", "streak_at_risk", "weekly_recap",
+  ], "all twelve member-visible preference types are listed");
   assert.ok(!types.has("new_report"), "the moderator-only type is not shown to a plain member");
+  assert.ok(!types.has("engagement_decline_flagged"), "the staff-only engagement alert type is not shown to a plain member");
 
   const push = window.document.querySelector('[data-community-action="notif-pref"][data-type="comment_on_post"][data-channel="push"]');
   assert.ok(push.disabled, "Push is disabled in V1");
@@ -409,7 +412,7 @@ test("the Account panel lists every type with Push (disabled), In-app and Off", 
   assert.ok(inApp.className.includes("selected"), "the default selection is In-app");
 });
 
-test("a moderator sees the new_report preference row; a plain member never does", async () => {
+test("a moderator sees the new_report and engagement_decline_flagged preference rows; a plain member never does", async () => {
   const modMock = createMockSupabase({
     profiles: [{ id: "u1", handle: "dana", display_name: "דנה", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true }],
     invite_redemptions: [{ user_id: "u1", invite_id: "inv-1", role: "coach", redeemed_at: VERIFIED }],
@@ -421,11 +424,13 @@ test("a moderator sees the new_report preference row; a plain member never does"
   const modWindow = await bootCommunity(modMock, { syncEnabled: false });
   await openAccount(modWindow);
   assert.ok(modWindow.document.querySelector('[data-community-action="notif-pref"][data-type="new_report"]'), "a coach (community.comment.moderate) sees the row");
+  assert.ok(modWindow.document.querySelector('[data-community-action="notif-pref"][data-type="engagement_decline_flagged"]'), "and the engagement-decline alert row too - same staffOnly gate as new_report (202609100002)");
 
   const memberMock = seeded([]);
   const memberWindow = await bootCommunity(memberMock, { syncEnabled: false });
   await openAccount(memberWindow);
   assert.ok(!memberWindow.document.querySelector('[data-community-action="notif-pref"][data-type="new_report"]'), "a plain member does not");
+  assert.ok(!memberWindow.document.querySelector('[data-community-action="notif-pref"][data-type="engagement_decline_flagged"]'), "nor the engagement-decline alert row");
 });
 
 test("changing a preference is a direct own-row upsert into notification_preferences", async () => {

@@ -1,3 +1,60 @@
+## Structural opportunities from the Community research pass, three of four shipped — 2026-09-10
+
+A research pass on the Community tab's structure ("effective, easy, fun, and beneficial to
+both members and owner") found the retention loop weak (every notification type is reactive
+or administrative, nothing gives a member a reason to open the app on a rest day) and coach
+tooling proactive but still pull-only (coach_engagement_flags is detected daily but never
+pushed to a coach - they have to open the Coach tab to find out). Asked to build all four
+ranked opportunities and add an admin off-switch for each.
+
+**1. Boards tab badge.** The tab pill for challenges/leaderboard carried no ambient signal,
+unlike Manage's own pendingReports badge two tabs over. Now badges with a count of active
+challenges ending within 48h - the same window `chal_notify_ending_soon()` already uses
+server-side, off data already loaded at boot (zero new fetches). Fixed a latent aria-label
+bug in passing: the shared tab-badge markup hardcoded "X דיווחים ממתינים" for every badge on
+that bar, which would have mis-described this one to a screen reader; generalized to a
+`badgeLabel` field, defaulting to the original string so nothing else changes.
+
+**2. Growth loop.** Turned out to already be built: `renderInviteQrPanel()`'s "שליחה לטלפון"
+button already calls `navigator.share()` with the real invite link and QR image
+(`shareInviteQr()`/`performInviteShare()`). Nothing to add. The bigger idea researched
+alongside it - letting an ordinary member (not just coaches/admins) share an invite from
+their own achievement posts - runs into two deliberate, tested boundaries on purpose: the
+outward-share card's own Rule 2/3 explicitly forbid club identity or any URL ("an image that
+has left this app has no RLS behind it any more"), and the `member` role holds no invite
+permission today. Left alone rather than silently reversing either; flagged as a real,
+separate product decision if the owner wants to revisit it.
+
+**3. Streak-at-risk nudges** (`notif_streak_at_risk()`, new). Daily job: a member with a
+3+ day activity streak (consecutive days the app was opened) who hasn't opened it yet today
+gets an honest reminder. Deliberately NOT gated on leaderboard visibility - this is a private
+reminder about a member's own number, not a board read. Self-limiting by construction (the
+"last activity = yesterday" predicate matches at most one calendar day per at-risk episode),
+so one daily cron run cannot double-notify without needing a tracking column.
+
+**4. Engagement-decline alerts to staff** (`coach_notify_engagement_flags()`, new). The
+existing daily detection job (`coach_detect_engagement_decline()`, already scheduled, never
+touched) still only writes the flag. This fans a NEW flag out to every coach/admin
+(`mod_alert_recipients()`, the same resolver `new_report` already uses) once - a new
+`notified_at` column gates it, the same "notify once per thing" idiom
+`challenges.ending_soon_notified_at` already established. Deliberately carries no member
+name or handle: PRIVACY.md documents this signal as hidden from the member it is about, and
+a push banner is a surface a coach's own notification centre doesn't otherwise expose to.
+
+**The admin off-switch, as asked**: two new `club_features` toggles
+(`streak_risk_nudges`, `engagement_alerts`), the same generic mechanism every other module
+toggle already uses - no new table, no new RPC, genuinely server-enforced (checked inside
+each new function itself, not just hidden client-side), on by default.
+
+Verified: local `supabase test db` (95 files/3289 tests, a new `0094` file covering both
+jobs' eligibility rules, idempotency, privacy, and the off-switch), `check-migration-
+immutability` clean, full JS suite 1514/1514 (2 new + 2 pre-existing tests updated for the
+new toggle/pref counts, with the updated numbers justified inline), full browser-check
+35/35 including `a11y-axe-scan.mjs` and `community-render-cost.mjs`. One early false-alarm:
+a first `supabase test db` run showed 5 unrelated files failing - traced to leftover
+pollution from my own earlier ad-hoc manual test insert in the shared local dev database,
+not a real regression; a clean `db reset` confirmed it.
+
 ## The Community feed "feels cheap" — a scoped polish pass, checked against the approved mockup — 2026-09-10
 
 Reported directly. Compared the current feed markup/CSS against the already-approved

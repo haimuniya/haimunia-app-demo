@@ -685,3 +685,37 @@ test("the challenge detail dialog closes on Escape and returns focus to the open
   window.document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   await waitFor(() => !window.document.querySelector('[data-cloud-dialog="challengeView"]'), 3000);
 });
+
+// Community structure research, 2026-09-10. The Boards pill used to carry
+// no ambient signal at all - a member had to already think to tap it to
+// discover an active challenge. Badged the same way Manage's own
+// pendingReports pill already is, off data already loaded at boot
+// (loadChallenges()), counting active challenges ending within 48h - the
+// same window chal_notify_ending_soon() uses server-side.
+test("the Boards pill carries a badge when a challenge is ending within 48 hours, and none when nothing is close", async () => {
+  const mock = seeded({
+    challenges: [
+      { id: "c1", challenge_type: "individual_target", title: "מסתיים בקרוב", description: "", metric_type: "session_count", target_value: 12, start_at: iso(-20), end_at: iso(1), status: "active", join_mode: "open", visibility: "club", created_by: "coach1", config: {} },
+      { id: "c2", challenge_type: "individual_target", title: "יש עוד זמן", description: "", metric_type: "session_count", target_value: 12, start_at: iso(-5), end_at: iso(20), status: "active", join_mode: "open", visibility: "club", created_by: "coach1", config: {} },
+    ],
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitFor(() => !!window.document.querySelector("#commTab-boards"), 3000);
+  await waitFor(() => !!window.document.querySelector("#commTab-boards .tab-badge"), 3000);
+  const badge = window.document.querySelector("#commTab-boards .tab-badge");
+  assert.equal(badge.textContent.trim(), "1", "only the challenge ending within 48h is counted, not the one with weeks left");
+  assert.match(badge.getAttribute("aria-label"), /אתגרים מסתיימים בקרוב/, "the badge's own accessible label describes what it counts, not the generic pending-reports string this bar's markup is shared with");
+});
+
+test("the Boards pill carries no badge when nothing is ending soon", async () => {
+  const mock = seeded({
+    challenges: [
+      { id: "c1", challenge_type: "individual_target", title: "יש עוד זמן", description: "", metric_type: "session_count", target_value: 12, start_at: iso(-5), end_at: iso(20), status: "active", join_mode: "open", visibility: "club", created_by: "coach1", config: {} },
+    ],
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitFor(() => !!window.document.querySelector("#commTab-boards"), 3000);
+  assert.ok(!window.document.querySelector("#commTab-boards .tab-badge"), "no badge renders when nothing is ending within 48h");
+});

@@ -63,10 +63,10 @@ test("an admin sees one toggle row per module, all checked when every module is 
   await openManageSettings(window);
   await waitFor(() => !!window.document.querySelector('[data-club-feature="feed"]'), 3000);
   const rows = window.document.querySelectorAll('[data-club-feature]');
-  // Redesign, Phase 2: 7 community-content rows (the original 6 plus
-  // "directory") + 4 coach-tool rows (coach_tools, member_of_week,
-  // welcome_flow, monthly_recap) = 11.
-  assert.equal(rows.length, 11, "one row per module across both groups");
+  // Community structure research, 2026-09-10: 8 community-content rows (the
+  // original 7 plus "streak_risk_nudges") + 5 coach-tool rows (the original
+  // 4 plus "engagement_alerts") = 13.
+  assert.equal(rows.length, 13, "one row per module across both groups");
   rows.forEach((el) => assert.equal(el.checked, true, `${el.dataset.clubFeature} starts checked`));
 });
 
