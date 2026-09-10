@@ -1,3 +1,50 @@
+## Three real gaps from a full member-facing UX sweep — 2026-09-10
+
+Asked to run the same "more complicated than it needs to be" audit across
+every member-facing screen, not just admin/Community. Forked four
+parallel audits (Add/WOD, History/Progress + Calendar, Community's
+social side, onboarding + Settings). Three came back clean on inspection
+- Community, onboarding, and Settings had all already been through
+deliberate simplification passes and nothing new cleared the bar. Three
+concrete fixes landed:
+
+- **Calendar tab showed the wrong title.** Tap "לוח שנה" in the bottom
+  nav, land on a screen whose h1 said "היסטוריה" - a straight mislabel
+  (the History/Progress tab, internally called `history`, correctly
+  shows "התקדמות"; only Calendar's own title had drifted from its nav
+  label). `app.js:4210`, one line.
+- **Progress tab's "add new measurement" outranked the measurements you
+  already track.** `renderMeasureArea()` rendered a bold, brass-bordered
+  "+ הוספת מדד חדש" CTA first, above every existing measurement - the
+  rare once-per-type action beating the thing you actually do every
+  visit (log today's value into a type you already have). Moved the
+  control after the real rows and dropped it to plain-row weight
+  (`.link-btn`, no border/CTA styling) - same control, same
+  `data-action="open-add-measure-type"`, just no longer first in line.
+- **Add tab's ladder/superset toggle competed with the actual set
+  entry.** Every single log session showed a full-width, two-line,
+  icon'd CTA for structured ladder/superset logging directly under the
+  weight/reps/sets steppers - a feature most single-set sessions never
+  touch. Shrunk the inactive state to a small `.link-btn`; the full
+  control (live round count, block-label chips, partner exercise, the
+  whole panel) still renders at its original weight the moment it's
+  actually active - nothing about the feature itself changed, only how
+  loud it is before you've asked for it.
+
+No ids, `data-action`s, or test selectors touched - confirmed against
+`test/bodyweight-measurements.test.mjs`, `test/duration-entries.test.mjs`,
+`test/superset-blocks.test.mjs`, `test/clear-data.test.mjs`, and
+`test/app-flow.test.mjs` before editing (all check for the active-state
+"...פעיל..." text via `[data-action='toggle-ladder-mode']`, none assert
+on inactive-state markup or DOM order). Full suite (1512/1512) and the
+full browser-check run (35/35, including `ladder.mjs`, `superset.mjs`,
+`roadmap.mjs`) both pass unchanged.
+
+Left alone: an unrelated, already-in-progress edit found in the same
+file mid-session (the WOD benchmarks subtab label "Benchmarks"→"קטלוג")
+- not something this pass touched, staged separately with `git add -p`
+so it ships on its own.
+
 ## Same fix, second surface: Member of the Week's coach's-pick form — 2026-09-10
 
 Follow-up to the invite-flow simplification below - a fork audited the

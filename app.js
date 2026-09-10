@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.16.1";
+const APP_VERSION = "4.16.2";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -3699,16 +3699,23 @@ function renderLogTab() {
       const isSuperset = !!ladderPartnerId;
       const modeLabel = isSuperset ? "סופרסט" : "סולם";
       const partner = ladderPartnerId ? movementById(ladderPartnerId) : null;
+      // Most single-set sessions never touch ladder/superset, so it no
+      // longer competes at full CTA weight with the actual set entry above
+      // it - a plain link-sized entry point until it's actually active,
+      // where the full control (live round count, block label, panel)
+      // still gets the same weight it always did.
+      if (!ladderMode) {
+        return `<button data-action="toggle-ladder-mode" class="link-btn" aria-pressed="false" style="display:block; margin-bottom:12px; font-size:12.5px;">${ICONS.ladder} רישום סולם / סופרסט</button>`;
+      }
       return `
-      <button data-action="toggle-ladder-mode" class="movement-btn ${ladderMode ? "active" : ""}" aria-pressed="${ladderMode}" style="margin-bottom:${ladderMode ? "0" : "12px"};">
+      <button data-action="toggle-ladder-mode" class="movement-btn active" aria-pressed="true" style="margin-bottom:0;">
         <div class="flex items-center gap-8">
           <span style="display:inline-flex; color:var(--brass); flex-shrink:0;">${ICONS.ladder}</span>
           <div style="text-align:right;">
-            <div aria-live="polite" style="font-weight:700; font-size:14px; color:${ladderMode ? "var(--brass)" : "var(--chalk)"};">${ladderMode ? (rounds.length ? `${modeLabel} פעיל — ${rounds.length} סטים נרשמו · הבא: ${nextNum}` : `${modeLabel} פעיל — קבעו את הסט הראשון למטה`) : "רישום סולם / סופרסט"}</div>
-            ${!ladderMode ? `<div style="color:var(--steel); font-size:11.5px; margin-top:2px;">כמה סטים ברצף — אותו תרגיל במשקלים שונים, או שני תרגילים לסירוגין</div>` : ""}
+            <div aria-live="polite" style="font-weight:700; font-size:14px; color:var(--brass);">${rounds.length ? `${modeLabel} פעיל — ${rounds.length} סטים נרשמו · הבא: ${nextNum}` : `${modeLabel} פעיל — קבעו את הסט הראשון למטה`}</div>
           </div>
         </div>
-        ${ladderMode ? `<span style="color:var(--brass); font-size:12px; font-weight:700; flex-shrink:0;">סיום</span>` : ""}
+        <span style="color:var(--brass); font-size:12px; font-weight:700; flex-shrink:0;">סיום</span>
       </button>
       ${ladderMode ? `
       <div style="border:1px solid var(--brass); border-top:none; border-radius:0 0 12px 12px; padding:10px 12px; margin-bottom:12px; margin-top:-1px;">
@@ -4207,7 +4214,7 @@ function renderCalendarTab() {
       <div class="scene-page__scrim" aria-hidden="true"></div>
       <div class="scene-page__intro">
         <div class="scene-page__brand">האימוניה</div>
-        <h1 id="pageTitle-calendar" class="scene-page__title">היסטוריה</h1>
+        <h1 id="pageTitle-calendar" class="scene-page__title">לוח שנה</h1>
       </div>
       <div class="scene-sheet">
     <div class="stripe-ribbon" aria-hidden="true"></div>
@@ -4270,17 +4277,20 @@ function renderMeasureArea() {
   if (!el) return;
   const types = measureTypesSorted();
 
+  // Adding a new measurement TYPE is rare (roughly once per type, ever);
+  // logging today's value into a type you already track is what happens
+  // every visit. The add control used to render first with CTA styling,
+  // outranking the actual measurements below it - now it's a plain row
+  // after the real data, same weight as everything else on screen.
   const addRow = measureAddOpen
-    ? `<div style="border:1px solid var(--brass); border-radius:12px; padding:10px 12px; margin-bottom:8px;">
+    ? `<div style="border:1px solid var(--brass); border-radius:12px; padding:10px 12px; margin-top:${types.length ? "8px" : "0"};">
          <input id="measureTypeInput" class="text-input" dir="auto" maxlength="80" autocomplete="off" placeholder="לדוגמה: היקף מותן" aria-label="שם מדד חדש" style="margin-bottom:8px;" />
          <div class="flex gap-8">
            <button data-action="confirm-add-measure-type" class="save-btn" style="max-width:none; flex:1;">הוספה</button>
            <button data-action="cancel-add-measure-type" style="color:var(--steel); font-size:13px; padding:0 10px;">ביטול</button>
          </div>
        </div>`
-    : `<button class="movement-btn" data-action="open-add-measure-type" style="border-color:var(--brass); margin-bottom:${types.length ? "8px" : "0"};">
-         <span style="font-weight:700; font-size:14px; color:var(--brass);">+ הוספת מדד חדש</span>
-       </button>`;
+    : `<button class="link-btn" data-action="open-add-measure-type" style="margin-top:${types.length ? "8px" : "0"};">+ הוספת מדד חדש</button>`;
 
   const rows = types.map((t) => {
     const expanded = measureExpandedId === t.id;
@@ -4328,8 +4338,8 @@ function renderMeasureArea() {
 
   el.innerHTML = `
     <div class="section-label" style="margin-top:4px;">מדדי גוף</div>
-    ${addRow}
     ${rows}
+    ${addRow}
   `;
   if (measureAddOpen) {
     const input = document.getElementById("measureTypeInput");
