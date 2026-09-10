@@ -1,0 +1,849 @@
+
+============================================================
+a11y-axe-scan.mjs
+============================================================
+Target: http://127.0.0.1:46867/ (local static server, mocked backend — see lib/mockCloud.mjs)
+PASS  axe: no serious/critical WCAG violations on Add (log a set) — 24 rules passed
+PASS  axe: no serious/critical WCAG violations on History — 24 rules passed
+PASS  axe: no serious/critical WCAG violations on Calendar — 26 rules passed
+PASS  axe: no serious/critical WCAG violations on WOD — 24 rules passed
+PASS  axe: no serious/critical WCAG violations on Community / Feed — 24 rules passed
+PASS  axe: no serious/critical WCAG violations on Community / boards — 26 rules passed
+PASS  axe: no serious/critical WCAG violations on Community / account — 26 rules passed
+PASS  no console errors during the accessibility sweep
+
+run-all: a11y-axe-scan.mjs passed
+
+============================================================
+app-dialog-keyboard.mjs
+============================================================
+Target: http://127.0.0.1:39661/ (local static server)
+PASS  two logged sets are on the calendar day view to work with — 2
+PASS  it opens as role=dialog aria-modal=true — {"role":"dialog","modal":"true","labelledby":"appConfirmTitle","labelResolves":true}
+PASS  and its aria-labelledby actually resolves to a node — appConfirmTitle
+PASS  the trap sees at least two controls to cycle between — ["app-confirm-no","app-confirm-yes"]
+PASS  focus moved to the FIRST control on open, not left on the page behind — app-confirm-no vs first=app-confirm-no
+PASS  and the first control is the cancel, not the destructive confirm — app-confirm-no
+PASS  Tab from the last control wraps to the first, it does not escape to the page — app-confirm-no
+PASS  Shift+Tab from the first control wraps to the last — app-confirm-yes
+PASS  Escape closes the confirm sheet
+PASS  Escape DISMISSED — it did not answer yes — 2 -> 2
+PASS  focus returns to the bin icon that opened it, not to <body> — {"action":"delete-entry","inCalendar":true}
+PASS  a click on the dim backdrop closes the sheet
+PASS  the backdrop click DISMISSED — it did not answer yes — 2 -> 2
+PASS  the confirm button is the only thing that actually deletes — 2 -> 1
+PASS  no console errors
+
+app-dialog-keyboard: all checks passed
+
+run-all: app-dialog-keyboard.mjs passed
+
+============================================================
+benchmarks.mjs
+============================================================
+Target: http://127.0.0.1:37351/ (local static server)
+PASS  the log subtab shows the pick-a-WOD empty state on a fresh load, not a pre-filled form — בחרו אימון ונרשום אותו אימונים מוכרים מהמועדון, או אימון משלכם. בחירת אימון יציר
+PASS  that empty state offers a way out (a wod-picker button), not just a sentence
+PASS  the empty state also offers the build-your-own path
+PASS  the bottom CTA on the empty state points at the picker, not a stale save — open-wod-picker / "בחירת אימון"
+PASS  the build-your-own door actually opens the builder
+PASS  every workout format carries its gloss — כמה מהר סיימתם / כמה סיבובים הספקתם / המשקל הכי כבד שהרמתם / תרגיל חדש כל דקה
+PASS  ...at the spec's 13px, not buried under the body text — 13px
+PASS  benchmarks pill highlights on tap
+PASS  benchmarks list shows Girls and Heroes entries — 
+    
+      בנות
+      
+        Fran21-15-9 Thrusters & Pull-ups
+        ›
+     
+PASS  picking a benchmark switches to the log subtab
+PASS  log form shows the picked benchmark — Grace
+PASS  neither Rx nor Scaled is pre-selected — Rx=false Scaled=false
+PASS  an unmade choice LOOKS unmade (dashed frame) — dashed
+PASS  both options are Hebrew-first and keep the English — מלא (Rx) בדיוק כפי שנכתב | מותאם (Scaled) במשקלים שמתאימים לי
+PASS  each carries a readable gloss — 12px
+PASS  the save CTA is disabled until the member answers
+PASS  ...and the screen says why
+PASS  answering selects the chip, clears the dashed frame and enables the CTA — {"unset":false,"scaledChecked":"true","ctaDisabled":false}
+PASS  no console errors
+
+benchmarks: all checks passed
+
+run-all: benchmarks.mjs passed
+
+============================================================
+bidi-rtl-geometry.mjs
+============================================================
+Target: http://127.0.0.1:45657/ (local static server)
+PASS  the page really is RTL, so bidi reordering is actually possible here — rtl
+PASS  a WOD description on the log screen: the runs paint in the order they were typed — painted "21-15-9 Thrusters & Pull-ups", wanted "21-15-9 Thrusters & Pull-ups"
+PASS  a WOD description on the log screen: and the un-isolated control still reorders, so the check is load-bearing — control painted "Thrusters & Pull-ups 21-15-9"
+PASS  a WOD description on the log screen: the rep scheme reads 21-15-9, not the valid-looking 9-15-21 — 21-15-9 Thrusters & Pull-ups
+PASS  a WOD description on the log screen: and it is painted at the start of the line, where it was typed — 21-15-9 Thrusters & Pull-ups
+PASS  the description's own container stays rtl (the fix isolated, it did not flip the page) — rtl
+PASS  the member-typed note reaches the calendar day view at all
+PASS  a member-typed mixed-script note: the runs paint in the order they were typed — painted "21-15-9 Thrusters + Pull-ups. Rx 43/30 ג"ק.", wanted "21-15-9 Thrusters + Pull-ups. Rx 43/30 ג"ק."
+PASS  a member-typed mixed-script note: and the un-isolated control still reorders, so the check is load-bearing — control painted ".ג"ק Thrusters + Pull-ups. Rx 43/30 21-15-9"
+PASS  a member-typed mixed-script note: the rep scheme reads 21-15-9, not the valid-looking 9-15-21 — 21-15-9 Thrusters + Pull-ups. Rx 43/30 ג"ק.
+PASS  a member-typed mixed-script note: and it is painted at the start of the line, where it was typed — 21-15-9 Thrusters + Pull-ups. Rx 43/30 ג"ק.
+PASS  the shared module exposes the isolation helper the render sites call
+PASS  a formula inside a Hebrew sentence: the run paints "3×5 @ 60", the order it was typed — painted "םויה 3×5 @ 60 יתישע"
+PASS  a formula inside a Hebrew sentence: and the pre-fix line-only build still paints "60 @ 5×3", so the check is load-bearing — control painted "םויה 60 @ 5×3 יתישע"
+PASS  a time range inside a Hebrew sentence: the run paints "7:30 - 8:30", the order it was typed — painted "רקובב 7:30 - 8:30 העשב ןומיאה"
+PASS  a time range inside a Hebrew sentence: and the pre-fix line-only build still paints "8:30 - 7:30", so the check is load-bearing — control painted "רקובב 8:30 - 7:30 העשב ןומיאה"
+PASS  forcing the whole LINE ltr does not fix it either — the isolate genuinely had to go around the run — forced-ltr line painted "םויה 60 @ 5×3 יתישע"
+PASS  the block labels read A/B/C/D forward, not D/C/B/A — painted ")A/B/C/D( קולב תיוות םע"
+PASS  the run-level fix left the parentheses to the paragraph: identical paint before and after — after ")A/B/C/D( קולב תיוות םע" vs before ")A/B/C/D( קולב תיוות םע"
+PASS  and an over-isolating build that swallows the parentheses DOES move them, so that is a real assertion — over-isolated painted "(A/B/C/D) קולב תיוות םע"
+PASS  a Hebrew-only line still resolves RTL (the fix isolates, it does not force LTR) — painted ".יתמייס לבא ,השק היה"
+PASS  it was not isolated at all: there is no LTR run in it to isolate
+PASS  and a forced-LTR build of the same line paints differently, so the sample is not stale — forced-ltr painted "יתמייס לבא ,השק היה."
+PASS  an LTR-first line still resolves LTR: the rep scheme is painted at the start of the line — painted "21-15-9 Thrusters + Pull-ups. Rx 43/30 ג"ק."
+PASS  the run-level fix deliberately left it alone — it is gated on the line resolving RTL
+PASS  and removing that gate strands the unit at the far end of the line again, so the gate is load-bearing — un-gated painted ".ג"ק 21-15-9 Thrusters + Pull-ups. Rx 43/30"
+PASS  the history search's no-match line renders at all
+PASS  the app's OWN render path isolates the run: the query paints 3×5 @ 60, not 60 @ 5×3 — painted ""םויה 3×5 @ 60 יתישע"-ל םאותה ןומיא אצמנ אל" — if this reads 60 @ 5×3, app.js must bind bidiText to the shared module (const bidiText = SAFE.bidiText) rather than keeping a local copy
+PASS  and it does so by emitting the shared helper's isolate, not a re-implementation of it — לא נמצא אימון התואם ל-"<bdi>עשיתי <bdi dir="ltr">3×5 @ 60</bdi> היום</bdi>" — app.js must bind bidiText to the shared module (const bidiText = SAFE.bidiText) rather than keeping a local copy
+PASS  no console errors
+
+bidi-rtl-geometry: all checks passed
+
+run-all: bidi-rtl-geometry.mjs passed
+
+============================================================
+boot-smoke.mjs
+============================================================
+Target: http://127.0.0.1:33467/ (local static server)
+PASS  app shell became visible
+PASS  dir=rtl on <html>
+PASS  Rubik font actually loaded
+PASS  no unexpected page reload in the first 4s — navCount=1
+PASS  all 5 tabs switch without an empty/broken content area
+PASS  no console errors
+
+boot-smoke: all checks passed
+
+run-all: boot-smoke.mjs passed
+
+============================================================
+chart-rtl-orientation.mjs
+============================================================
+Target: http://127.0.0.1:39655/ (local static server)
+PASS  the app really is RTL, which is the entire premise of this check — rtl
+PASS  the chart plotted all four sessions — 4
+PASS  the OLDEST session is painted on the right and the NEWEST on the left — oldest x=321, newest x=69
+PASS  and every point in between marches leftwards, so the whole line reads right-to-left — [321,237,153,69]
+PASS  an improving series therefore RISES when read right-to-left, instead of appearing to fall — [232,195,158,122]
+PASS  control: the sample actually has a direction to get wrong (the line is not flat) — vertical spread 110px — under ~10px this check could not tell a mirrored chart from an un-mirrored one
+PASS  the date labels were mirrored along with the plot, not left behind — ["06.09","07.09","08.09","09.09"] at x=[315,231,146,63]
+PASS  and each date sits beside the session it belongs to
+PASS  the chart states its own direction in words — Strict Press +5.8 ק"ג 1RM משוער 06.0907.0908.0909.09 מימין לשמאל: מהישן לחדש. 1RM—2RM—3RM—5RM7510RM— 1RM משוער: 87.5 ק"ג
+PASS  no console errors
+
+chart-rtl-orientation: all checks passed
+
+run-all: chart-rtl-orientation.mjs passed
+
+============================================================
+community-challenge-lifecycle.mjs
+============================================================
+Target: http://127.0.0.1:45873/ (local static server, mocked backend — see lib/mockCloud.mjs)
+PASS  Boards tab loaded with the club-challenges heading
+PASS  a coach's create form produces a draft challenge card in the list — 
+      
+        🎯
+        
+          10 אימונים בספטמבר
+          יעד אישי · 2026-09-01–2026-09-30 · טיוטה
+          
+        
+      
+      
+        פרטים
+        
+        
+      
+    
+PASS  the created row actually landed in the backend as a draft
+PASS  joining wrote a challenge_participants row for the real signed-in user
+PASS  the card flips to the joined state in the UI
+PASS  leaving deleted the participant row
+PASS  no console errors
+
+community-challenge-lifecycle: all checks passed
+
+run-all: community-challenge-lifecycle.mjs passed
+
+============================================================
+community-classmates-card.mjs
+============================================================
+Target: http://127.0.0.1:34301/ (local static server, mocked backend — see lib/mockCloud.mjs)
+PASS  private_records starts empty
+PASS  queueSyncRecord + the real haimunia-sync-needed listener flushed the outbox to a real private_records upsert
+PASS  the synced row carries today's date and the strength_entry type the client actually sent — {"user_id":"u1","record_type":"strength_entry","record_id":"e-today","payload":{"id":"e-today","exerciseId":"back-squat","date":"2026-09-09","type":"reps","weight":100,"reps":5,"sets":3,"ts":1788973349603},"deleted_at":null,"updated_at":"2026-09-09T17:02:29.603Z"}
+PASS  ATTENDANCE_RECORDED's real bus emit reached analytics_events as attendance_recorded
+PASS  and carries occurred_on only — no workout title, no result — {"occurred_on":"2026-09-09"}
+PASS  the classmates card renders once both members' attendance_log rows exist for today
+PASS  the card names the classmate who trained today — 
+      💪 התאמנו היום גם
+      
+      
+        נ
+        נועם@noam
+      
+      מעקב
+    
+    
+PASS  the card does not name the caller themselves — 
+      💪 התאמנו היום גם
+      
+      
+        נ
+        נועם@noam
+      
+      מעקב
+    
+    
+PASS  classmates_card_viewed fired once the card actually reached the screen — {"rows":1,"source":"feed"}
+PASS  the card's Follow control reuses the real follow() insert path — no new follow mechanism
+PASS  no Message affordance on the card, per the phase's standing no-messaging resolution
+PASS  no console errors
+
+community-classmates-card: all checks passed
+
+run-all: community-classmates-card.mjs passed
+
+============================================================
+community-coach-congratulate.mjs
+============================================================
+Target: http://127.0.0.1:37271/ (local static server, mocked backend — see lib/mockCloud.mjs)
+PASS  the Celebrate list shows the PR item with a Congratulate control
+PASS  one tap wrote the congratulation comment onto the member's real PR post
+PASS  the comment names the celebrated member — כל הכבוד לנועה על שיא חדש בסקוואט (100 ק"ג)! 💪
+PASS  the control disables itself immediately after (no double-send is possible)
+PASS  no console errors
+
+community-coach-congratulate: all checks passed
+
+run-all: community-coach-congratulate.mjs passed
+
+============================================================
+community-coach-engage.mjs
+============================================================
+Target: http://127.0.0.1:44841/ (local static server, mocked backend — see lib/mockCloud.mjs)
+PASS  the Engage section shows both real flagged members for the first time, not the COMM-226 empty state
+PASS  the significant-decline member's row shows the real level label — ["\n      \n        נ\n        \n          נועה\n          ירידה משמעותית בהגעה\n        \n      \n      \n        פנייה\n        סימון כנבדק\n        דחייה\n      \n    ","\n      \n        ג\n        \n          גיל\n          ירידה קלה בהגעה\n        \n      \n      \n        פנייה\n        סימון כנבדק\n        דחייה\n      \n    "]
+PASS  the mild-decline member's row shows the real level label — ["\n      \n        נ\n        \n          נועה\n          ירידה משמעותית בהגעה\n        \n      \n      \n        פנייה\n        סימון כנבדק\n        דחייה\n      \n    ","\n      \n        ג\n        \n          גיל\n          ירידה קלה בהגעה\n        \n      \n      \n        פנייה\n        סימון כנבדק\n        דחייה\n      \n    "]
+PASS  no raw session-count figure reaches this staff view — only the level bucket — ["\n      \n        נ\n        \n          נועה\n          ירידה משמעותית בהגעה\n        \n      \n      \n        פנייה\n        סימון כנבדק\n        דחייה\n      \n    ","\n      \n        ג\n        \n          גיל\n          ירידה קלה בהגעה\n        \n      \n      \n        פנייה\n        סימון כנבדק\n        דחייה\n      \n    "]
+PASS  reach-out posted through post_create, club-visible — {"body":"היי נועה, רק רצינו לומר שלום ולראות מה שלומך! נשמח לראות אותך באימון בקרוב 😊","visibility":"club","media":[],"links":null}
+PASS  the reach-out body is a generic warm check-in that never names the decline or a level — היי נועה, רק רצינו לומר שלום ולראות מה שלומך! נשמח לראות אותך באימון בקרוב 😊
+PASS  the created post was updated to POST_COACH, the real second half of the reach-out write
+PASS  the reach-out control disables itself after one tap — no double-send
+PASS  marking reviewed wrote status/reviewed_by/reviewed_at in one real RLS update, and the row left the open list — {"id":"flag-1","user_id":"u9","level":"significant","status":"reviewed","flagged_at":"2026-09-08T17:02:32.089Z","reviewed_by":"u1","reviewed_at":"2026-09-09T17:02:33.741Z"}
+PASS  dismissing the second flag wrote status='dismissed' and the section fell back to the real empty state, both flags now resolved — {"id":"flag-2","user_id":"u10","level":"mild","status":"dismissed","flagged_at":"2026-09-07T17:02:32.089Z","reviewed_by":"u1","reviewed_at":"2026-09-09T17:02:34.007Z"}
+PASS  no console errors
+
+community-coach-engage: all checks passed
+
+run-all: community-coach-engage.mjs passed
+
+============================================================
+community-directory-follow.mjs
+============================================================
+Target: http://127.0.0.1:39395/ (local static server, mocked backend — see lib/mockCloud.mjs)
+PASS  the directory lists the one other club member
+PASS  the caller never sees their own row in the roster
+PASS  following from the directory wrote a real follows edge
+PASS  no console errors
+
+community-directory-follow: all checks passed
+
+run-all: community-directory-follow.mjs passed
+
+============================================================
+community-event-rsvp.mjs
+============================================================
+Target: http://127.0.0.1:42457/ (local static server, mocked backend — see lib/mockCloud.mjs)
+PASS  event detail opens showing the starting capacity, 0 / 2
+PASS  RSVPing going updates the capacity figure to 1 / 2 with no reload
+PASS  the Going control itself flips to the active/selected state
+PASS  no console errors
+
+community-event-rsvp: all checks passed
+
+run-all: community-event-rsvp.mjs passed
+
+============================================================
+community-intro-carousel.mjs
+============================================================
+Target: http://127.0.0.1:43763/ (local static server, mocked backend — see lib/mockCloud.mjs)
+PASS  the intro carousel appears right after credentials, before profile completion
+PASS  starts on the first screen
+PASS  no back button on the first screen
+PASS  the last screen's button names what happens next — המשך להשלמת הפרופיל
+PASS  finishing the carousel lands on the existing, unmodified profile-completion gate
+PASS  the carousel itself is gone
+PASS  the one-time device flag is stamped
+PASS  profile completion lands in the normal tabbed Community UI
+PASS  the carousel is still absent now that the tabbed Community UI has loaded
+PASS  no console errors
+
+community-intro-carousel: all checks passed
+
+run-all: community-intro-carousel.mjs passed
+
+============================================================
+community-member-of-week-publish.mjs
+============================================================
+Target: http://127.0.0.1:39789/ (local static server, mocked backend — see lib/mockCloud.mjs)
+PASS  the week's rotation category and its real computed candidate are shown, not the empty state
+PASS  the section header names the real rotation category
+PASS  the candidate's category-shaped detail renders translated, not a raw JSON dump — 
+      
+        נ
+        
+          נועם
+          5 שיאים אישיים השבוע
+        
+      
+      פרסום
+    
+PASS  publishing wrote a real member_of_week row and the suggestion UI is fully replaced by the published view
+PASS  the row records the category the server resolved, most_prs for a shortlisted publish, not coachs_pick — {"id":"mow-1","week_start":"2026-08-24","category":"most_prs","user_id":"u2","reason":"","published_by":"coach1","published_at":"2026-09-09T17:02:42.472Z"}
+PASS  the published view names the real member
+PASS  no console errors
+
+community-member-of-week-publish: all checks passed
+
+run-all: community-member-of-week-publish.mjs passed
+
+============================================================
+community-monthly-recap-publish.mjs
+============================================================
+PASS  a coach previewing the draft sees the real figures (is_staff() is enough for the read policy)
+PASS  a coach gets no publish control at all — is_staff() is not the gate recap_monthly_publish() checks
+PASS  and is told why, rather than left to wonder if the draft is broken
+PASS  no console errors (coach preview)
+PASS  an admin (community.analytics.view / is_admin) gets the real publish control on the draft
+PASS  the draft is still labelled a draft before publishing
+PASS  publishing stamped published_at through the real recap_monthly_publish RPC
+PASS  a published recap has no publish control left — this ticket's own "cannot be un-published or edited" rule
+PASS  the preview now reads a publish timestamp instead of the draft label
+PASS  a second publish call for an already-published month is refused server-side, never silently re-published — recap already published
+PASS  no console errors (admin publish)
+
+community-monthly-recap-publish: all checks passed
+
+run-all: community-monthly-recap-publish.mjs passed
+
+============================================================
+community-notification-center.mjs
+============================================================
+Target: http://127.0.0.1:41317/ (local static server, mocked backend — see lib/mockCloud.mjs)
+PASS  the notification center shows a challenge-update group
+PASS  the notification center shows the event notification
+PASS  expanding the challenge group reveals the individual notification's own body
+PASS  the center is a real dialog (role=dialog, aria-modal=true)
+PASS  no console errors
+
+community-notification-center: all checks passed
+
+run-all: community-notification-center.mjs passed
+
+============================================================
+community-person-invite-lifecycle.mjs
+============================================================
+Target: http://127.0.0.1:39781/ (local static server, mocked backend — see lib/mockCloud.mjs)
+PASS  the admin reaches the invite management section
+PASS  the admin's create form reveals a raw code exactly once — e2e1qf5682423mc000000000
+PASS  the new invite appears in the admin's own list as pending, carrying the label — 
+      
+        דנה, יום שלישי 06:00 · חבר/ה
+        ממתין
+      
+      נוצר 2026-09-09
+      
+      ביטול
+    
+PASS  signing out drops back to the signed-out community gate
+PASS  the new signup's redemption succeeded and moved past the invite-code screen
+PASS  the new signup creates real, device-portable credentials
+PASS  the new member completed their profile and reached the real tabbed community UI
+PASS  the admin logs back in with their own username and password
+PASS  the admin's re-fetched list shows the invite flipped to redeemed, with the new member's own identity attached — 
+      
+        דנה, יום שלישי 06:00 · חבר/ה
+        מומש
+      
+      נוצר 2026-09-09
+      מומש/ה ע"י חברה חדשה · 2026-09-09
+      
+    
+PASS  no revoke control is offered on a redeemed row
+PASS  a second redemption attempt on the already-spent code answers the generic 'invalid' - never a distinguishable 'already used' — invalid
+PASS  the refused second attempt wrote no second invite_redemptions row - the invite stays single-use — 1
+PASS  no console errors
+
+community-person-invite-lifecycle: all checks passed
+
+run-all: community-person-invite-lifecycle.mjs passed
+
+============================================================
+community-post-composition.mjs
+============================================================
+Target: http://127.0.0.1:33015/ (local static server, mocked backend — see lib/mockCloud.mjs)
+PASS  Publish starts disabled with no text and no media
+PASS  Publish enables once real typed text is present
+PASS  publishing actually called post_create and wrote a real row
+PASS  the published post carries the typed body — בוקר טוב מהקהילה — יום נהדר לאימון
+PASS  the published post carries the chosen visibility — only_me
+PASS  the composer closes on a successful publish
+PASS  the new post appears in the feed immediately (optimistic insert) — 
+      דדנהעכשיו
+      ⋯
+      
+    
+      בוקר טוב מהקהילה — יום נהדר לאימון
+      
+      🔥 0
+      💬 0
+      
+    
+      
+      
+      
+    
+PASS  no console errors
+
+community-post-composition: all checks passed
+
+run-all: community-post-composition.mjs passed
+
+============================================================
+community-recap-classmates.mjs
+============================================================
+Target: http://127.0.0.1:42117/ (local static server, mocked backend — see lib/mockCloud.mjs)
+PASS  the classmates line lists real names, not just a count — נועם, מאיה התאמנו איתכם השבוע.
+PASS  each classmate is a link to their profile — 2
+PASS  the links point at the two real classmates, in the order the row returned them — ["u2","u3"]
+PASS  a quiet week with zero overlap gets an honest empty classmates line, not an error and not an omitted section — אין חברים משותפים השבוע
+PASS  navigating back to the populated week shows the classmates line again, unchanged — נועם, מאיה התאמנו איתכם השבוע.
+PASS  no console errors
+
+community-recap-classmates: all checks passed
+
+run-all: community-recap-classmates.mjs passed
+
+============================================================
+community-recap.mjs
+============================================================
+Target: http://127.0.0.1:34095/ (local static server, mocked backend — see lib/mockCloud.mjs)
+PASS  the recap dialog shows the member's most recent week's sessions figure
+PASS  the recap dialog shows the member's streak figure
+PASS  viewing/browsing the recap never posts anything on its own
+PASS  Share Recap posts through post_create with the chosen figure (streak) in the body — {"body":"הרצף שלי עומד על 2 ימים ברצף! 🔥","visibility":"club","media":[],"links":null}
+PASS  the shared recap post is club-visible, matching the documented default
+PASS  no console errors
+
+community-recap: all checks passed
+
+run-all: community-recap.mjs passed
+
+============================================================
+community-render-cost.mjs
+============================================================
+Target: http://127.0.0.1:41489/ (local static server, mocked backend)
+
+Community tab, signed-in member, feed loaded:
+  post cards in #content   20
+  HTML returned            27334 bytes
+  elements in #content     300
+  focusable controls       91
+  window.render()          1.4 ms   (median of 50)
+  innerHTML write alone    0.4 ms   (median of 50)
+  => string building       1 ms of it
+PASS  the feed actually rendered, so the numbers above describe a real screen - 20 post cards
+
+How the innerHTML write alone scales with feed depth (one real post card, repeated):
+  cards    bytes   elements   ms/write
+      1     1180         13      0.037
+     10    11800        130      0.243
+     30    35400        390      0.683
+     60    70800        780      1.393
+    120   141600       1560       1.97
+
+Same full render(), under CDP CPU throttling:
+  1x slowdown (desktop)   1.3 ms/render
+  4x slowdown (~mid-range phone)   5.4 ms/render
+PASS  a full rerender still fits a frame on a mid-range phone (COMM-366 trip-wire: < 16 ms at 4x) - 5.4 ms - if this fails, re-read docs/community/2026-09-03-render-architecture-spike.md §5/§6 before adding more UI
+  6x slowdown (~low-end phone)   8 ms/render
+
+One tap on the feed's "toggle-comments" control triggered 2 full-tab rebuild(s).
+PASS  one tap costs a small, bounded number of full rebuilds - 2
+
+After one rerender, #content's first element is the same DOM node: false
+  Expected: every node is destroyed and rebuilt. That is why focus, scroll
+  position, IME composition and <details> open-state all have to be restored
+  by hand (syncCloudDialogFocus) instead of simply surviving.
+PASS  a rerender still destroys and rebuilds every node - the premise the spike rests on
+
+community-render-cost: all checks passed
+
+run-all: community-render-cost.mjs passed
+
+============================================================
+community-report-moderation.mjs
+============================================================
+Target: http://127.0.0.1:37425/ (local static server, mocked backend — see lib/mockCloud.mjs)
+PASS  the report sheet confirms receipt
+PASS  a real report row was written for the correct reporter and reason
+PASS  the head coach sees the reported item with a Remove action in the real moderation queue
+PASS  the real mod_review RPC removed the reported post
+PASS  a report_review audit row was written — content_delete,report_review
+PASS  a content_delete audit row was written — content_delete,report_review
+PASS  the report itself moved to action_taken — action_taken
+PASS  no console errors
+
+community-report-moderation: all checks passed
+
+run-all: community-report-moderation.mjs passed
+
+============================================================
+community-search.mjs
+============================================================
+Target: http://127.0.0.1:40385/ (local static server, mocked backend — see lib/mockCloud.mjs)
+PASS  results render grouped, members/events/challenges in order, never interleaved — ["members","events","challenges"]
+PASS  the members group shows the matching member
+PASS  the events group shows the matching event
+PASS  the challenges group shows the matching challenge
+PASS  exactly one round trip for the settled query, not three — calls=1
+PASS  no console errors
+
+community-search: all checks passed
+
+run-all: community-search.mjs passed
+
+============================================================
+desktop-layout.mjs
+============================================================
+Target: http://127.0.0.1:45269/ (local static server)
+PASS  below the breakpoint: hamburger visible, sidebar hidden — hamburger=true sidebar=false
+PASS  no console errors at narrow width
+PASS  above the breakpoint: sidebar visible, hamburger hidden — hamburger=false sidebar=true
+PASS  clicking a sidebar row (no id, data-tab only) switches tabs and marks itself active — content=true active=true
+PASS  the sidebar row never duplicates the mobile row's id — #tabHistoryBtn count=1
+PASS  settings opens from the sidebar's own settings row
+PASS  the sidebar actually sticks on scroll, not just visually near the top of an unscrolled page — top 28 -> 28 after scrolling to y=2000
+PASS  no console errors at wide width
+PASS  an unfilled context column renders nothing at all (no empty sticky card) — #contextCol box=null
+PASS  lifting the .app-shell cap does not move the two existing columns — app={"x":300,"w":560} sidebar={"x":892,"w":248}
+PASS  a populated context column appears as a third column at 1440 — context={"x":32,"w":520}
+PASS  the 560px logging column is still exactly 560px with a third column present — #app w=560
+PASS  the third column reclaims the dead space (>=90% of a 1440px viewport is live column) — live=1328px of 1440 scrollWidth=1440
+PASS  the context column sticks on scroll rather than scrolling away — top 28 -> 28 at scrollY=2000
+PASS  clearing the column with innerHTML = "" removes it and restores the two-column layout
+PASS  whitespace-only content does not draw a column either
+PASS  one pixel below the breakpoint there is no third column and no overflow — context=null app=560 scrollWidth=1279
+PASS  at the breakpoint the column appears at its 380px floor, the logging column holds, and nothing overflows — context={"x":20,"w":384} app=560 scrollWidth=1280
+PASS  the settings panel gets a content measure at 1440 instead of spanning the viewport — #settingsSheet={"x":424,"w":592,"centred":true}
+PASS  the segmented theme control is a control-shaped control at 1440, not a 452px band — option box={"w":169,"h":44}
+PASS  a bottom sheet is capped and centred at 1440 rather than a full-viewport band — picker sheet={"x":424,"w":592,"centred":true}
+PASS  no console errors across the wide-desktop tier
+PASS  a member-facing tab keeps the 560px column at 1440 — #app w=560
+PASS  the real ניהול tab widens #app to the ~940px table area at 1440 — #app w=940 scrollWidth=1440
+PASS  the staff table area reclaims the dead space (>=80% of 1440 is live column) — live=1188px of 1440
+PASS  the staff table area shrinks to fit at 1200 instead of overflowing — #app w=872 scrollWidth=1200
+PASS  below 1200 the ניהול tab is unchanged at 560px — #app w=560
+PASS  no console errors on the staff tier
+PASS  the context column is display:none and a zero box at 390px — {"colDisplay":"none","colBox":"0x0","appX":0,"appW":390,"scrollWidth":390}
+PASS  the phone content column is untouched (x=0, full 390px, no horizontal scroll) — {"colDisplay":"none","colBox":"0x0","appX":0,"appW":390,"scrollWidth":390}
+PASS  no console errors at phone width
+
+desktop-layout: all checks passed
+
+run-all: desktop-layout.mjs passed
+
+============================================================
+duration.mjs
+============================================================
+Target: http://127.0.0.1:44891/ (local static server)
+PASS  reps mode shows the barbell visual for a barbell movement
+PASS  switching to duration mode removes the barbell visual
+PASS  duration mode shows a duration stepper
+PASS  duration mode hides the reps stepper
+PASS  selected the intended exercise — got "Weighted Plank"
+PASS  day footer shows the hold as 3×40" — הערות לאימון ופרטי היום · 3×40" @ 20
+      לוח השנה
+PASS  a shorter hold than the existing best does not celebrate a PR
+PASS  History tab renders a chart for the duration exercise
+PASS  History tab shows a best-hold stat instead of the rep-record grid
+PASS  calendar day view formats the hold entries as seconds (25") not reps — יום רביעי, 9 בספטמבר 2026 Weighted Plank 3×25" @ 20 Weighted Plank 3×40" @ 20 איך היה האימון היום שמירת הערה
+PASS  no console errors
+
+duration: all checks passed
+
+run-all: duration.mjs passed
+
+============================================================
+emom.mjs
+============================================================
+Target: http://127.0.0.1:34775/ (local static server)
+PASS  selecting EMOM format shows the minutes stepper
+PASS  EMOM movements skip the reps/duration toggle (reps-only by design)
+PASS  created EMOM's description mentions both movements and the minute count — EMOM 12: 15 Wall Balls / 10 Burpees
+PASS  log form shows one prefilled stepper per rotation movement, in order — ["15","10"]
+PASS  score-type stat card shows EMOM, not a fallback label
+PASS  saving an EMOM attempt never flashes a PR (no cross-attempt scoring)
+PASS  the first-ever saved entry is answered as arrival — הרישום הראשון שלך נשמר Test Builder EMOM — 15 · 7 מכאן זה מצטבר. כל אימון שתרשמו יופיע ביומן ובגרפים. מעולה!
+PASS  ...and says nothing about a personal record — הרישום הראשון שלך נשמר Test Builder EMOM — 15 · 7 מכאן זה מצטבר. כל אימון שתרשמו יופיע ביומן ובגרפים. מעולה!
+PASS  calendar day view shows per-movement reps (15 · 7), not a generic score — יום רביעי, 9 בספטמבר 2026 Test Builder EMOM מלא (Rx) 15 · 7 איך היה האימון היום שמירת הערה
+PASS  no console errors
+
+emom: all checks passed
+
+run-all: emom.mjs passed
+
+============================================================
+first-run-sequence.mjs
+============================================================
+Target: http://127.0.0.1:39167/ (local static server)
+PASS  S1: the welcome sheet is the only thing on screen
+PASS  S1: nothing is behind it either
+PASS  S1: it asks for a name and nothing else — the box-start date on this sheet is what earned two badges for typing a date
+PASS  S1: its primary is no longer בואו נתחיל — יאללה, נתחיל
+PASS  S1: the way out is a real 44px target — דילוג @ 44px
+PASS  S2: nothing opens after the welcome sheet
+PASS  S2: the logging screen offers the tour — סיור קצר במסכים דקה, ומכירים את חמשת המסכים
+PASS  S2: the tour card is above the fold on a 390x844 screen — 660–724px
+PASS  S2: it does NOT push the exercise picker down — picker@579 tour@660
+PASS  S2: it is a real 64px target — 64px
+PASS  S6: the install dock is not on the first screen — it used to be the largest block on an empty first-run screen
+PASS  S3: content is untouched — still the five screens two personas praised — 5
+PASS  S3: its primary no longer duplicates S1's — יאללה, נתחיל then הבנתי, קדימה
+PASS  S3: it says it can be reopened, which is what makes skipping it free — אפשר לחזור לזה מתי שרוצים — בהגדרות.
+PASS  S3: still one surface at a time
+PASS  S2: the tour card retires once the tour has been taken
+PASS  S4: the first entry is answered at all — הרישום הראשון שלך נשמר Back Squat — 20 ק"ג × 5 מכאן זה מצטבר. כל אימון
+PASS  S4: it never claims a personal record
+PASS  S4: no medal on entry one — 0
+PASS  S4: alone on screen — celebrationOverlay
+PASS  S5: the consent card waits its turn behind it
+PASS  S5: the consent card appears once the celebration closes
+PASS  S5: it is a card, not a modal — an unanswered question never blocks logging
+PASS  S5: accept and decline are identical in size
+PASS  S5: ...and in weight and contrast — a decline styled as a grey link is not a decline
+PASS  S5: both are >=44px
+PASS  S6: install is still deferred, even with an entry on file
+PASS  S5: asked exactly once
+PASS  S5: the answer actually reaches cloud.js, not just app.js's own memory
+PASS  §1.5: the עזרה והתאמה card exists
+PASS  §1.5: the explainer has a permanent home — its defect was showing once, as a gate, with no way back
+PASS  §1.5: so does the install prompt
+PASS  §1.5: so does the box-start date
+PASS  §1.5: the backup answer is mirrored where it can be changed
+PASS  §1.5: the explainer really does reopen from Settings, after it has been seen
+PASS  cold open to a saved first set costs 4 taps — 4 taps
+PASS  no console errors across the whole first run
+
+first-run-sequence: all checks passed
+
+run-all: first-run-sequence.mjs passed
+
+============================================================
+install-dock-hit-check.mjs
+============================================================
+Target: http://127.0.0.1:39169/ (local static server)
+PASS  the bottom bar is showing the save CTA, the control this bug buried — save-set
+PASS  before the banner: the save CTA (#bottomBarBtn) is reachable — #saveBtnLabel
+PASS  before the banner: the first tab button is reachable — svg
+PASS  before the banner: the last tab button is reachable — svg
+PASS  the install dock stays down on day one with an empty log, even after beforeinstallprompt
+PASS  the dock does appear once §1.2 S6's conditions are met
+PASS  with the install dock showing: the save CTA (#bottomBarBtn) still receives the tap — topmost is #saveBtnLabel
+PASS  with the install dock showing: the first tab button still receives the tap — topmost is svg
+PASS  with the install dock showing: the last tab button still receives the tap — topmost is svg
+PASS  the dock is a child of #bottomNavWrap, not a fixed element of its own — true
+PASS  the dock is in normal flow (not position:fixed) — static
+PASS  the dock ends above the tab bar — no overlap at all, not merely a winning z-index — {"dock":{"top":550,"bottom":706,"height":156},"bar":{"top":706,"bottom":776,"height":70},"tabs":{"top":776,"bottom":844,"height":68},"inWrap":true,"dockPosition":"static"}
+PASS  control: re-creating the pre-fix `position:fixed;bottom:0;z-index:59` DOES bury the bottom bar — buried 3/3: the save CTA (#bottomBarBtn), the first tab button, the last tab button
+PASS  #app reserves extra bottom padding while the dock is up, and gives it back on dismiss — 390px with dock vs 0px without
+PASS  after dismissing the dock: the save CTA (#bottomBarBtn) is reachable — #saveBtnLabel
+PASS  after dismissing the dock: the first tab button is reachable — svg
+PASS  after dismissing the dock: the last tab button is reachable — svg
+PASS  no console errors
+
+install-dock-hit-check: all checks passed
+
+run-all: install-dock-hit-check.mjs passed
+
+============================================================
+ladder.mjs
+============================================================
+Target: http://127.0.0.1:34705/ (local static server)
+PASS  selected the intended exercise — got "Strict Press"
+PASS  all 5 rungs saved with ladder mode staying on throughout
+PASS  PR celebration stayed suppressed for all 5 rungs — fired 0/5
+PASS  calendar groups the 5 rounds into one card — ["Strict Press סולם · 5 סטים 1. 6×60 2. 5×70 3. 4×80 4. 3×85 5. 3×90"]
+PASS  all 5 weight/rep pairs present in order
+PASS  editing one round updates it in place, still grouped
+PASS  deleting a round asks first, and the question names the set it will destroy — מחיקת סט | מחיקת סט Strict Press — 1×3 @ 90, 09.09. הסט יימחק מהמכשיר; אפשר יהיה לבטל למשך כמה שניות.
+PASS  the confirm button is styled as destructive, not a bare OK
+PASS  focus lands inside the dialog, not behind it — app-confirm-no
+PASS  nothing is deleted while the dialog is still open — 5
+PASS  cancelling the confirmation deletes nothing — 5 -> 5
+PASS  a cancelled delete offers no undo, because nothing was undone
+PASS  confirming deletes exactly one round — 5 -> 4
+PASS  a confirmed delete offers a short undo
+PASS  finishing re-renders immediately (no stale toggle text) — רישום סולם / סופרסט
+            כמה סטים ברצף — אותו תרגיל במשקלים שונים, או שני תרגילים לסירוגין
+PASS  no console errors
+
+ladder: all checks passed
+
+run-all: ladder.mjs passed
+
+============================================================
+roadmap.mjs
+============================================================
+Target: http://127.0.0.1:38361/ (local static server)
+PASS  nothing at all opens after the welcome sheet — the explainer is no longer a gate
+PASS  the logging screen offers the tour instead — סיור קצר במסכים דקה, ומכירים את חמשת המסכים
+PASS  tapping the tour card opens the explainer
+PASS  the welcome and explainer primaries no longer carry the same label — יאללה, נתחיל / הבנתי, קדימה
+PASS  the explainer says it can be reopened, so skipping it costs nothing — אפשר לחזור לזה מתי שרוצים — בהגדרות.
+PASS  onboarding dismisses on tap
+PASS  no what's-new popup for a fresh install (nothing to catch up on)
+PASS  bell badge shows nothing for a fresh install
+PASS  bell opens the notifications overlay
+PASS  notifications list actually renders a version entry
+PASS  streak indicator shows 1 after logging today's only set — visible=true text="1"
+PASS  recent-history strip shows up after a second logged set
+PASS  saving a session note shows the confirmation message
+PASS  session note persists after navigating away and back — got "בדיקת הערה אוטומטית"
+PASS  no console errors
+
+roadmap: all checks passed
+
+run-all: roadmap.mjs passed
+
+============================================================
+superset.mjs
+============================================================
+Target: http://127.0.0.1:39761/ (local static server)
+PASS  tapping a block-label chip marks it active
+PASS  picking a partner shows the two exercise-switch pills
+PASS  adding a superset partner does not end the ladder
+PASS  all 3 alternating rounds saved with the superset staying active
+PASS  calendar folds the superset into one card spanning both exercise names — Strict Press + Bench Press סופרסט · 3 סטים · בלוק B 1. Strict Press: 8×40 2. Bench Press: 10×20 3. Strict Press: 10×42.5
+PASS  no console errors
+
+superset: all checks passed
+
+run-all: superset.mjs passed
+
+============================================================
+text-scale.mjs
+============================================================
+Target: http://127.0.0.1:34413/ (local static server)
+PASS  no horizontal overflow at the default size
+PASS  the removed xlarge option is not offered anywhere in the UI
+PASS  clicking גדול sets data-text-scale=large — large
+PASS  the control's own rendered size actually grew (zoom is applying, not just the attribute) — 44 -> 52.796875
+PASS  no horizontal overflow on the main tab at the larger size
+PASS  preference persists across a reload — large
+PASS  the modal's own JS height hack still resolves to the real viewport height under zoom — style.height=800px window.innerHeight=800
+PASS  the modal's close button and its far-lower create button are both genuinely visible on screen — close=true create=true
+PASS  no horizontal overflow with a fixed modal open at the larger size
+PASS  no console errors
+
+text-scale: all checks passed
+
+run-all: text-scale.mjs passed
+
+============================================================
+update-flow.mjs
+============================================================
+Target: http://127.0.0.1:36007/ (local static server, sw.js will be temporarily edited)
+
+--- Scenario 1: first-ever install must not self-reload ---
+PASS  no reload within 4s of a fresh install — navCount=1
+
+--- Scenario 2: update arrives while page is HIDDEN -> auto-applies silently ---
+PASS  banner does NOT show while hidden
+PASS  page reloads automatically without ever showing a banner
+
+--- Scenario 3: update arrives while page is VISIBLE -> banner shown, applies on next visibility regain ---
+PASS  banner shows while actively visible
+PASS  reloads automatically on visibility regain, without ever tapping the banner
+
+update-flow: all checks passed
+
+run-all: update-flow.mjs passed
+
+============================================================
+wod-builder-duration.mjs
+============================================================
+Target: http://127.0.0.1:39559/ (local static server)
+PASS  checking a movement defaults to a reps stepper
+PASS  switching to duration mode shows a duration stepper for that movement
+PASS  the new WOD's generated description shows formatted time, not "10 Plank Hold" — 45" Plank Hold
+PASS  no console errors
+
+wod-builder-duration: all checks passed
+
+run-all: wod-builder-duration.mjs passed
+
+============================================================
+wod-extras.mjs
+============================================================
+Target: http://127.0.0.1:37923/ (local static server)
+PASS  selecting a non-EMOM format shows the time-cap stepper
+PASS  log view shows the time cap after creating the WOD
+PASS  calendar day view shows the partner tag next to Rx/Scaled — יום רביעי, 9 בספטמבר 2026 Test Capped WOD מלא (Rx) · עם דנה 18:00 איך היה האימון היום שמירת הערה
+PASS  no console errors
+
+wod-extras: all checks passed
+
+run-all: wod-extras.mjs passed
+
+============================================================
+run-all summary: 35/35 passed
+============================================================
+  PASS  a11y-axe-scan.mjs
+  PASS  app-dialog-keyboard.mjs
+  PASS  benchmarks.mjs
+  PASS  bidi-rtl-geometry.mjs
+  PASS  boot-smoke.mjs
+  PASS  chart-rtl-orientation.mjs
+  PASS  community-challenge-lifecycle.mjs
+  PASS  community-classmates-card.mjs
+  PASS  community-coach-congratulate.mjs
+  PASS  community-coach-engage.mjs
+  PASS  community-directory-follow.mjs
+  PASS  community-event-rsvp.mjs
+  PASS  community-intro-carousel.mjs
+  PASS  community-member-of-week-publish.mjs
+  PASS  community-monthly-recap-publish.mjs
+  PASS  community-notification-center.mjs
+  PASS  community-person-invite-lifecycle.mjs
+  PASS  community-post-composition.mjs
+  PASS  community-recap-classmates.mjs
+  PASS  community-recap.mjs
+  PASS  community-render-cost.mjs
+  PASS  community-report-moderation.mjs
+  PASS  community-search.mjs
+  PASS  desktop-layout.mjs
+  PASS  duration.mjs
+  PASS  emom.mjs
+  PASS  first-run-sequence.mjs
+  PASS  install-dock-hit-check.mjs
+  PASS  ladder.mjs
+  PASS  roadmap.mjs
+  PASS  superset.mjs
+  PASS  text-scale.mjs
+  PASS  update-flow.mjs
+  PASS  wod-builder-duration.mjs
+  PASS  wod-extras.mjs
+
+run-all: everything passed
