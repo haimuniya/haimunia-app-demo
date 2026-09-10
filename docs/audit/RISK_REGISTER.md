@@ -58,8 +58,8 @@ independently re-verified here.
 
 | Status | Rows |
 |---|---:|
-| VERIFIED_FIXED | 72 |
-| STILL_OPEN | 57 |
+| VERIFIED_FIXED | 73 |
+| STILL_OPEN | 56 |
 | PARTIAL | 50 |
 | NO_LONGER_APPLICABLE | 15 |
 | **Total rows reconciled** | **194** |
@@ -69,9 +69,10 @@ Of the 194 rows, 7 are newly minted `AUDIT-RECON-*` items found during verificat
 The three source documents overlap heavily — the 2026-08-27 rescan restates most of the
 2026-08-27 audit's open items, and the 2026-09-02 audit re-found several of both. Every
 finding is kept as its own row so no source document is silently dropped, with duplicates
-cross-referenced in Notes. **After deduplication the open work is 56 distinct items: 33
-STILL_OPEN and 23 PARTIAL**, which is exactly what the punch list below enumerates. Use
-the punch list, not the raw row counts, for planning.
+cross-referenced in Notes. **After deduplication the open work is 55 distinct items: 32
+STILL_OPEN and 23 PARTIAL** (AUDIT0827-PROD-3 resolved 2026-09-10, see item 29 below),
+which is exactly what the punch list below enumerates. Use the punch list, not the raw
+row counts, for planning.
 
 ## Commit-scope spot checks
 
@@ -152,9 +153,8 @@ Use this as the implementation todo list. Ordered roughly by risk.
     places; no rem token scale for body copy.
 28. **AUDIT0827-PROD-1** — No product success criteria/targets (activation, retention,
     backup, sync). `docs/community/metrics.md` defines community *events*, not targets.
-29. **AUDIT0827-PROD-3** — Onboarding still does not explain local vs. cloud vs. public
-    data before community sign-in; neither the onboarding modal nor the intro carousel
-    covers it.
+29. **AUDIT0827-PROD-3** — RESOLVED 2026-09-10: the intro carousel's `club_rules` step
+    now states the actual defaults (profile visible, numbers private until shared).
 30. **AUDIT0827-PROD-6** — No in-app feedback/support route carrying release version and
     diagnostic context.
 31. **AUDIT0827-SEC-L8 / DSYNC-CONTENT-5** — Plaintext JSON export still has no
@@ -238,7 +238,7 @@ Use this as the implementation todo list. Ordered roughly by risk.
 |---|---|---|---|---|---|---|---|
 | AUDIT0827-PROD-1 | AUDIT0827 | High | Product | No measurable success criteria | `docs/community/metrics.md:1-40` defines tracked events + WCAM but no activation/retention/backup targets | STILL_OPEN | Event taxonomy is real and disciplined; the *targets* half was never written. |
 | AUDIT0827-PROD-2 | AUDIT0827 | High | Product | Coach model is global, not roster-scoped | `supabase/migrations/202608280001_clubs_and_rbac.sql:38,238`; `admin_member_roster` (COMM-377) is admin-scoped, not coach-to-class | NO_LONGER_APPLICABLE | RBAC ranks + permission strings replaced the flat "coach" tier. Class-to-coach scoping is Arbox's domain by explicit product boundary, not this app's. |
-| AUDIT0827-PROD-3 | AUDIT0827 | Medium | Product | Onboarding does not explain local vs. cloud vs. public data | `index.html` onboarding modal lists 5 screens with no data-location copy; `supabase/migrations/202609050007_intro_carousel_content.sql:44-53` seeds welcome/rules/getting-started, none about data | STILL_OPEN | `privacy.html` exists and is linked from Settings (`app.js:3093`), but nothing sits before community sign-in. |
+| AUDIT0827-PROD-3 | AUDIT0827 | Medium | Product | Onboarding does not explain local vs. cloud vs. public data | `supabase/migrations/202609100001_intro_carousel_data_visibility_disclosure.sql` adds one accurate sentence to the `club_rules` intro-carousel step | VERIFIED_FIXED | Copy matches `PRIVACY.md`'s actual defaults (profile visible, workout results/PRs/attendance private until shared) rather than a vague "your data becomes public" overstatement. Shown before profile completion, still before `privacy.html` would otherwise be reached. |
 | AUDIT0827-PROD-4 | AUDIT0827 | Medium | Product | Recovery depends on user-managed JSON exports | `app.js:3046` staleness banner; `app.js:1653,1708` auto-backup before destructive ops; private cloud sync shipped | PARTIAL | Visible backup status and guidance landed; the "is cloud sync a recovery feature" decision is still unstated. |
 | AUDIT0827-PROD-5 | AUDIT0827 | Medium | Product | Moderation workflow incomplete | `cloud.js:2253` `REPORT_REASONS`, `cloud.js:5074` mod queue, `cloud.js:11912` queue actions, `admin_actions` audit table | VERIFIED_FIXED | Reasons, queue, review/resolve/dismiss and audit writes all ship (COMM-151..154). Appeals/sanctions policy is still a product decision, not a code gap. |
 | AUDIT0827-PROD-6 | AUDIT0827 | Medium | Product | No formal feedback channel | No feedback/support route in `app.js` or `cloud.js`; PRIVACY.md points at "contact your coach directly" | STILL_OPEN | The human channel is documented; the in-app route with version + diagnostics is not built. |

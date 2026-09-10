@@ -1,3 +1,41 @@
+## Closed the one real onboarding gap: what becomes visible when you join — 2026-09-10
+
+A full end-to-end audit (every screen, every feature, prepared for board review) gave
+onboarding a skeptical re-look after repeated concern that the earlier "already fine"
+verdict wasn't the full story. It wasn't: `RISK_REGISTER.md`'s AUDIT0827-PROD-3, open
+since 2026-08-27, was real and never closed — nothing in the sign-up flow tells a new
+member what happens to their data once they join Community.
+
+Checked `PRIVACY.md`'s actual documented defaults before writing a word of copy, rather
+than guessing: profile visibility is ON by default, but workout results, PRs, and
+attendance are all OFF by default and only publish when a member chooses to share them.
+So the honest sentence is "your profile is visible, your numbers are not, until you say
+so" - not the more alarming "everything becomes public" a first guess might have shipped.
+
+Added one sentence to the intro carousel's existing `club_rules` step (the step already
+covering club policy facts - hours, dress code, cancellations), via a new migration
+(`202609100001_intro_carousel_data_visibility_disclosure.sql`) rather than a fourth
+carousel screen: the table's own CHECK constraint fixes the step set at exactly three,
+so a new screen would have been schema surgery for a one-sentence gap. The UPDATE is
+guarded to only touch the row if its body still matches the original seed text
+byte-for-byte, so a club that already customized this step through the admin content
+editor keeps its own words.
+
+Verified locally: `supabase test db` (94 files / 3265 tests, including the exact row
+after a full `db reset`), `check-migration-immutability` clean (new file, nothing
+edited), full JS suite 1512/1512, `community-intro-carousel.test.mjs` +
+`first-run-sequence.test.mjs` 35/35 (JSDOM fixtures, unaffected by the DB seed change
+as expected). `RISK_REGISTER.md`'s AUDIT0827-PROD-3 row and its summary counts updated
+to VERIFIED_FIXED.
+
+While assembling the audit, one other reported finding turned out to be a false
+positive from stale documentation, not a real gap: the "any coach can edit any
+admin's announcement" claim (SEC-010) cited a 2026-08-27 policy that a 2026-09-06
+migration had already superseded - `announcements_update_admin` has been
+author-or-admin, with cross-author edits audited, for four days. A passing pgTAP test
+(`0079_product_decisions_attendance_and_announcements_test.sql`) already proves it.
+Corrected before it reached the board report, not after.
+
 ## Re-audited the three just-fixed screens — 2026-09-10
 
 Asked to re-audit after the previous fix. Forked one pass over the same
