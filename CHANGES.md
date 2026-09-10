@@ -1,3 +1,57 @@
+## A rerunnable tool for the bugs manual audits keep missing — 2026-09-10
+
+Asked, pointedly: the previous role-coverage pass found two real bugs a fresh set of
+eyes had missed; build something that finds them without needing a fresh set of eyes
+each time, then run it for real. `scripts/audit-role-coverage.mjs` is a new static
+check, not a one-off script - three mechanical checks modeled directly on the three bug
+shapes already found this session:
+
+1. **Permission-gate mismatch** — cross-references every render function's `hasPerm()`
+   gate against the actual (transitive, through `perform public.other_fn(...)` calls)
+   permission its buttons' RPCs require server-side, flagging any control visible to a
+   role the server will then refuse.
+2. **Type-coverage gap** — for every server RPC with a closed-enum argument guard,
+   checks that every value the server accepts has a real client control, not just the
+   ones reachable through a direct handler call in a test.
+3. **Dead field-registry entry** — flags a `{key, label}` toggle whose key is
+   referenced nowhere else in the client, the shape a control for a nonexistent feature
+   takes.
+
+Building it caught its own bugs first, each one only visible by manually verifying a
+finding against the real code rather than trusting the first output - exactly the
+discipline the tool's own header now insists on for its own findings: a body-boundary
+regex that leaked unrelated `CREATE POLICY` text into a function's counted permissions
+(falsely implicated `pin_clear`, `chal_progress`, `post_create`), a client-side call
+resolver that wandered 4 hops into big shared render functions and vacuumed up
+unrelated RPCs, and - the one that mattered most - treating `hasPerm(X) || isAdmin()`
+as requiring **both** conditions instead of *either*, which artificially inflated a
+gate's computed strictness and is exactly why the tool's first run missed the real bug
+it was modeled on. Fixed all three, then re-validated by running the tool against last
+session's OWN pre-fix `cloud.js` (via `git show`, never by touching the working file)
+and confirming it now catches both previously-known bugs cleanly.
+
+**Then it found a third, real, previously-unknown one on the first full run against the
+current tree**: `renderRestrictionsPanel()`'s outer gate is an OR across three tiers
+(`MEMBER_RESTRICT` / `COMMENT_MODERATE` / `isAdmin()`), so a plain coach could see the
+whole active-restrictions panel and a real "ביטול ההגבלה" (lift restriction) button on
+every row — `mod_lift_restriction()` requires `community.member.restrict`
+(head_coach+) and would have refused every coach's click. Same defect class as the
+moderation-queue restrict buttons fixed earlier this session, in a sibling panel that
+manual pass didn't happen to check. Fixed the same way: the lift button now only
+renders for a role that actually holds the permission the RPC will demand.
+
+A full re-run against the fixed tree comes back with exactly one finding, and it is a
+confirmed false positive under a documented, deliberate limitation (the check sees a
+render function's outer gate, not a per-button inner conditional) — recorded in the
+script's own header so a future run isn't second-guessed by it.
+
+Verified: 1548/1548 (this session's own +1 test for the restrictions-panel fix,
+verified via the working tree, which also carries a concurrent session's own unrelated
+in-progress changes to many of these same files — every edit in this entry was
+isolated into its own minimal patch, diffed against `git show HEAD:<file>` and applied
+with `git apply --cached`, specifically so staging and committing this work would not
+touch or discard anything the other session has not committed yet).
+
 ## A role-coverage audit — two real bugs found and fixed, one dead control removed — 2026-09-10
 
 Asked to verify the app is actually ready per role, not just told so. Four parallel research

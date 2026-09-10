@@ -655,3 +655,40 @@ test("an expired temporary restriction is not offered for lifting", async () => 
   assert.equal(window.document.querySelector('[data-community-action="lift-restriction"]'), null,
     "an already-expired restriction is not something there is anything left to lift");
 });
+
+// Real bug found by scripts/audit-role-coverage.mjs (permission-gate-
+// mismatch check): renderRestrictionsPanel()'s own outer gate is an OR
+// across three tiers (MEMBER_RESTRICT / COMMENT_MODERATE / isAdmin()), so a
+// plain coach - who holds comment.moderate but not member.restrict - could
+// see the whole active-restrictions panel, including a real, working-
+// looking "ביטול ההגבלה" (lift restriction) button on every row.
+// mod_lift_restriction() independently requires community.member.restrict
+// (head_coach+ only) - the coach's click would have hit a hard "not
+// authorized" every time, the same defect class as the moderation-queue
+// restrict buttons this session already fixed, just in a sibling panel
+// that fix did not happen to touch.
+test("a plain coach (below head_coach) can see the active-restrictions panel but never sees a lift-restriction button on it", async () => {
+  const mock = baseMock({
+    profiles: [
+      { id: "coach-1", handle: "coach", display_name: "מאמן", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true },
+      { id: "author-1", handle: "kobi", display_name: "קובי", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true },
+    ],
+    invite_redemptions: [
+      { user_id: "coach-1", invite_id: "i1", role: "coach", redeemed_at: VERIFIED },
+      { user_id: "author-1", invite_id: "i2", role: "member", redeemed_at: VERIFIED },
+    ],
+    posting_restrictions: [{
+      id: "restr-1", user_id: "author-1", restriction_type: "permanent",
+      reason: "פרסום חוזר של תוכן שדווח", expires_at: null, moderator_id: "coach-1",
+      created_at: VERIFIED, lifted_at: null, lifted_by: null, lift_reason: "",
+    }],
+  });
+  mock.setUser({ id: "coach-1", is_anonymous: false, email: "coach@members.haimuniya.invalid" });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openManageModeration(window);
+  await waitFor(() => /הגבלות פרסום פעילות/.test(window.document.body.textContent), 3000);
+  await waitFor(() => /קובי/.test(window.document.body.textContent), 3000);
+  assert.match(window.document.body.textContent, /הגבלה קבועה/, "a coach can see that the restriction exists and its details");
+  assert.equal(window.document.querySelector('[data-community-action="lift-restriction"]'), null,
+    "but never a lift button - a coach holds no community.member.restrict, and mod_lift_restriction() would refuse the click");
+});

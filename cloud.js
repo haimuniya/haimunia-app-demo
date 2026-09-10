@@ -8742,6 +8742,18 @@
       if (!a.restrictionsLoaded) return "";
       return `<div class="chart-card" style="margin-bottom:12px;">${sectionHead("var(--red)", "הגבלות פרסום פעילות")}<div class="empty">אין כרגע הגבלות פרסום.</div></div>`;
     }
+    // Bug found by scripts/audit-role-coverage.mjs (permission-gate-mismatch
+    // check): this panel's own OUTER gate is an OR across three tiers
+    // (MEMBER_RESTRICT / COMMENT_MODERATE / isAdmin()) so a plain coach -
+    // who holds comment.moderate but not member.restrict - could see the
+    // whole panel, which is fine (coaches should see that a restriction
+    // exists). But the lift button was rendered unconditionally to
+    // everyone who could see the panel at all, and mod_lift_restriction()
+    // independently requires community.member.restrict (head_coach+ only)
+    // - the same "coarse gate covers a stricter action" shape the
+    // moderation-queue restrict buttons had, just in a different panel
+    // this session's manual role audit did not happen to check.
+    const canLift = hasPerm(PERM.MEMBER_RESTRICT);
     const rows = a.restrictions.map((r) => {
       const who = r.member_name || "חבר/ה";
       const permanent = r.restriction_type === "permanent";
@@ -8751,7 +8763,7 @@
         <div style="font-weight:700;font-size:14px;">${bidiText(who)}</div>
         <div style="color:var(--steel);font-size:12px;">${permanent ? "הגבלה קבועה" : "הגבלה זמנית"} · ${esc(until)}</div>
         ${r.reason ? `<div style="color:var(--steel);font-size:12.5px;">${bidiText(r.reason)}</div>` : ""}
-        <button class="chip-btn" data-community-action="lift-restriction" data-id="${esc(r.id)}"${busy ? " disabled" : ""} style="margin-top:2px;">${busy ? "מבטל…" : "ביטול ההגבלה"}</button>
+        ${canLift ? `<button class="chip-btn" data-community-action="lift-restriction" data-id="${esc(r.id)}"${busy ? " disabled" : ""} style="margin-top:2px;">${busy ? "מבטל…" : "ביטול ההגבלה"}</button>` : ""}
       </div>`;
     }).join("");
     return `<div class="chart-card" style="margin-bottom:12px;">
