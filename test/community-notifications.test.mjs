@@ -724,6 +724,55 @@ test("tapping an announcement notification scrolls to that announcement in the f
   assert.ok(feedTabBtn.className.includes("active"), "the feed tab is the active screen");
 });
 
+// Real device feedback ("the feed is getting too long"): the announcements
+// archive below the feed now caps at ANNOUNCEMENTS_ARCHIVE_VISIBLE (3),
+// with the rest behind a closed <details> disclosure - the same pattern
+// renderAuditLog()'s "עוד סינונים" already uses. A closed <details>
+// collapses its content to zero height, so a notification deep-linking
+// into a row PAST that cap must open the disclosure before scrolling, or
+// the member lands on an invisible target - exactly the bug this test
+// would have caught, since a1 here is the 4th (oldest) of 4 announcements.
+test("an announcements archive past the visible cap sits behind a closed disclosure, and a notification deep link into it opens the disclosure before scrolling", async () => {
+  const ann = (id, offsetMinutes, title) => ({
+    id, author_id: "coach1", title, body: `תוכן ${title}`,
+    created_at: new Date(BASE + offsetMinutes * 60000).toISOString(),
+    pinned_date: null, priority: "normal", expires_at: null,
+    profiles: { handle: "coach1", display_name: "מאמן" },
+  });
+  const mock = seeded(
+    [notif(1, { type: "announcement", category: "club", title: "הודעה ראשונה", deep_link: "/community/feed?announcement=a1" })],
+    {
+      announcements: [
+        ann("a4", 40, "הודעה רביעית"), ann("a3", 30, "הודעה שלישית"),
+        ann("a2", 20, "הודעה שנייה"), ann("a1", 10, "הודעה ראשונה"),
+      ],
+    },
+  );
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCommunity(window);
+  await waitFor(() => !!window.document.querySelector('[data-announcement-id="a4"]'), 4000);
+
+  const a1Row = window.document.querySelector('[data-announcement-id="a1"]');
+  assert.ok(a1Row, "the 4th announcement is still in the DOM, just archived");
+  const details = a1Row.closest("details");
+  assert.ok(details, "it sits inside a <details> disclosure");
+  assert.equal(details.open, false, "closed by default - only the 3 most recent show without expanding");
+  assert.match(window.document.body.textContent, /עוד הודעות \(1\)/, "the disclosure names how many more there are");
+
+  // Each rerender() replaces the DOM tree, so a1Row (captured before
+  // opening the notification center) goes stale the moment the center
+  // opens - re-query live each time instead of reusing that reference.
+  const liveA1Details = () => {
+    const el = window.document.querySelector('[data-announcement-id="a1"]');
+    return el && el.closest("details");
+  };
+  await openCenter(window);
+  window.document.querySelector('[data-community-action="notif-open"]').click();
+  await waitFor(() => !window.document.querySelector("[data-notif-center]"), 4000);
+  await waitFor(() => !!liveA1Details() && liveA1Details().open === true, 4000);
+  assert.equal(liveA1Details().open, true, "the deep link opens the disclosure, not just scrolls toward it");
+});
+
 // Live bug hunt round 4 (2026-09-11): a mention/comment notification's
 // target post is not guaranteed to be on the currently-loaded (paginated)
 // feed page - navigateToNotifTarget() used to just querySelector for the

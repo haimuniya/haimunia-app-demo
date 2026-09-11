@@ -1,3 +1,28 @@
+## Capped the announcements archive, the second real "feed too long" contributor — 2026-09-11
+
+Follow-up to the club-WOD toggle fix: the previous entry named a second, separate
+contributor to feed length and deliberately held off on it pending confirmation -
+the announcements archive below the feed rendered every live announcement in full
+(up to 20, `announcements_read`'s own query cap), no collapse. Told to fix it.
+
+The most recent `ANNOUNCEMENTS_ARCHIVE_VISIBLE` (3) still render as before; the rest
+sit behind a `<details>` disclosure ("עוד הודעות (N)"), the same pattern
+`renderAuditLog()`'s own "עוד סינונים" already uses - nothing is hidden, only
+de-prioritized past the first screenful.
+
+**Caught before shipping, not after**: a closed `<details>` collapses its content to
+zero height, and `navigateToNotifTarget`'s `target.announcement` branch only ever
+called `scrollIntoView` - a notification deep-linking into an archived (4th-or-older)
+announcement would have scrolled to an invisible target, silently. Fixed by opening
+the disclosure before scrolling. A new test seeds 4 announcements specifically to put
+the deep-linked one past the cap and proves the disclosure opens, not just that the
+node exists in the DOM.
+
+Verified: new tests in `community-notifications.test.mjs` (the cap + the deep-link
+fix) and `community-club-wod-board.test.mjs`/`community-club-features.test.mjs`
+(unaffected, re-run for confidence), full suite 1606/1606, and a direct visual check
+(real Chromium) of the collapsed and expanded states.
+
 ## Security hunt, round 4: moderation bypass, client-side tampering, and resource exhaustion — 2026-09-11
 
 Three more independent agents: moderation/abuse-bypass, client-side data tampering, and

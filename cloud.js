@@ -10681,6 +10681,10 @@
   const POST_BODY_MAX = 1000;
   const POST_MEDIA_MAX = 4;
   const ALT_TEXT_MAX = 200;
+  // Real device feedback: the announcements archive below the feed used to
+  // render every live announcement in full with no cap. Recent ones stay
+  // visible; older ones move behind a <details> disclosure instead.
+  const ANNOUNCEMENTS_ARCHIVE_VISIBLE = 3;
   // COMM-102 "control characters stripped, leading and trailing whitespace
   // trimmed". The server re-trims to POST_BODY_MAX, this is only the client
   // guard and the counter source.
@@ -16450,6 +16454,12 @@
       setTimeout(() => {
         const sel = '[data-announcement-id="' + String(target.announcement).replace(/"/g, '\\"') + '"]';
         const node = document.querySelector(sel);
+        // Real device feedback ("the feed is getting too long"): older
+        // archive rows now sit behind a closed <details> disclosure - a
+        // closed one collapses its content to zero height, so scrolling to
+        // a node inside it lands on an invisible target. Open it first.
+        const details = node && node.closest("details");
+        if (details && !details.open) details.open = true;
         if (node && node.scrollIntoView) node.scrollIntoView({ block: "center" });
       }, 60);
     } else if (target.achievement) {
@@ -17487,7 +17497,20 @@
     // each announcement. Post, challenge and event pin affordances live on
     // their own surfaces (posts and Phase 2 clusters); the strip and unpin
     // control render for every one of the four target types.
-    const announcementsList = otherAnnouncements.length ? `<div class="log-list">${otherAnnouncements.map((a) => `<div class="log-row" data-announcement-id="${esc(a.id)}" style="align-items:flex-start;flex-direction:column;gap:4px;${announcementAccentStyle(a)}"><div style="font-weight:700;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">${bidiText(a.title)}${announcementPriorityBadge(a)}</div><div style="color:var(--steel);font-size:13px;">${bidiText(a.body)}</div><div style="color:var(--steel);font-size:11px;">${esc(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div>${pinToggleHtml("announcement", a.id, a.title)}</div>`).join("")}</div>` : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
+    // Real device feedback ("the feed is getting too long"): this archive
+    // used to render every live announcement in full (up to 20, the cap
+    // announcements_read's own query carries) with no collapse - a club
+    // that posts regularly turned "reference material below the feed"
+    // into another long scroll. The most recent ANNOUNCEMENTS_ARCHIVE_
+    // VISIBLE render as before; the rest sit behind the same <details>
+    // disclosure renderAuditLog()'s "עוד סינונים" already uses, so nothing
+    // is hidden, only de-prioritized past the first screenful.
+    const announcementRow = (a) => `<div class="log-row" data-announcement-id="${esc(a.id)}" style="align-items:flex-start;flex-direction:column;gap:4px;${announcementAccentStyle(a)}"><div style="font-weight:700;display:flex;align-items:center;flex-wrap:wrap;gap:6px;">${bidiText(a.title)}${announcementPriorityBadge(a)}</div><div style="color:var(--steel);font-size:13px;">${bidiText(a.body)}</div><div style="color:var(--steel);font-size:11px;">${esc(a.profiles ? (a.profiles.display_name || "@" + a.profiles.handle) : "")}</div>${pinToggleHtml("announcement", a.id, a.title)}</div>`;
+    const visibleAnnouncements = otherAnnouncements.slice(0, ANNOUNCEMENTS_ARCHIVE_VISIBLE);
+    const restAnnouncements = otherAnnouncements.slice(ANNOUNCEMENTS_ARCHIVE_VISIBLE);
+    const announcementsList = otherAnnouncements.length
+      ? `<div class="log-list">${visibleAnnouncements.map(announcementRow).join("")}</div>${restAnnouncements.length ? `<details style="margin-top:8px;"><summary class="link-btn" style="cursor:pointer;">עוד הודעות (${restAnnouncements.length})</summary><div class="log-list" style="margin-top:8px;">${restAnnouncements.map(announcementRow).join("")}</div></details>` : ""}`
+      : (pinnedToday ? "" : `<div class="empty">אין הודעות חדשות</div>`);
     // ONE RAIL. pinnedHtml has moved OUT of this section and into the rail
     // above the feed, where it competes for a slot on merit like everything
     // else. What is left here is the archive: older announcements and the
