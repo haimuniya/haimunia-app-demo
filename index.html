@@ -2,6 +2,12 @@
 <html lang="he" dir="rtl">
 <head>
 <meta charset="UTF-8" />
+<!-- Security hunt round 8: hides the page and attempts to bust out if this
+     document is ever loaded inside another page's frame (frame-ancestors in
+     the CSP meta tag below is inert on this host - see the comment above
+     it). Loaded FIRST, ahead of theme-init.js, so it runs before anything
+     else can render. See frame-guard.js for the full reasoning. -->
+<script src="./frame-guard.js"></script>
 <!-- Stamps data-theme on <html> before first paint, from a stored choice.
      Must be a separate file, not an inline <script> — script-src 'self'
      below has no 'unsafe-inline'. Runs synchronously so there's no flash. -->
@@ -30,8 +36,17 @@
   no-real-headers host, and its meta tag already lists frame-ancestors
   'none' too (as inertly as it does here) — it is not "no CSP at all" as an
   earlier version of this comment claimed. The only real remaining gap on
-  both apps is the same one: moving off GitHub Pages (or fronting it with an
-  edge layer) to get real response headers.
+  both apps, at the header/CSP layer specifically, is the same one: moving
+  off GitHub Pages (or fronting it with an edge layer) to get real response
+  headers.
+
+  Security hunt round 8: that gap is not being left fully unmitigated
+  anymore. frame-guard.js (loaded first, before this meta tag is even
+  parsed) is a client-side framebuster — it cannot be delivered as a real
+  header on this host, but window.top === window.self holds for every
+  legitimate load (an installed PWA, an ordinary tab), so a script-level
+  check costs nothing real and closes the gap this meta tag cannot. See
+  that file for the live-confirmed exploit chain that motivated it.
 -->
 <!-- Launch-readiness audit, SEC-004. script-src and frame-src carry exactly
      two extra hosts: Cloudflare Turnstile and hCaptcha, the two providers
@@ -1331,7 +1346,13 @@
   .cat-group{ margin-bottom:14px; }
   .cat-head{ display:flex; align-items:center; gap:6px; margin-bottom:6px; }
   .cat-name{ color:var(--steel); font-size:12px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; }
-  .movement-btn{ width:100%; min-height:44px; display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 14px; text-align:right; margin-bottom:6px; box-shadow:var(--shadow-card); }
+  /* Security hunt round 8: the delete-custom-wod X had zero gap to the
+     pick-wod button beside it - pick-wod is flex:1 and fills all remaining
+     row width, so space-between alone left nothing between them. gap is
+     subtracted from that available space before the flex:1 child grows
+     into it, so this creates real separation without touching either
+     button's own layout. */
+  .movement-btn{ width:100%; min-height:44px; display:flex; align-items:center; justify-content:space-between; gap:6px; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 14px; text-align:right; margin-bottom:6px; box-shadow:var(--shadow-card); }
   .movement-btn.active{ background:var(--surface2); border-color:var(--brass); }
   @media (prefers-reduced-motion: reduce){ *{ transition:none !important; animation:none !important; } }
 

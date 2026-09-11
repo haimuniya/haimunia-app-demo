@@ -1,3 +1,62 @@
+## Security hunt, round 8: social-engineering-adjacent and UI-redressing — 2026-09-12
+
+Three more independent agents: clickjacking/UI-redressing, display/identity spoofing,
+and notification/invite/deep-link social engineering.
+
+**Clickjacking: the host's own known, already-documented limitation, upgraded from
+theoretical to a live-confirmed exploit chain, and given the one mitigation actually
+available.** This repo has long and accurately documented that `frame-ancestors` in a
+`<meta>` CSP is spec-ignored, and that the static host this app ships from has no way
+to send a real HTTP response header — an accepted, low-severity, "nothing to do about
+it here" finding. Confirmed live this round that the gap is exploitable, not just
+theoretical: an invisible iframe positioned over pre-measured real coordinates, behind
+an ordinary-looking decoy page, silently executed a real destructive action ("leave
+challenge") on a signed-in member who never saw the app's own confirmation text - the
+same technique reaches every destructive confirm action in the app. Real HTTP headers
+still cannot be sent on this host, but a client-side check can run regardless: a
+legitimate load (an installed PWA, an ordinary browser tab) always has its own window
+as its top window, so a same-origin check that hides the page whenever that is not
+true costs nothing for a real user and closes the gap a header-only mitigation cannot
+reach on this host. (Also confirmed live: modern Chromium additionally blocks a framed
+page from navigating itself out to safety without a prior user gesture - the hide-on-
+detection half of the fix is what actually stops the attack; the navigate-away half is
+kept as a harmless best-effort addition, not the load-bearing part.)
+
+**Display/identity spoofing: one confirmed high-severity gap in an existing guard,
+fixed.** An earlier round's free-text staff-impersonation guard (blocking a plain
+member from setting a display name like "מאמן דני") only ever ran on an UPDATE to an
+existing row - and a brand-new member's very first profile write is an INSERT, since
+there is no prior row to update. A new member could set a staff-claiming name on day
+one and simply never edit it again, keeping an unenforced impersonation permanently;
+confirmed live against real local Postgres. The same free-text claim also worked
+un-guarded in the bio field, insert or update, which the original guard never covered
+at all. Fixed by extending the same check to run on insert as well as update, across
+both fields, with the same staff-word list and the same exemption for members who
+actually hold the role they're claiming.
+
+**UI-redressing: one confirmed medium-severity gap, fixed - an in-app control, not a
+framing attack.** Every destructive delete action in the offline training log routes
+through an explicit confirmation step, except one: deleting a custom WOD definition
+deleted it immediately on a single tap, with its small delete control sitting flush
+against the primary "select this WOD" button beside it in the picker list, with no
+visual gap between them. Fixed with the same confirmation pattern every sibling delete
+action already uses, and a real gap between the two controls so they no longer read as
+one continuous tap target.
+
+**Notification/invite/deep-link social engineering found nothing to fix.** A
+crafted deep-link parameter only ever opens a view, never auto-executes an action; a
+notification's title is always a fixed, honest, client-side label per type, never
+overridable by free-text content even though a comment's raw body is echoed into its
+own notification; an invite code's role is independently capped server-side regardless
+of who is sending it; and there is no feature at all that shows a new member who
+"invited" them, so there is nothing there to spoof. Confirmed live against both the
+mock and, for every authorization-layer question, real local Postgres.
+
+Verified: full suite 1641/1641 (new regression coverage for the confirmation step and
+the impersonation-guard's insert/bio coverage), full browser-check 44/44 (new
+frame-guard.mjs scenario proving a framed load is hidden and un-hit-testable while an
+ordinary load is untouched), `supabase test db` 3393/3393 against real local Postgres.
+
 ## The square-glow bug, reported twice, actually fixed this time — 2026-09-12
 
 Real device screenshot: an earned bronze plate medal's glow looked like a square, not

@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert";
 import { bootApp, answerWodRx } from "./helpers/boot.mjs";
 
-test("a custom WOD with zero logged entries can be deleted from the picker", async () => {
+test("a custom WOD with zero logged entries can be deleted from the picker, through a confirmation step", async () => {
   const window = await bootApp();
   await window.addCustomWod("Test Delete Me", "load", "");
   const wod = window.allWods().find((w) => w.name === "Test Delete Me");
@@ -18,11 +18,33 @@ test("a custom WOD with zero logged entries can be deleted from the picker", asy
   const deleteBtn = window.document.querySelector(`[data-action='delete-custom-wod'][data-id='${wod.id}']`);
   assert.ok(deleteBtn, "a never-logged custom WOD should offer a delete button in the picker");
   deleteBtn.click();
+
+  // Security hunt round 8: this was the one delete-* action with no
+  // askAppConfirm step at all - one tap deleted the WOD outright, with its
+  // ✕ button sitting pixel-adjacent to the pick-wod button beside it.
+  const overlay = window.document.getElementById("appConfirmOverlay");
+  assert.ok(overlay, "the click opens a confirm dialog instead of deleting immediately");
+  assert.ok(overlay.textContent.includes("Test Delete Me"), "the dialog names the WOD being deleted");
+  assert.ok(window.allWods().some((w) => w.id === wod.id), "the WOD is still there while the dialog is open");
+
+  window.document.querySelector('[data-action="app-confirm-yes"]').click();
   await new Promise((r) => setTimeout(r, 0)); // deleteCustomWod() is async
 
   assert.equal(window.allWods().find((w) => w.id === wod.id), undefined, "the WOD should be gone from allWods()");
   const stored = await window.dbLoadCustomWods();
   assert.ok(!stored.some((w) => w.id === wod.id), "it should be gone from IndexedDB too, not just in-memory");
+});
+
+test("cancelling the delete-custom-wod confirmation leaves the WOD untouched", async () => {
+  const window = await bootApp();
+  await window.addCustomWod("Test Cancel Delete", "load", "");
+  const wod = window.allWods().find((w) => w.name === "Test Cancel Delete");
+
+  window.openWodPicker();
+  window.document.querySelector(`[data-action='delete-custom-wod'][data-id='${wod.id}']`).click();
+  window.document.querySelector('[data-action="app-confirm-no"]').click();
+
+  assert.ok(window.allWods().some((w) => w.id === wod.id), "cancelling the confirmation must not delete the WOD");
 });
 
 test("a custom WOD with logged entries offers no delete button, and deleteCustomWod refuses to touch it directly", async () => {

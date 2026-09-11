@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.35.1";
+const APP_VERSION = "4.36.0";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -2254,6 +2254,7 @@ function runAppConfirm() {
   else if (c.action === "delete-wod-entry") deleteWodEntry(c.payload.id);
   else if (c.action === "delete-measure-type") deleteMeasureType(c.payload.id);
   else if (c.action === "delete-measurement-entry") deleteMeasurementEntry(c.payload.id);
+  else if (c.action === "delete-custom-wod") deleteCustomWod(c.payload.id);
   else if (c.action === "save-set") saveSet(true);
   else render();
 }
@@ -3448,6 +3449,22 @@ function renderTextScaleRow() {
   </div>`;
 }
 
+// Security hunt round 8: this was the one delete-* action in the whole
+// dispatcher with no askAppConfirm step - a single tap deleted a custom
+// WOD outright, and its ✕ sat pixel-adjacent to the pick-wod button
+// beside it (see the .movement-btn gap fix in index.html). Named for what
+// it destroys, same convention as askDeleteEntry/askDeleteMeasureType.
+function askDeleteCustomWod(id) {
+  const wod = customWods.find((item) => item.id === id);
+  if (!wod) return;
+  askAppConfirm({
+    title: "מחיקת אימון",
+    message: `${wod.name}. האימון המותאם אישית יימחק לצמיתות.`,
+    confirmLabel: "מחיקה", destructive: true,
+    action: "delete-custom-wod", payload: { id },
+    opener: { action: "delete-custom-wod", id },
+  });
+}
 async function deleteCustomWod(id) {
   const wod = customWods.find((item) => item.id === id);
   if (!wod || wod.category !== "Custom" || wodEntriesFor(id).length) return false;
@@ -6785,7 +6802,7 @@ document.addEventListener("click", (e) => {
     closeWodPicker();
     renderWodContent();
   }
-  else if (action === "delete-custom-wod") { deleteCustomWod(el.dataset.id); }
+  else if (action === "delete-custom-wod") { askDeleteCustomWod(el.dataset.id); }
   else if (action === "open-wod-glossary") { if (typeof window.openTermGlossary === "function") window.openTermGlossary(); }
   else if (action === "select-benchmark") {
     choosePickedWod(el.dataset.id);
