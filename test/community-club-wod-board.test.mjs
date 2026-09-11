@@ -612,6 +612,45 @@ test("cancelling asks first, says nothing is deleted, and withdraws the card wit
   assert.ok(mock.db.club_wod_sessions[0].cancelled_at);
 });
 
+// Live bug hunt (2026-09-11): this form's own render reads its values FROM
+// state.club.wodSessionForm (the <select>'s "selected" option, the date
+// input's and note textarea's value/textContent) - but nothing wrote a
+// coach's live typing back into that state, only publishClubWodSession()
+// did, at submit time. Any unrelated rerender() in the meantime (the
+// confirmed live repro: cancel a session - which calls setMessage(), whose
+// own 6s auto-clear timer eventually calls rerender() - then start filling
+// in the republish form) replaced #content wholesale and rebuilt this form
+// from the stale, still-default state, silently wiping whatever had
+// already been typed. window.render() below stands in for that unrelated
+// rerender directly, rather than waiting 6 real seconds for the timer.
+test("filling in the republish form survives an unrelated rerender in the meantime, instead of being silently wiped", async () => {
+  const mock = personaMock("coach-1");
+  const coach = await bootCommunity(mock, { syncEnabled: false });
+  await openCommunity(coach);
+  await waitFor(() => !!coach.document.getElementById("communityClubWodSession"), 5000);
+
+  const form = coach.document.getElementById("communityClubWodSession");
+  const wodSelect = form.elements.wodId;
+  const dateInput = form.elements.sessionDate;
+  const noteInput = form.elements.note;
+
+  wodSelect.value = WOD_ID;
+  wodSelect.dispatchEvent(new coach.Event("input", { bubbles: true }));
+  dateInput.value = TOMORROW;
+  dateInput.dispatchEvent(new coach.Event("input", { bubbles: true }));
+  noteInput.value = "הערה שלא נשמרה עדיין";
+  noteInput.dispatchEvent(new coach.Event("input", { bubbles: true }));
+
+  // An unrelated rerender - real user typing has to survive this, or the
+  // form is only safe as long as nothing else on screen ever changes.
+  coach.render();
+
+  const formAfter = coach.document.getElementById("communityClubWodSession");
+  assert.equal(formAfter.elements.wodId.value, WOD_ID, "the chosen WOD must survive an unrelated rerender");
+  assert.equal(formAfter.elements.sessionDate.value, TOMORROW, "the chosen date must survive it too");
+  assert.equal(formAfter.elements.note.value, "הערה שלא נשמרה עדיין", "and the note, not reset back to empty");
+});
+
 test("every refusal these six RPCs can raise is mapped to Hebrew, and none of them says 'try again'", () => {
   // The strings below are the REAL ones: each was produced by calling the RPC
   // against the local Supabase stack with a real JWT (dana_k as the coach,

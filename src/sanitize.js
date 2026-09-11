@@ -111,7 +111,7 @@ function sanitizeEntry(e) {
     return {
       id, exerciseId, date, type, weight, reps: 0, sets: Math.round(sets),
       durationSeconds: Math.round(durationSeconds),
-      ts: cleanTs(e.ts), isPR: e.isPR === true, groupId, blockLabel, est1RM: 0,
+      ts: cleanTs(e.ts, date), isPR: e.isPR === true, groupId, blockLabel, est1RM: 0,
     };
   }
   const weight = cleanNum(e.weight, 0, LIMITS.weight, null);
@@ -120,7 +120,7 @@ function sanitizeEntry(e) {
   return {
     id, exerciseId, date, type, weight, reps, sets: Math.round(sets),
     durationSeconds: 0,
-    ts: cleanTs(e.ts), isPR: e.isPR === true,
+    ts: cleanTs(e.ts, date), isPR: e.isPR === true,
     // Links several rows saved as one working-set ladder or superset (same
     // groupId, one or two exerciseIds, same day) so the calendar day view
     // can group them — see renderCalDetail. null for an ordinary single set.
@@ -135,7 +135,7 @@ function sanitizeWodEntry(e) {
   const scoreType = WOD_SCORE_TYPES.includes(e.scoreType) ? e.scoreType : "time";
   // EMOM has no cross-attempt scoring (yet) — never let a hand-edited import
   // claim a PR flame for it.
-  const out = { id, wodId, date, scoreType, ts: cleanTs(e.ts), rx: e.rx !== false, isPR: scoreType === "emom" ? false : e.isPR === true };
+  const out = { id, wodId, date, scoreType, ts: cleanTs(e.ts, date), rx: e.rx !== false, isPR: scoreType === "emom" ? false : e.isPR === true };
   if (scoreType === "time") out.timeSeconds = cleanNum(e.timeSeconds, 0, LIMITS.minutes * 60 + 59, 0);
   else if (scoreType === "amrap") {
     out.rounds = Math.round(cleanNum(e.rounds, 0, LIMITS.rounds, 0));
@@ -163,7 +163,7 @@ function sanitizeBodyweight(e) {
   const id = cleanId(e.id), date = cleanISODate(e.date);
   const weight = cleanNum(e.weight, 0, LIMITS.bodyweight, null);
   if (!id || !date || weight === null) return null;
-  return { id, date, weight, ts: cleanTs(e.ts) };
+  return { id, date, weight, ts: cleanTs(e.ts, date) };
 }
 function sanitizeMeasureType(t) {
   if (!t || typeof t !== "object") return null;
@@ -176,7 +176,7 @@ function sanitizeMeasurement(e) {
   const id = cleanId(e.id), typeId = cleanId(e.typeId), date = cleanISODate(e.date);
   const value = cleanNum(e.value, 0, LIMITS.measurement, null);
   if (!id || !typeId || !date || value === null) return null;
-  return { id, typeId, date, value, ts: cleanTs(e.ts) };
+  return { id, typeId, date, value, ts: cleanTs(e.ts, date) };
 }
 function sanitizeList(list, fn) {
   if (!Array.isArray(list)) return [];

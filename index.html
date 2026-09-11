@@ -1418,6 +1418,19 @@
   .rx-btn.active-rx .term-sub, .rx-btn.active-scaled .term-sub, .rx-btn.active-type .term-sub{ color:inherit; opacity:.8; }
   .wod-desc{ color:var(--steel); font-size:12px; margin-top:2px; }
   .text-input{ width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:12px; padding:10px 12px; color:var(--chalk); font-size:16px; }
+  /* Live bug hunt (2026-09-11): the ≥1200px staff-tier rule widens #app to
+     ~940px for genuinely tabular admin work (roster, moderation queue,
+     analytics) - see that rule's own comment further down. The person-
+     invite and shared-code creation forms render in that same widened
+     container but are single-field forms, not tables: .text-input's own
+     width:100% stretched them to the full measure regardless - measured
+     live at 1440px, an 89px submit button next to an 874px number input.
+     No media query needed: this only ever binds once the container is
+     wider than the cap, which never happens at mobile widths, so it is a
+     no-op there rather than a second breakpoint to keep in sync. 448px
+     matches .save-btn's own established narrow-single-column cap
+     elsewhere, rather than inventing a new number. */
+  [data-invite-management-section]{ max-width:448px; }
   input[type="date"]{ color-scheme:var(--color-scheme); }
   input[type="date"]::-webkit-calendar-picker-indicator{ cursor:pointer; }
   @media (prefers-color-scheme: dark){

@@ -1,3 +1,59 @@
+## A second live bug hunt round: sync/PWA lifecycle, keyboard a11y, and lightly-covered admin areas — 2026-09-11
+
+Asked to keep looking for more live bugs. Ran three more independent agents in
+parallel, each covering fresh ground the first round hadn't: the offline-first
+sync/service-worker machinery, keyboard/accessibility navigation, and the two admin
+areas an earlier agent had flagged as only lightly checked (Club WOD board, invite
+management) plus the whole app at desktop viewport width. 7 confirmed findings, all
+fixed:
+
+- **The update banner's "wait for a tap" promise was defeated by the very next screen
+  lock/unlock.** `showUpdateBanner()` never marked itself as showing, so the same
+  `visibilitychange` listener that legitimately auto-applies an update arriving while
+  the page is hidden also fired on the NEXT visibility change after the banner was
+  already up - an ordinary phone screen lock (explicitly named in the code's own
+  comment as the common case) silently reloaded and dropped unsaved input, with no tap
+  ever happening. A new `updateBannerShowing` flag makes only an actual tap on the
+  banner able to apply it from that point on - confirmed live with real unsaved text
+  sitting in the WOD builder's name field. `update-flow.mjs`'s own Scenario 3 used to
+  assert the buggy behavior as correct; rewritten to assert the fix instead.
+- **Opening the WOD builder from inside the still-open WOD picker** left both dialogs
+  "open" at once - same root-cause shape as the earlier achievements/nav-menu bug.
+  `currentAppDialog()` kept treating the now-invisible picker as "the" open dialog:
+  Escape closed the hidden picker first (a second press was needed for the visible
+  builder), Shift+Tab from the builder's first control tabbed into the hidden picker
+  instead of wrapping, and the scroll lock dropped one press early. Fixed the same way
+  as before: close the picker first.
+- **The Club WOD publish/republish form could be silently wiped mid-edit** by an
+  unrelated global toast's 6-second auto-clear timer, which triggers a full rerender
+  from the form's own stale, uncontrolled state. Now kept live-synced the same way
+  `inviteCodeDraft`/date-echo fields already are.
+- **Creating a shared join-code collapsed its own one-time reveal card**, and the
+  reveal's close button became genuinely unreachable - the `<details>` disclosure it
+  lives inside had no id and no tracked open state, so `createInviteCode()`'s own
+  success rerender rebuilt it plain-closed. Since the raw code is never shown again
+  after this screen, that risked losing it outright. Now tracked the same way
+  `manageAdminArea()`'s five accordion areas already are, forced open the moment
+  there's a reveal to show.
+- **Shared codes showed no distinction between healthy, exhausted, and expired** -
+  `active` never auto-flips on either condition, and the badge only ever printed that
+  raw boolean. Now derived client-side from the same use_count/max_uses/expires_at the
+  row already displays as text.
+- **Invite/shared-code creation forms rendered ~874px-wide inputs** in the ≥1200px
+  staff-tier admin column (a width meant for genuinely tabular work - roster,
+  moderation, analytics - not a single-field form). Capped to match `.save-btn`'s own
+  established narrow-form width.
+- **A record with no stored `ts`** (legacy pre-existing local data, or a hand-restored
+  import) got a fresh, unstable `Date.now()` manufactured on every load, feeding
+  directly into cross-device last-write-wins conflict resolution - a years-old
+  workout could look like it was just edited, every session, with a different value
+  each time. `cleanTs()` now derives a stable fallback from the record's own date when
+  one is available, so the same input always produces the same output.
+
+Verified: full suite 1569/1569 (4 new regression tests), full browser-check 40/40
+(two new scripts: `desktop-invite-form-width.mjs`, and `update-flow.mjs`'s Scenario 3
+rewritten in place).
+
 ## A full site-wide live bug hunt, three fresh agents actually using the app — 2026-09-11
 
 Asked to check the whole site again for live bugs. Ran three independent agents in

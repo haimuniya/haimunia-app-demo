@@ -108,6 +108,39 @@ test("the app's bare identifiers and window globals are the shared module's own 
   assert.equal(window.cleanId("a".repeat(500)).length, S.LIMITS.idLen);
 });
 
+// Live bug hunt (2026-09-11): a missing/invalid ts always fell back to
+// Date.now() - fine for a genuinely new record, wrong for legacy data with
+// no ts column at all. Confirmed live: reloading the same ts-less record
+// twice produced two DIFFERENT manufactured "now" values, feeding directly
+// into shouldApplyRemote()'s cross-device conflict resolution, which
+// trusts ts verbatim. Fixed with an optional fallbackDateIso that every
+// sanitizeEntry()-family caller already has in scope.
+test("cleanTs falls back to the record's own date when ts is missing, instead of a fresh Date.now() every time", async () => {
+  const window = await bootApp();
+  const midnightOf = (iso) => new Date(iso + "T00:00:00Z").getTime();
+
+  assert.equal(window.cleanTs(undefined, "1991-06-15"), midnightOf("1991-06-15"), "a missing ts derives from the given date, not the clock");
+  assert.equal(window.cleanTs(0, "2020-01-01"), midnightOf("2020-01-01"), "an invalid (zero) ts also falls back to the date, not just undefined");
+  assert.equal(window.cleanTs(undefined, "1991-06-15"), window.cleanTs(undefined, "1991-06-15"), "the SAME input must always produce the SAME output - stable across reloads, not a fresh timestamp each time");
+
+  // A real, present ts is untouched regardless of what date is also passed.
+  assert.equal(window.cleanTs(12345, "1991-06-15"), 12345);
+
+  // No fallback date at all keeps the original behavior for callers with no
+  // date concept: still a real, current timestamp, not NaN/0/undefined.
+  const before = Date.now();
+  const noFallback = window.cleanTs(undefined);
+  assert.ok(noFallback >= before && noFallback <= Date.now() + 1000, "with no fallback date, still defaults to something close to now");
+
+  // Integration: a ts-less legacy record sanitizes to a date-derived ts,
+  // not a manufactured "now" - exercised through the real sanitize layer,
+  // not just the low-level helper in isolation.
+  const sanitizedBw = window.sanitizeBodyweight({ id: "bw-legacy", date: "1991-06-15", weight: 80 });
+  assert.equal(sanitizedBw.ts, midnightOf("1991-06-15"));
+  const sanitizedEntry = window.sanitizeEntry({ id: "set-legacy", exerciseId: "back-squat", date: "1991-06-15", type: "reps", weight: 60, reps: 5, sets: 1 });
+  assert.equal(sanitizedEntry.ts, midnightOf("1991-06-15"));
+});
+
 test("cloud.js escapes through the shared esc(): a hostile display name is inert in the rendered community tab", async () => {
   const mock = createMockSupabase();
   const window = await bootCommunity(mock);

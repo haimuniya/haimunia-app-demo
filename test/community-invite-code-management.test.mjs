@@ -114,6 +114,33 @@ test("shared codes panel lists role, active state and redemption count, and togg
   assert.deepEqual(setActiveCalls[0], { p_code_id: "code-1", p_active: false });
 });
 
+// Live bug hunt (2026-09-11): admin_invite_code_create/set_active never
+// auto-deactivate a code on exhaustion or expiry - `active` stays true
+// regardless - so a code at its own use-count cap, or one whose
+// expires_at is already in the past, used to read "פעיל" indistinguishably
+// from a genuinely usable one, with no on-screen cue that it's already
+// dead.
+test("an exhausted code and an expired code each get their own distinct status label, not the same 'פעיל' a healthy code shows", async () => {
+  const mock = seeded({}, "admin");
+  mock.onRpc("admin_invite_list", () => ({ data: [], error: null }));
+  mock.onRpc("admin_invite_code_list", () => ({
+    data: [
+      { id: "code-healthy", role: "member", active: true, created_at: "2026-08-01T00:00:00Z", expires_at: null, max_uses: 100, use_count: 4, redemption_count: 3 },
+      { id: "code-exhausted", role: "member", active: true, created_at: "2026-08-01T00:00:00Z", expires_at: null, max_uses: 1, use_count: 1, redemption_count: 1 },
+      { id: "code-expired", role: "member", active: true, created_at: "2026-08-01T00:00:00Z", expires_at: "2020-01-01T00:00:00Z", max_uses: 100, use_count: 0, redemption_count: 0 },
+    ],
+    error: null,
+  }));
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openAccountTab(window);
+  await waitFor(() => !!window.document.querySelector('[data-invite-code-id="code-healthy"]'), 3000);
+
+  const statusOf = (id) => window.document.querySelector(`[data-invite-code-id="${id}"] .admin-tag`).textContent;
+  assert.equal(statusOf("code-healthy"), "פעיל");
+  assert.equal(statusOf("code-exhausted"), "נוצל", "a code at its own use-count cap must not read the same as a healthy one");
+  assert.equal(statusOf("code-expired"), "פג תוקף", "a code past its own expires_at must not read the same as a healthy one");
+});
+
 test("creating a shared code never offers a coach-role option - the server refuses it unconditionally (COMM-371's own DEVIATION)", async () => {
   const mock = seeded({}, "admin");
   mock.onRpc("admin_invite_list", () => ({ data: [], error: null }));
@@ -142,6 +169,14 @@ test("creating a shared code reveals the raw code exactly once, with a copy acti
   assert.equal(createCalls[0].p_role, "member");
   await waitFor(() => !!window.document.querySelector('[data-invite-code-created="1"]'), 3000);
   assert.match(window.document.querySelector('[data-invite-code-created="1"]').textContent, /deadbeef/);
+  // Live bug hunt (2026-09-11): the reveal renders INSIDE the shared-code
+  // <details> disclosure, which used to collapse itself on this exact
+  // rerender (no id, no tracked open state) - taking the just-built reveal,
+  // and its own dismiss button, down with it. Since the raw code is never
+  // shown again after this screen, that risked losing it outright.
+  const disclosure = window.document.getElementById("inviteSharedCodeDisclosure");
+  assert.ok(disclosure, "the disclosure has a stable id now, for its open state to be tracked by");
+  assert.equal(disclosure.open, true, "creating a code must force the disclosure open, not leave the reveal hidden inside a collapsed one");
   window.document.querySelector('[data-community-action="dismiss-invite-code-created"]').click();
   await waitFor(() => !window.document.querySelector('[data-invite-code-created="1"]'), 3000);
 });

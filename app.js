@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.19.0";
+const APP_VERSION = "4.20.0";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -3262,7 +3262,23 @@ async function deleteCustomWod(id) {
 
 // ---------- WOD builder ----------
 let wodBuilderOpenerEl = null;
+// Live bug hunt (2026-09-11): "בניית אימון מותאם אישית" is reachable from
+// INSIDE the WOD picker (open-wod-builder, dispatched with the picker still
+// open underneath) - this never closed it first, same root-cause shape as
+// the earlier achievements/nav-menu bug (openAchievements()/openSettings()
+// both call closeNavMenu() first for exactly this reason). With both
+// wodPickerOpen and wodBuilderOpen true at once, currentAppDialog() (first
+// match by registration order) kept treating the now-INVISIBLE picker as
+// "the" open dialog: Escape closed the hidden picker while the visible
+// builder stayed open (a second Escape was needed), Shift+Tab from the
+// builder's first control tabbed into the hidden picker's controls instead
+// of wrapping within the builder, and the picker's own close() reset
+// document.body.style.overflow to "" one press early even though the
+// builder - a full-screen modal - should still be blocking scroll.
+// closeWodPicker() is a safe no-op when the picker was never open (the
+// other entry point, "יצירת אימון משלי", opens the builder directly).
 function openWodBuilder(prefillName) {
+  closeWodPicker();
   wodBuilderOpen = true;
   wodBuilderOpenerEl = document.activeElement;
   builderFormat = null;
@@ -6157,9 +6173,21 @@ let pendingWorker = null;
 // for it was wiping out whatever someone had just started typing, every
 // single first visit).
 let swapRequested = false;
+// Live bug hunt (2026-09-11): showUpdateBanner() never cleared/marked
+// pendingWorker, so the SAME visibilitychange listener that legitimately
+// auto-applies an update arriving while hidden ALSO fired on the very NEXT
+// visibility change after the banner was already showing - a member who
+// locked and unlocked their screen once (explicitly named below as the
+// common case) got the reload anyway, silently, without ever tapping the
+// banner, dropping whatever they had typed but not yet saved. This flag is
+// what actually makes "requires a manual tap" true: once the banner is up,
+// only reload-app's own call to applyUpdate() may apply it - no future
+// visibilitychange may, until a fresh offerUpdate() arrives.
+let updateBannerShowing = false;
 function applyUpdate() {
   const worker = pendingWorker;
   pendingWorker = null; // guard against a second trigger firing before the reload lands
+  updateBannerShowing = false;
   if (worker) {
     swapRequested = true;
     try { worker.postMessage({ type: "SKIP_WAITING" }); return; } catch (e) { swapRequested = false; }
@@ -6176,11 +6204,11 @@ function applyUpdate() {
 // yet, since nothing here persists until that tap.
 function offerUpdate(worker) {
   pendingWorker = worker;
-  if (document.visibilityState === "visible") showUpdateBanner();
+  if (document.visibilityState === "visible") { updateBannerShowing = true; showUpdateBanner(); }
   else applyUpdate();
 }
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && pendingWorker) applyUpdate();
+  if (document.visibilityState === "visible" && pendingWorker && !updateBannerShowing) applyUpdate();
 });
 
 // ---------- Install prompt ----------

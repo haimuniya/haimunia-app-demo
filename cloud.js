@@ -3069,9 +3069,9 @@
     const options = choices.map((w) => `<option value="${esc(w.id)}"${f.wodId === w.id ? " selected" : ""}>${esc(w.name)}</option>`).join("");
     return `<form id="communityClubWodSession" class="admin-card" style="margin-top:10px;">
       <div style="font-weight:800;margin-bottom:10px;">קביעת האימון של היום<span class="admin-tag">ניהול</span></div>
-      ${field("communityClubWodSession", "wodId", "אימון מהקטלוג", `<select class="text-input" name="wodId"><option value="">בחירת אימון</option>${options}</select>`)}
-      ${dateField("communityClubWodSession", "sessionDate", "ליום", `<input class="text-input" name="sessionDate" type="date" value="${esc(f.date || today)}" min="${esc(shift(-1))}" max="${esc(shift(1))}"/>`)}
-      ${field("communityClubWodSession", "note", "מילה מהמאמן/ת (אופציונלי)", `<textarea class="text-input" name="note" maxlength="500" rows="2">${esc(f.note || "")}</textarea>`)}
+      ${field("communityClubWodSession", "wodId", "אימון מהקטלוג", `<select class="text-input" name="wodId" data-club-wod-field="wodId"><option value="">בחירת אימון</option>${options}</select>`)}
+      ${dateField("communityClubWodSession", "sessionDate", "ליום", `<input class="text-input" name="sessionDate" type="date" value="${esc(f.date || today)}" min="${esc(shift(-1))}" max="${esc(shift(1))}" data-club-wod-field="date"/>`)}
+      ${field("communityClubWodSession", "note", "מילה מהמאמן/ת (אופציונלי)", `<textarea class="text-input" name="note" maxlength="500" rows="2" data-club-wod-field="note">${esc(f.note || "")}</textarea>`)}
       <div class="footer-note" style="margin:-4px 0 8px;">אפשר לקבוע לאתמול, להיום או למחר בלבד, ועד ארבעה אימונים ליום — כך הפיד נשאר מה שקורה עכשיו. הטקסט נשמר כפי שהוא ברגע הפרסום; לשינוי שלו צריך לבטל ולקבוע מחדש.</div>
       <button class="chip-btn primary" type="submit"${f.saving ? " disabled" : ""}>${f.saving ? "מפרסם…" : "פרסום למועדון"}</button>
     </form>`;
@@ -4283,6 +4283,12 @@
     if (error) return setMessage(inviteCodeCreateErrorText(error));
     form.reset();
     state.admin.inviteCodes.created = data;
+    // Forced open, not left to whatever it happened to be: the reveal
+    // renders inside this same disclosure (see its own comment above), and
+    // a coach who has to be somewhere else the instant the plaintext code
+    // exists is exactly the "risk losing a credential that's never shown
+    // again" case this fix closes.
+    state.admin.openAreas[SHARED_CODE_DISCLOSURE_ID] = true;
     // The one moment the plaintext code exists in the client. Build the QR
     // now or never - admin_invite_code_list() below returns everything about
     // this row EXCEPT the code itself.
@@ -4456,14 +4462,31 @@
     } else if (!ic.items.length) {
       list = `<div class="empty">אין קודי הצטרפות משותפים עדיין</div>`;
     } else {
-      list = `<div class="log-list">${ic.items.map((c) => `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:6px;" data-invite-code-id="${esc(c.id)}">
+      // Live bug hunt (2026-09-11): admin_invite_code_create/set_active never
+      // auto-deactivate a code on exhaustion or expiry - deactivation is a
+      // separate, manual action, and `active` stays true regardless. This
+      // badge used to print only off that raw boolean, so a code at its own
+      // use-count cap, or one whose expires_at is already in the past,
+      // still read "פעיל" indistinguishably from a genuinely usable one -
+      // confirmed live, no on-screen cue either way. The person-invite
+      // panel next to this one already shows a real "פג תוקף" (it comes
+      // straight off that RPC's own computed status field); shared codes
+      // have no such field, so it's derived here from the same raw
+      // use_count/max_uses/expires_at this row already displays as text.
+      list = `<div class="log-list">${ic.items.map((c) => {
+        const exhausted = c.max_uses != null && Number(c.use_count || 0) >= Number(c.max_uses);
+        const expired = !!c.expires_at && new Date(c.expires_at).getTime() <= Date.now();
+        const statusLabel = !c.active ? "כבוי" : exhausted ? "נוצל" : expired ? "פג תוקף" : "פעיל";
+        const statusDim = !c.active || exhausted || expired;
+        return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:6px;" data-invite-code-id="${esc(c.id)}">
         <div class="flex" style="justify-content:space-between;width:100%;">
           <span>${roleCodeLabel(c.role)} · נוצר ${esc(String(c.created_at || "").slice(0, 10))}</span>
-          <span class="admin-tag" style="${c.active ? "" : "opacity:.6;"}">${c.active ? "פעיל" : "כבוי"}</span>
+          <span class="admin-tag" style="${statusDim ? "opacity:.6;" : ""}">${statusLabel}</span>
         </div>
         <div style="color:var(--steel);font-size:12px;">${Number(c.redemption_count || 0)} מימושים · שימושים ${Number(c.use_count || 0)}${c.max_uses ? "/" + esc(c.max_uses) : ""}${c.expires_at ? " · תפוגה " + esc(String(c.expires_at).slice(0, 10)) : ""}</div>
         <button class="chip-btn"${ic.busy ? " disabled" : ""} data-community-action="invite-code-toggle-active" data-id="${esc(c.id)}" data-active="${c.active ? "0" : "1"}">${c.active ? "כיבוי" : "הפעלה"}</button>
-      </div>`).join("")}</div>`;
+      </div>`;
+      }).join("")}</div>`;
     }
     return `<div data-invite-codes-panel="1">
       <div class="field-label" style="margin:4px 0 8px;">קודי הצטרפות משותפים</div>
@@ -5251,12 +5274,33 @@
   // DOM exactly as before (dispatchEvent/requestSubmit on it in the unit
   // tests don't care about open/closed state) but not competing for the
   // first glance.
+  // Live bug hunt (2026-09-11): this <details> had no id and no tracked
+  // open state at all - every rerender (including createInviteCode()'s OWN
+  // success path) rebuilt it plain-closed. createInviteCode() builds the
+  // one-shot "the code is X, shown only now" reveal card to render INSIDE
+  // this same disclosure - so the instant a code was created, the
+  // disclosure that had to be open to reach the create form in the first
+  // place collapsed right back, taking the reveal (and its own close
+  // button, now genuinely unreachable - confirmed live, a real click
+  // timed out) down with it. Since the raw code is never retrievable again
+  // after this screen, that risked losing it outright. Fixed by tracking
+  // its open state the same way manageAdminArea() does for the five
+  // top-level areas (state.admin.openAreas, an id, a "toggle" listener
+  // reattached after every render - see afterRenderManage()) - WITHOUT
+  // adopting the `.manage-area` class itself, which also carries that
+  // system's own chevron/heading-font styling meant for a top-level
+  // accordion row, not this smaller nested disclosure; only the
+  // persistence behavior is reused, not the look. createInviteCode() now
+  // also forces it open the moment it has a reveal to show.
+  const SHARED_CODE_DISCLOSURE_ID = "inviteSharedCodeDisclosure";
   function renderInviteManagement() {
     const shared = renderSharedCodesPanel();
     const person = renderPersonInvitesPanel();
     if (!shared && !person) return "";
+    const open = Object.prototype.hasOwnProperty.call(state.admin.openAreas, SHARED_CODE_DISCLOSURE_ID)
+      ? state.admin.openAreas[SHARED_CODE_DISCLOSURE_ID] : false;
     const sharedDisclosure = shared
-      ? `<details style="margin-top:14px;"><summary class="link-btn" style="cursor:pointer;">עוד אפשרות: קוד הצטרפות משותף (להדפסה/שיתוף עם כמה אנשים)</summary><div style="margin-top:10px;">${shared}</div></details>`
+      ? `<details id="${SHARED_CODE_DISCLOSURE_ID}" style="margin-top:14px;"${open ? " open" : ""}><summary class="link-btn" style="cursor:pointer;">עוד אפשרות: קוד הצטרפות משותף (להדפסה/שיתוף עם כמה אנשים)</summary><div style="margin-top:10px;">${shared}</div></details>`
       : "";
     return `<div class="ach-section" style="margin-top:18px;" data-invite-management-section="1">${sectionHead("var(--purple)", "הזמנת חבר/ה", true)}${person}${sharedDisclosure}</div>`;
   }
@@ -18658,6 +18702,11 @@
     document.querySelectorAll(".manage-area").forEach((el) => {
       el.addEventListener("toggle", () => { state.admin.openAreas[el.id] = el.open; });
     });
+    // Same persistence, deliberately NOT the .manage-area class - see
+    // renderInviteManagement()'s own comment for why this one disclosure
+    // keeps its own styling instead of adopting that system's look.
+    const sharedCodeDetails = document.getElementById(SHARED_CODE_DISCLOSURE_ID);
+    if (sharedCodeDetails) sharedCodeDetails.addEventListener("toggle", () => { state.admin.openAreas[sharedCodeDetails.id] = sharedCodeDetails.open; });
   };
   window.handleCommunityClick = function (el) {
     const action = el.dataset.communityAction;
@@ -19434,6 +19483,24 @@
     // shape as liveValidateCredentialField just above, and for the sharper
     // version of the same reason: a rerender would rebuild a native date
     // control while the member is part-way through typing into it.
+    // Live bug hunt (2026-09-11): this form's own render pulls its values
+    // FROM state.club.wodSessionForm (the wodId <select>'s "selected"
+    // option, the date input's and note textarea's own value= /
+    // textContent), but nothing wrote a member's live typing back into
+    // that state - only publishClubWodSession() did, at submit time. Any
+    // unrelated rerender() in the meantime (setMessage()'s own 6s auto-
+    // clear timer is the confirmed live repro: cancel a session, start
+    // filling in the republish form, wait past 6s) replaces #content
+    // wholesale and rebuilds this form from the STALE, still-default state
+    // - silently wiping whatever had been typed. Same patch-in-place-
+    // never-rerender shape as inviteCodeDraft/dateEcho just below; checked
+    // BEFORE dateEcho and without an early return, since the date field
+    // carries BOTH data attributes (dateField() tags every date input with
+    // its own data-date-echo) and needs both handlers to run, not just the
+    // first match. Also handled in the "change" listener below for the
+    // same reason dateEcho is (a native date-picker commit, or a <select>
+    // choice, is not guaranteed to fire "input" on every engine).
+    if ("clubWodField" in t.dataset) state.club.wodSessionForm[t.dataset.clubWodField] = t.value;
     if ("dateEcho" in t.dataset) { updateDateEcho(t); return; }
     if ("composerBody" in t.dataset) composerSetBody(t.value);
     else if ("commentInput" in t.dataset) onCommentInput(t);
@@ -19500,6 +19567,7 @@
     // is not guaranteed to fire input on every engine, and an echo that
     // silently stops matching the field is worse than no echo at all.
     // updateDateEcho() is idempotent, so the double delivery costs nothing.
+    if ("clubWodField" in t.dataset) state.club.wodSessionForm[t.dataset.clubWodField] = t.value;
     if ("dateEcho" in t.dataset) { updateDateEcho(t); return; }
     if ("composerFile" in t.dataset) { const f = t.files && t.files[0]; if (f) composerAddPhoto(f); try { t.value = ""; } catch (err) {} }
     else if ("avatarFile" in t.dataset) { const f = t.files && t.files[0]; if (f) avatarPhotoSelected(f); try { t.value = ""; } catch (err) {} }

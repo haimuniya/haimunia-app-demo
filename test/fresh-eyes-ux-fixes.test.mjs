@@ -51,6 +51,28 @@ test("real-user report, root cause: opening medals or settings from the nav menu
     "the nav menu must not still be open underneath Settings either");
 });
 
+// Live bug hunt (2026-09-11): same root cause as the achievements/nav-menu
+// bug just above, found again in a different pair - "בניית אימון מותאם
+// אישית" opens the WOD builder from INSIDE the still-open WOD picker
+// without closing it first. currentAppDialog() (first APP_DIALOGS match by
+// registration order) kept treating the now-invisible picker as "the" open
+// dialog, breaking Escape (closed the hidden picker, needed a second press
+// for the visible builder) and the Tab trap (Shift+Tab from the builder's
+// first control landed in the hidden picker instead of wrapping).
+test("real-user report, root cause: opening the WOD builder from inside the WOD picker closes the picker, instead of leaving it open underneath", async () => {
+  const window = await bootApp();
+  window.document.getElementById("tabWodBtn").click();
+  window.document.querySelector('[data-action="open-wod-picker"]').click();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(window.document.getElementById("wodPickerOverlay").classList.contains("open"), true);
+
+  window.document.querySelector('#wodPickerOverlay [data-action="open-wod-builder"]').click();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(window.document.getElementById("wodBuilderOverlay").classList.contains("open"), true);
+  assert.equal(window.document.getElementById("wodPickerOverlay").classList.contains("open"), false,
+    "the WOD picker must not still be open underneath the builder");
+});
+
 test("real-user report: the phone back button (browser history back) closes an open dialog instead of doing nothing", async () => {
   // On a phone there is no Escape key - the equivalent gesture is the
   // Android back button / swipe, which the browser surfaces as history

@@ -363,10 +363,30 @@
     const d = new Date(v + "T00:00:00");
     return isNaN(d.getTime()) ? null : v;
   }
-  function cleanTs(v) {
+  // Live bug hunt (2026-09-11): a missing/invalid ts used to always fall
+  // back to Date.now() - fine for a genuinely new record, wrong for a
+  // legacy one with no ts column at all (pre-existing local history from
+  // before this field existed, or a hand-restored/imported record).
+  // Confirmed live: reloading the SAME ts-less record twice produced two
+  // DIFFERENT manufactured "now" values, and migrating it to Community
+  // sync pushed a fabricated recency for a workout logged years earlier -
+  // directly feeding shouldApplyRemote()'s last-write-wins conflict
+  // resolution between devices, which trusts ts verbatim. `fallbackDateIso`
+  // (every sanitizeEntry()-family caller already has the record's own
+  // validated date in scope) makes the fallback a deterministic function
+  // of data already on the record instead of the clock: the same input
+  // always produces the same ts, and a 1991 workout gets a ts that reads
+  // like 1991, not like it was just edited. No fallback date given (the
+  // few callers with no date concept) keeps the original Date.now()
+  // behavior unchanged.
+  function cleanTs(v, fallbackDateIso) {
     const n = Number(v);
-    if (!isFinite(n) || n <= 0 || n > 4102444800000) return Date.now(); // cap at year 2100
-    return Math.floor(n);
+    if (isFinite(n) && n > 0 && n <= 4102444800000) return Math.floor(n); // cap at year 2100
+    if (fallbackDateIso) {
+      const d = new Date(fallbackDateIso + "T00:00:00Z");
+      if (!isNaN(d.getTime())) return d.getTime();
+    }
+    return Date.now();
   }
 
   // ---------- Id generation ----------

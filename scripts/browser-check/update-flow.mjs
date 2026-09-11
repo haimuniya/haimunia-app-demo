@@ -90,8 +90,21 @@ try {
     await ctx.close();
   }
 
-  console.log("\n--- Scenario 3: update arrives while page is VISIBLE -> banner shown, applies on next visibility regain ---");
+  console.log("\n--- Scenario 3: update arrives while page is VISIBLE -> banner shown, requires an actual tap ---");
   {
+    // Live bug hunt (2026-09-11): this scenario used to assert the OPPOSITE
+    // of what app.js's own comment promises ("reloading out from under
+    // someone mid-set would drop whatever they just typed but haven't
+    // tapped Save on yet") - showUpdateBanner() never marked the banner as
+    // showing, so the SAME visibilitychange listener that legitimately
+    // auto-applies an update arriving while hidden also fired on the very
+    // NEXT hide/show cycle after the banner was already up. A phone screen
+    // lock/unlock - named in that same comment as the ordinary, expected
+    // case - silently reloaded and dropped in-progress input with no tap
+    // ever happening. Confirmed live with real unsaved text in the WOD
+    // builder's own name field before this fix. Now: a hide/show cycle
+    // while the banner is showing must NOT reload; only tapping the banner
+    // itself may.
     const { ctx, page } = await freshPage();
     await page.goto(url, { waitUntil: "networkidle" });
     await waitForControllerActive(page);
@@ -102,12 +115,26 @@ try {
     const bannerShown = await page.evaluate(() => document.getElementById("updateBanner").style.display === "block");
     check("banner shows while actively visible", bannerShown);
 
+    // The exact repro: real unsaved input sitting in a form, then one
+    // ordinary screen lock/unlock cycle while the banner is up.
+    await page.evaluate(() => { window.openWodBuilder(""); document.getElementById("wodBuilderName").value = "טיוטה שלא נשמרה"; });
+    let reloadedTooEarly = false;
+    const earlyLoad = page.waitForEvent("load", { timeout: 2500 }).then(() => { reloadedTooEarly = true; }).catch(() => {});
     await page.evaluate(() => Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true }));
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
     await page.evaluate(() => Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true }));
-    const navPromise = page.waitForEvent("load", { timeout: 15000 }).then(() => true).catch(() => false);
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-    check("reloads automatically on visibility regain, without ever tapping the banner", await navPromise);
+    await earlyLoad;
+    check("a single screen lock/unlock while the banner is showing does NOT reload", !reloadedTooEarly);
+    const draftSurvived = await page.evaluate(() => document.getElementById("wodBuilderName")?.value === "טיוטה שלא נשמרה").catch(() => false);
+    check("the unsaved draft survives that lock/unlock cycle", draftSurvived);
+    const stillShown = await page.evaluate(() => document.getElementById("updateBanner").style.display === "block");
+    check("the banner is still up, still waiting for an actual tap", stillShown);
+
+    // The actual tap is what must apply it.
+    const navPromise = page.waitForEvent("load", { timeout: 15000 }).then(() => true).catch(() => false);
+    await page.click("#updateBanner");
+    check("tapping the banner itself does reload", await navPromise);
     restoreSw();
     await ctx.close();
   }
