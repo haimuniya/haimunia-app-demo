@@ -402,6 +402,93 @@ test("COMM-125: a blocked member's comment is hidden behind a placeholder and th
   assert.equal(card(window).querySelectorAll(".reaction-strip .avatar-badge").length, 0, "the blocked reactor's avatar is dropped");
 });
 
+// Live bug hunt round 4 (2026-09-11): block() clears
+// state.engagement.comments = {} wholesale (COMM-125, so a newly blocked
+// member's comments/replies drop out of the current view), which reactions
+// self-heal from (ensureReactionsLoaded() runs unconditionally every
+// render) but comments did not - renderComments() only re-fetched on the
+// OPEN transition. Blocking someone mid-conversation blanked the whole open
+// thread to nothing until the member manually closed and reopened it.
+test("blocking a member mid-conversation repopulates the open thread instead of blanking it to nothing", async () => {
+  const mock = seeded({
+    blocks: [],
+    post_comments: [
+      { id: "c1", post_id: "p1", author_id: "u2", body: "תגובה של רון", parent_comment_id: null, created_at: "2026-08-28T08:00:00.000Z", status: "active", profiles: { handle: "ron", display_name: "רון" } },
+      { id: "c2", post_id: "p1", author_id: "u1", body: "תשובה שלי", parent_comment_id: "c1", created_at: "2026-08-28T08:05:00.000Z", status: "active", profiles: { handle: "dana", display_name: "דנה" } },
+    ],
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openFeed(window);
+  await openComments(window);
+  await waitFor(() => /תגובה של רון/.test(card(window).textContent), 3000);
+
+  window.eval('window.handleCommunityClick({ dataset: { communityAction: "block", id: "u2" } })');
+  await waitFor(() => !!window.document.querySelector('[data-community-action="confirm-yes"]'), 3000);
+  window.document.querySelector('[data-community-action="confirm-yes"]').click();
+  await waitFor(() => mock.db.blocks.some((b) => b.blocked_id === "u2"), 3000);
+
+  // Before the fix: the thread went blank here and stayed blank until
+  // manually closed and reopened - state.engagement.comments[postId] was
+  // wiped by block() and nothing re-fetched it while the thread was
+  // already marked open.
+  await waitFor(() => /תגובה מוסתרת/.test(card(window).textContent), 3000);
+  // The reply itself is collapsed by default (state.engagement.openReplies)
+  // regardless of this fix - not opened by this test - so its own body text
+  // isn't on screen yet; its toggle-count IS, which is exactly the "the
+  // real data came back, not just a blank state" signal this fix is about.
+  assert.match(card(window).textContent, /1 תשובות/, "the reply, which is not from the blocked member, must still be present after the reload - the thread self-heals rather than staying blank");
+});
+
+// Live bug hunt round 4 (2026-09-11): blocking had no reverse path
+// anywhere in the app - no unblock() function, no "blocked members" list,
+// nothing on the full profile overlay. Confirmed live: a permanent
+// one-way action for the life of both accounts, recoverable only via
+// direct database access.
+test("a blocked member can be unblocked from the Account tab's own blocked-members list", async () => {
+  const mock = seeded({
+    profiles: [
+      { id: "u1", handle: "dana", display_name: "דנה", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true },
+      { id: "u2", handle: "ron", display_name: "רון", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true },
+    ],
+    blocks: [{ blocker_id: "u1", blocked_id: "u2" }],
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 4000);
+  window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();
+  await waitFor(() => !!window.document.querySelector('[data-blocked-members-section="1"]'), 4000);
+
+  const section = window.document.querySelector('[data-blocked-members-section="1"]');
+  assert.match(section.textContent, /רון/, "the blocked member's real name is shown, not just a raw id");
+  const unblockBtn = section.querySelector('[data-community-action="unblock"][data-id="u2"]');
+  assert.ok(unblockBtn, "an unblock control exists for a block this member actually initiated");
+
+  unblockBtn.click();
+  await waitFor(() => !mock.db.blocks.some((b) => b.blocker_id === "u1" && b.blocked_id === "u2"), 4000);
+  await waitFor(() => !window.document.querySelector('[data-blocked-members-section="1"]'), 4000);
+});
+
+test("the blocked-members list only ever offers to unblock people the viewer blocked themselves, never someone who blocked the viewer", async () => {
+  const mock = seeded({
+    profiles: [
+      { id: "u1", handle: "dana", display_name: "דנה", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true },
+      { id: "u3", handle: "gil", display_name: "גיל", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true },
+    ],
+    // u3 blocked u1 - the OTHER direction. blockedIds (used to hide
+    // comments/reactions) intentionally merges both directions, but
+    // blockedByMe (this list) must not, or a member could "unblock"
+    // someone who blocked them, undoing a decision that was never theirs.
+    blocks: [{ blocker_id: "u3", blocked_id: "u1" }],
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 4000);
+  window.document.querySelector('[data-community-action="set-tab"][data-tab="account"]').click();
+  await waitFor(() => !!window.document.getElementById("communityProfile"), 4000);
+  assert.equal(window.document.querySelector('[data-blocked-members-section="1"]'), null,
+    "no blocked-members section at all when the viewer hasn't blocked anyone themselves");
+});
+
 // --- failure path ---------------------------------------------
 
 test("a failed comment shows a retry and preserves the draft, then the retry sends it", async () => {

@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.21.0";
+const APP_VERSION = "4.22.0";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -2292,9 +2292,34 @@ function renderToastBar() {
     </div>`;
 }
 
-function startEditEntry(id) {
-  const entry = entries.find((e) => e.id === id);
+// Live bug hunt (2026-09-11): used to seed the edit form straight from the
+// in-memory `entries` array, which can go stale for the whole rest of a
+// session on a device with two tabs/windows open against the same IndexedDB
+// origin — there is no cross-tab sync for the pure-offline path (unlike the
+// cloud-sync path's shouldApplyRemote() guard). A tab that booted before a
+// sibling tab's edit landed would silently overwrite that edit the next
+// time IT saved: saveSet() rebuilds the WHOLE record from whatever the form
+// was seeded with, and dbPut() is a blind full-record replace with no
+// version check — confirmed live, a Frankenstein record combining one tab's
+// stale weight with the other's fresh reps, with zero warning either side.
+// Re-reading the current on-disk record the instant editing actually begins
+// closes that down to a genuine same-instant race (both tabs opening the
+// SAME entry within the same moment) — much narrower than "stale for the
+// rest of the session." Falls back to the in-memory copy if the disk read
+// fails or somehow doesn't have it (should not normally happen).
+async function startEditEntry(id) {
+  let entry = entries.find((e) => e.id === id);
   if (!entry) return;
+  try {
+    const fresh = (await dbLoadAll()).find((e) => e.id === id);
+    if (fresh) {
+      entry = fresh;
+      // Self-heals the in-memory copy too, so History/Calendar reflect the
+      // fresh value even before this edit is saved.
+      const idx = entries.findIndex((e) => e.id === id);
+      if (idx !== -1) entries[idx] = fresh;
+    }
+  } catch (e) { /* offline/storage error - fall back to the in-memory copy above */ }
   selectedId = entry.exerciseId;
   movementExplicitlyChosen = true; // COMM-360: opening a real past set is as explicit a choice as the picker
   logEntryType = entry.type === "duration" ? "duration" : "reps";
@@ -3611,9 +3636,19 @@ async function saveWod() {
   }
   } finally { savingWod = false; }
 }
-function startEditWodEntry(id) {
-  const entry = wodEntries.find((e) => e.id === id);
+// Live bug hunt (2026-09-11): same two-tab staleness fix as startEditEntry()
+// above - see its own comment.
+async function startEditWodEntry(id) {
+  let entry = wodEntries.find((e) => e.id === id);
   if (!entry) return;
+  try {
+    const fresh = (await dbLoadWodEntries()).find((e) => e.id === id);
+    if (fresh) {
+      entry = fresh;
+      const idx = wodEntries.findIndex((e) => e.id === id);
+      if (idx !== -1) wodEntries[idx] = fresh;
+    }
+  } catch (e) { /* offline/storage error - fall back to the in-memory copy above */ }
   const w = wodById(entry.wodId);
   if (!w) return;
   selectedWodId = entry.wodId;

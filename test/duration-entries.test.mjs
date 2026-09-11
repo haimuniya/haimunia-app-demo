@@ -156,7 +156,7 @@ test("startEditEntry() on a duration entry restores duration mode and its value"
   const [entry] = window.entriesFor(movement.id);
 
   window.setLogEntryType("reps"); // simulate the toggle having moved on elsewhere
-  window.startEditEntry(entry.id);
+  await window.startEditEntry(entry.id);
 
   const durationBtn = window.document.querySelector('[data-action="set-log-entry-type"][data-type="duration"]');
   assert.equal(durationBtn.getAttribute("aria-checked"), "true", "editing a duration entry should restore duration mode");

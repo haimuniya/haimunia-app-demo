@@ -1,3 +1,68 @@
+## A fourth live bug hunt round: notifications depth, moderation & blocking depth, and data-integrity edges — 2026-09-11
+
+Ran three more independent agents in parallel driving the real app live in Chromium
+against the mocked backend (never production): a notifications deep-dive, moderation
+& blocking depth, and data-integrity edges (malformed imports, two-tab concurrency,
+mid-frame render failures). 8 confirmed findings, all fixed with regression tests -
+one of them a real Postgres migration, not just a client fix:
+
+- **Blocking a member was permanent - there was no unblock() function anywhere in the
+  app**, no "blocked members" list, nothing on the full profile overlay. Confirmed
+  live: a one-way action recoverable only via direct database access. Added
+  `unblock()`, a `blockedByMe` state slice (distinct from `blockedIds`, which
+  deliberately merges both block directions for the comment/reaction-hiding check -
+  only a block the viewer actually initiated is theirs to undo), and a "חברים
+  חסומים" panel on the Account tab that renders nothing at all when the member
+  hasn't blocked anyone.
+- **A resubmitted report on already-reviewed content was silently swallowed forever**
+  - `report()`'s `ON CONFLICT` clause has always refreshed reason/details on a
+    duplicate but never touched `status`, so a dismissed report stayed dismissed even
+    when the same reporter came back with a genuinely escalated complaint. Fixed with
+    a real migration (`202609110001_report_reopen_on_new_complaint.sql`, verified
+    against local Postgres via `supabase test db`, 95 files / 3301 pgTAP assertions
+    passing): a resubmission that genuinely changes reason or details now reopens an
+    already-closed report; an exact repeat of the identical complaint does not (guards
+    against a bad-faith reporter spamming identical resubmissions to force review
+    churn). Mirrored in `mockSupabase.mjs` and an existing pgTAP test updated to match
+    the corrected behavior.
+- **`feed_activity` notifications could never be muted at all** - its preference key
+  was the orphaned pre-rename `"comments"` (COMM-218/219 renamed every other type's
+  key but missed this one), and no toggle in the Preferences panel ever wrote that
+  key regardless. Now keyed to `notif_pref_key()`'s real identity-fallback
+  (`"feed_activity"`) with its own panel row, same shape `weekly_recap`/
+  `streak_at_risk` already use.
+- **A realtime-arriving batched notification silently collapsed an already-expanded
+  group mid-read** - the group's "is it open" key was derived from its own first
+  row's id, which changes the instant a realtime INSERT unshifts a new row onto the
+  front. Now keyed off the group's last (oldest, stable) row instead.
+- **The header bell's badge wasn't actually real-time until Community had been
+  visited at least once that session** - the unread *count* was already eager
+  (promoted into the session-start batch specifically so the badge is correct on
+  first paint), but arming the realtime *subscription* that keeps it live was only
+  ever wired into the deferred, Community-visit-gated batch. Promoted alongside the
+  count, for the same reason.
+- **A mention/comment notification whose target post wasn't on the currently-loaded
+  feed page silently did nothing** - closed the notification center with zero sign
+  anything was even attempted. Now shows an honest "not loaded right now" message
+  instead.
+- **Blocking someone mid-conversation blanked the whole open comment thread to
+  nothing** until manually closed and reopened - reactions self-heal from a block's
+  cache wipe (`ensureReactionsLoaded()` runs unconditionally every render) but
+  comments never had the equivalent. Added `ensureCommentsLoaded()`, same shape.
+- **Editing an entry on a device with two tabs/windows open against the same
+  IndexedDB origin could silently discard a sibling tab's edit** - `startEditEntry()`/
+  `startEditWodEntry()` seeded the edit form from the in-memory `entries`/`wodEntries`
+  array, which can go stale for a whole session with no cross-tab sync on the
+  pure-offline path. Both now re-read the current on-disk record the instant editing
+  begins (both became `async`; every existing call site across the test suite needed
+  the same `await` added - a genuinely wide mechanical fix, caught by re-running the
+  full suite before considering this done).
+
+Verified: full suite 1588/1588 (11 new regression tests across
+`test/live-bug-hunt-round4.test.mjs`, `test/community-engagement-cluster.test.mjs`,
+`test/community-notifications.test.mjs`, `test/community-moderation.test.mjs`), full
+browser-check 40/40, `supabase test db` 95/95 files (3301 pgTAP assertions).
+
 ## A third live bug hunt round: achievements/streaks depth, the WOD catalogue, and search & discovery — 2026-09-11
 
 Ran three more independent agents in parallel driving the real app live in Chromium

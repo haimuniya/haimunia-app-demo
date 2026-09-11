@@ -779,9 +779,21 @@ export function createMockSupabase(seedTables = {}) {
           const existing = rs.find((r) => r.reporter_id === uid && r.target_type === tt && r.target_id === tid);
           if (existing) {
             // Duplicate by the same reporter collapses - reason/note refresh,
-            // reporter_count does not move.
+            // reporter_count does not move. Live bug hunt round 4
+            // (202609110001, mirrored here from the real report() SQL): a
+            // genuinely different resubmission (reason or note actually
+            // changed) reopens an already-closed report, clearing the prior
+            // review - an exact repeat of the identical complaint does not.
+            const newNote = String((args && args.p_note) || "").slice(0, 500);
+            const changed = existing.reason !== reason || existing.note !== newNote;
+            if (existing.status !== "open" && changed) {
+              existing.status = "open";
+              existing.reviewed_by = null;
+              existing.reviewed_at = null;
+              existing.review_note = "";
+            }
             existing.reason = reason;
-            existing.note = String((args && args.p_note) || "").slice(0, 500);
+            existing.note = newNote;
             return Promise.resolve({ data: null, error: null });
           }
           rs.push({

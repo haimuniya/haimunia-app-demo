@@ -187,7 +187,7 @@ test("editing one round of an active superset does not end it (mirrors the exist
   await window.saveSet();
   const [round1] = window.currentLadderRounds();
 
-  window.startEditEntry(round1.id);
+  await window.startEditEntry(round1.id);
   const isOn = () => window.document.querySelector("[data-action='toggle-ladder-mode']").textContent.includes("פעיל");
   assert.equal(isOn(), true, "editing the superset's own round should not end it");
   window.applyFieldValue("step", "weight", 82.5);

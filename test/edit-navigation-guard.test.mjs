@@ -34,7 +34,7 @@ test("picking a different exercise mid-edit does not overwrite the original entr
   const [originalEntry] = window.entriesFor(original.id);
   assert.ok(originalEntry, "original entry should exist");
 
-  window.startEditEntry(originalEntry.id);
+  await window.startEditEntry(originalEntry.id);
   assert.ok(window.document.querySelector("[data-action='cancel-edit-entry']"), "edit banner should show while an edit is in flight");
 
   // Pick a different exercise WITHOUT cancelling the edit first — this is
@@ -71,7 +71,7 @@ test("picking a different WOD mid-edit does not overwrite the original WOD entry
   const [originalEntry] = window.wodEntriesFor(original.id);
   assert.ok(originalEntry, "original WOD entry should exist");
 
-  window.startEditWodEntry(originalEntry.id);
+  await window.startEditWodEntry(originalEntry.id);
   assert.ok(window.document.querySelector("[data-action='cancel-edit-wod-entry']"), "WOD edit banner should show while an edit is in flight");
 
   // Switch to a built-in benchmark WITHOUT cancelling the edit — the exact

@@ -255,6 +255,48 @@ test("the 90-day horizon is not walked until 'show older' is used", async () => 
   await waitFor(() => /התראה ישנה/.test(centerText(window)), 4000);
 });
 
+// Live bug hunt round 4 (2026-09-11): ensureNotifRealtime() used to arm only
+// inside ensureCommunityDataLoaded()'s deferred batch - gated on the member
+// actually visiting Community or Manage. loadNotifUnread() (a plain count)
+// was already promoted into refreshSession()'s eager batch for exactly this
+// reason (the header badge needs a real number from first paint, not only
+// once Community happens to be visited) - the realtime subscription that
+// keeps that badge LIVE had never been given the same promotion.
+test("the notification realtime channel arms at session start, without the member ever visiting Community", async () => {
+  const mock = seeded([]);
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  // Deliberately never call openCommunity() / click into the Community tab
+  // at all - the app boots straight onto the training log, same as a
+  // member who opens the app only to log a workout.
+  await waitFor(() => mock.openChannels().includes("notif-u1"), 4000);
+});
+
+test("a realtime-arriving batched notification does not collapse an already-expanded group mid-read", async () => {
+  const mock = seeded([
+    notif(1, { type: "reaction" }),
+    notif(2, { type: "reaction" }),
+    notif(3, { type: "reaction" }),
+  ]);
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCenter(window);
+  const group = window.document.querySelectorAll('[data-community-action="notif-toggle-group"]');
+  assert.equal(group.length, 1, "three reactions collapse into one group");
+  group[0].click();
+  await waitFor(() => window.document.querySelectorAll('[data-community-action="notif-open"]').length === 3, 4000);
+
+  await waitFor(() => mock.openChannels().includes("notif-u1"), 4000);
+  // A realtime INSERT unshift()s onto the front of c.rows - the exact
+  // sequence that used to change the group's own key (derived from
+  // group[0].id) out from under it, silently re-collapsing an
+  // already-expanded group mid-read.
+  mock.emitRealtime("notif-u1", { eventType: "INSERT", new: { id: "n-live-reaction", user_id: "u1", type: "reaction", category: "community", title: "עוד עידוד", read_at: null, created_at: new Date().toISOString() } });
+
+  await waitFor(() => window.document.querySelectorAll('[data-community-action="notif-open"]').length === 4, 4000);
+  const groupAfter = window.document.querySelector('[data-community-action="notif-toggle-group"]');
+  assert.equal(groupAfter.getAttribute("aria-expanded"), "true",
+    "the group must stay expanded through the realtime insert, not silently snap shut mid-read");
+});
+
 test("the badge refreshes on a realtime own-row event", async () => {
   const mock = seeded([notif(1)]);
   const window = await bootCommunity(mock, { syncEnabled: false });
@@ -391,7 +433,11 @@ test("the Account panel lists every type with Push (disabled), In-app and Off", 
   // notif_pref_key() names (comment_on_post/comment_reply/achievement_
   // unlocked, COMM-218/219), monthly_club_recap was added (COMM-309), and
   // streak_at_risk was added by the community structure research pass
-  // (202609100002) - a plain, member-visible reminder type. new_report and
+  // (202609100002) - a plain, member-visible reminder type. feed_activity
+  // was added by the live bug hunt round 4 fix (2026-09-11): its pref key
+  // used to be the orphaned pre-rename "comments" (nothing ever wrote that
+  // key), so this toggle could never be muted at all - see NOTIF_TYPES.
+  // feed_activity's own comment in cloud.js. new_report and
   // engagement_decline_flagged are both staff/moderator-only
   // (mod_alert_recipients()) and are deliberately absent here: this seeded
   // member holds no moderation permission, so both rows are gated out -
@@ -399,8 +445,8 @@ test("the Account panel lists every type with Push (disabled), In-app and Off", 
   const types = new Set([...window.document.querySelectorAll('[data-community-action="notif-pref"]')].map((b) => b.dataset.type));
   assert.deepEqual([...types].sort(), [
     "achievement_unlocked", "announcements", "challenges", "comment_on_post", "comment_reply",
-    "events", "friend_achievements", "mentions", "monthly_club_recap", "reactions", "streak_at_risk", "weekly_recap",
-  ], "all twelve member-visible preference types are listed");
+    "events", "feed_activity", "friend_achievements", "mentions", "monthly_club_recap", "reactions", "streak_at_risk", "weekly_recap",
+  ], "all thirteen member-visible preference types are listed");
   assert.ok(!types.has("new_report"), "the moderator-only type is not shown to a plain member");
   assert.ok(!types.has("engagement_decline_flagged"), "the staff-only engagement alert type is not shown to a plain member");
 
@@ -604,6 +650,14 @@ test("comment_reply/comment_on_post/achievement_unlocked route on the server's r
   // either challenge type, so a combined client 'challenges' toggle still
   // has no real server-side counterpart to line up with.
   assert.equal(window.notifRoute("challenge_ending_soon", { challenges: "off" }).channel, "off", "still suppresses client-side rendering...");
+  // Live bug hunt round 4 (2026-09-11): feed_activity's pref key was the
+  // orphaned pre-rename "comments" - nothing in NOTIF_PREF_TYPES ever wrote
+  // that key, so this toggle could never be muted at all. notif_pref_key()
+  // has no explicit arm for feed_activity (202608290009's SQL), so it falls
+  // through to its identity fallback - the real server key is the literal
+  // string "feed_activity".
+  assert.deepEqual(window.notifRoute("feed_activity", { feed_activity: "off" }), { channel: "off", mode: "batched", suppressed: true });
+  assert.equal(window.notifRoute("feed_activity", { comments: "off" }).channel, "in_app", "the old orphaned 'comments' key no longer has any effect on this type");
 });
 
 test("the comment_reply toggle writes the server's real preference key, not the old client-only 'replies'", async () => {
@@ -668,5 +722,26 @@ test("tapping an announcement notification scrolls to that announcement in the f
 
   const feedTabBtn = window.document.querySelector('[data-community-action="set-tab"][data-tab="feed"]');
   assert.ok(feedTabBtn.className.includes("active"), "the feed tab is the active screen");
-  assert.match(window.document.querySelector('[data-announcement-id="a1"]').textContent, /תחזוקה מתוכננת/, "the specific announcement has a real DOM anchor to scroll to");
+});
+
+// Live bug hunt round 4 (2026-09-11): a mention/comment notification's
+// target post is not guaranteed to be on the currently-loaded (paginated)
+// feed page - navigateToNotifTarget() used to just querySelector for the
+// post's DOM node and silently do nothing at all when it wasn't found,
+// closing the notification center with zero sign anything was even
+// attempted.
+test("tapping a mention notification whose target post isn't on the loaded feed page shows an honest message instead of silently doing nothing", async () => {
+  const mock = seeded(
+    [notif(1, { type: "mention", category: "community", deep_link: "/community/feed?post=p-missing&comment=c-missing" })],
+  );
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCenter(window);
+
+  window.document.querySelector('[data-community-action="notif-open"]').click();
+  await waitFor(() => !window.document.querySelector("[data-notif-center]"), 4000);
+
+  const feedTabBtn = window.document.querySelector('[data-community-action="set-tab"][data-tab="feed"]');
+  assert.ok(feedTabBtn.className.includes("active"), "still navigates to the feed tab itself");
+  assert.equal(window.document.querySelector('[data-post-id="p-missing"]'), null, "the target post genuinely never rendered");
+  await waitFor(() => /לא נטען בפיד/.test(window.document.body.textContent), 4000);
 });

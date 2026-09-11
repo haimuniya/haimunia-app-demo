@@ -205,6 +205,49 @@ test("a duplicate report by the same member collapses; a second unique reporter 
   assert.equal(mock.db.reports.filter((r) => r.target_id === "post-1").length, 1, "no second row for the same reporter");
 });
 
+// Live bug hunt round 4 (2026-09-11), moderation & blocking depth agent:
+// report()'s ON CONFLICT clause refreshed reason/note on a duplicate but
+// never touched status - a report already reviewed and dismissed stayed
+// dismissed forever, even when the SAME reporter came back with a
+// genuinely different, escalated complaint. Confirmed live, fixed server-
+// side in 202609110001 (mirrored here in mockSupabase.mjs's own report
+// stand-in) - a resubmission with a different reason/note now reopens an
+// already-closed report; an exact repeat of the identical one does not
+// (covered by the sibling test just below).
+test("a resubmission with a genuinely different reason reopens a report that was already dismissed", async () => {
+  const mock = baseMock({
+    reports: [{ id: "rep-1", reporter_id: "reporter-1", target_type: "post", target_id: "post-1", reason: "spam", note: "", status: "dismissed", reviewed_by: "mod-1", reviewed_at: VERIFIED, review_note: "not spam" }],
+  });
+  mock.setUser({ id: "reporter-1", is_anonymous: false, email: "noa@members.haimuniya.invalid" });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCommunity(window);
+  window.eval('window.handleCommunityClick({ dataset: { communityAction: "report", id: "post-1" } })');
+  await waitFor(() => !!window.document.querySelector("[data-report-reason]"), 3000);
+  window.document.querySelector('[data-report-reason="unsafe_advice"]').click();
+  window.document.querySelector('[data-community-action="report-submit"]').click();
+  await waitFor(() => /הדיווח התקבל/.test(window.document.body.textContent), 3000);
+  const row = mock.db.reports.find((r) => r.target_id === "post-1");
+  assert.equal(row.reason, "unsafe_advice", "the reason refreshed in place");
+  assert.equal(row.status, "open", "an escalated resubmission must reopen an already-dismissed report");
+  assert.equal(row.reviewed_by, null, "the prior reviewer stamp is cleared, not carried forward on a reopened report");
+});
+
+test("resubmitting the exact same reason does not reopen a report that was already dismissed", async () => {
+  const mock = baseMock({
+    reports: [{ id: "rep-1", reporter_id: "reporter-1", target_type: "post", target_id: "post-1", reason: "spam", note: "", status: "dismissed", reviewed_by: "mod-1", reviewed_at: VERIFIED }],
+  });
+  mock.setUser({ id: "reporter-1", is_anonymous: false, email: "noa@members.haimuniya.invalid" });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCommunity(window);
+  window.eval('window.handleCommunityClick({ dataset: { communityAction: "report", id: "post-1" } })');
+  await waitFor(() => !!window.document.querySelector("[data-report-reason]"), 3000);
+  window.document.querySelector('[data-report-reason="spam"]').click();
+  window.document.querySelector('[data-community-action="report-submit"]').click();
+  await waitFor(() => /הדיווח התקבל/.test(window.document.body.textContent), 3000);
+  const row = mock.db.reports.find((r) => r.target_id === "post-1");
+  assert.equal(row.status, "dismissed", "an exact repeat of the identical complaint must not reopen an already-closed report");
+});
+
 // ===== COMM-152 the queue ============================================
 
 test("the queue shows content, reported member, reporter count, reason, date and status, and filters by status", async () => {

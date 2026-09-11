@@ -191,6 +191,14 @@
       // other surface a member is shown.
       roles: {},
       blockedIds: [], blocksLoaded: false, profileView: null,
+      // Live bug hunt (2026-09-11): blockedIds merges BOTH directions (who I
+      // blocked AND who blocked me) into one set, by design, for the
+      // comment/reaction-hiding check (isBlockedUser()) - it never needed to
+      // distinguish direction before. Unblocking does: only a block I
+      // initiated is mine to undo. blockedByMe is that subset, with names
+      // fetched the same second-read way loadRestrictions() already does
+      // ("a missing display name must degrade... rather than lose the row").
+      blockedByMe: [], blockedByMeNames: {}, blockedByMeLoaded: false, unblocking: "",
       // Live bug hunt (2026-09-11): every follow button across the app
       // (directory, welcome post, classmates card, member row, profile
       // dialog) rendered unconditionally as "מעקב" with no notion of
@@ -1393,6 +1401,19 @@
       // keeps deferred, so promoting only this one call here does not
       // reopen that tradeoff.
       await Promise.all([loadProfile(), loadChallenges(), loadClubFeatures(), loadNotifUnread()]);
+      // Live bug hunt (2026-09-11): loadNotifUnread() (just above) gives the
+      // header badge a correct COUNT from first paint, but arming the
+      // realtime subscription that keeps it LIVE only happened later, inside
+      // ensureCommunityDataLoaded()'s deferred batch - gated on the member
+      // actually visiting Community or Manage. A member who opens the app,
+      // logs a workout, and never taps either tab that session saw a header
+      // badge that could go stale for the whole session (it does self-heal
+      // on focus/visibilitychange, which is why this read as "annoying" not
+      // "broken forever" - confirmed live). Same reasoning as
+      // loadNotifUnread()'s own promotion above: cheap, self-contained
+      // (state.user/client/window.HaimuniaRealtime only, no Community data
+      // dependency), idempotent, so promoting it here is safe.
+      ensureNotifRealtime();
       // Push pending local edits before pulling the remote copy - without
       // this, reopening the app with an unflushed outbox (e.g. a set
       // logged offline seconds ago) pulls the still-stale server record
@@ -6177,7 +6198,7 @@
   // authors server-side; this is the comment and reaction read half, a client
   // echo of the same rule rather than the enforcement point.
   async function loadBlockedIds() {
-    if (!state.user) { state.members.blockedIds = []; state.members.blocksLoaded = true; return; }
+    if (!state.user) { state.members.blockedIds = []; state.members.blocksLoaded = true; state.members.blockedByMe = []; state.members.blockedByMeNames = {}; state.members.blockedByMeLoaded = true; return; }
     const ids = {};
     const a = await client.from("blocks").select("blocked_id").eq("blocker_id", state.user.id);
     for (const r of (a.data || [])) ids[r.blocked_id] = true;
@@ -6185,6 +6206,48 @@
     for (const r of (b.data || [])) ids[r.blocker_id] = true;
     state.members.blockedIds = Object.keys(ids);
     state.members.blocksLoaded = true;
+    // Live bug hunt (2026-09-11): only MY blocks (the `a` query above) are
+    // mine to ever list for unblocking - see blockedByMe's own comment.
+    // Names in a second read, same pattern loadRestrictions() already uses.
+    const mine = (a.data || []).map((r) => r.blocked_id);
+    state.members.blockedByMe = mine;
+    if (mine.length) {
+      const { data: profs } = await client.from("profiles").select("id,handle,display_name").in("id", mine);
+      const names = {};
+      for (const p of (profs || [])) names[p.id] = p.display_name || p.handle || "";
+      state.members.blockedByMeNames = names;
+    } else {
+      state.members.blockedByMeNames = {};
+    }
+    state.members.blockedByMeLoaded = true;
+  }
+  // Live bug hunt (2026-09-11): blocking had no reverse path anywhere in the
+  // app - no unblock() function, no "blocked members" list, nothing on the
+  // full profile overlay - confirmed live, a permanent one-way action for
+  // the life of both accounts (recoverable only via direct DB access). Same
+  // busy-guard shape follow()/block() (further down this file) already use.
+  async function unblock(userId) {
+    if (!state.user || state.members.unblocking) return;
+    state.members.unblocking = userId; rerender();
+    const { error } = await client.from("blocks").delete().eq("blocker_id", state.user.id).eq("blocked_id", userId);
+    state.members.unblocking = "";
+    if (error) { setMessage(failText("ביטול החסימה נכשל. נסו שוב", error)); rerender(); return; }
+    await loadBlockedIds();
+    setMessage("החסימה בוטלה");
+    rerender();
+  }
+  // Live bug hunt (2026-09-11): unblock()'s own client surface, wired into
+  // the Account tab's privacy panel. See loadBlockedIds()'s comment for why
+  // blockedByMe (not blockedIds) is what this lists.
+  function renderBlockedMembersPanel() {
+    const ids = state.members.blockedByMe || [];
+    if (!ids.length) return "";
+    const names = state.members.blockedByMeNames || {};
+    const rows = ids.map((id) => `<div class="log-row" style="align-items:center;">
+      <span>${bidiText(names[id] || "חבר/ה")}</span>
+      <button class="chip-btn"${state.members.unblocking === id ? " disabled" : ""} data-community-action="unblock" data-id="${esc(id)}">${state.members.unblocking === id ? "מבטלים…" : "ביטול חסימה"}</button>
+    </div>`).join("");
+    return `<div class="ach-section" style="margin-top:18px;" data-blocked-members-section="1">${sectionHead("var(--blue)", "חברים חסומים")}<div class="log-list">${rows}</div></div>`;
   }
   function isBlockedUser(userId) { return !!userId && state.members.blockedIds.indexOf(userId) >= 0; }
 
@@ -6287,6 +6350,21 @@
 
   // ---- Comments and replies (COMM-121, COMM-122, COMM-124) --------------
 
+  // Live bug hunt (2026-09-11): renderComments() used to read
+  // state.engagement.comments[pid] with no load-if-missing check of its own
+  // - only toggleComments()'s OPEN transition ever triggered a fetch.
+  // block() clears state.engagement.comments = {} wholesale (so a newly
+  // blocked member's comments/replies drop out of the current view - COMM-
+  // 125), which reactions self-heal from (ensureReactionsLoaded() is called
+  // unconditionally every render, from reactionStripHtml()) but comments did
+  // not - confirmed live, blocking someone mid-conversation blanked the
+  // WHOLE open thread (not just their own comment) to nothing until the
+  // member manually closed and reopened it. Same shape as
+  // ensureReactionsLoaded(), called from renderComments() below.
+  function ensureCommentsLoaded(postId) {
+    if (!postId || state.engagement.comments[postId]) return;
+    loadCommentsFor(postId);
+  }
   async function loadCommentsFor(postId) {
     // The embed names its foreign key explicitly. post_comments has TWO
     // references to profiles - author_id and the deleted_by column added by
@@ -8960,6 +9038,7 @@
     if (!pid) return "";
     const strip = reactionStripHtml(post);
     if (!state.engagement.openComments[pid]) return strip;
+    ensureCommentsLoaded(pid);
 
     const all = state.engagement.comments[pid] || [];
     const byId = {};
@@ -15772,7 +15851,16 @@
     mention:               { category: "community",  mode: "immediate", pref: "mentions",            icon: "@",  title: "תייגו אותך בתגובה" },
     coach_mention:         { category: "community",  mode: "immediate", pref: "mentions",            icon: "@",  title: "מאמן/ת תייג/ה אותך" },
     reaction:              { category: "community",  mode: "batched",   pref: "reactions",           icon: "🔥", title: "עידודים חדשים על הפוסט שלך" },
-    feed_activity:         { category: "community",  mode: "batched",   pref: "comments",            icon: "📣", title: "פעילות חדשה בפיד" },
+    // Live bug hunt (2026-09-11): pref was "comments" - the OLD pre-rename
+    // key COMM-218/219 renamed everywhere else to comment_on_post, just
+    // missed here. notif_pref_key()'s real SQL (202608290009) has no
+    // explicit arm for feed_activity, so it falls through to its identity
+    // fallback (`else p_type`) - the real server-side key is the literal
+    // string "feed_activity", not "comments". No key in NOTIF_PREF_TYPES
+    // ever wrote "comments" either way, so this toggle could never be muted
+    // at all - same shape as weekly_recap/streak_at_risk below, now fixed
+    // the same way (see the new NOTIF_PREF_TYPES row).
+    feed_activity:         { category: "community",  mode: "batched",   pref: "feed_activity",       icon: "📣", title: "פעילות חדשה בפיד" },
     new_report:            { category: "community",  mode: "immediate", pref: "new_report",          icon: "🚩", title: "דיווח חדש לבדיקה" },
     achievement_unlocked:  { category: "training",   mode: "immediate", pref: "achievement_unlocked",icon: "🏅", title: "פתחת הישג חדש" },
     friend_achievement:    { category: "training",   mode: "batched",   pref: "friend_achievements", icon: "🎉", title: "חברים פתחו הישגים" },
@@ -15827,6 +15915,9 @@
     { key: "comment_reply",       label: "תגובות לתגובות שלי" },
     { key: "mentions",            label: "תיוגים" },
     { key: "reactions",           label: "עידודים" },
+    // Live bug hunt (2026-09-11): feed_activity had no row here at all - see
+    // NOTIF_TYPES.feed_activity's own comment.
+    { key: "feed_activity",       label: "פעילות חדשה בפיד" },
     { key: "achievement_unlocked",label: "הישגים שנפתחו" },
     { key: "friend_achievements", label: "הישגים של חברים" },
     { key: "challenges",          label: "אתגרים" },
@@ -16238,7 +16329,19 @@
       setTimeout(() => {
         const sel = '[data-post-id="' + String(target.post).replace(/"/g, '\\"') + '"]';
         const node = document.querySelector(sel);
-        if (node && node.scrollIntoView) node.scrollIntoView({ block: "center" });
+        if (node && node.scrollIntoView) {
+          node.scrollIntoView({ block: "center" });
+        } else {
+          // Live bug hunt (2026-09-11): the target post isn't guaranteed to
+          // be on the currently-loaded feed page (the feed is paginated) -
+          // this used to silently do nothing at all, closing the
+          // notification center with no sign anything was even attempted.
+          // Confirmed live with a real mention notification pointing at a
+          // post outside the loaded page.
+          delete state.engagement.openComments[target.post];
+          setMessage("התוכן הזה לא נטען בפיד כרגע — אפשר לגלול או לרענן ולנסות שוב");
+          rerender();
+        }
       }, 60);
     } else if (target.event) {
       openEvent(target.event, "notification");
@@ -16535,7 +16638,16 @@
   // group. Windows are server-side; this only renders what came back.
   function renderNotifBatchGroup(group, c) {
     const def = notifTypeDef(group[0].type) || { icon: "🔔", title: group[0].title || "התראה" };
-    const key = group[0].type + ":" + group[0].id;
+    // Live bug hunt (2026-09-11): was group[0].id - a realtime INSERT
+    // unshift()s the new row onto the FRONT of c.rows (onNotifRealtime()
+    // above), which becomes the new group[0] on the very next render. That
+    // changed this key out from under an already-open group, so
+    // c.expanded[key] read undefined and a group a member was mid-reading
+    // silently snapped shut. The group's LAST (oldest) row's id is what
+    // actually stays stable when new rows get prepended to the front -
+    // confirmed live against the same mock.emitRealtime() harness
+    // test/community-notifications.test.mjs already uses.
+    const key = group[0].type + ":" + group[group.length - 1].id;
     const open = !!c.expanded[key];
     const emphasise = group.some((g) => g._wasUnread);
     return `<div class="notif-group${emphasise ? " emphasise" : ""}" data-notif-group="${esc(key)}">
@@ -17565,6 +17677,11 @@
       <div style="color:var(--steel);font-size:12px;line-height:1.6;margin-bottom:8px;">כל שינוי נשמר מיד ונאכף בשרת. הגדרות הנוכחות והרישום לשיעור ייכנסו לתוקף כשמודול הנוכחות יעלה.</div>
       <div class="log-list">${privacyRows}</div>
     </div>`;
+    // Live bug hunt (2026-09-11): unblock()'s own client surface - see its
+    // comment above. Renders nothing at all when the member hasn't blocked
+    // anyone (the common case), same "additive, not a permanent empty
+    // section" shape monthlyRecapEntry just below already uses.
+    const blockedMembersPanel = renderBlockedMembersPanel();
 
     // Design spec section 3.5 — the one explicit switch over the `?` markers.
     //
@@ -17640,7 +17757,7 @@
     // neighbour (privacy), ahead of the glossary/search/staff sections
     // rather than trailing all of them - still a settings-style panel, just
     // no longer the very last thing on the screen.
-    const accountTab = restrictionPanel + account + renderMyAchievements() + recapEntry + monthlyRecapEntry + privacyPanel + renderNotifPrefsPanel() + termMarkPanel + people + newMembersHtml + inactiveHtml + movedToManageNote
+    const accountTab = restrictionPanel + account + renderMyAchievements() + recapEntry + monthlyRecapEntry + privacyPanel + blockedMembersPanel + renderNotifPrefsPanel() + termMarkPanel + people + newMembersHtml + inactiveHtml + movedToManageNote
       + `<button class="link-btn" data-community-action="sign-out" style="display:block;margin:20px auto 0;">התנתקות</button>`
       + `<button class="link-btn" data-community-action="delete-account" style="display:block;margin:10px auto 8px;color:var(--red-text);">בקשת מחיקת חשבון</button>`;
 
@@ -18814,6 +18931,11 @@
     else if (action === "directory-retry") loadDirectory(true);
     else if (action === "directory-more") loadDirectory(false);
     else if (action === "block") askConfirm({ title: "חסימת משתמש", message: "לחסום את {subject}? לא תראו זה את זה בקהילה.", subject: subjectNameFor(el.dataset.id), confirmLabel: "חסימה", destructive: true, action: "block", payload: { userId: el.dataset.id } });
+    // Live bug hunt (2026-09-11): unblock()'s dispatch - no confirm sheet,
+    // same "no confirm needed for a reversible toggle" shape the club-module
+    // toggles already use (block() itself still confirms - it's the one
+    // that actually cuts off interaction).
+    else if (action === "unblock") unblock(el.dataset.id);
     else if (action === "delete-post") askConfirm({ title: "הסרת שיתוף", message: "להסיר את השיתוף מהפיד? הפעולה לא ניתנת לביטול.", confirmLabel: "הסרה", destructive: true, action: "delete-post", payload: { postId: el.dataset.id } });
     else if (action === "compare") compare(el.dataset.key, el.dataset.id);
     else if (action === "delete-account") askConfirm({ title: "מחיקת חשבון", message: "הפרופיל והשיתופים יוסרו מיד. המחיקה הסופית תתבצע לאחר 30 יום. להמשיך?", confirmLabel: "מחיקה", destructive: true, action: "delete-account" });

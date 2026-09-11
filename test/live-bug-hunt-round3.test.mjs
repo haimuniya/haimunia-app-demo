@@ -80,7 +80,7 @@ test("editing an unrelated older entry does not silently re-lock an already-earn
   // earning moment itself, and nowhere near the medal screen. This alone
   // drops the raw categoryPRCounts() back to 2 (see achievements-depth live
   // report), which used to re-lock the badge on the very next render.
-  window.startEditEntry(ids[4]);
+  await window.startEditEntry(ids[4]);
   window.applyFieldValue("step", "weight", 52);
   await window.saveSet();
   window.closeCelebration();
@@ -141,7 +141,7 @@ test("the flame/record marker is gated the same way categoryPRCounts() already i
 
   // Edit the 4th save (55kg) up past the 5th (60kg) - an ordinary correction
   // to an entry that is NOT the one currently carrying the flame.
-  window.startEditEntry(ids[3]);
+  await window.startEditEntry(ids[3]);
   window.applyFieldValue("step", "weight", 62);
   await window.saveSet();
   window.closeCelebration();

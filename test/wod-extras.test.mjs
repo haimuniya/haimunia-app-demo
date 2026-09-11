@@ -73,7 +73,7 @@ test("saveWod: persists the partner tag and startEditWodEntry restores it; clear
   const afterFirstSaveInput = window.document.getElementById("wodPartnerTagInput");
   assert.equal(afterFirstSaveInput.value, "", "the input should clear after a normal (non-edit) save");
 
-  window.startEditWodEntry(saved.id);
+  await window.startEditWodEntry(saved.id);
   const editInput = window.document.getElementById("wodPartnerTagInput");
   assert.equal(editInput.value, "עם דנה", "editing should restore the saved partner tag");
 });

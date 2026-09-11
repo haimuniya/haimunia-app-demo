@@ -2,8 +2,12 @@
 -- Boundaries: report() requires is_community_member, rejects an unknown
 -- target_type or reason, is rate limited at 10/10min, sets post_id only for
 -- a post target, and a duplicate by the same reporter on the same target
--- refreshes reason/details without adding a row, moving the reporter count,
--- or reopening status; submit_report still routes here. post_delete: the
+-- refreshes reason/details without adding a row or moving the reporter
+-- count; a resubmission that genuinely changes reason or details reopens an
+-- already-closed report (202609110001, live bug hunt round 4 - a repeat
+-- offense or an escalated complaint used to sit permanently dismissed with
+-- no way back into the queue), but an EXACT repeat of the identical
+-- reason+details does not; submit_report still routes here. post_delete: the
 -- author always, a non-author only via post.delete_any OR comment.moderate
 -- OR real is_admin, idempotent, one content_delete audit row for a
 -- moderator and none for the author. comment_moderate: comment.moderate OR
@@ -127,7 +131,9 @@ select results_eq(
 -- =====================================================================
 -- report(): a duplicate by the same reporter on the same target refreshes
 -- reason/details, does not add a row, does not move the distinct-reporter
--- count, and does not reopen a status that already moved on
+-- count. 202609110001 (live bug hunt round 4): a resubmission that
+-- genuinely changes reason or details reopens an already-closed report; an
+-- exact repeat of the identical complaint does not.
 -- =====================================================================
 update public.reports set status = 'dismissed'
   where reporter_id = tests.uid('m3') and target_type = 'post' and target_id = 'c0250000-0000-4000-8000-000000000001';
@@ -143,15 +149,34 @@ select results_eq(
   $$ values (1) $$,
   'the duplicate did not add a second row');
 select results_eq(
-  $$ select reason, details, status::text from public.reports where reporter_id = tests.uid('m3')
+  $$ select reason, details, status::text, reviewed_by, reviewed_at, resolution_notes
+       from public.reports where reporter_id = tests.uid('m3')
        and target_type = 'post' and target_id = 'c0250000-0000-4000-8000-000000000001' $$,
-  $$ values ('harassment'::text, 'updated note'::text, 'dismissed'::text) $$,
-  'reason and details refreshed in place; status was not reopened back to open');
+  $$ values ('harassment'::text, 'updated note'::text, 'open'::text, null::uuid, null::timestamptz, ''::text) $$,
+  'a genuinely different resubmission refreshes reason/details AND reopens status, clearing the prior review');
 select results_eq(
   $$ select count(distinct reporter_id)::int from public.reports
        where target_type = 'post' and target_id = 'c0250000-0000-4000-8000-000000000001' $$,
   $$ values (1) $$,
   'the distinct-reporter count for this target is still exactly 1');
+
+-- An EXACT repeat of the same reason+details must NOT reopen a case that
+-- was closed for an unrelated reason since the first report - otherwise a
+-- reporter could spam identical resubmissions to force review churn on
+-- someone already cleared.
+update public.reports set status = 'resolved'
+  where reporter_id = tests.uid('m3') and target_type = 'post' and target_id = 'c0250000-0000-4000-8000-000000000001';
+
+select tests.set_auth(tests.uid('m3'));
+select lives_ok(
+  $$ select public.report('post', 'c0250000-0000-4000-8000-000000000001', 'harassment', 'updated note') $$,
+  'm3 resubmits the identical reason and details a third time');
+select tests.clear_auth();
+select results_eq(
+  $$ select status::text from public.reports where reporter_id = tests.uid('m3')
+       and target_type = 'post' and target_id = 'c0250000-0000-4000-8000-000000000001' $$,
+  $$ values ('resolved'::text) $$,
+  'an exact repeat of the identical complaint does not reopen an already-closed report');
 
 -- =====================================================================
 -- submit_report() still resolves and routes through report()

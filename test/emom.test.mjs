@@ -110,7 +110,7 @@ test("startEditWodEntry (EMOM): restores the per-movement rep counts for editing
   const [entry] = window.wodEntriesFor(wod.id);
 
   window.applyFieldValue("wod-emom-step", "0", 99); // dirty the state first
-  window.startEditWodEntry(entry.id);
+  await window.startEditWodEntry(entry.id);
   const val0 = window.document.querySelector("[data-field='0'][data-action='wod-emom-step'].stepper-val").value;
   const val1 = window.document.querySelector("[data-field='1'][data-action='wod-emom-step'].stepper-val").value;
   assert.equal(val0, "10");
