@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.23.0";
+const APP_VERSION = "4.24.0";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -5198,9 +5198,16 @@ function render() {
     }
   } catch (err) {
     console.error("render error:", err);
+    // Security hunt (2026-09-11): the raw JS exception message used to be
+    // shown here verbatim. It's already HTML-escaped via bidiText() (no
+    // injection risk - the prior security pass's CHANGES.md entry already
+    // closed that half), but the message itself can still name an internal
+    // property/variable a developer never meant a member to see. Console
+    // still gets the full detail for debugging; the screen gets a plain,
+    // non-revealing line instead.
     content = `<div style="padding:40px 16px; text-align:center;">
       <div style="color:var(--red-text); font-weight:700; margin-bottom:8px;">משהו השתבש בהצגת הטאב הזה</div>
-      <div style="color:var(--steel); font-size:12px;">${bidiText((err && err.message) ? err.message : String(err))}</div>
+      <div style="color:var(--steel); font-size:12px;">אפשר לנסות לרענן את האפליקציה או לעבור לטאב אחר.</div>
     </div>`;
   }
   const navMenuListEl = document.getElementById("navMenuList");

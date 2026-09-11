@@ -16,6 +16,9 @@
   // always there - and an escape function is the one dependency that must
   // fail loudly rather than degrade to a no-op fallback that would ship XSS.
   const esc = window.BoxLogSafe.esc;
+  // Security hunt (2026-09-11): first real call site - navigateToNotifTarget()
+  // below used a naive manual escape instead. See that call site's own comment.
+  const cssSel = window.BoxLogSafe.cssSel;
   const cfg = window.HAIMUNIA_CONFIG || {};
   const configured = /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(cfg.supabaseUrl || "") && !!cfg.supabasePublishableKey;
   const client = configured && window.supabase ? window.supabase.createClient(cfg.supabaseUrl, cfg.supabasePublishableKey, {
@@ -13340,7 +13343,19 @@
     const metaHtml = `<div style="color:var(--steel);font-size:12px;margin-bottom:10px;">${meta.map(esc).join(" · ")}</div>`;
     const image = e.image_url ? `<img src="${esc(e.image_url)}" alt="" style="width:100%;max-height:200px;object-fit:cover;border-radius:12px;margin-bottom:10px;"/>` : "";
     const description = e.description ? `<div style="font-size:13.5px;line-height:1.6;margin-bottom:10px;white-space:pre-wrap;">${bidiText(e.description)}</div>` : "";
-    const locationHtml = e.location ? `<div style="font-size:13px;color:var(--steel);margin-bottom:4px;">📍 ${bidiText(e.location)}${e.map_link ? ` · <a class="link-btn" href="${esc(e.map_link)}" target="_blank" rel="noopener noreferrer">מפה</a>` : ""}</div>` : "";
+    // Security hunt (2026-09-11): esc() only escapes &<>"' - it does not
+    // stop a javascript:/data: URI from sitting in an href (its own comment
+    // already says so). Not currently exploitable: submitEventForm() below
+    // rejects a non-http(s) link before insert, and the DB itself carries a
+    // matching CHECK constraint (202609050004_event_map_link_scheme.sql) -
+    // but both of those are upstream of this render call, not at it. A
+    // third, independent gate here (same regex submitEventForm() already
+    // uses) means a future write path that bypasses the other two - a bulk
+    // edit, a migration rollback, a second insert path - still can't turn
+    // this into a stored javascript: link every member who views the event
+    // would click.
+    const mapLinkSafe = e.map_link && /^https?:\/\//i.test(e.map_link);
+    const locationHtml = e.location ? `<div style="font-size:13px;color:var(--steel);margin-bottom:4px;">📍 ${bidiText(e.location)}${mapLinkSafe ? ` · <a class="link-btn" href="${esc(e.map_link)}" target="_blank" rel="noopener noreferrer">מפה</a>` : ""}</div>` : "";
     const going = eventGoingCount(e.id);
     const capacityHtml = `<div style="font-size:13px;color:var(--steel);margin-bottom:4px;">${e.capacity != null ? `${going} / ${e.capacity} משתתפים` : `${going} משתתפים`}</div>`;
     const deadlineHtml = e.registration_deadline ? `<div style="font-size:12px;color:var(--steel);margin-bottom:4px;">מועד אחרון להרשמה: ${esc(formatEventDate(e.registration_deadline))} ${esc(formatEventTime(e.registration_deadline))}</div>` : "";
@@ -16384,7 +16399,13 @@
       if (target.comment) state.engagement.openReplies[target.comment] = true;
       rerender();
       setTimeout(() => {
-        const sel = '[data-post-id="' + String(target.post).replace(/"/g, '\\"') + '"]';
+        // Security hunt (2026-09-11): was a naive manual '"'-only escape -
+        // querySelector can't execute script from a malformed selector, so
+        // this was never an XSS vector, but the shared cssSel() helper
+        // (CSS.escape when available) is the established, correct way to
+        // build a selector from an attacker-controlled string (target.post
+        // is reachable via ?notif=) and should be used for consistency.
+        const sel = '[data-post-id="' + cssSel(target.post) + '"]';
         const node = document.querySelector(sel);
         if (node && node.scrollIntoView) {
           node.scrollIntoView({ block: "center" });

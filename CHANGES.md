@@ -1,3 +1,51 @@
+## Security hunt, round 1: authorization boundaries, injection, and data exposure — 2026-09-11
+
+Started a new, separate 5-round pass focused specifically on security (defensive
+testing of the team's own app — authorization, injection, data exposure — not the
+UX/functional-correctness lens the prior five rounds used). Ran three independent
+agents in parallel: authorization/RLS boundary testing (verified live against real
+local Postgres, not just the mock), XSS/injection surface, and sensitive-data
+exposure.
+
+**Authorization/RLS: no new confirmed gap.** This codebase had already been through
+five prior security-hardening passes with real-Postgres verification; this round's
+agent independently re-verified several specific surfaces live (club WOD result
+visibility, attendance-log role/ownership scoping, challenge team-assignment
+gating) rather than trusting the prior record, and confirmed all of them still hold.
+One environment limitation flagged, not a vulnerability: the local Realtime
+container is stopped in this sandbox, so `postgres_changes` authorization on the
+published tables couldn't be exercised end-to-end this round - worth a follow-up
+once that's available.
+
+**XSS/injection: no exploitable vulnerability found.** Every user-controlled surface
+tested live (post/comment bodies, mentions, display names, bios, imported-backup
+content, the `?invite=` boot param) escaped correctly with no payload execution.
+Two defense-in-depth gaps closed anyway, since neither is currently exploitable on
+its own but both are cheap to close outright:
+- An event's map link was rendered as a clickable `href` with no scheme check at
+  the render site itself - two independent upstream controls (a client submit-time
+  check and a DB `CHECK` constraint) already prevent a non-`http(s)` value from
+  ever reaching this field today, but a third, independent gate right at the render
+  call means a future write path that bypasses both of those still can't turn this
+  into a stored javascript-URI link.
+- A CSS selector built from an attacker-reachable value (`?notif=` → a post id)
+  used a naive manual escape instead of the shared `cssSel()` helper this codebase
+  already provides for exactly this. `querySelector` can't execute script from a
+  malformed selector either way, but this closes the inconsistency.
+
+**Sensitive-data exposure: one confirmed low-severity finding, fixed.** A render
+failure showed the raw JavaScript exception message on screen - not an injection
+risk (already HTML-escaped by a prior pass), but the message text itself could name
+an internal property or variable a member was never meant to see. Now shows a
+plain, generic message; the console still gets full detail for debugging. Every
+other surface checked clean: invite/push deep-link params are stripped from the URL
+before first paint and never resurface via back/forward, no secret sits in
+localStorage/IndexedDB, and every error path (login, invite redemption, a forced
+raw-Postgres-shaped RPC error) already routes through the app's generic,
+anti-enumeration message text rather than echoing server internals.
+
+Verified: full suite 1595/1595 (3 new regression tests), full browser-check 41/41.
+
 ## A fifth and final live bug hunt round: theme/visual regression, onboarding & account-recovery depth, and resilience under stress — 2026-09-11
 
 Ran the fifth and final round of three independent agents in parallel driving the
