@@ -1,3 +1,62 @@
+## Security hunt, round 9: infrastructure-adjacent configuration review — 2026-09-12
+
+Three more independent agents: CSP/hosting/service-worker/manifest configuration,
+Supabase project configuration (RLS coverage, grants, scheduled jobs), and
+dependency/secrets/build configuration.
+
+**Supabase project configuration: one confirmed high-severity gap, fixed.** An
+earlier hardening pass closed a real anon read hole by revoking the database's
+default auto-grant to every newly created table - but named only the four
+read/write privilege types (select/insert/update/delete), not the other three a
+table also gets by default (truncate/references/trigger, plus a fourth added in
+this Postgres version). None of those three are covered by row-level security at
+all - RLS only ever applies to the four DML operations - so every table created
+after that hardening pass silently kept a standing grant letting any logged-in
+member, and in a few cases even a fully anonymous connection, run `TRUNCATE` on
+it directly, with no policy able to stop it. Confirmed live against real local
+Postgres: this reached 42 of 61 tables for a plain member, including the entire
+role/permission model and the admin audit log. Not reachable through the app's
+own client library today (there is no path from a normal Supabase client call to
+a raw `TRUNCATE`), but a real, reproducible privilege sitting underneath
+everything else this hunt has verified, and exactly the class of gap that no
+policy-level test could ever catch, since it lives at the grant layer instead of
+in any RLS policy. Fixed by naming the remaining privilege types explicitly, the
+same way the original hardening pass intended, plus closing the identical latent
+gap for a future sequence (none exist in this schema today). A second,
+independent default-grant entry tied to a different, more-privileged database
+role was found dormant but could not be closed from a migration - a different
+role's default privileges can only be changed by that role or a superuser, and
+migrations run as neither for it - recorded for whoever holds direct project
+access rather than silently left for the next person to rediscover. Every other
+area checked (RLS actually enabled on all 61 tables, every function's search_path
+pinned, scheduled-job SQL, storage bucket policy, Realtime's exposed tables) came
+back clean.
+
+**CSP/hosting configuration: one confirmed low-severity supply-chain gap, fixed.**
+An earlier hardening pass pinned every CI action to an exact commit SHA except
+one, which was fixed on the job that runs the test suite against a throwaway
+local database - the identical unpinned pattern was still live on the job that
+deploys straight to production Edge Functions with a real, privileged access
+token, the higher-stakes of the two. Fixed the same way its sibling job already
+was, plus a new regression test that checks every action in every CI workflow
+file for a pinned SHA, so a future workflow can't reintroduce the same gap
+unnoticed the way this one did. Everything else in this area - every CSP
+directive against what the app actually uses, the PWA manifest, the service
+worker's fetch/cache/activate logic, GitHub Actions trigger safety - was
+live-tested and came back clean.
+
+**Dependency/secrets/build configuration found nothing to fix.** No credential
+of any kind (a service-role key, a real database password, a third-party API
+key) exists anywhere in the repository or its full git history; every dependency
+is appropriately scoped for what it does; the vendored Supabase client's
+integrity check is a real, working tamper detector, independently re-verified;
+every migration's seed data uses the established safe fixture pattern with no
+real person's data anywhere; and no CI workflow can reach production
+automatically without a human-gated, secret-protected step.
+
+Verified: full suite 1645/1645, full browser-check 44/44, `supabase test db`
+3400/3400 against real local Postgres.
+
 ## Security hunt, round 8: social-engineering-adjacent and UI-redressing — 2026-09-12
 
 Three more independent agents: clickjacking/UI-redressing, display/identity spoofing,

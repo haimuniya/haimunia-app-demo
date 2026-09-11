@@ -68,9 +68,18 @@ jobs:
             exit 1
           fi
 
-      - uses: supabase/setup-cli@v1
+      # Security hunt round 9: this was the one unpinned action left in the
+      # repo (test.yml's migration-check job had the identical `@v1` /
+      # `version: latest` pattern fixed by an earlier launch-readiness
+      # audit, but that fix never reached this file) - and it is the
+      # higher-privilege of the two, running with a real
+      # SUPABASE_ACCESS_TOKEN against production Edge Functions rather than
+      # a throwaway local stack. A floating tag and `latest` mean a CLI
+      # release could change deploy behaviour under this job with no commit
+      # in this repo to review. Same SHA/version test.yml already pinned to.
+      - uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v3.0.0
         with:
-          version: latest
+          version: 2.116.0
 
       # Verified against the lockfile FIRST, by the same command the
       # edge-function-lockfiles job in test.yml runs. A function that cannot
