@@ -6,15 +6,37 @@
 // shield/circle glyph system.
 //
 // The plate <img> sits in TWO nested wrappers, not one:
-// .medal-shape.medal-shape-plate (outer — gets the locked/earned filter,
-// e.g. the glow) and .medal-plate (inner — does the circular
-// overflow:hidden clip + rim + gloss). Reported after the first version
-// shipped with them combined on one element: "the square can be seen" —
-// filter:drop-shadow() doesn't reliably respect its own element's
-// overflow:hidden clip across browsers, so the earned glow traced the
-// plate's square bounding box instead of its circular clipped shape.
-// Splitting the clip and the filter onto separate elements avoids the
-// combination that triggers it.
+// .medal-shape.medal-shape-plate (outer — locked/earned's grayscale filter
+// still applies here) and .medal-plate (inner — does the circular
+// overflow:hidden clip + rim + gloss).
+//
+// THE SQUARE-GLOW BUG, REPORTED TWICE. First shipped with the clip and the
+// glow combined on one element; reported as "the square can be seen" and
+// "fixed" by splitting the clip (.medal-plate) and the filter
+// (.medal-shape-plate) onto two separate, nested elements, on the theory
+// that filter:drop-shadow() on an ancestor doesn't reliably respect a
+// DESCENDANT's overflow:hidden clip. Real device feedback reported the
+// identical square glow again after that "fix" shipped - because the
+// theory was incomplete, not fixed: drop-shadow traces the alpha of the
+// element's entire rendered subtree regardless of which specific
+// descendant does the clipping, so moving the clip to a child changes
+// nothing about the ambiguity a filter-based glow has in a browser whose
+// drop-shadow implementation falls back to the pre-clip layout box. The
+// two-element split stays (test below still checks it - it is still
+// correct DOM hygiene, filter and clip on the same element being
+// needlessly fragile either way) but it was never the actual fix.
+//
+// THE ACTUAL FIX: an earned plate's glow no longer uses filter:drop-shadow
+// on the ancestor at all. It is a real box-shadow, applied directly to
+// .medal-plate (the element that actually carries border-radius:50%).
+// box-shadow's shape is defined by spec to follow ITS OWN element's border
+// radius - there is no filter-compositing step, no ancestor/descendant
+// relationship to get wrong, and therefore no ambiguity for any engine to
+// resolve differently. The shield/circle SVG shapes (milestone/rx/
+// capstone/streak's non-tiered medals) keep using drop-shadow, unaffected
+// - an SVG shape is a real vector path, which drop-shadow traces correctly
+// everywhere; the ambiguity is specific to an HTML div clipped by
+// border-radius+overflow:hidden, which only the plate shape uses.
 //
 // ACHIEVEMENTS is a module-scope `const`, not a window property (top-level
 // const/let never attach to the global object), so this drives the real
@@ -22,11 +44,38 @@
 // than reaching into internal state directly.
 import { test } from "node:test";
 import assert from "node:assert";
+import fs from "node:fs";
 import { bootApp } from "./helpers/boot.mjs";
+
+const indexHtml = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
 
 function badgeByName(window, text) {
   return [...window.document.querySelectorAll(".medal-badge")].find((el) => el.querySelector(".medal-name")?.textContent.includes(text));
 }
+
+// The actual fix, verified at the CSS source level rather than by pixel
+// comparison (this suite has no real layout/paint engine to check a glow's
+// shape against - the browser-check screenshot taken while building this
+// fix is the actual visual proof; this guards the mechanism regression-
+// style, so a future edit can't quietly reintroduce drop-shadow here
+// without a test noticing before a third device report).
+test("an earned plate medal's glow is a real box-shadow on .medal-plate, never filter:drop-shadow on an ancestor", () => {
+  assert.match(
+    indexHtml,
+    /\.medal-badge\.earned \.medal-shape-plate \.medal-plate\{[^}]*box-shadow:[^}]*var\(--glow-color\)/,
+    "the earned glow must be a box-shadow on the actual clipped circle, not a filter on its ancestor",
+  );
+  assert.match(
+    indexHtml,
+    /\.medal-badge\.earned \.medal-shape:not\(\.medal-shape-plate\)\{[^}]*filter:drop-shadow/,
+    "the shield/circle SVG shapes keep drop-shadow, explicitly excluding the plate shape",
+  );
+  assert.doesNotMatch(
+    indexHtml,
+    /\.medal-badge\.earned \.medal-shape\{[^}]*filter:drop-shadow/,
+    "drop-shadow must never apply to EVERY .medal-shape unconditionally again - that unconditional form is exactly what glowed a plate's square bounding box",
+  );
+});
 
 test("tiered (pr) medals render the mapped weight-plate image, wrapped in the circular plate frame, not the SVG shield", async () => {
   const window = await bootApp();

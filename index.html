@@ -1554,6 +1554,27 @@
   .medal-shape{ width:64px; height:70px; margin:0 auto; }
   .medal-shape-plate{ height:64px; display:flex; align-items:center; justify-content:center; }
   .medal-plate{ position:relative; width:64px; height:64px; border-radius:50%; overflow:hidden; box-shadow:inset 0 0 0 2px rgba(255,255,255,.16); }
+  /* Real device feedback: an earned plate medal's glow looked like a square,
+     not a circle - on the actual phone this screenshot came from, not in
+     this repo's own Chromium checks, which is exactly the signature of a
+     known WebKit gap: filter:drop-shadow() on an ANCESTOR div, tracing the
+     alpha of a DESCENDANT circle made of border-radius+overflow:hidden (not
+     an SVG path), is not reliably clipped to that circle in every engine -
+     some fall back to the ancestor's own rectangular layout box. The other
+     two medal shapes (shield/circle) are plain SVG with a real vector path,
+     which drop-shadow traces correctly everywhere, so they keep using it
+     below. A plate's glow moves to box-shadow instead, applied directly to
+     .medal-plate (the actual element carrying border-radius:50%) - box-
+     shadow's shape is defined by spec to follow its own element's border
+     radius, with no filter-compositing ambiguity to fall back from. */
+  .medal-badge.earned .medal-shape-plate .medal-plate{ box-shadow:inset 0 0 0 2px rgba(255,255,255,.16), 0 0 5px var(--glow-color), 0 0 13px var(--glow-color); }
+  @media (prefers-reduced-motion: no-preference){
+    .medal-badge.earned .medal-shape-plate .medal-plate{ animation:medalGlowPlate 2.6s ease-in-out infinite; }
+  }
+  @keyframes medalGlowPlate{
+    0%,100%{ box-shadow:inset 0 0 0 2px rgba(255,255,255,.16), 0 0 4px var(--glow-color), 0 0 10px var(--glow-color); }
+    50%{ box-shadow:inset 0 0 0 2px rgba(255,255,255,.16), 0 0 7px var(--glow-color), 0 0 20px var(--glow-color); }
+  }
   .medal-plate img{ width:100%; height:100%; object-fit:cover; display:block; }
   .medal-plate-shine{ position:absolute; inset:0; border-radius:50%; background:linear-gradient(135deg,rgba(255,255,255,.28),transparent 38%,rgba(0,0,0,.18)); pointer-events:none; }
   .medal-badge.locked .medal-shape-plate{ opacity:.72; }
@@ -1577,9 +1598,12 @@
      rows - a markup change in app.js, not a font-size here. */
   .medal-rule{ font-size:11px; color:var(--steel); margin-top:2px; line-height:1.3; opacity:.85; }
   .medal-badge.locked .medal-shape{ filter:grayscale(1) brightness(.55); opacity:.4; }
-  .medal-badge.earned .medal-shape{ filter:drop-shadow(0 0 5px var(--glow-color)) drop-shadow(0 0 13px var(--glow-color)); }
+  /* :not(.medal-shape-plate) - a plate's glow is box-shadow on .medal-plate
+     now (see that rule above); the shield/circle SVG shapes below keep
+     drop-shadow, which correctly traces a real vector path in every engine. */
+  .medal-badge.earned .medal-shape:not(.medal-shape-plate){ filter:drop-shadow(0 0 5px var(--glow-color)) drop-shadow(0 0 13px var(--glow-color)); }
   @media (prefers-reduced-motion: no-preference){
-    .medal-badge.earned .medal-shape{ animation:medalGlow 2.6s ease-in-out infinite; }
+    .medal-badge.earned .medal-shape:not(.medal-shape-plate){ animation:medalGlow 2.6s ease-in-out infinite; }
   }
   @keyframes medalGlow{
     0%,100%{ filter:drop-shadow(0 0 4px var(--glow-color)) drop-shadow(0 0 10px var(--glow-color)); }

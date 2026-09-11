@@ -1,3 +1,42 @@
+## The square-glow bug, reported twice, actually fixed this time — 2026-09-12
+
+Real device screenshot: an earned bronze plate medal's glow looked like a square, not
+a circle. This exact bug was reported once before and "fixed" by splitting the plate's
+circular clip (`.medal-plate`) and its glow filter (`.medal-shape-plate`) onto two
+separate, nested elements, on the theory that `filter:drop-shadow()` on an ancestor
+doesn't reliably respect a descendant's `overflow:hidden` clip. It didn't work - this
+device report is the proof - because the theory was incomplete: drop-shadow traces the
+alpha of an element's entire rendered subtree regardless of which specific descendant
+does the clipping, so moving the clip to a child changes nothing about a browser whose
+drop-shadow implementation falls back to the pre-clip layout box for that whole
+subtree. Confirmed this repo's own Chromium checks never would have caught it either
+way - the isolated CSS renders a clean circle there, so this is real, browser-specific
+render behavior, not something reproducible in this sandbox by design.
+
+The actual fix removes the ambiguity instead of trying to work around it: an earned
+plate's glow is no longer `filter:drop-shadow()` on an ancestor at all - it's a real
+`box-shadow` applied directly to `.medal-plate`, the element that actually carries
+`border-radius:50%`. `box-shadow`'s shape is defined by spec to follow its own
+element's border radius; there is no filter-compositing step and therefore no
+ambiguity for any engine to get wrong. The shield/circle SVG shapes (milestone/rx/
+capstone medals) keep drop-shadow, unaffected - a real SVG vector path is exactly what
+drop-shadow traces correctly everywhere, so the fragility is specific to an HTML div
+clipped by CSS, which only the plate shape uses.
+
+`test/medals.test.mjs`'s own header comment (which recorded the first, incomplete
+fix as settled) is corrected to say so plainly, and a new test asserts the CSS
+mechanism directly - the earned rule must be a `box-shadow` on `.medal-plate`, and
+`filter:drop-shadow` must never again apply unconditionally to every `.medal-shape` -
+so a future edit can't quietly reintroduce this without a test noticing before a
+third device report.
+
+Verified: `test/medals.test.mjs` (6/6, one new), `brass-contrast.test.mjs`/
+`theme-token-parity.test.mjs` (shared CSS file, unaffected), full suite green, and a
+direct visual check (real Chromium) confirming no regression in the glow's own
+appearance - the actual cross-engine claim rests on the CSS mechanism being provably
+unambiguous by spec, not on a screenshot this sandbox's one browser engine can produce
+either way.
+
 ## Security hunt, round 7: API/RPC contract abuse — 2026-09-12
 
 Three more independent agents: malformed or unexpected-type RPC parameters, race
