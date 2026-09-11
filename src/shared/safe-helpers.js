@@ -36,7 +36,7 @@
 
   // Bumped on every behavior change to any helper below. A consumer repo
   // records the version it vendored so a drift is visible without a diff.
-  const VERSION = "1.1.0";
+  const VERSION = "1.2.0";
 
   // The only limit this module needs. Deliberately owned here rather than
   // read from src/constants.js's LIMITS: cleanId is a security boundary and
@@ -342,10 +342,64 @@
   function bag() { return Object.create(null); }
 
   // ---------- Untrusted value cleaners ----------
+  // Live bug hunt (2026-09-11): cleanStr stripped ASCII control chars but let
+  // Unicode bidi FORMAT controls (RTL-OVERRIDE and siblings) and zero-width
+  // characters straight through. Confirmed live: a display name typed as
+  // "safe_photo" + RLO + "gnp.exe" was stored verbatim by cloud.js and
+  // painted as "safe_photoexe.png" on every surface that shows it (profile,
+  // feed author, search) - a classic filename/identity spoof, because
+  // nothing upstream of storage ever cleared the override. A zero-width-only
+  // name had the same shape of bug the other way: it stored and rendered as
+  // an invisible blank, yet .trim() never made it fall out of "has a display
+  // name" truthy-checks, so a member could appear as a nameless ghost while
+  // still passing gates meant to require a real name. Both belong here, not
+  // at each call site: this is exactly what an "untrusted value cleaner" is
+  // for, these characters are never something a member legitimately types,
+  // and one shared strip closes the gap for every cleanStr caller in both
+  // app.js and cloud.js at once. Built from numeric code points rather than
+  // literal escapes so the ranges stay unambiguous to read.
+  const UNSAFE_STR_RANGES = [
+    [0x0000, 0x001f], [0x007f, 0x007f],
+    [0x200b, 0x200f], [0x202a, 0x202e], [0x2066, 0x2069], [0xfeff, 0xfeff],
+  ];
+  const UNSAFE_STR_RE = new RegExp(
+    "[" + UNSAFE_STR_RANGES.map(([a, b]) => (a === b
+      ? String.fromCodePoint(a)
+      : String.fromCodePoint(a) + "-" + String.fromCodePoint(b))).join("") + "]",
+    "g"
+  );
   function cleanStr(v, max) {
     if (typeof v !== "string") return "";
-    // strip control chars, collapse runaway whitespace, hard-cap length
-    return v.replace(/[\u0000-\u001F\u007F]/g, "").trim().slice(0, max);
+    // strip control/bidi-override/zero-width chars, collapse runaway
+    // whitespace, hard-cap length
+    return v.replace(UNSAFE_STR_RE, "").trim().slice(0, max);
+  }
+  // Live bug hunt (2026-09-11): saveSessionNote() (app.js) ran every note
+  // through cleanStr(), which deletes \n/\r outright - confirmed live, a
+  // three-line training reflection ("...\nהמשקל עלה\n...") was saved with
+  // its line breaks silently removed and the words fused together
+  // ("היוםהמשקל"), a real, permanent loss of what was typed with no warning.
+  // cloud.js's own comment-body sanitizer already solves this correctly by
+  // keeping \t/\n/\r out of its strip set; this promotes the same shape to
+  // the shared module as a named variant, for any field that is genuinely
+  // multi-line, rather than leaving each caller to hand-roll its own control
+  // character class.
+  const MULTILINE_UNSAFE_RANGES = [
+    [0x0000, 0x0008], [0x000b, 0x000c], [0x000e, 0x001f], [0x007f, 0x007f],
+    [0x200b, 0x200f], [0x202a, 0x202e], [0x2066, 0x2069], [0xfeff, 0xfeff],
+  ];
+  const MULTILINE_UNSAFE_RE = new RegExp(
+    "[" + MULTILINE_UNSAFE_RANGES.map(([a, b]) => (a === b
+      ? String.fromCodePoint(a)
+      : String.fromCodePoint(a) + "-" + String.fromCodePoint(b))).join("") + "]",
+    "g"
+  );
+  function cleanMultilineStr(v, max) {
+    if (typeof v !== "string") return "";
+    // Same as cleanStr, but keeps tab/LF/CR so a genuinely multi-line field
+    // (a training note, a comment body) preserves its line breaks instead of
+    // having them deleted and its lines fused together.
+    return v.replace(MULTILINE_UNSAFE_RE, "").trim().slice(0, max);
   }
   function cleanNum(v, min, max, fallback) {
     const n = typeof v === "number" ? v : parseFloat(v);
@@ -410,7 +464,7 @@
     LIMITS: Object.freeze(LIMITS),
     esc, cssSel, bag,
     bidiText, bidiHtml,
-    cleanStr, cleanNum, cleanId, cleanISODate, cleanTs,
+    cleanStr, cleanMultilineStr, cleanNum, cleanId, cleanISODate, cleanTs,
     uid,
   });
 })(typeof window !== "undefined" ? window : globalThis);

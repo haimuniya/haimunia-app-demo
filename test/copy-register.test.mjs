@@ -157,7 +157,11 @@ test("the backup import counts the member's entries in the app's own word, not t
   // screen and the same class of failure.
   assert.ok(!appCode.includes("רשומות"),
     "no member-facing count may be measured in database rows");
-  for (const expected of ["רישומים תקינים", "רישומים לנתונים הקיימים", "רישומים?", "רישומים`"]) {
+  // Live bug hunt (2026-09-11): incoming/ok are now routed through
+  // incomingLabel/an inline singular branch (count===1 reads "רישום אחד",
+  // not "1 רישומים") - updated to match that shape, same underlying intent
+  // (never "רשומות", always the member's own word).
+  for (const expected of ["רישומים תקינים", "incomingLabel} לנתונים הקיימים", "incomingLabel}?", "רישום אחד"]) {
     assert.ok(appCode.includes(expected), `import copy should read "${expected}"`);
   }
 });

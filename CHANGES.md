@@ -1,3 +1,101 @@
+## Live bug hunt, round 6: Hebrew grammar/RTL depth, extreme content values, and units/dates/locale — 2026-09-11
+
+The 5-round hunt from earlier today was called "final" prematurely - the full
+protocol runs 10 rounds. Continuing from round 6: three fresh agents on Hebrew
+grammar & RTL content depth, extreme content values, and units/dates/locale
+formatting, none of which the first five rounds covered.
+
+**Highest-impact fix: `cloud.js` computed "today" from UTC, not local time.**
+`todayIso()` was `new Date().toISOString().slice(0,10)` - the UTC calendar
+date. Israel is always ahead of UTC, so for 2-3 hours after every local
+midnight this returned yesterday's date. Confirmed live (Chromium,
+`Asia/Jerusalem`, clock fixed to 01:00 local): the feed's "pinned note for
+today" showed yesterday's stale pin while today's real one sat in the
+archive, and the Club WOD board labeled today's own session "מחר" (tomorrow)
+in one panel while app.js's own board panel simultaneously said "today" for
+the same session - because app.js's own `todayISO()` (`src/format.js`)
+already builds the date from local Y/M/D and was never affected. Fixed by
+matching that same local-date construction; every caller (the pin write
+side, the realtime today-strip filter, the weekly-challenge active window,
+activity pings, achievement-share `occurred_on`) funnels through the one
+function, so one fix closes the whole class. `clubWodDateLabel()`'s own
+yesterday/tomorrow shift math had the identical UTC-vs-local gap one level
+down and got the same local-date fix.
+
+**Silent data loss: multi-line training notes lost their line breaks.**
+`saveSessionNote()` ran the note through `cleanStr()`, which deletes
+`\n`/`\r` outright - correct for the single-line fields it was built for,
+wrong for the one genuinely multi-line field in the app (`sessionNoteInput`,
+`rows="3"`). A real 3-line reflection was saved with its sentences silently
+fused together word-to-word, no warning. `cleanMultilineStr()` is now a
+named sibling in `src/shared/safe-helpers.js` for exactly this shape of
+field - same control-char/bidi/zero-width stripping, minus deleting
+tab/LF/CR.
+
+**Identity spoofing via an RTL-override character.** `cloud.js`'s
+`saveProfile()` sanitized `display_name`/`bio` with only
+`.trim().slice(N)` - no control-char, bidi-override, or zero-width
+stripping at all, despite `cleanStr()` existing and being used everywhere in
+`app.js` since COMM-368. Confirmed live: a display name typed as
+`"safe_photo" + U+202E + "gnp.exe"` stored and rendered as
+`"safe_photoexe.png"` on every surface showing it (profile, feed author,
+search) - a classic filename/identity spoof. Fixed at the shared
+`cleanStr()` layer (now strips Unicode bidi format controls and zero-width
+characters, not just ASCII control chars, closing the same gap for every
+`cleanStr` caller in both clients at once) and wired `cleanStr` into
+`cloud.js` for the first time, applied to `saveProfile`, `postAnnouncement`,
+and `setWeeklyChallenge`. `nameHtml()` also now isolates a stored name
+through `bidiText()` as defense-in-depth. The same stripping incidentally
+closed a second, related gap: a zero-width-only display name used to store
+and render as an invisible blank while still passing "has a display name"
+truthy checks - it now cleans down to an actually-empty string.
+
+**Nine Hebrew singular/plural grammar bugs, one shared root cause.** The
+same missing-singular-branch pattern this repo already fixed once for the
+streak label recurred at nine more sites, several on very high-traffic
+surfaces: `relativeTime()` (feed/comment/mod-queue/audit-log timestamps -
+"לפני 1 ימים" instead of "לפני יום"), the moderation queue's reporter count
+and the Manage-tab pending-reports banner, the reaction-count strip,
+event/challenge participant counts (four sites, now one shared
+`participantsLabel()` helper), the coach "new members" row's day/session
+counts, the consistency-challenge weeks label, the onboarding first-month
+recap card (whose own test had literally asserted the wrong grammar as
+correct), and the backup-import confirm dialog. All fixed with the same
+explicit-singular-branch shape the existing streak-label fix already used.
+
+**Cosmetic, systemic: raw ISO date fragments in admin/coach UI.** Invite
+lists, member/ghost rows, the directory profile sheet, and achievement/event
+"when" labels printed `2026-06-15` directly into otherwise-Hebrew-formatted
+text. Added `shortHebDate()` (compact D.M.YYYY) and applied it to the
+read-only display sites - never to anything feeding a form or
+`<input type="date">` value, which still needs the raw ISO string.
+
+**Minor DST fix:** `daysSinceBoxStart()` did raw millisecond division,
+which drifts by the DST offset right at a transition and can flip a
+tenure/anniversary badge's day count off by one for about an hour. Now
+counts local calendar days the same way `computeCurrentStreak()` already
+does elsewhere in this file.
+
+**Layout fix:** an 80-character unbreakable name (`cleanStr`'s own cap)
+overflowed `.who-name` on the Settings screen and bled under the adjacent
+edit-icon button. Added `overflow-wrap:anywhere`, verified with a real
+Chromium measurement plus a control proving the same page would overflow
+without it (`scripts/browser-check/who-name-overflow.mjs`).
+
+**Checked and found clean:** number formatting inside RTL text (already
+correctly isolated via `bidiText`/`bidiWrapRuns`), gender agreement in every
+generated sentence (the app's `/ה` suffix convention holds everywhere),
+weight units (kg-only throughout, no leftover lb references), emoji-only and
+mixed RTL+emoji+English display names, zalgo-style combining-diacritic
+stacking (capped, contained, not a layout break), and the WOD/reaction
+"and N more" labels that already special-cased singular correctly.
+
+Verified: full suite 1620/1620 (13 new/updated regression tests across
+`test/live-bug-hunt-round6.test.mjs`, `test/roadmap-features.test.mjs`,
+`test/community-onboarding.test.mjs`, plus three pre-existing tests updated
+to match the corrected grammar/date-format output they were asserting
+against), full browser-check 42/42 (new: `who-name-overflow.mjs`).
+
 ## Security hunt, round 5: supply chain, PWA surface, and a full assume-breach pass — 2026-09-11
 
 Three more independent agents: third-party & supply-chain review, PWA/service-worker

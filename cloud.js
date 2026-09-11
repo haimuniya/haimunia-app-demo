@@ -19,6 +19,16 @@
   // Security hunt (2026-09-11): first real call site - navigateToNotifTarget()
   // below used a naive manual escape instead. See that call site's own comment.
   const cssSel = window.BoxLogSafe.cssSel;
+  // Live bug hunt (2026-09-11): saveProfile()/postAnnouncement()/
+  // setWeeklyChallenge() sanitized human-typed text with only
+  // `.trim().slice(N)` - no control-char, bidi-override, or zero-width
+  // stripping at all. Confirmed live: a display name typed as
+  // "safe_photo" + RLO + "gnp.exe" was stored verbatim and painted as
+  // "safe_photoexe.png" everywhere it renders (profile, feed author,
+  // search). app.js has used SAFE.cleanStr for every untrusted text field
+  // since COMM-368; cloud.js never bound it at all, so it silently missed
+  // the same coverage.
+  const cleanStr = window.BoxLogSafe.cleanStr;
   const cfg = window.HAIMUNIA_CONFIG || {};
   const configured = /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(cfg.supabaseUrl || "") && !!cfg.supabasePublishableKey;
   const client = configured && window.supabase ? window.supabase.createClient(cfg.supabaseUrl, cfg.supabasePublishableKey, {
@@ -968,7 +978,44 @@
   // Cleared by markCopied() so a "הועתק ✓" from one control cannot linger
   // on screen after another copy, or after a panel is closed and reopened.
   let copyResetTimer = null;
-  function todayIso() { return new Date().toISOString().slice(0, 10); }
+  // Live bug hunt (2026-09-11): this returned the UTC calendar date, not the
+  // local one. Israel is always ahead of UTC (+2 winter / +3 DST summer), so
+  // for the first 2-3 hours after LOCAL midnight every night this returned
+  // YESTERDAY's date. Confirmed live (Playwright, timezoneId
+  // "Asia/Jerusalem", clock fixed to 01:00 local): the feed's "pinned note
+  // for today" showed a stale note pinned for the day before while today's
+  // real pin sat in the archive, and the Club WOD board labeled today's own
+  // session "מחר" (tomorrow) while app.js's board panel simultaneously
+  // labeled the same session "today" - because app.js's todayISO()
+  // (src/format.js) already builds the date from local Y/M/D and was never
+  // affected. Matches that same local-date construction instead of
+  // reimplementing a UTC-based one.
+  // Live bug hunt (2026-09-11): every "${n} משתתפים" site rendered "1
+  // משתתפים" for the single most common real case - a challenge/event's
+  // first joiner. One shared helper instead of six separately-typed
+  // ternaries, matching relativeTime()'s own singular-branch fix above.
+  function participantsLabel(n) {
+    const count = Number(n) || 0;
+    return count === 1 ? "משתתף אחד" : `${count} משתתפים`;
+  }
+  // Live bug hunt (2026-09-11): admin/coach surfaces (invite lists, member
+  // rows, ghost invites, the directory profile sheet) printed a raw ISO
+  // date fragment ("2026-06-15") straight into otherwise-Hebrew-formatted
+  // text instead of a localized date - unlocalized, not incorrect, but a
+  // systemic pattern across every one of those surfaces. A light, compact
+  // D.M.YYYY formatter for exactly the read-only-label call sites (never
+  // touches anything feeding a form/<input type="date"> value - those keep
+  // the raw ISO string, which is what the DOM requires there).
+  function shortHebDate(iso) {
+    const s = String(iso || "").slice(0, 10);
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+    if (!m) return s;
+    return `${Number(m[3])}.${Number(m[2])}.${Number(m[1])}`;
+  }
+  function todayIso() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
   function setFieldErrors(formId, errors) {
     if (errors && Object.keys(errors).length) state.ui.fieldErrors[formId] = errors;
     else delete state.ui.fieldErrors[formId];
@@ -1037,7 +1084,12 @@
   // needed, and it degrades to plain text in a context that already
   // requires no HTML (there is none here).
   function nameHtml(displayName, handle) {
-    return displayName ? esc(displayName) : `<bdi>@${esc(handle || "")}</bdi>`;
+    // Live bug hunt (2026-09-11): bare esc() here (defense-in-depth on top
+    // of the write-side cleanStr() fix in saveProfile() - a row written
+    // before that fix shipped, or by any other future write path, could
+    // still carry a bidi-override character) - bidiText() is the same
+    // per-line isolation app.js already gives every human-typed field.
+    return displayName ? bidiText(displayName) : `<bdi>@${esc(handle || "")}</bdi>`;
   }
   // The isolation nameHtml() applies to "@handle" is needed by EVERY string a
   // human typed, and there the failure is far worse than a misplaced "@". A
@@ -1299,14 +1351,23 @@
     for (const p of (data || [])) map[p.id] = p;
     return { map, error: null };
   }
+  // Live bug hunt (2026-09-11): no diffDay===1 branch - a 1-day-old feed
+  // post/comment/mod-queue row/audit-log entry rendered "לפני 1 ימים"
+  // instead of "לפני יום". Highest-traffic grammar bug of the round: this
+  // one function feeds timestamps across nearly every social surface.
+  // Matches the singular-branch pattern app.js's own daysAgoLabel() already
+  // uses for the same "one day" case.
   function relativeTime(iso) {
     if (!iso) return "";
     const diffMin = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
     if (diffMin < 1) return "עכשיו";
+    if (diffMin === 1) return "לפני דקה";
     if (diffMin < 60) return `לפני ${diffMin} דק׳`;
     const diffHr = Math.floor(diffMin / 60);
+    if (diffHr === 1) return "לפני שעה";
     if (diffHr < 24) return `לפני ${diffHr} שע׳`;
     const diffDay = Math.floor(diffHr / 24);
+    if (diffDay === 1) return "לפני יום";
     if (diffDay < 7) return `לפני ${diffDay} ימים`;
     return new Date(iso).toLocaleDateString("he-IL");
   }
@@ -2028,7 +2089,10 @@
       ? `<span aria-hidden="true" style="display:inline-block;height:12px;width:70%;background:var(--border);border-radius:6px;"></span>`
       : summary.error
       ? `החודש הראשון שלכם הסתיים - לא הצלחנו לטעון את הסיכום כרגע.`
-      : `החודש הראשון שלכם: ${summary.sessions} אימונים, ${summary.prs} שיאים ו-${summary.achievements} הישגים חדשים. כל הכבוד!`;
+      // Live bug hunt (2026-09-11): missing singular branches - a real
+      // 1-session/1-PR/1-achievement first month (test/community-
+      // onboarding.test.mjs's own seed data) rendered "1 שיאים"/"1 הישגים".
+      : `החודש הראשון שלכם: ${summary.sessions === 1 ? "אימון אחד" : `${summary.sessions} אימונים`}, ${summary.prs === 1 ? "שיא אחד" : `${summary.prs} שיאים`} ו-${summary.achievements === 1 ? "הישג חדש אחד" : `${summary.achievements} הישגים חדשים`}. כל הכבוד!`;
     const leadRaw = onboardingStepBodyRaw("first_month");
     const lead = leadRaw ? bidiText(leadRaw) + " " : "";
     return renderOnboardingCard(onboardingStepTitle("first_month", "החודש הראשון שלכם במועדון"), lead + computed, "first_month");
@@ -2265,7 +2329,10 @@
   }
   async function postAnnouncement(form) {
     if (!state.user || !isStaff()) return;
-    const title = String(form.elements.title.value || "").trim().slice(0, 120);
+    // Live bug hunt (2026-09-11): same cleanStr gap as saveProfile() - a
+    // staff-only surface, but the same control-char/bidi-override class of
+    // input was still accepted and stored raw.
+    const title = cleanStr(form.elements.title.value, 120);
     // Live bug hunt (2026-09-11): this used to slice at 2000, but the
     // announcement's OWN feed card (POST_ANNOUNCEMENT, produced server-side
     // from this row) renders through the same postBodyHtml() every other
@@ -2458,7 +2525,8 @@
   }
   async function setWeeklyChallenge(form) {
     if (!state.user || !isStaff()) return;
-    const title = String(form.elements.title.value || "").trim().slice(0, 120);
+    // Live bug hunt (2026-09-11): same cleanStr gap as saveProfile().
+    const title = cleanStr(form.elements.title.value, 120);
     const comparisonKey = String(form.elements.comparisonKey.value || "").trim().slice(0, 160);
     const startsOn = form.elements.startsOn.value, endsOn = form.elements.endsOn.value;
     const errors = {};
@@ -2834,7 +2902,16 @@
     if (!d) return "";
     const today = todayIso();
     if (d === today) return "היום";
-    const shift = (days) => new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+    // Live bug hunt (2026-09-11): now that "today" is local (see todayIso()
+    // above), yesterday/tomorrow have to be computed the same local way too
+    // - the old UTC ms-shift stayed correct for "today" but drifted a day
+    // out of step with it right at the same local-midnight boundary.
+    // setDate() on a local Date is DST-safe by construction.
+    const shift = (days) => {
+      const base = new Date();
+      base.setDate(base.getDate() + days);
+      return `${base.getFullYear()}-${String(base.getMonth() + 1).padStart(2, "0")}-${String(base.getDate()).padStart(2, "0")}`;
+    };
     if (d === shift(-1)) return "אתמול";
     if (d === shift(1)) return "מחר";
     return d;
@@ -4561,10 +4638,10 @@
         const statusDim = !c.active || exhausted || expired;
         return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:6px;" data-invite-code-id="${esc(c.id)}">
         <div class="flex" style="justify-content:space-between;width:100%;">
-          <span>${roleCodeLabel(c.role)} · נוצר ${esc(String(c.created_at || "").slice(0, 10))}</span>
+          <span>${roleCodeLabel(c.role)} · נוצר ${esc(shortHebDate(c.created_at))}</span>
           <span class="admin-tag" style="${statusDim ? "opacity:.6;" : ""}">${statusLabel}</span>
         </div>
-        <div style="color:var(--steel);font-size:12px;">${Number(c.redemption_count || 0)} מימושים · שימושים ${Number(c.use_count || 0)}${c.max_uses ? "/" + esc(c.max_uses) : ""}${c.expires_at ? " · תפוגה " + esc(String(c.expires_at).slice(0, 10)) : ""}</div>
+        <div style="color:var(--steel);font-size:12px;">${Number(c.redemption_count || 0)} מימושים · שימושים ${Number(c.use_count || 0)}${c.max_uses ? "/" + esc(c.max_uses) : ""}${c.expires_at ? " · תפוגה " + esc(shortHebDate(c.expires_at)) : ""}</div>
         <button class="chip-btn"${ic.busy ? " disabled" : ""} data-community-action="invite-code-toggle-active" data-id="${esc(c.id)}" data-active="${c.active ? "0" : "1"}">${c.active ? "כיבוי" : "הפעלה"}</button>
       </div>`;
       }).join("")}</div>`;
@@ -4604,8 +4681,8 @@
         <span>${bidiText(inv.label || INVITE_UNLABELLED_TEXT)} · ${roleCodeLabel(inv.role)}</span>
         <span class="admin-tag">${inviteStatusLabel(inv.status)}</span>
       </div>
-      <div style="color:var(--steel);font-size:12px;">נוצר ${esc(String(inv.created_at || "").slice(0, 10))}${inv.expires_at ? " · תפוגה " + esc(String(inv.expires_at).slice(0, 10)) : ""}</div>
-      ${inv.status === "redeemed" ? `<div style="color:var(--steel);font-size:12px;">מומש/ה ע"י ${esc(inv.redeemed_by_display_name || inv.redeemed_by_handle || "חבר/ה")} · ${esc(String(inv.redeemed_at || "").slice(0, 10))}</div>` : ""}
+      <div style="color:var(--steel);font-size:12px;">נוצר ${esc(shortHebDate(inv.created_at))}${inv.expires_at ? " · תפוגה " + esc(shortHebDate(inv.expires_at)) : ""}</div>
+      ${inv.status === "redeemed" ? `<div style="color:var(--steel);font-size:12px;">מומש/ה ע"י ${esc(inv.redeemed_by_display_name || inv.redeemed_by_handle || "חבר/ה")} · ${esc(shortHebDate(inv.redeemed_at))}</div>` : ""}
       ${inv.status === "pending" ? `<button class="chip-btn danger"${iv.revoking === inv.id ? " disabled" : ""} data-community-action="invite-revoke" data-id="${esc(inv.id)}">ביטול</button>` : ""}
     </div>`;
     let list;
@@ -7144,7 +7221,7 @@
     // full admin access. Full admin stays a manual dashboard-only flip;
     // real coach-scoped permissions (their own classes/members) are a
     // separate piece of work, not built yet.
-    const payload = { id: state.user.id, handle, display_name: String(form.elements.displayName.value || "").trim().slice(0, 80), bio: String(form.elements.bio.value || "").trim().slice(0, 160) };
+    const payload = { id: state.user.id, handle, display_name: cleanStr(form.elements.displayName.value, 80), bio: cleanStr(form.elements.bio.value, 160) };
     // The ONE place an insert is genuinely possible: profile completion runs
     // before the row exists. Once it does, update - an upsert would evaluate
     // profiles_insert_self, which requires recovery_verified_at to be null,
@@ -9043,9 +9120,12 @@
     if (!total && !reactors.length) return "";
     const avatars = reactors.slice(0, REACTOR_AVATARS_SHOWN)
       .map((r) => `<span style="display:inline-flex;margin-inline-start:-6px;">${avatarHtml(r.name || "?", 22, r.avatar_url)}</span>`).join("");
+    // Live bug hunt (2026-09-11): the `mine` branch already special-cased
+    // total<=1; the other branch (viewed by someone who hasn't reacted)
+    // didn't, and rendered "1 הגבות" for a post with exactly one reaction.
     const label = rs.mine
       ? (total <= 1 ? "הגבתם" : `הגבתם ועוד ${total - 1}`)
-      : `${total} הגבות`;
+      : (total === 1 ? "הגבה אחת" : `${total} הגבות`);
     return `<div class="reaction-strip">${avatars ? `<span class="flex" style="padding-inline-start:6px;">${avatars}</span>` : ""}<span style="color:var(--steel);font-size:11.5px;">${esc(label)}</span></div>`;
   }
   // COMM-124. Text carries the meaning, not colour alone.
@@ -9238,7 +9318,7 @@
             <span class="admin-tag" style="${r.status === "open" ? "background:rgba(194,57,44,.12);border-color:var(--red);color:var(--red-text);" : ""}">${esc(MOD_STATUS_LABEL[r.status] || r.status)}</span>
           </div>
           <div style="color:var(--steel);font-size:12px;margin-top:8px;">
-            ${Number(r.reporter_count || 0)} דיווחים · ${reasons.map(reportReasonLabel).map(esc).join(", ") || "—"} · ${relativeTime(r.created_at)}
+            ${(() => { const rc = Number(r.reporter_count || 0); return rc === 1 ? "דיווח אחד" : `${rc} דיווחים`; })()} · ${reasons.map(reportReasonLabel).map(esc).join(", ") || "—"} · ${relativeTime(r.created_at)}
           </div>
           ${r.note ? `<div style="color:var(--steel);font-size:12px;margin-top:4px;">״${esc(String(r.note).slice(0, 240))}״</div>` : ""}
           <div class="chip-row" style="margin-top:10px;">
@@ -9424,7 +9504,7 @@
     const showRemove = opts.showRemove !== false;
     return `<div class="log-row" style="align-items:flex-start;flex-direction:column;gap:6px;">
       <div class="flex gap-10" style="align-items:center;">${avatarHtml(m.display_name || m.handle, 32, m.avatar_url)}<div><div style="font-weight:700;">${nameHtml(m.display_name, m.handle)}${isCoachRole(m.role) ? " " + coachBadgeHtml(m.role) : ""}</div><div style="color:var(--steel);font-size:11px;"><bdi>@${esc(m.handle)}</bdi> · ${memberRoleLabel(m)}</div></div></div>
-      <div style="color:var(--steel);font-size:11px;">הצטרפ/ה: ${m.redeemed_at ? esc(String(m.redeemed_at).slice(0, 10)) : "—"} · פעילות אחרונה באפליקציה: ${m.last_activity_on ? esc(m.last_activity_on) : "אין נתונים"}</div>
+      <div style="color:var(--steel);font-size:11px;">הצטרפ/ה: ${m.redeemed_at ? esc(shortHebDate(m.redeemed_at)) : "—"} · פעילות אחרונה באפליקציה: ${m.last_activity_on ? esc(m.last_activity_on) : "אין נתונים"}</div>
       <div class="footer-note" style="margin:0;font-size:10.5px;">${esc(m.id)}</div>
       ${m.is_admin ? "" : `<div class="chip-row" style="margin-top:0;">
         ${memberRoleButtonsHtml(m, readOnly)}
@@ -9641,7 +9721,7 @@
     // a username back into a person they remember.
     const secondary = g.username && g.label
       ? `<div style="color:var(--steel);font-size:12.5px;margin-top:2px;">${bidiText(`תווית ההזמנה: ${g.label}`)}</div>` : "";
-    const meta = [ghostSourceLabel(g.invite_source), ghostStalledText(stalled), `מימש/ה ${String(g.redeemed_at || "").slice(0, 10)}`];
+    const meta = [ghostSourceLabel(g.invite_source), ghostStalledText(stalled), `מימש/ה ${shortHebDate(g.redeemed_at)}`];
     const control = !admin
       ? `<div class="footer-note" style="margin:10px 0 0;">שחרור ההזמנה שמור למנהל/ת.</div>`
       : `<div class="chip-row" style="margin-top:10px;">
@@ -10876,7 +10956,7 @@
     // already-built strings rather than .map(esc).
     const metaParts = [scoreTypeHtml(scoreType), effortHtml(effort, m.level)].filter(Boolean);
     const detail = `<div class="post-title">${bidiText(name)}${prBadge}</div>
-      ${when ? `<div style="color:var(--steel);font-size:12px;">${esc(String(when).slice(0, 10))}</div>` : ""}
+      ${when ? `<div style="color:var(--steel);font-size:12px;">${esc(shortHebDate(when))}</div>` : ""}
       ${result ? `<div class="mono post-result">${esc(result)}</div>` : ""}
       ${metaParts.length ? `<div style="color:var(--steel);font-size:12px;">${metaParts.join(" · ")}</div>` : ""}`;
     const caption = post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${bidiText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : "";
@@ -10908,7 +10988,7 @@
     const why = m.explanation || post.result_text || "";
     const inner = `<div class="flex gap-10" style="align-items:center;">
         <span aria-hidden="true" style="font-size:26px;">${esc(icon)}</span>
-        <div><div class="post-title" style="margin:0;">${bidiText(title)}</div>${when ? `<div style="color:var(--steel);font-size:12px;">${esc(String(when).slice(0, 10))}</div>` : ""}</div>
+        <div><div class="post-title" style="margin:0;">${bidiText(title)}</div>${when ? `<div style="color:var(--steel);font-size:12px;">${esc(shortHebDate(when))}</div>` : ""}</div>
       </div>
       ${why ? `<div style="color:var(--steel);font-size:13px;margin-top:6px;">${bidiText(why)}</div>` : ""}
       ${post.body ? `<div class="post-body" style="white-space:pre-wrap;margin-top:6px;">${bidiText(String(post.body).slice(0, POST_BODY_MAX))}</div>` : ""}`;
@@ -10962,7 +11042,7 @@
       const going = eventGoingCount(ev.id);
       const meta = [eventTypeBadge(ev.event_type), formatEventDate(ev.start_at), formatEventTime(ev.start_at)];
       if (ev.location) meta.push(ev.location);
-      meta.push(`${going} משתתפים`);
+      meta.push(participantsLabel(going));
       if (ev.status === "cancelled") meta.push("בוטל");
       const image = ev.image_url ? `<img src="${esc(ev.image_url)}" alt="" style="width:100%;max-height:160px;object-fit:cover;border-radius:10px;margin-top:6px;"/>` : "";
       const inner = `<div class="post-title">📅 ${bidiText(ev.title)}</div>
@@ -11925,7 +12005,9 @@
     }
     if (c.challenge_type === "consistency") {
       const weeks = Number((c.config && c.config.weeks) || 0);
-      return `<div class="mono" style="color:var(--brass);font-size:12px;">${esc(part.progress_value)}${weeks ? ` / ${weeks} שבועות` : ""}</div>`;
+      // Live bug hunt (2026-09-11): "0 / 1 שבועות" for a 1-week challenge -
+      // missing singular, same class as TIER_LABELS' own "שיא אישי" ternary.
+      return `<div class="mono" style="color:var(--brass);font-size:12px;">${esc(part.progress_value)}${weeks ? ` / ${weeks === 1 ? "שבוע אחד" : `${weeks} שבועות`}` : ""}</div>`;
     }
     const pct = c.target_value ? Math.round((Number(part.progress_value || 0) / c.target_value) * 100) : null;
     return `<div class="mono" style="color:var(--brass);font-size:12px;">${esc(part.progress_value)}${c.target_value != null ? ` / ${esc(c.target_value)}` : ""}</div>${pct != null ? challengeProgressBarHtml(pct) : ""}`;
@@ -11939,7 +12021,7 @@
       ? `<img src="${esc(c.config.image_url)}" alt="" style="width:44px;height:44px;border-radius:12px;object-fit:cover;"/>`
       : `<span aria-hidden="true" style="width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:20px;background:var(--border);">${def.icon}</span>`;
     const meta = [def.label, `${formatChallengeDate(c.start_at)}–${formatChallengeDate(c.end_at)}`];
-    if (agg && agg.participant_count != null) meta.push(`${agg.participant_count} משתתפים`);
+    if (agg && agg.participant_count != null) meta.push(participantsLabel(agg.participant_count));
     if (c.status === "draft") meta.push(challengeStatusLabel(c));
     return `<article class="chart-card" data-challenge-id="${esc(c.id)}" data-challenge-status="${esc(c.status)}" style="margin-bottom:10px;">
       <div class="flex gap-10" style="align-items:flex-start;">
@@ -12074,7 +12156,8 @@
     // aggregate count on coach_new_members() (a coach still cannot read the
     // attendance rows themselves - 202609060013 keeps those at admin rank).
     const sessions = Number(m.sessions_logged) || 0;
-    const trained = sessions ? `${sessions} אימונים באפליקציה` : "לא רשמו אימון באפליקציה";
+    // Live bug hunt (2026-09-11): "1 אימונים באפליקציה" - missing singular.
+    const trained = sessions === 1 ? "אימון אחד באפליקציה" : sessions ? `${sessions} אימונים באפליקציה` : "לא רשמו אימון באפליקציה";
     const contacted = !!state.coach.welcome.contactedIds[m.id];
     const welcomed = !!state.coach.welcome.welcomed[m.id];
     const busy = state.coach.welcome.busy === m.id;
@@ -12085,7 +12168,7 @@
         ${avatarHtml(m.display_name || m.handle, 32, m.avatar_url)}
         <div>
           <div style="font-weight:700;">${nameHtml(m.display_name, m.handle)}</div>
-          <div style="color:var(--steel);font-size:12px;">${bidiText(`${days === 0 ? "הצטרפ/ה היום" : `לפני ${days} ימים`} · ${trained} · ${contacted ? "נוצר קשר" : "טרם נוצר קשר"}`)}</div>
+          <div style="color:var(--steel);font-size:12px;">${bidiText(`${days === 0 ? "הצטרפ/ה היום" : days === 1 ? "הצטרפ/ה לפני יום" : `לפני ${days} ימים`} · ${trained} · ${contacted ? "נוצר קשר" : "טרם נוצר קשר"}`)}</div>
           ${m.has_opened_app === false ? `<div style="color:var(--brass);font-size:12px;">${bidiText("עדיין לא נכנס/ה לאפליקציה")}</div>` : ""}
         </div>
       </div>
@@ -12653,7 +12736,7 @@
           <button class="chip-btn" data-community-action="challenge-team-rename" data-id="${esc(t.id)}"${renameBusy ? " disabled" : ""}>${renameBusy ? "שומר…" : "שמירה"}</button>
           <button class="chip-btn" data-community-action="challenge-team-delete" data-id="${esc(t.id)}"${(deleteBusy || memberCount > 0) ? " disabled" : ""}${memberCount > 0 ? ` title="יש לפנות את הקבוצה מחברים לפני מחיקתה"` : ""}>${deleteBusy ? "מוחק…" : "מחיקה"}</button>
         </div>
-        <div style="font-size:12px;color:var(--steel);">${memberCount} משתתפים · ${esc(total)} סה״כ${captainName ? ` · 👑 ${esc(captainName)}` : ""}</div>
+        <div style="font-size:12px;color:var(--steel);">${participantsLabel(memberCount)} · ${esc(total)} סה״כ${captainName ? ` · 👑 ${esc(captainName)}` : ""}</div>
         <div class="flex gap-6" style="align-items:center;">
           <select class="text-input" data-challenge-team-captain-select="${esc(t.id)}" style="flex:1;"${(captainBusy || !teamMembers.length) ? " disabled" : ""} aria-label="קפטן/ית הקבוצה">${captainOptions}</select>
         </div>
@@ -12704,13 +12787,16 @@
     const c = v.challenge, part = v.myParticipant;
     const weeks = Number((c.config && c.config.weeks) || 0);
     const timesPerWeek = Number((c.config && c.config.times_per_week) || 0);
-    if (!part) return `<div style="color:var(--steel);font-size:12px;margin-bottom:10px;">${weeks} שבועות · ${timesPerWeek} אימונים בשבוע</div>`;
+    // Live bug hunt (2026-09-11): weeksLabel closes the same missing-singular
+    // gap for both renderConsistencyPanel strings below ("X שבועות").
+    const weeksLabel = weeks === 1 ? "שבוע אחד" : `${weeks} שבועות`;
+    if (!part) return `<div style="color:var(--steel);font-size:12px;margin-bottom:10px;">${weeksLabel} · ${timesPerWeek} אימונים בשבוע</div>`;
     const hit = Number(part.progress_value || 0);
     const boxes = Array.from({ length: weeks }, (_, i) => `<span aria-hidden="true" style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;margin:2px;font-size:11px;font-weight:800;${i < hit ? "background:var(--brass);color:#0c0c0c;" : "background:var(--border);color:var(--steel);"}">${i + 1}</span>`).join("");
     const emptyMsg = hit === 0 ? `<div class="empty">השבוע הראשון בעיצומו.</div>` : "";
     const completeMsg = part.status === "completed" ? `<div style="color:var(--brass);font-weight:800;margin-top:6px;">האתגר הושלם 🎉</div>` : "";
     return `<div class="chart-card" style="margin-bottom:10px;">
-      <div class="field-label" style="margin-bottom:6px;">${hit} מתוך ${weeks} שבועות · ${timesPerWeek} אימונים בשבוע</div>
+      <div class="field-label" style="margin-bottom:6px;">${hit} מתוך ${weeksLabel} · ${timesPerWeek} אימונים בשבוע</div>
       <div>${boxes}</div>
       ${emptyMsg}${completeMsg}
       ${part.status !== "completed" ? `<button class="chip-btn" data-community-action="challenge-log-week-hit" style="margin-top:8px;"${v.consistencyCheck.busy ? " disabled" : ""}>${v.consistencyCheck.busy ? "בודק/ת נוכחות…" : "בדיקת נוכחות ועדכון השבוע"}</button>` : ""}
@@ -12940,7 +13026,7 @@
     const cancelled = e.status === "cancelled";
     const meta = [eventTypeBadge(e.event_type), formatEventDate(e.start_at), formatEventTime(e.start_at)];
     if (e.location) meta.push(e.location);
-    meta.push(`${going} משתתפים`);
+    meta.push(participantsLabel(going));
     if (e.status === "draft") meta.push(eventStatusLabel(e));
     if (cancelled) meta.push("בוטל");
     const mineLabel = mine === "going" ? "הולכ/ת" : mine === "interested" ? "מעוניינ/ת" : mine === "not_going" ? "לא הולכ/ת" : "";
@@ -13386,7 +13472,7 @@
     const mapLinkSafe = e.map_link && /^https?:\/\//i.test(e.map_link);
     const locationHtml = e.location ? `<div style="font-size:13px;color:var(--steel);margin-bottom:4px;">📍 ${bidiText(e.location)}${mapLinkSafe ? ` · <a class="link-btn" href="${esc(e.map_link)}" target="_blank" rel="noopener noreferrer">מפה</a>` : ""}</div>` : "";
     const going = eventGoingCount(e.id);
-    const capacityHtml = `<div style="font-size:13px;color:var(--steel);margin-bottom:4px;">${e.capacity != null ? `${going} / ${e.capacity} משתתפים` : `${going} משתתפים`}</div>`;
+    const capacityHtml = `<div style="font-size:13px;color:var(--steel);margin-bottom:4px;">${e.capacity != null ? `${going} / ${e.capacity} משתתפים` : participantsLabel(going)}</div>`;
     const deadlineHtml = e.registration_deadline ? `<div style="font-size:12px;color:var(--steel);margin-bottom:4px;">מועד אחרון להרשמה: ${esc(formatEventDate(e.registration_deadline))} ${esc(formatEventTime(e.registration_deadline))}</div>` : "";
     const organizerName = v.organizer ? (v.organizer.display_name || (v.organizer.handle ? "@" + v.organizer.handle : "")) : "";
     const organizerHtml = organizerName ? `<div style="font-size:12px;color:var(--steel);margin-bottom:10px;">מארגנ/ת: ${esc(organizerName)}</div>` : "";
@@ -13490,7 +13576,7 @@
     return `<div class="chart-card" style="margin-top:10px;" data-event-id="${esc(e.id)}">
       <button class="link-btn" data-community-action="open-event" data-id="${esc(e.id)}" data-source="club_top" style="padding:0;text-align:right;display:block;width:100%;">
         <div style="font-weight:800;font-size:14px;">📅 ${bidiText(e.title)}</div>
-        <div style="color:var(--steel);font-size:12px;margin-top:2px;">${esc(formatEventDate(e.start_at))} ${esc(formatEventTime(e.start_at))} · ${going} משתתפים</div>
+        <div style="color:var(--steel);font-size:12px;margin-top:2px;">${esc(formatEventDate(e.start_at))} ${esc(formatEventTime(e.start_at))} · ${participantsLabel(going)}</div>
       </button>
       <div class="chip-row" style="margin-top:8px;">
         <button class="chip-btn${mine === "going" ? " selected" : ""}" data-community-action="event-rsvp" data-id="${esc(e.id)}" data-response="going"${closed || full ? " disabled" : ""}>משתתפ/ת</button>
@@ -13793,7 +13879,7 @@
         }).join(", ")} התאמנו איתכם השבוע.</div>`
       : `<div class="empty" data-recap-classmates="empty">אין חברים משותפים השבוע</div>`;
     const club = row.club_challenge_progress && row.club_challenge_progress.title
-      ? `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">${esc(row.club_challenge_progress.title)}</div><div class="mono" style="color:var(--brass);">${esc(row.club_challenge_progress.total)}${row.club_challenge_progress.target != null ? ` / ${esc(row.club_challenge_progress.target)}` : ""}</div>${row.club_challenge_progress.participants != null ? `<div style="color:var(--steel);font-size:12px;">${esc(row.club_challenge_progress.participants)} משתתפים</div>` : ""}</div>`
+      ? `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">${esc(row.club_challenge_progress.title)}</div><div class="mono" style="color:var(--brass);">${esc(row.club_challenge_progress.total)}${row.club_challenge_progress.target != null ? ` / ${esc(row.club_challenge_progress.target)}` : ""}</div>${row.club_challenge_progress.participants != null ? `<div style="color:var(--steel);font-size:12px;">${participantsLabel(row.club_challenge_progress.participants)}</div>` : ""}</div>`
       : "";
     const event = row.upcoming_event
       ? `<div class="chart-card" style="margin-bottom:10px;"><div class="field-label" style="margin-bottom:4px;">האירוע הקרוב</div><button class="link-btn" data-community-action="open-event" data-id="${esc(row.upcoming_event.id)}" data-source="recap" style="padding:0;text-align:right;display:block;">${esc(row.upcoming_event.title)}</button>${row.upcoming_event.start_at ? `<div style="color:var(--steel);font-size:12px;">${esc(formatChallengeDate(row.upcoming_event.start_at))}</div>` : ""}</div>`
@@ -15861,7 +15947,7 @@
               ${avatarHtml(name, 44, d.avatar_url)}
               <div style="min-width:0;">
                 <h2 id="profileViewTitle" style="margin-top:0;font-weight:800;font-size:16px;margin-bottom:0;">${esc(name)}${isCoachRole(d.role) ? " " + coachBadgeHtml(d.role) : ""}</h2>
-                <div style="color:var(--steel);font-size:12px;">${roleLabel ? esc(roleLabel) : ""}${d.member_since ? ` · חבר/ה מאז ${esc(String(d.member_since).slice(0, 10))}` : ""}</div>
+                <div style="color:var(--steel);font-size:12px;">${roleLabel ? esc(roleLabel) : ""}${d.member_since ? ` · חבר/ה מאז ${esc(shortHebDate(d.member_since))}` : ""}</div>
               </div>
             </div>
             <button class="link-btn" data-community-action="close-profile" aria-label="סגירה">סגירה</button>
@@ -17217,12 +17303,14 @@
     const body = rows.length
       ? `<div class="log-list">${rows.map((m) => {
           const days = Number(m.days_since_join);
-          const joined = !Number.isFinite(days) ? "" : days === 0 ? "הצטרפ/ה היום" : `לפני ${days} ימים`;
+          // Live bug hunt (2026-09-11): missing singular branches, same as
+          // renderCoachWelcomeRow() above - both read the same server field.
+          const joined = !Number.isFinite(days) ? "" : days === 0 ? "הצטרפ/ה היום" : days === 1 ? "הצטרפ/ה לפני יום" : `לפני ${days} ימים`;
           const sessions = Number(m.sessions_logged) || 0;
           // Says what the number IS. A count of workouts logged in the app is
           // not a count of classes attended, and a coach must not read it as
           // one.
-          const trained = sessions ? `${sessions} אימונים באפליקציה` : "לא רשמו אימון באפליקציה";
+          const trained = sessions === 1 ? "אימון אחד באפליקציה" : sessions ? `${sessions} אימונים באפליקציה` : "לא רשמו אימון באפליקציה";
           const contacted = m.contacted ? "נוצר קשר" : "טרם נוצר קשר";
           // THE MEMBER THIS WHOLE FIX EXISTS FOR. Before 202609060020
           // coach_new_members() INNER JOINed activity_pings, so someone who
@@ -18186,7 +18274,7 @@
     // somewhere either way - see setManageTab()'s scrollTo.
     const attentionRows = [
       pendingReports ? `<button class="log-row" data-community-action="set-manage-tab" data-tab="moderation" data-scroll="manageArea-moderation" style="width:100%;text-align:right;border:1px solid var(--red);border-radius:10px;padding:10px 12px;background:transparent;cursor:pointer;">
-          <span>${pendingReports} דיווחים ממתינים למודרציה</span><span aria-hidden="true">‹</span>
+          <span>${pendingReports === 1 ? "דיווח אחד ממתין למודרציה" : `${pendingReports} דיווחים ממתינים למודרציה`}</span><span aria-hidden="true">‹</span>
         </button>` : "",
       inactiveCount ? `<button class="log-row" data-community-action="set-manage-tab" data-tab="members" data-scroll="manageArea-roster" style="width:100%;text-align:right;border:1px solid var(--yellow);border-radius:10px;padding:10px 12px;background:transparent;cursor:pointer;">
           <span>${bidiText(`${inactiveCount} חברים לא נכנסו לאפליקציה לאחרונה`)}</span><span aria-hidden="true">‹</span>

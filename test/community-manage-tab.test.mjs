@@ -234,8 +234,10 @@ test("dashboard: a moderator with genuinely open reports sees the red attention 
   const window = await bootCommunity(mock, { syncEnabled: false });
   window.document.getElementById("tabManageBtn").click();
   await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
-  await waitFor(() => window.document.body.textContent.includes("דיווחים ממתינים למודרציה"), 3000);
-  assert.match(window.document.body.textContent, /1 דיווחים ממתינים למודרציה/, "the real open-report count renders, not a stale placeholder");
+  // Live bug hunt (2026-09-11): this fixture's real count IS 1, so the
+  // correct render is the singular form - "1 דיווחים" was itself the bug.
+  await waitFor(() => window.document.body.textContent.includes("דיווח אחד ממתין למודרציה"), 3000);
+  assert.match(window.document.body.textContent, /דיווח אחד ממתין למודרציה/, "the real open-report count renders, not a stale placeholder");
   assert.ok(!window.document.body.textContent.includes("אין דבר שדורש תשומת לב כרגע"), "the red row and the green all-clear are mutually exclusive");
 
   window.document.querySelector('[data-community-action="set-manage-tab"][data-tab="moderation"]').click();

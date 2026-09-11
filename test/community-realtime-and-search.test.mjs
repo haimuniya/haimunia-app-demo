@@ -350,7 +350,9 @@ test("COMM-227: a reaction by another member moves the count on a visible card w
   // exist the instant .subtabbar does - wait for the card itself first,
   // same pattern the comments test above this one already uses.
   await waitFor(() => !!window.document.querySelector('[data-post-id="p1"]'), 4000);
-  await waitFor(() => /1 הגבות/.test(window.document.querySelector('[data-post-id="p1"]').textContent), 4000);
+  // Live bug hunt (2026-09-11): total===1 (viewed by someone who hasn't
+  // reacted) is now the correct singular "הגבה אחת", not "1 הגבות".
+  await waitFor(() => /הגבה אחת/.test(window.document.querySelector('[data-post-id="p1"]').textContent), 4000);
 
   mock.db.reactions.push({ post_id: "p1", user_id: "u3", kind: "cheer", created_at: new Date().toISOString(), profiles: { handle: "gil", display_name: "גיל", avatar_url: null } });
   mock.emitRealtime("feed-reactions", { eventType: "INSERT", new: { post_id: "p1", user_id: "u3", kind: "cheer" } });
@@ -376,7 +378,8 @@ test("COMM-227: a removed reaction (a DELETE payload, which carries only `old`) 
   mock.db.reactions = mock.db.reactions.filter((r) => r.user_id !== "u3");
   mock.emitRealtime("feed-reactions", { eventType: "DELETE", old: { post_id: "p1", user_id: "u3", kind: "cheer" } });
 
-  await waitFor(() => /1 הגבות/.test(window.document.querySelector('[data-post-id="p1"]').textContent), 4000);
+  // Live bug hunt (2026-09-11): dropping to total===1 is now "הגבה אחת".
+  await waitFor(() => /הגבה אחת/.test(window.document.querySelector('[data-post-id="p1"]').textContent), 4000);
 });
 
 test("COMM-227: the own-row notifications channel COMM-140 shipped now moves the badge live", async () => {

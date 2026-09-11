@@ -53,7 +53,9 @@ test("a full profile renders the header and all four tabs, and only the fields p
   const overlay = window.document.getElementById("profileViewTitle").closest(".modal-sheet");
   assert.match(overlay.textContent, /רון לוי/);
   assert.match(overlay.textContent, /מאמן\/ת/);
-  assert.match(overlay.textContent, /חבר\/ה מאז 2023-04-01/);
+  // Live bug hunt (2026-09-11): member_since is now rendered through
+  // shortHebDate() (D.M.YYYY) instead of the raw ISO fragment.
+  assert.match(overlay.textContent, /חבר\/ה מאז 1\.4\.2023/);
   assert.ok(overlay.querySelector('[data-community-action="follow"][data-id="u2"]'));
   for (const t of ["overview", "progress", "achievements", "posts"]) {
     assert.ok(overlay.querySelector(`[data-community-action="profile-tab"][data-tab="${t}"]`), `${t} tab`);
@@ -73,7 +75,7 @@ test("a fully private profile shows only name, role and member since, with empty
   await openProfile(window);
   const overlay = window.document.getElementById("profileViewTitle").closest(".modal-sheet");
   assert.match(overlay.textContent, /מוסתר/);
-  assert.match(overlay.textContent, /חבר\/ה מאז 2024-01-01/);
+  assert.match(overlay.textContent, /חבר\/ה מאז 1\.1\.2024/);
   assert.match(overlay.textContent, /אין מידע להצגה/);
 
   overlay.querySelector('[data-community-action="profile-tab"][data-tab="achievements"]').click();

@@ -1094,7 +1094,15 @@
   /* Nav menu (replaces the old top tabbar) and its user-info card. */
   .who{ display:flex; align-items:center; gap:12px; background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:14px; margin:4px 0 18px; box-shadow:var(--shadow-card); }
   .who-avatar{ width:42px; height:42px; border-radius:50%; background:linear-gradient(160deg, color-mix(in srgb, var(--brass) 45%, white), var(--brass)); color:#241a0d; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:15px; flex-shrink:0; }
-  .who-name{ font-weight:800; font-size:15px; }
+  /* Live bug hunt (2026-09-11): an 80-char unbreakable name (cleanStr's own
+     cap, e.g. one long repeated character with no spaces) overflowed this
+     flex item's edge and bled under the settings edit-icon button and card
+     border - the wrapping div already carries flex:1;min-width:0 so the
+     item CAN shrink, but nothing here told a long word it was allowed to
+     break instead of overflowing. Community's post-body composer already
+     wraps the same kind of extreme input correctly; this brings .who-name
+     in line with it. */
+  .who-name{ font-weight:800; font-size:15px; overflow-wrap:anywhere; }
   .who-sub{ color:var(--steel); font-size:12.5px; margin-top:2px; }
   .navrow{ width:100%; display:flex; align-items:center; gap:10px; padding:12px 10px; border-radius:14px; text-align:right; min-height:44px; }
   .navrow.active{ background:color-mix(in srgb, var(--energy) 10%, transparent); }

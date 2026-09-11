@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.28.0";
+const APP_VERSION = "4.29.0";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -819,7 +819,17 @@ function longestWeekStreak() {
 function totalSessions() { return new Set(loggedDates()).size; }
 function daysSinceBoxStart() {
   if (!boxStartDate) return null;
-  return Math.floor((Date.now() - new Date(boxStartDate + "T00:00:00").getTime()) / 86400000);
+  // Live bug hunt (2026-09-11): raw ms-division drifts by the DST offset
+  // around a spring-forward/fall-back transition, which can flip a
+  // tenure/anniversary badge's day count off-by-one right at local midnight
+  // once the drift accumulates. computeCurrentStreak() already gets this
+  // right elsewhere in this file via setDate() local-calendar-day counting;
+  // matching that instead of the ms-division this function used before.
+  const start = new Date(boxStartDate + "T00:00:00");
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  start.setHours(0, 0, 0, 0);
+  return Math.round((today.getTime() - start.getTime()) / 86400000);
 }
 function earnedRxWodIds() { return new Set(wodEntries.filter((e) => e.rx).map((e) => e.wodId)); }
 function loggedCategories() {
@@ -2913,9 +2923,13 @@ async function importDataFromFile(file) {
   // The import merges into existing data and cannot be undone from inside the
   // app, so confirm first and drop a rollback backup on the way in.
   const hasExisting = entries.length || wodEntries.length || bodyweightEntries.length || customMovements.length || customWods.length || measureTypes.length;
+  // Live bug hunt (2026-09-11): a 1-record backup (a very real case - a
+  // single manually-recreated entry, or a trimmed test file) confirmed as
+  // "לייבא 1 רישומים?" - missing singular.
+  const incomingLabel = incoming === 1 ? "רישום אחד" : `${incoming} רישומים`;
   const question = hasExisting
-    ? `הייבוא יוסיף ${incoming} רישומים לנתונים הקיימים ולא ניתן לבטל אותו.\nלפני כן יורד גיבוי של המצב הנוכחי.\n\nלהמשיך?`
-    : `לייבא ${incoming} רישומים?`;
+    ? `הייבוא יוסיף ${incomingLabel} לנתונים הקיימים ולא ניתן לבטל אותו.\nלפני כן יורד גיבוי של המצב הנוכחי.\n\nלהמשיך?`
+    : `לייבא ${incomingLabel}?`;
   if (!window.confirm(question)) { setImportMessage("הייבוא בוטל"); render(); return; }
 
   if (hasExisting) {
@@ -2938,7 +2952,7 @@ async function importDataFromFile(file) {
 
   await reloadFromDb();
 
-  const parts = [`יובאו ${ok} רישומים`];
+  const parts = [ok === 1 ? "יובא רישום אחד" : `יובאו ${ok} רישומים`];
   if (rejected) parts.push(`${rejected} נפסלו`);
   if (failed) parts.push(`${failed} נכשלו בשמירה`);
   setImportMessage(parts.join(", "));
@@ -4479,7 +4493,14 @@ async function loadSessionNoteFor(date) {
   if (tab === "calendar" && calSelectedDate === date) renderCalDetail();
 }
 async function saveSessionNote(date, text) {
-  const cleaned = cleanStr(text, LIMITS.notesLen);
+  // Live bug hunt (2026-09-11): this field is a genuinely multi-line
+  // textarea (rows="3", "הרגשה, אנרגיה, מה עבד ומה פחות..."), but cleanStr()
+  // deletes \n/\r outright - confirmed live, a 3-line reflection was saved
+  // with its line breaks silently stripped and the sentences fused together
+  // word-to-word, with no warning shown. cleanMultilineStr() is the same
+  // cleaner minus that one behavior, for fields where a line break is real
+  // content, not something to discard.
+  const cleaned = cleanMultilineStr(text, LIMITS.notesLen);
   calNoteText = cleaned;
   calNoteDate = date;
   try {

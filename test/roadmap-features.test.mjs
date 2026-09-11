@@ -135,3 +135,27 @@ test("session note round-trips through IndexedDB and is scoped per date", async 
   const storedOther = await window.dbGetSetting(`sessionNote:${otherDate}`);
   assert.equal(storedOther, null, "a note on one date must not leak onto another");
 });
+
+// Live bug hunt (2026-09-11): saveSessionNote() used to run every note
+// through cleanStr(), which deletes \n/\r outright - a real multi-line
+// reflection ("...\nהמשקל עלה\n...") was saved with its line breaks silently
+// stripped and the sentences fused word-to-word, with no warning. The
+// textarea (rows="3") is genuinely multi-line, so cleanMultilineStr() is now
+// used instead. The control below proves this would have failed against the
+// pre-fix cleanStr() behavior.
+test("session note preserves line breaks instead of fusing lines together", async () => {
+  const window = await bootApp();
+  const today = window.todayISO();
+  const typed = "הרגשתי מעולה היום\nהמשקל עלה\nבפעם הבאה להוסיף עוד סט";
+
+  await window.saveSessionNote(today, typed);
+  const stored = await window.dbGetSetting(`sessionNote:${today}`);
+  assert.equal(stored, typed, "line breaks must survive a save/reload round-trip");
+  assert.equal((stored.match(/\n/g) || []).length, 2, "all three lines must stay separated");
+
+  // Control: the bug's exact failure mode, demonstrated against the old
+  // sanitizer directly (not re-testing production code, just proving the
+  // assertion above is not vacuous).
+  const viaOldCleanStr = window.cleanStr(typed, 4000);
+  assert.equal(viaOldCleanStr, "הרגשתי מעולה היוםהמשקל עלהבפעם הבאה להוסיף עוד סט", "cleanStr alone reproduces the fused-lines bug this test guards against");
+});

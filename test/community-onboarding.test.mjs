@@ -119,8 +119,14 @@ test("after the first month: the personal summary aggregates the member's own we
   await waitFor(() => !stepCard(window, "first_month").textContent.includes("99"), 3000);
   const text = stepCard(window, "first_month").textContent;
   assert.match(text, /5 אימונים/, "3 + 2 sessions across the member's own two rows");
-  assert.match(text, /1 שיאים/);
-  assert.match(text, /1 הישגים/);
+  // Live bug hunt (2026-09-11): the count=1 case is grammatically singular
+  // ("שיא אחד"/"הישג חדש אחד"), not "1 שיאים"/"1 הישגים" - this seed's own
+  // prs/achievements totals are both 1, so it's exercising exactly the
+  // boundary the fix targets, not just re-asserting a rendered number.
+  assert.match(text, /שיא אחד/);
+  assert.match(text, /הישג חדש אחד/);
+  assert.doesNotMatch(text, /1 שיאים/);
+  assert.doesNotMatch(text, /1 הישגים/);
 });
 
 test("dismissing an earlier step never blocks a later one already due on the same load", async () => {

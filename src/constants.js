@@ -24,7 +24,7 @@
 // reaches every other platform module through window.
 const SAFE = window.BoxLogSafe;
 var esc = SAFE.esc, cssSel = SAFE.cssSel, bag = SAFE.bag;
-var cleanStr = SAFE.cleanStr, cleanNum = SAFE.cleanNum, cleanId = SAFE.cleanId;
+var cleanStr = SAFE.cleanStr, cleanMultilineStr = SAFE.cleanMultilineStr, cleanNum = SAFE.cleanNum, cleanId = SAFE.cleanId;
 var cleanISODate = SAFE.cleanISODate, cleanTs = SAFE.cleanTs, uid = SAFE.uid;
 
 // ---------- Data ----------
