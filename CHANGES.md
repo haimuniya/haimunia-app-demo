@@ -1,3 +1,85 @@
+## Live bug hunt, round 9: long-term data lifecycle — 2026-09-11
+
+Three fresh agents: multi-year training-log performance/correctness, data
+completeness on export/delete-all, and multi-version upgrade paths - all
+about what happens to a real member's data over years of real use, not a
+single session.
+
+**Severe: ordinary app boot silently discarded real data past 20,000 rows
+in any one store.** `sanitizeList()`'s `max` parameter always defaulted to
+`LIMITS.importItems` (20000) - a limit designed to bound an untrusted JSON
+backup file - but the function is also called by `reloadFromDb()` on
+*every normal boot*, for every store. Confirmed live: 21,001 seeded
+strength entries all persisted correctly to IndexedDB, but only 20,000 were
+ever visible to the running app after a reload, with no error or warning.
+Because IndexedDB's `getAll()` orders by primary key (a random id, not a
+timestamp), the ~1,000 dropped rows were scattered roughly uniformly across
+the whole dataset - not a clean "drop the oldest" trim, and not
+recency-safe: any given row, including a recent PR, was as likely to be
+dropped as any other once the count crossed the threshold. A years-active
+member logging multiple sets a session is a realistic way to reach it.
+Fixed by making the cap an explicit opt-in parameter, passed only at the
+one JSON-import call site it was actually meant for.
+
+**Severe: "מחיקת כל הנתונים" left real data behind in two write queues.**
+Neither the private-records sync outbox nor the Community write outbox was
+ever cleared by delete-all - confirmed live, full record payloads (weight,
+reps, movement names, WOD text) survived a real delete-all in both stores.
+Every save in `src/db.js` unconditionally queues a row to the first store
+regardless of whether cloud backup is even on, so it fills up for every
+member; a working `HaimuniaOutbox.clearAll()` already existed for the
+second store but had zero call sites anywhere in the codebase. Beyond the
+immediate "delete didn't actually delete" problem, a member who enables
+backup after running delete-all risked the leftover rows syncing to the
+cloud and resurrecting data they had just deleted locally. Fixed by adding
+the missing bulk-clear for the first store and wiring the existing one in
+for the second, both now called from `clearAllData()`.
+
+**Medium: session notes were never in a backup, and delete-all wiped them
+unrecoverably.** `buildBackupPayload()` covered the seven record groups but
+never the free-text session notes stored per calendar day - including in
+the auto-downloaded safety backup `clearAllData()` takes right before
+wiping everything. The Settings screen's own copy frames export as "the
+full training log"; a member's actual reflections on a session are
+training-log content by that reading, unlike the name/box-start-date
+exclusion (which is explicitly disclosed in that same copy and is correct
+as-is). Now included in every export and restored on import. The same fix
+also picked up a small, low-severity sibling gap: WOD-builder movement
+suggestions (`wodMovementTags`) were exported nowhere though cleared on
+delete - the underlying movement names were never actually lost (they live
+inside each custom WOD's own description), only the autocomplete cache.
+
+**Confusing for skip-upgraded users: a returning member with years of real
+history but no stored name got the fresh-install welcome sheet.** Every
+other first-run flag bootstrapped at boot correctly grandfathers a device
+with real data (`isFreshInstall`), but the welcome-sheet trigger checked
+only `userName === null` - a device that predates the naming step got the
+"ברוכים הבאים לאימוניה" sheet on top of years of its own training history,
+and because of the `if`/`else if` shape, the release-notes catch-up was
+silently skipped for that same boot too. Fixed to match every sibling
+flag's own grandfathering rule; a grandfathered member can still set a name
+any time via Settings' edit icon, unchanged.
+
+**Checked and found clean, at real scale:** chart rendering at ~1,095-1,831
+points over a ~6-year range (no hang, correct horizontal scroll); calendar
+navigation across 39 consecutive month clicks and real Dec→Jan/leap-year
+boundaries; PR/rep-record correctness under a same-day, identical-timestamp
+5-way tie; a full 5,116-row multi-year dataset loading with an exact
+in-memory/on-disk count match; every other exported/deleted record type
+(entries, WOD entries including EMOM fields, custom movements/WODs,
+bodyweight, measure types and values); the legacy `userName`
+localStorage→IndexedDB migration; a genuine v1-era (single-store) and
+v2-era IndexedDB shape both upgrading cleanly straight to the current
+schema with no data loss; every `localStorage` key (including two
+deliberately corrupted with non-JSON garbage) defaulting safely when
+absent; and the service worker's own update mechanism, which has no
+sequential-version assumption to begin with.
+
+Verified: full suite 1635/1635 (10 new/updated regression tests across
+`test/live-bug-hunt-round9.test.mjs`, `test/clear-data.test.mjs`,
+`test/import-export-ui.test.mjs`, `test/community-dormancy-warning.test.mjs`),
+full browser-check 42/42.
+
 ## Live bug hunt, round 8: analytics, dashboards, and numeric accuracy — 2026-09-11
 
 Three fresh agents: admin analytics dashboard accuracy, recap content

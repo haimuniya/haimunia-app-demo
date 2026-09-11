@@ -13,7 +13,22 @@
 // .files and fire a change event.
 import { test } from "node:test";
 import assert from "node:assert";
-import { bootApp } from "./helpers/boot.mjs";
+import { bootApp, waitFor } from "./helpers/boot.mjs";
+
+// Live bug hunt, round 9 (2026-09-11): exportData() is now async
+// (buildBackupPayload() reads session notes off IndexedDB before
+// downloading), so a bare click no longer completes synchronously. Polling
+// for the actual expected outcome is robust to however many ticks that
+// chain now takes, the same fix bodyweight-measurements.test.mjs's own
+// save-button tests needed for the same underlying reason.
+async function pollUntil(checkAsync, timeoutMs = 2000, intervalMs = 5) {
+  const start = Date.now();
+  for (;;) {
+    if (await checkAsync()) return;
+    if (Date.now() - start > timeoutMs) throw new Error("pollUntil timed out");
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
 
 test("clicking ייצוא גיבוי in the footer exports without throwing and records the export time", async () => {
   const window = await bootApp();
@@ -21,6 +36,10 @@ test("clicking ייצוא גיבוי in the footer exports without throwing and 
 
   assert.doesNotThrow(() => window.document.querySelector("[data-action='export-data']").click());
 
+  await pollUntil(async () => {
+    const stored = await window.dbGetSetting("haimunia-demo:lastExportAt");
+    return typeof stored === "number" && stored > 0;
+  });
   const stored = await window.dbGetSetting("haimunia-demo:lastExportAt");
   assert.ok(typeof stored === "number" && stored > 0, "exporting should record when the last export happened");
 });
@@ -69,7 +88,11 @@ test("the footer's no-backup-yet warning clears once a real export happens", asy
   assert.ok(window.document.body.textContent.includes("עדיין לא ביצעתם גיבוי"), "with real data and no export yet, the reminder should show");
 
   window.document.querySelector("[data-action='export-data']").click();
-  await new Promise((r) => setTimeout(r, 0));
+  await pollUntil(async () => {
+    const stored = await window.dbGetSetting("haimunia-demo:lastExportAt");
+    return typeof stored === "number" && stored > 0;
+  });
+  window.render();
 
   assert.ok(!window.document.body.textContent.includes("עדיין לא ביצעתם גיבוי"), "exporting should clear the no-backup-yet reminder");
 });

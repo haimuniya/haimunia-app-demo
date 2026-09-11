@@ -178,7 +178,22 @@ function sanitizeMeasurement(e) {
   if (!id || !typeId || !date || value === null) return null;
   return { id, typeId, date, value, ts: cleanTs(e.ts, date) };
 }
-function sanitizeList(list, fn) {
+// Live bug hunt, round 9 (2026-09-11): `max` used to always default to
+// LIMITS.importItems (20000) inside this function, so reloadFromDb() - which
+// calls sanitizeList() on every ordinary boot, not just the explicit JSON
+// import flow the cap was designed for - silently truncated any store past
+// 20000 real rows. Confirmed live: 21001 seeded strength entries all
+// persisted correctly to IndexedDB, but after a reload only 20000 were ever
+// visible to the running app (no error, no warning) - and because
+// IndexedDB's getAll() orders by primary key (a random uuid), the ~1000
+// dropped rows were scattered roughly uniformly across the whole dataset,
+// not a clean "oldest N" trim. A years-active member logging multiple sets
+// a session is a realistic way to cross that count. `max` is now required
+// at the one call site (the JSON-import path) that actually needs to bound
+// untrusted input size; reloadFromDb()'s own on-disk reads - already
+// validated data this app wrote itself - pass no cap at all.
+function sanitizeList(list, fn, max) {
   if (!Array.isArray(list)) return [];
-  return list.slice(0, LIMITS.importItems).map(fn).filter(Boolean);
+  const bounded = typeof max === "number" ? list.slice(0, max) : list;
+  return bounded.map(fn).filter(Boolean);
 }

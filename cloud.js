@@ -19122,11 +19122,16 @@
       // browser. app.js owns the file, so this only reports the outcome -
       // and reports FAILURE honestly rather than claiming a download that a
       // browser without URL.createObjectURL never started.
-      const ok = typeof window.haimuniaExportBackup === "function" && window.haimuniaExportBackup();
-      if (typeof window.showToast === "function") {
-        window.showToast(ok ? "ההורדה התחילה. שמרו את הקובץ במקום שתמצאו אותו." : "ההורדה נכשלה. אפשר לייצא גיבוי ממסך ההגדרות.");
-      }
-      rerender();
+      // Live bug hunt (2026-09-11): haimuniaExportBackup() is now async
+      // (buildBackupPayload() reads session notes off IndexedDB) - wrapped
+      // in an IIFE rather than making this whole click handler async.
+      (async () => {
+        const ok = typeof window.haimuniaExportBackup === "function" && await window.haimuniaExportBackup();
+        if (typeof window.showToast === "function") {
+          window.showToast(ok ? "ההורדה התחילה. שמרו את הקובץ במקום שתמצאו אותו." : "ההורדה נכשלה. אפשר לייצא גיבוי ממסך ההגדרות.");
+        }
+        rerender();
+      })();
     }
     else if (action === "backup-optout") {
       localStorage.setItem(BACKUP_OPTOUT_KEY, "1");

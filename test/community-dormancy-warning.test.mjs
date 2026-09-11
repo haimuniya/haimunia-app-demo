@@ -117,7 +117,9 @@ test("the warning offers a download, and the download reports failure honestly",
   assert.match(cloudJs, /action === "backup-download-copy"/, "the action must be handled");
   // A browser without URL.createObjectURL produces no file; claiming success
   // there would leave a member believing they have a copy they do not have.
-  assert.match(appJs, /window\.haimuniaExportBackup = function \(\) \{[\s\S]{0,300}return ok;/,
+  // Live bug hunt (2026-09-11): now async (buildBackupPayload() reads
+  // session notes off IndexedDB) - same "return ok" contract, just awaited.
+  assert.match(appJs, /window\.haimuniaExportBackup = async function \(\) \{[\s\S]{0,300}return ok;/,
     "the bridge must report whether a file was actually produced");
   assert.match(cloudJs, /ok \? "ההורדה התחילה[^"]*" : "ההורדה נכשלה/,
     "the toast must distinguish a started download from a failed one");

@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.31.0";
+const APP_VERSION = "4.32.0";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -2839,7 +2839,25 @@ function daysSinceLastExport() {
 const BACKUP_APP_ID = "box-log";
 const BACKUP_VERSION = 1;
 
-function buildBackupPayload() {
+// Live bug hunt, round 9 (2026-09-11): session notes (saveSessionNote(),
+// stored as sessionNote:<date> rows in the settings store) were never in
+// this payload at all - confirmed live, a real hand-typed training note
+// survived on disk but was absent from every backup, including the
+// auto-downloaded safety backup clearAllData() takes right before wiping
+// everything. The Settings screen's own copy frames export as "the full
+// training log", and a member's free-text reflections on a session are
+// training-log content by any reasonable reading of that, unlike the
+// name/box-start-date exclusion (which IS explicitly disclosed in that
+// same copy). Now async: dbGetAllSettings() is the only way to read every
+// sessionNote:* row without knowing every date in advance.
+async function buildBackupPayload() {
+  const settingsRows = await dbGetAllSettings().catch(() => []);
+  const sessionNotes = bag();
+  for (const row of settingsRows) {
+    if (row && typeof row.key === "string" && row.key.startsWith("sessionNote:") && row.value) {
+      sessionNotes[row.key.slice("sessionNote:".length)] = row.value;
+    }
+  }
   return {
     app: BACKUP_APP_ID,
     version: BACKUP_VERSION,
@@ -2851,6 +2869,8 @@ function buildBackupPayload() {
     bodyweightEntries,
     measureTypes,
     measureEntries,
+    sessionNotes,
+    customWodMovementTags,
   };
 }
 
@@ -2870,8 +2890,8 @@ function downloadBackup(payload, filename) {
   return true;
 }
 
-function exportData() {
-  downloadBackup(buildBackupPayload(), `box-log-backup-${todayISO()}.json`);
+async function exportData() {
+  downloadBackup(await buildBackupPayload(), `box-log-backup-${todayISO()}.json`);
   markExported();
   render();
 }
@@ -2895,8 +2915,8 @@ window.haimuniaTrainingDataSummary = function () {
 // Lets the backup panel offer the download without reaching into app.js's
 // internals. Returns whether a file was actually produced, so the caller can
 // avoid claiming success on a browser with no URL.createObjectURL.
-window.haimuniaExportBackup = function () {
-  var ok = downloadBackup(buildBackupPayload(), `box-log-backup-${todayISO()}.json`);
+window.haimuniaExportBackup = async function () {
+  var ok = downloadBackup(await buildBackupPayload(), `box-log-backup-${todayISO()}.json`);
   if (ok) markExported();
   return ok;
 };
@@ -2933,15 +2953,31 @@ async function importDataFromFile(file) {
     return bad("הייבוא נכשל — הגיבוי נוצר בגרסה חדשה יותר של האפליקציה");
   }
 
+  // LIMITS.importItems bounds untrusted input size here, at the one place
+  // it's actually meant to apply - a hand-edited or malicious backup file.
   const clean = {
-    customMovements: sanitizeList(data.customMovements, sanitizeMovement),
-    customWods: sanitizeList(data.customWods, sanitizeCustomWod),
-    entries: sanitizeList(data.entries, sanitizeEntry),
-    wodEntries: sanitizeList(data.wodEntries, sanitizeWodEntry),
-    bodyweightEntries: sanitizeList(data.bodyweightEntries, sanitizeBodyweight),
-    measureTypes: sanitizeList(data.measureTypes, sanitizeMeasureType),
-    measureEntries: sanitizeList(data.measureEntries, sanitizeMeasurement),
+    customMovements: sanitizeList(data.customMovements, sanitizeMovement, LIMITS.importItems),
+    customWods: sanitizeList(data.customWods, sanitizeCustomWod, LIMITS.importItems),
+    entries: sanitizeList(data.entries, sanitizeEntry, LIMITS.importItems),
+    wodEntries: sanitizeList(data.wodEntries, sanitizeWodEntry, LIMITS.importItems),
+    bodyweightEntries: sanitizeList(data.bodyweightEntries, sanitizeBodyweight, LIMITS.importItems),
+    measureTypes: sanitizeList(data.measureTypes, sanitizeMeasureType, LIMITS.importItems),
+    measureEntries: sanitizeList(data.measureEntries, sanitizeMeasurement, LIMITS.importItems),
   };
+  // Live bug hunt, round 9 (2026-09-11): sessionNotes/customWodMovementTags
+  // restore, the same fix buildBackupPayload() got above. Kept out of the
+  // incoming/rejected/ok/failed counters below - those "X רישומים" counts
+  // are specifically about the seven array-shaped training-record groups; a
+  // session note and a WOD-builder movement suggestion are neither.
+  const incomingTags = sanitizeList(data.customWodMovementTags, sanitizeWodMovementTag, LIMITS.importItems);
+  const incomingNotes = bag();
+  if (data.sessionNotes && typeof data.sessionNotes === "object" && !Array.isArray(data.sessionNotes)) {
+    for (const [date, text] of Object.entries(data.sessionNotes)) {
+      const cleanDate = cleanISODate(date);
+      const cleanText = cleanMultilineStr(text, LIMITS.notesLen);
+      if (cleanDate && cleanText) incomingNotes[cleanDate] = cleanText;
+    }
+  }
   const incoming = Object.values(clean).reduce((n, l) => n + l.length, 0);
   const rawCount = ["customMovements", "customWods", "entries", "wodEntries", "bodyweightEntries", "measureTypes", "measureEntries"]
     .reduce((n, k) => n + (Array.isArray(data[k]) ? data[k].length : 0), 0);
@@ -2969,7 +3005,7 @@ async function importDataFromFile(file) {
   if (!window.confirm(question)) { setImportMessage("הייבוא בוטל"); render(); return; }
 
   if (hasExisting) {
-    try { downloadBackup(buildBackupPayload(), `box-log-rollback-${todayISO()}.json`); } catch (e) {}
+    try { downloadBackup(await buildBackupPayload(), `box-log-rollback-${todayISO()}.json`); } catch (e) {}
   }
 
   let ok = 0, failed = 0;
@@ -2985,6 +3021,12 @@ async function importDataFromFile(file) {
   await write(clean.bodyweightEntries, dbPutBodyweight);
   await write(clean.measureTypes, dbAddMeasureType);
   await write(clean.measureEntries, dbPutMeasurement);
+  for (const [date, text] of Object.entries(incomingNotes)) {
+    try { await dbSetSetting(`sessionNote:${date}`, text); } catch (e) {}
+  }
+  for (const tag of incomingTags) {
+    try { await dbAddWodMovementTag(tag); } catch (e) {}
+  }
 
   await reloadFromDb();
 
@@ -3024,7 +3066,7 @@ async function clearAllData() {
   // destructive merge). Auto-download the same backup export would
   // produce, before anything is actually wiped.
   const hasData = entries.length || wodEntries.length || customMovements.length || customWods.length || bodyweightEntries.length || measureTypes.length || measureEntries.length;
-  if (hasData) downloadBackup(buildBackupPayload(), `box-log-backup-before-delete-${todayISO()}.json`);
+  if (hasData) downloadBackup(await buildBackupPayload(), `box-log-backup-before-delete-${todayISO()}.json`);
   endLadder();
   entries = [];
   wodEntries = [];
@@ -3044,6 +3086,15 @@ async function clearAllData() {
     await dbClearMeasureTypes();
     await dbClearMeasurements();
     await dbClearWodMovementTags();
+    // Live bug hunt, round 9 (2026-09-11): the two write queues (private
+    // records to Supabase backup, Community's own outbox) were never
+    // touched here at all - confirmed live, real record payloads survived
+    // a full delete-all in both stores, with a real risk of a member's
+    // already-deleted data syncing back to the cloud later if they turn
+    // backup on afterward. HaimuniaOutbox.clearAll() already existed for
+    // the Community store and was simply never called from here.
+    await dbClearSyncOutbox();
+    if (window.HaimuniaOutbox) await window.HaimuniaOutbox.clearAll().catch(() => {});
     // "delete everything" must also drop the stored name and export marker.
     await dbClearSettings();
     // ...but the club's shared catalogue is not this member's data to delete,
@@ -7074,7 +7125,18 @@ async function init() {
 
   // render() above already calls updateNotificationsBadge() on every pass
   // (fresh-eyes audit) - no separate call needed here any more.
-  if (userName === null) openWelcomeModal();
+  //
+  // Live bug hunt, round 9 (2026-09-11): this checked only userName ===
+  // null, not isFreshInstall - unlike every other first-run flag bootstrapped
+  // above, which all correctly grandfather a device with real history. A
+  // returning member with years of real entries but no stored name (a
+  // device that predates the naming step) got the exact same "welcome, new
+  // user" sheet a brand-new install gets, and - because of the
+  // if/else-if - the release-notes catch-up was silently skipped for that
+  // boot too. isFreshInstall already excludes anyone with real data; a
+  // grandfathered member can still set a name any time via Settings' edit
+  // icon (openWelcomeModal(true)).
+  if (userName === null && isFreshInstall) openWelcomeModal();
   else if (unseenReleaseNotes().length) openNotifications();
 
   if ("serviceWorker" in navigator) {

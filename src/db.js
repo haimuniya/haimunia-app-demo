@@ -91,6 +91,19 @@ async function dbClearSettings() {
     tx.onerror = () => reject(tx.error);
   });
 }
+// Live bug hunt, round 9 (2026-09-11): buildBackupPayload() needs every
+// sessionNote:<date> row to include real training notes in a backup - there
+// was no way to read them in bulk, only one date at a time via
+// dbGetSetting(). Returns the raw {key, value} rows; the caller filters for
+// the prefix it wants.
+async function dbGetAllSettings() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(SETTINGSTORE, "readonly").objectStore(SETTINGSTORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
 async function dbLoadMovements() {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -372,6 +385,23 @@ async function dbDeleteSyncOutbox(id) {
     const tx = db.transaction(OUTBOXSTORE, "readwrite");
     tx.objectStore(OUTBOXSTORE).delete(id);
     tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+// Live bug hunt, round 9 (2026-09-11): no bulk-clear existed for this store
+// at all - "מחיקת כל הנתונים" never touched it, and every dbPut*/dbAdd*/
+// delete function above unconditionally queues a row here on every save
+// regardless of whether cloud backup is even on, so it fills up for every
+// member. Confirmed live: 9 full-payload rows (every field of the deleted
+// records) survived a real delete-all. Worse, a member who later enables
+// backup risks those leftover rows syncing to the cloud and resurrecting
+// data they already deleted locally.
+async function dbClearSyncOutbox() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(OUTBOXSTORE, "readwrite");
+    tx.objectStore(OUTBOXSTORE).clear();
+    tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 }
