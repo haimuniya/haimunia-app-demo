@@ -46,6 +46,59 @@ test("full signup stamps recovery_verified_at and lands the member in the commun
   assert.equal(window.document.querySelector('[data-community-action="verify-recovery"]'), null, "the recovery gate is not shown once the method is verified");
 });
 
+// Live bug hunt round 5 (2026-09-11): saveProfile() used to call
+// setMessage("הפרופיל נשמר") unconditionally right after its own
+// verifyRecovery({force:true}) call - clobbering verifyRecovery()'s own
+// "אימות החשבון נכשל, אפשר לנסות שוב" failure message on exactly this path,
+// a brand-new member's FIRST automatic verification attempt (the flaky-
+// connection case). The gate screen and its retry button still rendered
+// correctly (this is not the same bug the test above covers, which drives
+// the gate's OWN direct verifyRecovery() call, a different call site) -
+// only the status TEXT was wrong, making the failure message effectively
+// unreachable from the single most common path to it.
+test("a first-ever profile save whose automatic recovery verification fails shows the failure message, not \"profile saved\"", async () => {
+  const mock = createMockSupabase();
+  let failVerify = true;
+  mock.onRpc("mark_recovery_verified", (_args, ctx) => {
+    if (failVerify) return { data: null, error: { message: "recovery method not verified" } };
+    const prof = ctx.db.profiles.find((p) => p.id === ctx.currentUser.id);
+    prof.recovery_verified_at = new Date().toISOString();
+    return { data: prof.recovery_verified_at, error: null };
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitForCommunityGate(window);
+
+  window.document.querySelector('[data-community-action="start-signup"]').click();
+  await waitFor(() => !!window.document.getElementById("communityInviteCode"), 3000);
+  window.document.querySelector('#communityInviteCode input[name="code"]').value = "CLUBCODE";
+  submit(window, "communityInviteCode");
+  await waitFor(() => !!window.document.getElementById("communityCredentials"), 3000);
+
+  window.document.querySelector('#communityCredentials input[name="username"]').value = "dana";
+  window.document.querySelector('#communityCredentials input[name="password"]').value = "CorrectHorse9";
+  window.document.querySelector('#communityCredentials input[name="passwordConfirm"]').value = "CorrectHorse9";
+  submit(window, "communityCredentials");
+  await waitFor(() => !!window.document.getElementById("communityProfile"), 3000);
+
+  window.document.querySelector('#communityProfile input[name="handle"]').value = "dana";
+  submit(window, "communityProfile");
+
+  await waitFor(() => /אימות החשבון נכשל/.test(window.document.getElementById("content").textContent), 3000);
+  const prof = mock.db.profiles.find((p) => p.handle === "dana");
+  assert.ok(prof, "the profile row was still created - only verification failed");
+  assert.equal(prof.recovery_verified_at, null, "verification genuinely failed, column unstamped");
+  assert.ok(!/הפרופיל נשמר/.test(window.document.getElementById("content").textContent),
+    "the failure message must not be clobbered by the unconditional success message");
+
+  // A manual retry (same gate/button the other failed-verification test
+  // above exercises) still works.
+  failVerify = false;
+  window.document.querySelector('[data-community-action="verify-recovery"]').click();
+  await waitFor(() => !!window.document.querySelector(".subtabbar"), 3000);
+  assert.ok(mock.db.profiles.find((p) => p.handle === "dana").recovery_verified_at, "manual retry stamped the column and unlocked the app");
+});
+
 test("a member whose profile is still unverified sees the Hebrew recovery gate, then the auto verify call unlocks the app", async () => {
   // An existing anonymous account after the Phase 0 migration: redemption
   // and profile already exist, recovery_verified_at is null, and the

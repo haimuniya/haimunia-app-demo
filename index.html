@@ -1038,7 +1038,21 @@
      .modal-overlay itself, which every other dialog in the app still uses
      unchanged. */
   #celebrationOverlay.arrival-card{ background:rgba(3,10,20,.96); }
-  .modal-sheet{ background:var(--bg); border-top-left-radius:22px; border-top-right-radius:22px; width:100%; max-height:85%; padding-bottom:env(safe-area-inset-bottom,0px); display:flex; flex-direction:column; border:1px solid var(--border); border-bottom:none; overflow-x:hidden; }
+  /* Live bug hunt round 5 (2026-09-11): width:100% here was uncapped for
+     every width below the ≥900px block's own 592px fix further down - #app
+     itself stays locked to its mobile max-width:480px across the ENTIRE
+     480-899px tablet gap (nothing widens it before 900px), but this rule
+     had nothing keeping the sheet in step, so it stretched to the full
+     viewport instead - measured live at 700px wide on a 700px-wide phone-
+     in-a-tablet's-clothing viewport, sitting on top of a page still
+     visually a narrow 480px mobile card. Every dialog in the app shares
+     this one rule (confirm sheets, pickers, WOD builder, achievements,
+     notifications, invite forms...), so this single line was the fix for
+     all of them at once. 512px = #app's own 480px content measure + its
+     16px padding on each side (line ~375) - same formula the ≥900px
+     block's own 592px already documents, just for the measure that
+     applies below that breakpoint instead of above it. */
+  .modal-sheet{ background:var(--bg); border-top-left-radius:22px; border-top-right-radius:22px; width:100%; max-width:512px; margin-inline:auto; max-height:85%; padding-bottom:env(safe-area-inset-bottom,0px); display:flex; flex-direction:column; border:1px solid var(--border); border-bottom:none; overflow-x:hidden; }
   .modal-head{ display:flex; align-items:center; justify-content:space-between; padding:16px 16px 8px; }
   /* #navMenuSheet, #settingsSheet and #achievementsOverlay's sheet are the
      .modal-sheet instances that go full-height (align-items:stretch on
@@ -1853,6 +1867,18 @@
        its ancestors having to be individually exempted. The card is then
        lifted to the top-left of the page so it does not print in whatever
        gap the hidden layout left behind. */
+    /* Live bug hunt round 5 (2026-09-11): html,body{...background:var(--bg)}
+       (this file's own base rule) means BOTH inherit the app's live theme
+       background - the default ships dark navy. This block only ever reset
+       body's, so html stayed navy under print. visibility:hidden preserves
+       the hidden app's full layout height (deliberately, so it inherits -
+       see this block's own comment above) rather than collapsing it, so a
+       real invite-management screen printed a solid navy band across the
+       card's own page plus one or two more 100%-navy pages after it -
+       confirmed live via an actual print-to-PDF render, not just computed
+       styles. A coach's front-desk flyer print wasted ink/paper on pages
+       that look like the app crashed. */
+    html{ background:#FFFFFF; }
     body{ visibility:hidden; background:#FFFFFF; }
     .invite-print-card, .invite-print-card *{ visibility:visible; }
     .invite-print-card{

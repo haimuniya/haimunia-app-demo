@@ -52,12 +52,47 @@ test("DEFECT 1: the typed invite code survives a re-render because it lives in s
 
 test("DEFECT 1: submit reads the code from state first, so a render between keystroke and submit cannot empty it", () => {
   const body = redeemCodeBody();
-  assert.match(body, /const code = String\(state\.ui\.inviteCodeDraft \|\| form\.elements\.code\.value \|\| ""\)\.trim\(\);/,
+  // Live bug hunt round 5: .toLowerCase() joined .trim() here - see the
+  // dedicated case-sensitivity test below for why.
+  assert.match(body, /const code = String\(state\.ui\.inviteCodeDraft \|\| form\.elements\.code\.value \|\| ""\)\.trim\(\)\.toLowerCase\(\);/,
     "state must be consulted before the DOM - the DOM node may be a fresh, empty replacement");
   // The DOM fallback is kept deliberately (a paste that never fires input,
   // an autofill), so this is a widening, not a swap.
   assert.match(body, /form\.elements\.code\.value/,
     "the DOM value is kept as a fallback rather than removed");
+});
+
+// Live bug hunt round 5 (2026-09-11): confirmed live - a code typed with any
+// uppercase letter (mobile autocapitalize on the first character; retyping
+// a spoken/printed code) was rejected with the same generic "wrong/expired/
+// used" message as a genuinely bad code. Codes are minted lowercase-hex
+// only (supabase/migrations/*_redeem_person_invite.sql:
+// gen_random_bytes(24) -> hex) and the server's own format gate is a
+// lowercase-only regex, so an uppercase letter hashes to a different
+// string entirely - this was a real, blocking asymmetry, not a cosmetic
+// one. The ?invite= deep-link capture path already normalized this way;
+// manual entry (the more common path) did not.
+test("the invite code is lowercased before it ever reaches the server, matching the deep-link capture path's own normalization", () => {
+  const body = redeemCodeBody();
+  assert.match(body, /\.toLowerCase\(\);/, "manual entry must normalize case the same way the ?invite= deep-link path already does");
+  // The <input> itself also stops a mobile keyboard from auto-capitalizing
+  // the first character in the first place - defense in depth, not a
+  // substitute for the toLowerCase() above (a pasted or spoken code can
+  // still carry uppercase regardless of this attribute).
+  assert.match(cloudJs, /name="code"[^`]*autocapitalize="off"/, "the invite-code input should not let a mobile keyboard auto-capitalize it");
+});
+
+// Live bug hunt round 5: no in-flight guard existed at all - two fast taps
+// on submit fired redeem_invite_code twice concurrently. The real RPC
+// increments a shared code's use_count before its invite_redemptions
+// insert, so this risked burning an extra use off a limited-use code for
+// one real redemption.
+test("submit has an in-flight guard, and the button reflects it while a redemption is pending", () => {
+  const body = redeemCodeBody();
+  assert.match(body, /if \(state\.ui\.redeemingCode\) return;/, "a second submit while one is already in flight must be a no-op");
+  assert.match(body, /state\.ui\.redeemingCode = true;/);
+  assert.match(body, /state\.ui\.redeemingCode = false;/, "the flag must be cleared on every exit path (success, error, rate-limited, invalid)");
+  assert.match(cloudJs, /type="submit"\$\{state\.ui\.redeemingCode \? " disabled" : ""\}/, "the submit button itself must disable while a redemption is in flight");
 });
 
 test("DEFECT 1: a successful redemption clears the draft so the next signup on this device does not inherit it", () => {

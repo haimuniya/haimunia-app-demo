@@ -1,3 +1,63 @@
+## A fifth and final live bug hunt round: theme/visual regression, onboarding & account-recovery depth, and resilience under stress — 2026-09-11
+
+Ran the fifth and final round of three independent agents in parallel driving the
+real app live in Chromium against the mocked backend (never production): theme/
+visual regression across tablet widths, onboarding & account-recovery depth, and
+resilience under stress (rapid dialog cycling, flaky-network simulation, sustained
+interaction, render-throw recovery). 6 confirmed findings, all fixed with regression
+tests - closing out this 5-round pass at 38 confirmed, fixed bugs total (15 from
+rounds 1-2, 9/8/6 from rounds 3/4/5):
+
+- **Every dialog in the app was uncapped in width across the ~480-899px tablet gap**
+  - `.modal-sheet`'s width cap only ever existed inside the ≥900px desktop block;
+  `#app` itself stays locked to its mobile 480px measure the whole way up to that
+  breakpoint, so a Settings/picker/WOD-builder/achievements/notification/invite sheet
+  stretched to the full viewport instead - measured live at 700px wide on a
+  700px-wide viewport, sitting on top of a page still visually a narrow mobile card.
+  Capped at 512px (the same #app-content-measure-plus-padding formula the ≥900px
+  block's own 592px already uses, just for the range below it) in the base rule,
+  leaving the existing desktop cap untouched.
+- **Printing the invite QR flyer produced 1-2 extra full-bleed solid-navy pages** -
+  the `@media print` block reset `body`'s background but not `html`'s, and both
+  inherit the app's live (dark, by default) theme background. Confirmed via an
+  actual print-to-PDF render, not just computed styles.
+- **An invite code typed with any uppercase letter was rejected with a misleading
+  generic error** - codes are minted lowercase-hex only and the server's format gate
+  is a lowercase-only regex, so a case mismatch (mobile autocapitalize on the first
+  character; retyping a spoken/printed code) silently hashed to a different code
+  entirely. The `?invite=` deep-link path already normalized this; manual entry, the
+  far more common path, did not. Added `.toLowerCase()` plus `autocapitalize="off"`
+  on the input as defense in depth.
+- **Rapid double-tap on invite-code submit fired the redemption RPC twice** with no
+  in-flight guard - the real RPC increments a shared code's use count before its
+  insert, risking an extra use burned off a limited-use code for one real redemption.
+  Added a busy guard, same shape as `reactionBusy`/`followBusy`.
+- **A failed automatic recovery-verification attempt was silently overwritten by
+  "Profile saved"** - `saveProfile()`'s own unconditional success message clobbered
+  `verifyRecovery()`'s "verification failed, try again" message, on exactly a brand-
+  new member's first automatic verification attempt (the flaky-connection case). The
+  gate and its retry button still worked correctly; only the status text was wrong.
+- **`ensureCommunityDataLoaded()` had no top-level error handling** - every
+  individual loader already normalizes a real network failure into a resolved error
+  object (confirmed by reading the vendored SDK), so this isn't reachable through an
+  ordinary hiccup, but if some other bug ever threw inside one of the ~17 parallel
+  loaders, the old finally-only version still marked the batch permanently loaded
+  (blocking any retry for the session) while the exception itself became an
+  unhandled rejection. Now caught, logged, and not marked loaded on failure.
+
+Also confirmed clean across a wide sweep with no fixes needed: theme switching
+mid-session on every major screen/dialog (including auto/OS-follow mode), rapid
+25-cycle dialog open/close (no leak, one-time lazy DOM fill only), a slow/degraded
+network (loading states and retry all correct), 66 real actions in one sustained
+session (zero console errors), and the render-error-boundary recovering gracefully
+for three independent tab paths beyond the one round 4 had already checked.
+
+Verified: full suite 1592/1592 (7 new regression tests across
+`test/live-bug-hunt-round5.test.mjs`, `test/community-invite-code-draft.test.mjs`,
+`test/community-recovery-method.test.mjs`), full browser-check 41/41 (one new
+script, `tablet-modal-width-and-print.mjs`, covering the two CSS fixes jsdom
+cannot see).
+
 ## A fourth live bug hunt round: notifications depth, moderation & blocking depth, and data-integrity edges — 2026-09-11
 
 Ran three more independent agents in parallel driving the real app live in Chromium

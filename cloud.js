@@ -120,6 +120,10 @@
       // what had been typed. A member then submitted an empty code and
       // got "code required" for a code they had just entered.
       inviteCodeDraft: "",
+      // Live bug hunt round 5 (2026-09-11): redeemCode()'s in-flight guard -
+      // see its own comment. Declared here like every other ui leaf
+      // (community-state-namespaces.test.mjs enforces this).
+      redeemingCode: false,
       // Design spec section 7. Which of the community gate's THREE screens is
       // showing while there is still no redemption: "" is the neutral choice
       // screen (what the club is, then "יש לי קוד הזמנה" as the primary
@@ -1364,8 +1368,24 @@
         window.__pendingPushDeepLink = null;
         communityHandlePushDeepLink(link);
       }
-    } finally {
       state.communityDataLoaded = true;
+    } catch (e) {
+      // Live bug hunt round 5 (2026-09-11): no top-level error handling
+      // existed here at all. Every individual loader above already
+      // normalizes a real Supabase network failure into a resolved
+      // {data:null,error} object (confirmed by reading vendor/supabase.js's
+      // PostgrestBuilder), so this is not reachable through an ordinary
+      // network hiccup - but if some OTHER bug ever threw inside one of
+      // these ~17 parallel loaders, the old finally-only version still
+      // marked communityDataLoaded = true (permanently blocking any retry
+      // for the rest of the session, since the guard at the top of this
+      // function checks exactly that flag) while the exception itself
+      // propagated past afterRenderCommunity()'s un-awaited call as an
+      // unhandled rejection. Net effect: Community silently, permanently
+      // blank with no way back short of a full reload. Now: not marked
+      // loaded (the next call can retry) and surfaced, not swallowed.
+      console.error("ensureCommunityDataLoaded failed", e);
+    } finally {
       state.communityDataLoading = false;
     }
     rerender();
@@ -1667,10 +1687,31 @@
     // with no error and no explanation, which is indistinguishable from the
     // app being broken. Same audit pass as the retry loop below.
     if (!state.user) return setFieldErrors("communityInviteCode", { code: "אין חיבור לקהילה כרגע, נסו שוב בעוד רגע" });
+    // Live bug hunt round 5 (2026-09-11): no in-flight guard existed at
+    // all - a fast double-tap on submit fired redeem_invite_code twice
+    // concurrently, confirmed live. The real RPC increments a shared
+    // code's use_count before its invite_redemptions insert, so two
+    // near-simultaneous calls risk burning an extra use off a limited-use
+    // code for one real redemption. Same busy-guard shape as
+    // reactionBusy/followBusy elsewhere in this file.
+    if (state.ui.redeemingCode) return;
     // State first, DOM second: a render between the last keystroke and
     // this submit replaces form.elements.code with an empty one.
-    const code = String(state.ui.inviteCodeDraft || form.elements.code.value || "").trim();
+    //
+    // Live bug hunt round 5: .toLowerCase() added. Codes are minted
+    // lowercase-hex only (gen_random_bytes) and the server's format gate
+    // is a lowercase-only regex - a code typed with any uppercase letter
+    // (mobile autocapitalize on the first character; retyping a
+    // spoken/printed code) hashed to a different string and was rejected
+    // with the same generic "wrong/expired/used" message as a genuinely
+    // bad code, no hint that case was the problem. The ?invite= deep-link
+    // capture path (see loadRedemption() area) already normalized this
+    // way - this was the asymmetry: manual entry, the far more common
+    // path, did not.
+    const code = String(state.ui.inviteCodeDraft || form.elements.code.value || "").trim().toLowerCase();
     if (!code) return setFieldErrors("communityInviteCode", { code: "יש להזין קוד הזמנה" });
+    state.ui.redeemingCode = true;
+    try {
     // Two-arg overload: passes the actor key so the throttle holds across
     // session replacement. The server returns the same generic answer and
     // applies the same increment whether or not this actor has been seen
@@ -1717,7 +1758,14 @@
       try { window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.MEMBER_JOINED, { user_id: state.user.id }); } catch (e) {}
     }
     setMessage("קוד אושר, אפשר להשלים פרופיל");
-    rerender();
+    } finally {
+      // Reset and render here (not left to whichever branch above happened
+      // to return) so every exit path - success, error, rate-limited,
+      // invalid - clears the busy state and repaints the button, not just
+      // the ones that already called setFieldErrors/rerender themselves.
+      state.ui.redeemingCode = false;
+      rerender();
+    }
   }
   // One row per user per day they had the app open — the raw dates stay
   // private (activity_pings RLS is self-only); this only ever records
@@ -7105,8 +7153,17 @@
     // the new member is a full community_member and never sees the
     // COMM-016 gate. A returning member editing their profile from the
     // Account tab is already verified, so this no-ops for them.
-    if (!state.user.is_anonymous && state.profile && !state.profile.recovery_verified_at) await verifyRecovery({ force: true });
-    setMessage("הפרופיל נשמר");
+    // Live bug hunt round 5 (2026-09-11): the unconditional setMessage()
+    // below used to run regardless of verifyRecovery()'s own outcome,
+    // clobbering its "אימות החשבון נכשל, אפשר לנסות שוב" failure message
+    // with "הפרופיל נשמר" - on exactly the flaky-connection path every new
+    // member's FIRST automatic verification attempt goes through. The gate
+    // screen and its manual retry button still rendered correctly; only
+    // the status text was wrong, making the dead failure message
+    // effectively unreachable from this, the most common path to it.
+    let recoveryVerified = true;
+    if (!state.user.is_anonymous && state.profile && !state.profile.recovery_verified_at) recoveryVerified = await verifyRecovery({ force: true });
+    if (recoveryVerified) setMessage("הפרופיל נשמר");
   }
   async function migrateLocalData() {
     if (!state.user || typeof window.queueAllLocalRecordsForSync !== "function") return;
@@ -17306,7 +17363,7 @@
     //    below it, because they go to different places and answer different
     //    questions: back to the choice screen, versus straight to the login
     //    form. Collapsing them would make one of the two labels a lie.
-    if (!state.redemption) return `<div class="chart-card"><button class="gate-back" data-community-action="gate-back">‹ חזרה</button>${renderJoinProgress(0)}<div style="font-weight:800;font-size:18px;margin:0 0 6px;">קוד הזמנה למועדון</div><div style="color:var(--steel);font-size:14px;line-height:1.6;margin-bottom:14px;">${bidiText("הכניסה עם קוד הזמנה שמקבלים מהמאמן/ת. הקוד לא נוגע לרישום האימונים שלכם — הוא רק פותח את לשונית הקהילה.")}</div>${state.ui.inviteCodeDraft ? `<div class="footer-note" data-invite-prefilled="1" style="margin-bottom:10px;color:var(--brass);">${bidiText("הקוד מולא אוטומטית מהקישור שנסרק. אפשר להמשיך.")}</div>` : ""}<form id="communityInviteCode">${field("communityInviteCode", "code", "קוד הזמנה", `<input class="text-input" name="code" dir="ltr" inputmode="text" autocomplete="off" maxlength="128" placeholder="קוד הזמנה" value="${esc(state.ui.inviteCodeDraft)}" data-invite-code required/>`)}<button class="save-btn" type="submit" style="margin-top:12px;">אישור קוד</button></form><div style="display:flex;justify-content:center;margin-top:16px;"><button class="gate-alt" data-community-action="back-to-login">כבר יש לכם חשבון? התחברות</button></div>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
+    if (!state.redemption) return `<div class="chart-card"><button class="gate-back" data-community-action="gate-back">‹ חזרה</button>${renderJoinProgress(0)}<div style="font-weight:800;font-size:18px;margin:0 0 6px;">קוד הזמנה למועדון</div><div style="color:var(--steel);font-size:14px;line-height:1.6;margin-bottom:14px;">${bidiText("הכניסה עם קוד הזמנה שמקבלים מהמאמן/ת. הקוד לא נוגע לרישום האימונים שלכם — הוא רק פותח את לשונית הקהילה.")}</div>${state.ui.inviteCodeDraft ? `<div class="footer-note" data-invite-prefilled="1" style="margin-bottom:10px;color:var(--brass);">${bidiText("הקוד מולא אוטומטית מהקישור שנסרק. אפשר להמשיך.")}</div>` : ""}<form id="communityInviteCode">${field("communityInviteCode", "code", "קוד הזמנה", `<input class="text-input" name="code" dir="ltr" inputmode="text" autocomplete="off" autocapitalize="off" maxlength="128" placeholder="קוד הזמנה" value="${esc(state.ui.inviteCodeDraft)}" data-invite-code required/>`)}<button class="save-btn" type="submit"${state.ui.redeemingCode ? " disabled" : ""} style="margin-top:12px;">${state.ui.redeemingCode ? "בודקים…" : "אישור קוד"}</button></form><div style="display:flex;justify-content:center;margin-top:16px;"><button class="gate-alt" data-community-action="back-to-login">כבר יש לכם חשבון? התחברות</button></div>${state.ui.message ? `<div class="footer-note" role="status" style="margin-top:10px;color:var(--brass);">${esc(state.ui.message)}</div>` : ""}</div>`;
     // Right after the code, before anything else — this is what turns the
     // bootstrap anonymous session into a real, log-in-from-any-device
     // account. state.user.is_anonymous flips to false the moment
