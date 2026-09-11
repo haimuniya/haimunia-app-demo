@@ -1,3 +1,60 @@
+## Security hunt, round 4: moderation bypass, client-side tampering, and resource exhaustion — 2026-09-11
+
+Three more independent agents: moderation/abuse-bypass, client-side data tampering, and
+resource exhaustion from malicious input.
+
+**Client-side data tampering: one confirmed high-impact gap, fixed with the same
+claim-before-write pattern this hunt has used all along.** Sharing a PR or an
+achievement is meant to go through server-side RPCs that read a member's own real
+training/achievement record before minting the card. Confirmed live against real
+local Postgres: a direct table write - any member's own devtools, bypassing both
+RPCs entirely - could mint a PR or achievement card with a completely fabricated
+result, movement name, and backdated date, and zero backing record. The card then
+received the same feed-ranking boost and public-profile placement as a genuine
+share. Fixed with a server-side guard requiring proof the row came from the real
+RPC before the label is allowed to land, the same transaction-local claim pattern
+this codebase already uses for exactly this class of problem - with one narrow,
+explicitly-scoped exception preserved for a pre-existing, already-documented
+legacy sharing path that has never had server-side verification (a client-only,
+self-reported local badge, trusted at the same level this codebase has always
+trusted a member's own logged workout - not a new gap, and not touched by this fix).
+
+**Moderation/abuse-bypass: one confirmed gap, fixed.** A comment or post's text is
+snapshotted into a notification the moment it's created; nothing ever revisited
+that snapshot afterward. Confirmed live: a moderator removing a comment correctly
+hid it everywhere the comment itself is read, but the exact original text -
+including a comment reported and removed for being abusive - stayed fully readable
+in the one recipient's Notification Center indefinitely. Comment and post removal
+now blank that snapshot; restoring the content does not restore the notification
+text. A related, lower-severity gap in the same family - a block does not
+retroactively redact the blocked party's pre-block notifications - is recorded for
+a follow-up rather than fixed here; everything created after a block is already
+correctly refused.
+
+**Resource exhaustion: one confirmed low-severity gap, fixed; one lead recorded
+for follow-up.** One RPC accepted an array field and discarded everything past
+its real 20-item limit only after fully expanding the input, so a multi-million-
+element array cost real, measurable database time before being discarded -
+bounded in practice by this codebase's own statement timeout and per-endpoint
+rate limit, so not an outage risk, but inconsistent with the size-check-before-
+expand pattern every other array-accepting endpoint here already follows. Fixed
+to reject a wildly oversized array outright before any expansion; every
+legitimate input, including a real near-miss over the item cap, is completely
+unaffected. A second, unconfirmed lead - the image-upload pipeline caps
+compressed file size but not decoded pixel dimensions, a plausible
+decompression-bomb shape - could not be verified in this environment (no browser
+automation available for a real image-decode test) and is recorded for a
+follow-up with proper browser tooling rather than acted on without confirmation.
+
+**Moderation/abuse-bypass agent, IDOR-adjacent checks, and business-logic checks
+otherwise found clean** - block enforcement holds everywhere going forward,
+restricted members are refused server-side on a direct RPC call (not just hidden
+in the UI), and every text/array field checked elsewhere carries its own
+server-side cap independent of the client's.
+
+Verified: full suite 1605/1605 (11 new regression tests), full browser-check 41/41,
+`supabase test db` 3356/3356 against real local Postgres.
+
 ## Real device feedback: a real missing toggle, this time confirmed and fixed — 2026-09-11
 
 Two screenshots from the live app: the club-modules panel, and the Feed tab's empty
