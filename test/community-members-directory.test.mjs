@@ -123,6 +123,28 @@ test("under the search threshold, the box filters the already-loaded page client
   assert.equal(mock.callsTo("community_search").length, 0);
 });
 
+// Live bug hunt (2026-09-11): renderDirectorySection() rendered the exact
+// same data-directory-empty="empty" / "אין חברים להצגה" markup whether the
+// club genuinely had no other members OR a search just matched nobody -
+// the same class of bug COMM-377 already fixed for the admin roster
+// (renderMemberRoster() above), just never propagated to this second
+// search surface. A member whose search typo matches nobody should not be
+// told their whole club directory is empty.
+test("a search matching nobody shows a distinct \"no results for this search\" state, not \"no members\"", async () => {
+  const mock = seeded({ profiles: [member("u1", "דנה"), member("u2", "נועם כהן"), member("u3", "רון לוי")] });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openDirectory(window);
+  await waitFor(() => rowsOf(window, "members").length === 2, 4000);
+  mock.onRpc("community_search", () => ({ data: { members: [], events: [], challenges: [] }, error: null }));
+  const box = window.document.getElementById("communityDirectorySearch");
+  box.value = "zzznotfound";
+  box.dispatchEvent(new window.Event("input", { bubbles: true }));
+  await waitFor(() => !!window.document.querySelector("[data-directory-empty]"), 4000);
+  const empty = window.document.querySelector("[data-directory-empty]");
+  assert.equal(empty.dataset.directoryEmpty, "no-results", "a failed SEARCH must not read as an empty club");
+  assert.match(empty.textContent, /לא נמצאו חברים תואמים/);
+});
+
 test("tapping a row opens the community profile, and Follow is hidden when allow_follows is off", async () => {
   const mock = seeded({ profiles: [member("u1", "דנה"), member("u2", "נועם"), member("u3", "רון", { allow_follows: false })] });
   mock.onRpc("community_profile", (args) => ({ data: { id: args.user_id, display_name: "נועם", handle: "u2", role: "member", member_since: "2024-01-01" }, error: null }));

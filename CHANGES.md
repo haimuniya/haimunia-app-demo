@@ -1,3 +1,80 @@
+## A third live bug hunt round: achievements/streaks depth, the WOD catalogue, and search & discovery — 2026-09-11
+
+Ran three more independent agents in parallel driving the real app live in Chromium
+against the mocked backend (never production), each reading the existing
+tests/browser-check scripts for its area first so nothing already-covered got
+re-reported: an achievements/streaks deep-dive, WOD/benchmark catalogue edge cases,
+and search & discovery across the movement picker, WOD picker and Community's member
+directory. 9 confirmed findings, all fixed with regression tests:
+
+- **A set saved after the real day changed, with the date field never touched, was
+  silently dated with yesterday's date.** `logDate`/`wodLogDate` are captured once at
+  page load and read again at save time — a session left open across midnight (the
+  ordinary "phone stayed on all night" case, not an edge case) meant the entry's date
+  quietly went stale, with the very next save correcting itself and leaving no sign
+  anything had gone wrong. Added `logDateExplicitlyChosen`/`wodLogDateExplicitlyChosen`
+  flags, mirroring `movementExplicitlyChosen`'s own shape: only an actual touch of the
+  date field (or opening a real past entry for edit) counts as explicit; everything
+  else reads `todayISO()` fresh at the moment of save.
+- **An already-earned, already-celebrated PR-tier badge could be silently re-locked**
+  by an unrelated edit to an older entry — `categoryPRCounts()` recomputes from
+  scratch on every render, so correcting a typo in an old set could drop the live
+  count back under a tier's threshold, regressing the displayed badge (and the
+  athlete score/level computed from the same map) with no notice. `seenAchievementIds`
+  already tracks "has this ever been true" (added the moment a badge is first
+  detected, never removed) — `renderAchievementsContent()` now ORs it into `earned()`
+  instead of trusting the live recompute alone, so a medal stays earned once won.
+- **A celebration deferred behind an open dialog (Achievements, Settings, a picker...)
+  was only flushed by a literal click** — closing that dialog via Escape or the
+  hardware/gesture back button left it stuck until some later, completely unrelated
+  click happened to trigger it, popping up disconnected from the moment it was
+  actually earned. `flushDeferredCelebration()` is now also called from both the
+  Escape keydown handler and the popstate/back-button handler, not just
+  `closeOnboarding()` and the generic click handler's tail.
+- **The day list's flame icon, the calendar's per-day PR dot, and its "ימי שיא" stat
+  all read the raw, ungated `entry.isPR` flag** — unlike every OTHER PR-count/badge
+  surface, which already goes through `celebratablePrEntryIds()`'s
+  `MIN_ENTRIES_BEFORE_PR` gate. A movement's trivial first-ever entry showed a
+  "record" flame, and an entry's flame never cleared even after a later edit made it
+  no longer the real running max (`renderDetailCard()`'s own history chart was
+  already correct here — it recomputes fresh and never reads the stored flag). New
+  `isFlameworthyEntry()` helper, reused across all three surfaces.
+- **Building a custom WOD with a name that already exists silently discarded
+  everything just built** (format, movements, EMOM rotation, time cap...) and swapped
+  in the pre-existing WOD instead, with zero message. The redirect-to-existing
+  behavior is unchanged; `addCustomWod()` now tells the member via toast.
+- **Undoing a deleted WOD attempt after its own WOD definition was ALSO deleted in the
+  undo window resurrected a permanently orphaned entry** —
+  `deleteCustomWod()`'s history guard only sees `wodEntries` as they exist at the
+  moment of deletion, and an entry sitting in the 5-second undo window has already
+  been filtered out of that array by then. `restoreWodEntry()` now refuses (with an
+  honest toast) when its own WOD no longer exists, instead of creating a "?" row that
+  was invisible in History, permanently stuck in the calendar, and a silent no-op to
+  edit.
+- **Rx and Scaled attempts were compared as one pool for "the" WOD record**, despite
+  being treated as meaningfully different everywhere else in the app (a dedicated
+  toggle, the "· מותאם" tag, a separate `scaledWeight` field) — a faster Scaled time
+  could flash "new record" and overwrite the displayed Rx best, and conversely a
+  genuine Rx improvement could be wrongly denied PR status because an unrelated
+  faster Scaled attempt sat in the comparison. `bestWodScore()` now takes an optional
+  `rx` filter; `saveWod()`'s PR check and `formatWodBest()` (which now prefers the Rx
+  best, falling back to Scaled only when no Rx attempt exists) both use it.
+- **The WOD history chart's PR dots used an inclusive (`&lt;=`/`&gt;=`) comparison**,
+  disagreeing with the real stored `isPR` flag's strict one right in the attempt list
+  below it — an exact tie flashed as a second PR dot on the chart while the list
+  correctly showed only one flame. Now strict, and Rx/Scaled-aware to match
+  `bestWodScore()`'s own fix.
+- **Community's member Directory search box showed "אין חברים להצגה" (no members) for
+  a search that matched nobody** — the exact same class of bug COMM-377 already fixed
+  for the admin roster, just never propagated to this second search surface (a
+  separate code path, `renderDirectorySection()`/`directoryRows()`). A member whose
+  search typo matched nobody read it as "this club's directory is broken." Now a
+  distinct `data-directory-empty="no-results"` state with its own copy.
+
+Verified: full suite 1578/1578 (9 new regression tests: 8 in the new
+`test/live-bug-hunt-round3.test.mjs`, 1 appended to
+`test/community-members-directory.test.mjs`), full browser-check 40/40.
+
 ## A second live bug hunt round: sync/PWA lifecycle, keyboard a11y, and lightly-covered admin areas — 2026-09-11
 
 Asked to keep looking for more live bugs. Ran three more independent agents in

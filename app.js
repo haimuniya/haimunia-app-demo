@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.20.0";
+const APP_VERSION = "4.21.0";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -442,6 +442,16 @@ let weight = 20, reps = 5, sets = 1;
 // kept separate from reps so switching modes never clobbers the other.
 let logEntryType = "reps", durationSeconds = 20;
 let logDate = todayISO();
+// Live bug hunt (2026-09-11): logDate/wodLogDate below are set once (here,
+// or on reset-to-today) and read again whenever a set/WOD is actually
+// saved - if a session spans midnight and the member never touches the
+// date field (the ordinary flow), the stale value silently mis-dates the
+// entry with no visible sign anything went wrong. Mirrors
+// movementExplicitlyChosen's shape: false means "still tracking today
+// live, read it fresh at save time"; true (set only when the field is
+// actually touched, or an existing dated entry is opened for edit) means
+// "an explicit date was chosen, honor it exactly." See saveSet()/saveWod().
+let logDateExplicitlyChosen = false;
 // A ladder groups the next saves (different weight/reps each) under one
 // groupId, scoped to one exercise/day — see toggleLadderMode() and saveSet().
 // Setting ladderPartnerId turns the same group into a superset: exactly two
@@ -528,6 +538,9 @@ let wodNotes = "";
 // timeCapSeconds below which describes the WOD itself.
 let wodPartnerTag = "";
 let wodLogDate = todayISO();
+// Live bug hunt (2026-09-11): see logDateExplicitlyChosen's comment above —
+// same fix, same shape, for the WOD tab's own date field.
+let wodLogDateExplicitlyChosen = false;
 let editingWodEntryId = null;
 let emomStateWodId = null;
 let wodHistoryId = null;
@@ -764,6 +777,22 @@ function celebratablePrEntryIds() {
   }
   return ids;
 }
+// Live bug hunt (2026-09-11): entry.isPR is the raw, honest-against-
+// everything-on-file flag saveSet() computes at save time - correct for
+// renderDetailCard()'s own history chart, which never reads this field and
+// recomputes its PR dots fresh every render, but three OTHER surfaces (the
+// day list's flame icon, the calendar's per-day dot/aria-label, and its
+// "ימי שיא" stat) read the stored flag directly. That flag isn't gated by
+// MIN_ENTRIES_BEFORE_PR the way celebratablePrEntryIds() already gates
+// every other PR-count/badge surface (so a movement's trivial first-ever
+// entry shows a "record" flame), and it's never retroactively cleared when
+// a later edit changes the real running max, unlike celebratablePrEntryIds()
+// which recomputes from scratch on every call. Duration entries are outside
+// celebratablePrEntryIds() itself (see its own comment above) and keep
+// reading the raw flag — there's no equivalent gate for that metric.
+function isFlameworthyEntry(entry, celebratableIds) {
+  return entry.type === "duration" ? !!entry.isPR : celebratableIds.has(entry.id);
+}
 function categoryPRCounts() {
   const counts = bag();
   const celebratable = celebratablePrEntryIds();
@@ -953,7 +982,17 @@ function renderMedal(ach, earned) {
 }
 function renderAchievementsContent() {
   const earnedMap = bag();
-  for (const a of ACHIEVEMENTS) earnedMap[a.id] = a.earned();
+  // Live bug hunt (2026-09-11): a.earned() recomputes from scratch on every
+  // render (categoryPRCounts() etc. walk `entries` chronologically), so an
+  // unrelated edit to an OLDER entry - a plain correction, nowhere near the
+  // badge itself - could drop the running PR count back under a tier's
+  // threshold and silently re-lock an already-celebrated medal, regressing
+  // the score/level computed from this same map below with it. A medal is
+  // meant to be permanent once earned - seenAchievementIds already tracks
+  // exactly that ("has this ever been true"), added to the moment a badge is
+  // first detected (claimNewlyEarned()) and never removed - so it doubles as
+  // the "stays earned" record with no new persisted state needed.
+  for (const a of ACHIEVEMENTS) earnedMap[a.id] = a.earned() || seenAchievementIds.has(a.id);
   const earnedCount = ACHIEVEMENTS.filter((a) => earnedMap[a.id]).length;
   const score = ACHIEVEMENTS.reduce((s, a) => s + (earnedMap[a.id] ? a.points : 0), 0);
   const level = athleteLevel(score);
@@ -1827,7 +1866,9 @@ async function saveSet(sanityConfirmed) {
   // actually picked - the empty-state prompt has no save affordance of its
   // own, but defend anyway (same reasoning as saveWod()'s own guard).
   if (!movementExplicitlyChosen) return;
-  const date = clampLogDate(logDate);
+  // Live bug hunt (2026-09-11): read today's date fresh unless the member
+  // actually chose one - see logDateExplicitlyChosen's declaration.
+  const date = logDateExplicitlyChosen ? clampLogDate(logDate) : todayISO();
   const editId = editingEntryId;
   const existing = editId ? entries.find((e) => e.id === editId) : null;
   // Editing keeps the row's original group/label; a fresh save only joins
@@ -1928,7 +1969,7 @@ async function saveSet(sanityConfirmed) {
   // Mid-ladder, keep the date fixed so every rung lands on the same day —
   // otherwise this reset-to-today would silently misdate rungs 2+ of a
   // ladder logged for a past date.
-  if (!ladderMode) logDate = todayISO();
+  if (!ladderMode) { logDate = todayISO(); logDateExplicitlyChosen = false; }
   if (celebratePR) flashPR();
   // Decided HERE, before the render below, not after it. That render is what
   // evaluates S5's consent card, so the debt has to already exist by the time
@@ -2063,12 +2104,14 @@ function endEntryEditIfActive() {
   if (!editingEntryId) return;
   editingEntryId = null;
   logDate = todayISO();
+  logDateExplicitlyChosen = false;
 }
 
 function endWodEditIfActive() {
   if (!editingWodEntryId) return;
   editingWodEntryId = null;
   wodLogDate = todayISO();
+  wodLogDateExplicitlyChosen = false;
 }
 // Adds (or would-be-adds) a second exercise to the active ladder, turning it
 // into a superset — exactly two exercises alternating rounds under one
@@ -2260,6 +2303,7 @@ function startEditEntry(id) {
   sets = entry.sets;
   if (entry.durationSeconds) durationSeconds = entry.durationSeconds;
   logDate = entry.date;
+  logDateExplicitlyChosen = true; // opening a real past entry's date is as explicit a choice as touching the date field
   editingEntryId = entry.id;
   tab = "add";
   // Editing an entry can switch exercise and date out from under an active
@@ -2274,6 +2318,7 @@ function startEditEntry(id) {
 function cancelEditEntry() {
   editingEntryId = null;
   logDate = todayISO();
+  logDateExplicitlyChosen = false;
   render();
 }
 // Named for what it destroys, per the "no confirmation in this app says
@@ -2296,7 +2341,7 @@ function askDeleteEntry(id) {
 async function deleteEntry(id) {
   const removed = entries.find((e) => e.id === id);
   entries = entries.filter((e) => e.id !== id);
-  if (editingEntryId === id) { editingEntryId = null; logDate = todayISO(); }
+  if (editingEntryId === id) { editingEntryId = null; logDate = todayISO(); logDateExplicitlyChosen = false; }
   try { await dbDelete(id); } catch (e) { noteStorageError(e); }
   if (removed) {
     const mov = movementById(removed.exerciseId);
@@ -2974,8 +3019,10 @@ async function clearAllData() {
   measureExpandedId = null;
   measureAddOpen = false;
   logDate = todayISO();
+  logDateExplicitlyChosen = false;
   editingEntryId = null;
   wodLogDate = todayISO();
+  wodLogDateExplicitlyChosen = false;
   editingWodEntryId = null;
   confirmClear = false;
   renderUserGreeting();
@@ -3114,13 +3161,22 @@ function scoreValue(e) {
   if (e.scoreType === "emom") return 0; // no single comparable score — see bestWodScore
   return e.weight;
 }
-function bestWodScore(id, excludeId) {
+// Live bug hunt (2026-09-11): rx (optional) restricts the comparison to
+// entries of that same Rx/Scaled status. Callers that don't pass it get the
+// old unfiltered behavior; saveWod()'s own PR check and formatWodBest()
+// below now both pass it, since Rx and Scaled are already treated as
+// meaningfully different everywhere else in the app (a dedicated toggle,
+// the "· מותאם" tag, a separate scaledWeight field) but this comparison
+// used to ignore that entirely - a Scaled attempt could flash "new record"
+// and overwrite an Rx best just because they share a scoreType.
+function bestWodScore(id, excludeId, rx) {
   const w = wodById(id);
   // EMOM has no cross-attempt scoring yet: consistency (did every round)
   // matters more than a single number, and there's no agreed way to reduce
   // "10 reps of A, 8 of B" to one comparable value. No PR concept for it.
   if (w.scoreType === "emom") return null;
-  const list = wodEntriesFor(id, excludeId);
+  let list = wodEntriesFor(id, excludeId);
+  if (rx === true || rx === false) list = list.filter((e) => e.rx === rx);
   if (!list.length) return null;
   if (w.scoreType === "time") return Math.min(...list.map(scoreValue));
   return Math.max(...list.map(scoreValue));
@@ -3138,7 +3194,11 @@ function lastScaledAttempt(id) {
 }
 function formatWodBest(id) {
   const w = wodById(id);
-  const best = bestWodScore(id);
+  // Live bug hunt (2026-09-11): prefer the Rx best - the standard/
+  // prescribed version of the WOD - falling back to the Scaled best only
+  // when there's no Rx attempt on file at all. See bestWodScore()'s comment.
+  const bestRx = bestWodScore(id, null, true);
+  const best = bestRx !== null ? bestRx : bestWodScore(id, null, false);
   if (best === null) return "—";
   if (w.scoreType === "time") return formatClock(best);
   if (w.scoreType === "amrap") return `${Math.floor(best / 1000)}+${best % 1000}`;
@@ -3150,7 +3210,12 @@ async function addCustomWod(name, scoreType, desc, extra) {
   if (!trimmed) return;
   if (!WOD_SCORE_TYPES.includes(scoreType)) return;
   const existing = allWods().find((w) => w.name.toLowerCase() === trimmed.toLowerCase());
-  if (existing) { choosePickedWod(existing.id); closeWodPicker(); closeWodBuilder(); render(); return; }
+  // Live bug hunt (2026-09-11): this branch silently discarded everything the
+  // member just built (format, movements, EMOM rotation, time cap...) and
+  // swapped in the pre-existing WOD of that name instead, with no message at
+  // all - confirmed live via the WOD builder. Redirecting to the existing WOD
+  // is kept (a name is still a name), but it's no longer silent.
+  if (existing) { showToast(`כבר קיים אימון בשם "${trimmed}" — נבחר האימון הקיים, והשינויים שבניתם לא נשמרו.`); choosePickedWod(existing.id); closeWodPicker(); closeWodBuilder(); render(); return; }
   const id = uid("customwod");
   // extra carries scoreType-specific structured fields (currently just EMOM's
   // movement rotation — see sanitizeCustomWod) that, unlike every other
@@ -3497,11 +3562,14 @@ async function saveWod() {
   if (w.scoreType === "emom" && !wodEmomReps.every((r) => isFinite(r))) return;
   const editId = editingWodEntryId;
   const existing = editId ? wodEntries.find((e) => e.id === editId) : null;
-  const prevBest = bestWodScore(selectedWodId, editId);
+  // Live bug hunt (2026-09-11): rx-scoped now - see bestWodScore()'s comment.
+  const prevBest = bestWodScore(selectedWodId, editId, wodRx);
   const entry = {
     id: existing ? existing.id : uid("wod"),
     ts: existing ? existing.ts : Date.now(),
-    date: clampLogDate(wodLogDate),
+    // Live bug hunt (2026-09-11): same fix as saveSet() - see
+    // logDateExplicitlyChosen's declaration.
+    date: wodLogDateExplicitlyChosen ? clampLogDate(wodLogDate) : todayISO(),
     wodId: selectedWodId,
     scoreType: w.scoreType,
     rx: wodRx,
@@ -3527,6 +3595,7 @@ async function saveWod() {
   wodPartnerTag = "";
   editingWodEntryId = null;
   wodLogDate = todayISO();
+  wodLogDateExplicitlyChosen = false;
   if (isPR) flashWodPR();
   // Same ordering rule as saveSet(): the debt is claimed before the render
   // that evaluates S5's consent card, never after it.
@@ -3558,6 +3627,7 @@ function startEditWodEntry(id) {
   else if (entry.scoreType === "emom") wodEmomReps = (entry.emomReps || []).slice();
   else wodWeight = entry.weight || 0;
   wodLogDate = entry.date;
+  wodLogDateExplicitlyChosen = true; // opening a real past WOD entry's date is as explicit a choice as touching the date field
   editingWodEntryId = entry.id;
   tab = "wod";
   wodSubTab = "log";
@@ -3566,6 +3636,7 @@ function startEditWodEntry(id) {
 function cancelEditWodEntry() {
   editingWodEntryId = null;
   wodLogDate = todayISO();
+  wodLogDateExplicitlyChosen = false;
   wodNotes = "";
   wodPartnerTag = "";
   render();
@@ -3589,7 +3660,7 @@ function askDeleteWodEntry(id) {
 async function deleteWodEntry(id) {
   const removed = wodEntries.find((e) => e.id === id);
   wodEntries = wodEntries.filter((e) => e.id !== id);
-  if (editingWodEntryId === id) { editingWodEntryId = null; wodLogDate = todayISO(); }
+  if (editingWodEntryId === id) { editingWodEntryId = null; wodLogDate = todayISO(); wodLogDateExplicitlyChosen = false; }
   try { await dbDeleteWodEntry(id); } catch (e) { noteStorageError(e); }
   if (removed) {
     const w = wodById(removed.wodId);
@@ -3598,6 +3669,19 @@ async function deleteWodEntry(id) {
   render();
 }
 async function restoreWodEntry(entry) {
+  // Live bug hunt (2026-09-11): the WOD this entry belongs to can be deleted
+  // AFTER this undo was offered - deleteCustomWod()'s own history guard only
+  // sees wodEntries as they are at the moment of deletion, and an entry
+  // sitting in the undo window has already been filtered out of that array.
+  // Restoring it anyway created a permanently orphaned entry: invisible in
+  // the History subtab (activeWods() drops it via wodById()), shown as
+  // "? מלא" forever in the calendar, and its own edit pencil a silent no-op.
+  // Refuse instead, with an honest toast.
+  if (!wodById(entry.wodId)) {
+    showToast("אי אפשר לשחזר — האימון עצמו נמחק בינתיים.");
+    render(); // showToast() only stores the pending toast - render() is what actually paints it
+    return;
+  }
   wodEntries = wodEntries.filter((e) => e.id !== entry.id);
   wodEntries.unshift(entry);
   wodEntries.sort((a, b) => (b.ts || 0) - (a.ts || 0));
@@ -4271,7 +4355,14 @@ function computeCalendarMonthStats(year, month) {
   const monthEntries = entries.filter((e) => e.date.startsWith(prefix));
   const monthWods = wodEntries.filter((e) => e.date.startsWith(prefix));
   const trainingDays = new Set([...monthEntries, ...monthWods].map((e) => e.date)).size;
-  const prDays = new Set([...monthEntries, ...monthWods].filter((e) => e.isPR).map((e) => e.date)).size;
+  // Live bug hunt (2026-09-11): gate the strength half through
+  // isFlameworthyEntry() - see its own comment. wodEntries.isPR is untouched
+  // here, out of this bug's scope.
+  const celebratableIds = celebratablePrEntryIds();
+  const prDays = new Set([
+    ...monthEntries.filter((e) => isFlameworthyEntry(e, celebratableIds)),
+    ...monthWods.filter((e) => e.isPR),
+  ].map((e) => e.date)).size;
   return { trainingDays, totalSets: monthEntries.length, prDays };
 }
 function renderCalendarGrid() {
@@ -4282,6 +4373,10 @@ function renderCalendarGrid() {
   const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
   const firstWeekday = new Date(calYear, calMonth, 1).getDay();
   const today = todayISO();
+  // Live bug hunt (2026-09-11): see isFlameworthyEntry()'s comment - computed
+  // once per grid render, not per day, since celebratablePrEntryIds() walks
+  // every entry on file.
+  const celebratableIds = celebratablePrEntryIds();
   let cells = "";
   for (let i = 0; i < firstWeekday; i++) cells += `<div class="cal-cell empty"></div>`;
   for (let d = 1; d <= daysInMonth; d++) {
@@ -4289,7 +4384,7 @@ function renderCalendarGrid() {
     const dayEntries = entries.filter((e) => e.date === iso);
     const dayWods = wodEntries.filter((e) => e.date === iso);
     const hasData = hasAnyEntryOn(iso);
-    const hasPR = dayEntries.some((e) => e.isPR) || dayWods.some((e) => e.isPR);
+    const hasPR = dayEntries.some((e) => isFlameworthyEntry(e, celebratableIds)) || dayWods.some((e) => e.isPR);
     const cls = ["cal-cell"];
     if (iso === today) cls.push("today");
     if (iso === calSelectedDate) cls.push("selected");
@@ -4367,6 +4462,8 @@ async function saveSessionNote(date, text) {
 // into two different renderings of the identical underlying data.
 function renderDayEntriesListHtml(dayEntries, dayWods) {
   if (dayEntries.length === 0 && dayWods.length === 0) return `<div class="empty">לא נרשם דבר ביום הזה.</div>`;
+  // Live bug hunt (2026-09-11): see isFlameworthyEntry()'s comment.
+  const celebratableIds = celebratablePrEntryIds();
   return `
     <div class="log-list">
       ${groupDayEntries(dayEntries).map((group) => {
@@ -4375,7 +4472,7 @@ function renderDayEntriesListHtml(dayEntries, dayWods) {
           return `
         <div class="log-row">
           <div class="flex items-center gap-8">
-            ${e.isPR ? ICONS.flame : ""}
+            ${isFlameworthyEntry(e, celebratableIds) ? ICONS.flame : ""}
             <span style="font-weight:700; font-size:14px;">${bidiText(movementById(e.exerciseId) ? movementById(e.exerciseId).name : "?")}</span>
           </div>
           <div class="flex items-center gap-10">
@@ -4392,7 +4489,7 @@ function renderDayEntriesListHtml(dayEntries, dayWods) {
         // whole feature. A superset is just a ladder whose rounds span two
         // exerciseIds instead of one — derived from the group's own data,
         // not from any currently-active session state.
-        const anyPR = group.some((e) => e.isPR);
+        const anyPR = group.some((e) => isFlameworthyEntry(e, celebratableIds));
         const exerciseIds = [...new Set(group.map((e) => e.exerciseId))];
         const isSuperset = exerciseIds.length > 1;
         const name = bidiText(exerciseIds.map((id) => movementById(id) ? movementById(id).name : "?").join(" + "));
@@ -4407,7 +4504,7 @@ function renderDayEntriesListHtml(dayEntries, dayWods) {
           <div class="flex col gap-6">
             ${group.map((e, i) => `
             <div class="flex items-center justify-between">
-              <span class="mono flex items-center gap-6" style="color:var(--steel); font-size:13px;">${i + 1}. ${esc(ladderRoundSummary(e, isSuperset))}${e.isPR ? ICONS.flame : ""}</span>
+              <span class="mono flex items-center gap-6" style="color:var(--steel); font-size:13px;">${i + 1}. ${esc(ladderRoundSummary(e, isSuperset))}${isFlameworthyEntry(e, celebratableIds) ? ICONS.flame : ""}</span>
               <div class="flex items-center gap-6">
                 <button data-action="edit-entry" data-id="${esc(e.id)}" aria-label="עריכת סט ${i + 1}" class="icon-btn-sm">${ICONS.edit}</button>
                 <button data-action="delete-entry" data-id="${esc(e.id)}" aria-label="מחיקת סט ${i + 1}" class="icon-btn-sm">${ICONS.trash}</button>
@@ -5137,6 +5234,7 @@ function render() {
       const dateInput = document.getElementById("logDateInput");
       if (dateInput) dateInput.addEventListener("change", (e) => {
         logDate = clampLogDate(e.target.value);
+        logDateExplicitlyChosen = true;
         endLadder(); // a ladder is scoped to one day
         render();
       });
@@ -5561,11 +5659,22 @@ function renderWodDetailCard(w) {
   let chartHtml = "";
   if (!isEmom) {
     const sorted = list.slice().sort((a, b) => a.date.localeCompare(b.date) || a.ts - b.ts);
-    let bestSoFar = w.scoreType === "time" ? Infinity : -Infinity;
+    // Live bug hunt (2026-09-11): two fixes so this chart's PR dots can never
+    // disagree with the real per-entry isPR flag in the attempt list right
+    // below it again:
+    //  1. STRICT comparison, not inclusive - an exact tie is not a second PR
+    //     (matches saveWod()'s own < / > check on the stored flag).
+    //  2. Rx and Scaled tracked as separate running bests, matching
+    //     bestWodScore()'s own rx-aware fix - a Scaled attempt no longer
+    //     "beats" an earlier Rx one just because they share a scoreType.
+    let bestSoFarRx = w.scoreType === "time" ? Infinity : -Infinity;
+    let bestSoFarScaled = w.scoreType === "time" ? Infinity : -Infinity;
     const chartData = sorted.map((e) => {
       const val = scoreValue(e);
-      const isPR = w.scoreType === "time" ? val <= bestSoFar : val >= bestSoFar;
-      bestSoFar = w.scoreType === "time" ? Math.min(bestSoFar, val) : Math.max(bestSoFar, val);
+      const prevBest = e.rx ? bestSoFarRx : bestSoFarScaled;
+      const isPR = w.scoreType === "time" ? val < prevBest : val > prevBest;
+      if (e.rx) bestSoFarRx = w.scoreType === "time" ? Math.min(bestSoFarRx, val) : Math.max(bestSoFarRx, val);
+      else bestSoFarScaled = w.scoreType === "time" ? Math.min(bestSoFarScaled, val) : Math.max(bestSoFarScaled, val);
       return { dateLabel: fmtDate(e.date), est1RM: val, isPR };
     });
     chartHtml = renderChart(chartData);
@@ -5718,6 +5827,7 @@ function renderWodContent() {
     const dateInput = document.getElementById("wodLogDateInput");
     if (dateInput) dateInput.addEventListener("change", (e) => {
       wodLogDate = clampLogDate(e.target.value);
+      wodLogDateExplicitlyChosen = true;
       renderWodContent();
     });
   }
@@ -5818,7 +5928,12 @@ function focusFirstAppDialogEl(overlayId) {
 document.addEventListener("keydown", (e) => {
   const dlg = currentAppDialog();
   if (!dlg) return;
-  if (e.key === "Escape") { if (dlg.escapable) { e.preventDefault(); dlg.close(); } return; }
+  // Live bug hunt (2026-09-11): flushDeferredCelebration() was only wired
+  // into closeOnboarding() and the tail of the generic click handler below -
+  // closing a dialog via Escape left a celebration deferred behind it stuck
+  // until some unrelated later click happened to flush it, popping up
+  // completely disconnected from the moment it was actually earned.
+  if (e.key === "Escape") { if (dlg.escapable) { e.preventDefault(); dlg.close(); flushDeferredCelebration(); } return; }
   if (e.key !== "Tab") return;
   const focusables = appDialogFocusables(dlg.overlayId);
   if (!focusables.length) return;
@@ -6042,6 +6157,9 @@ window.addEventListener("popstate", () => {
     return;
   }
   appDialogClosingViaHistory = true; dlg.close(); appDialogClosingViaHistory = false;
+  // Live bug hunt (2026-09-11): same gap as the Escape handler above, for
+  // the hardware/gesture back-button path - see that comment.
+  flushDeferredCelebration();
 });
 for (const key in APP_DIALOGS) {
   const el = document.getElementById(APP_DIALOGS[key].overlayId);
@@ -6407,7 +6525,7 @@ document.addEventListener("click", (e) => {
     calSelectedDate = logDate;
     render();
   }
-  else if (action === "reset-log-date") { logDate = todayISO(); endLadder(); render(); }
+  else if (action === "reset-log-date") { logDate = todayISO(); logDateExplicitlyChosen = false; endLadder(); render(); }
   else if (action === "toggle-ladder-mode") { toggleLadderMode(); }
   else if (action === "set-log-entry-type") { setLogEntryType(el.dataset.type); }
   else if (action === "ladder-switch-exercise") { switchLadderExercise(el.dataset.id); }
@@ -6423,7 +6541,7 @@ document.addEventListener("click", (e) => {
     calSelectedDate = wodLogDate;
     render();
   }
-  else if (action === "reset-wod-log-date") { wodLogDate = todayISO(); renderWodContent(); }
+  else if (action === "reset-wod-log-date") { wodLogDate = todayISO(); wodLogDateExplicitlyChosen = false; renderWodContent(); }
   else if (action === "cancel-edit-wod-entry") { cancelEditWodEntry(); }
   else if (action === "edit-wod-entry") { startEditWodEntry(el.dataset.id); }
   else if (action === "open-picker") { openPicker(el.dataset.target); }

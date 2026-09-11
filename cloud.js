@@ -8789,7 +8789,18 @@
     } else {
       const rows = directoryRows();
       if (!rows.length) {
-        body = `<div class="empty" data-directory-empty="empty">${DIRECTORY_EMPTY_TEXT}</div>`;
+        // Live bug hunt (2026-09-11): same class of bug COMM-377 already
+        // fixed for the admin roster (renderMemberRoster() above) - a
+        // zero-length list meant two different things (a genuinely empty
+        // directory, or a search that matched nobody) and both rendered the
+        // identical "אין חברים להצגה" text/attribute, reading as "this
+        // club's directory is broken" to a member who just mistyped a
+        // clubmate's name. `q` (already computed above) is exactly what
+        // roster's own `searching` flag tracks - just never threaded into
+        // this branch.
+        body = q
+          ? `<div class="empty" data-directory-empty="no-results">לא נמצאו חברים תואמים לחיפוש</div>`
+          : `<div class="empty" data-directory-empty="empty">${DIRECTORY_EMPTY_TEXT}</div>`;
       } else {
         const { staff, rest } = splitDirectoryStaff(rows);
         const staffHtml = staff.length ? `<div class="log-list" data-directory-group="staff">${staff.map(searchMemberRowHtml).join("")}</div>` : "";
