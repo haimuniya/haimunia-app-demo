@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.18.9";
+const APP_VERSION = "4.18.10";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -397,6 +397,35 @@ if (urlNotif) {
     history.replaceState(null, "", url.pathname + (url.search || "") + url.hash);
   } catch (e) { /* not fatal - the pending link still gets consumed once */ }
 }
+// Live report: "when I move my finger from the left side it opens another
+// app or something." manifest.json ships display:standalone - an installed
+// PWA's WKWebView still recognizes iOS's own edge-swipe-back gesture even
+// though it shows no browser chrome for it. Before this, the ONLY history
+// entries this app ever pushed were the dialog-open reservations further
+// below (registerAppDialog/syncAppDialogHistoryState), consumed back to
+// zero the instant a dialog closed - so on any ordinary screen with nothing
+// open, history had nowhere to go, and the edge-swipe gesture fell straight
+// through the page to the OS (backgrounding the installed app / the app
+// switcher - "opens another app"). Establishing one un-consumable anchor
+// entry here, at boot, and re-planting it on any pop that isn't the dialog
+// system's own reserved one (see the popstate listener far below, and this
+// one), keeps every edge-swipe attempt landing back inside the app instead
+// of ever finding real history to fall through to. Placed after the notif-
+// param cleanup above (and after cloud.js's own invite-code cleanup, which
+// runs first - cloud.js is a `defer` script ordered before this one, see
+// index.html): an invite code is a live credential that MUST be scrubbed by
+// replaceState() before anything pushes a fresh entry, or the scrubbed URL
+// would sit safely on top while the original, credential-bearing entry
+// stayed reachable underneath it forever.
+try { history.pushState({ appAnchor: true }, ""); } catch (e) { /* history API unavailable in this embedding */ }
+window.addEventListener("popstate", () => {
+  // appDialogHistoryPushed (declared later in this file) is only ever read
+  // here, never written - by the time any popstate can fire, the whole
+  // script has finished its first pass and the variable is long since
+  // initialized, so the forward reference below is safe.
+  if (appDialogHistoryPushed) return; // the dialog-close listener owns this pop instead
+  try { history.pushState({ appAnchor: true }, ""); } catch (e) {}
+});
 let selectedId = MOVEMENTS[0].id;
 // COMM-360. selectedId always needs to point at a real movement internally
 // (ladder/superset switching, saveSet's exerciseId, movementById lookups
@@ -5862,6 +5891,12 @@ registerAppDialog("welcome", { overlayId: "welcomeOverlay", isOpen: () => docume
 // exactly "had to close the app to get back out." Escape-to-close (COMM-328
 // above) already does the right thing for a keyboard; this is the same
 // idea for hardware/gesture back.
+//
+// This reservation sits ON TOP OF the un-consumable boot-time anchor near
+// the top of this file (the urlNotif block) - that anchor is what keeps an
+// ORDINARY screen's edge-swipe from falling through to the OS at all; this
+// dialog layer is what makes back/Escape/swipe close a dialog specifically
+// once it IS caught. Two different bugs, two entries, same history.
 //
 // A MutationObserver on each registered overlay's own `class` attribute
 // (not a hook added to all dozen individual open()/close() functions)

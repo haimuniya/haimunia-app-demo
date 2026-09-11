@@ -1,3 +1,34 @@
+## Edge-swipe-back was falling through to the OS on an ordinary screen — 2026-09-11
+
+Live report: "when I move my finger from the left side it opens another app or
+something." manifest.json ships `display: standalone` - an installed PWA's
+WKWebView still recognizes iOS's own edge-swipe-back gesture even though it shows no
+browser chrome for it. This session's earlier dialog back-button fix (see below) only
+ever pushed a history entry while a dialog was open, consumed back to zero the
+instant it closed - so on any ORDINARY screen, with nothing open, history had
+nowhere to go, and an edge-swipe-back gesture fell straight through the page to the
+OS (backgrounding the installed app / the app switcher) instead of being absorbed.
+
+Fix: one un-consumable history anchor established at boot (app.js, right after the
+existing notif-deep-link URL cleanup, and after cloud.js's own invite-code cleanup -
+both scrub a live credential from the address bar via `replaceState` before anything
+should be allowed to `pushState` on top and leave the original, credential-bearing
+entry reachable underneath forever). A popstate listener re-plants the same anchor on
+any pop the dialog-reservation system isn't already handling, so an edge-swipe
+attempt always lands back inside the app - the dialog-close feature is unaffected,
+since that listener explicitly defers to it (`if (appDialogHistoryPushed) return`)
+rather than eating every pop unconditionally.
+
+Real device gestures can't be driven by Playwright, but the exact API surface a
+gesture drives (`history.back()` + the `popstate` it fires) can: new
+`scripts/browser-check/history-anchor-trap.mjs` drives that directly, paired with a
+control proving the dialog-close case still works through the same listener chain
+now that a second listener is in the mix.
+
+Verified: full suite 1553/1553, full browser-check 39/39 (new
+`history-anchor-trap.mjs`). The underlying gesture-level behavior still needs a real
+device to fully confirm.
+
 ## Three more live reports: a permanent medal icon, an unreachable close button, and a self-cleaning "what's new" — 2026-09-11
 
 Three issues reported live, back to back, against the changes above:
