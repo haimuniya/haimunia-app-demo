@@ -1,3 +1,41 @@
+## Real device feedback: a real missing toggle, this time confirmed and fixed — 2026-09-11
+
+Two screenshots from the live app: the club-modules panel, and the Feed tab's empty
+state for a feature it doesn't list - "לא נקבע אימון למועדון היום" (the daily club-WOD
+strip: a coach schedules a catalogue workout for today, it gets one feed card and one
+board, members attach results they already logged with one tap, no post required).
+Checked against the actual code rather than assumed: `renderClubWodTodayStrip()` and
+its loader (`loadClubWodBoards()`) had no `isModuleEnabled()` check at all, anywhere -
+unlike every other real feature on this panel, an admin had no way to turn this one
+off. A previous pass this session concluded the panel was complete after verifying its
+existing 13 toggles all render; this feature was missing entirely from that count, not
+just from the panel, which is why it was missed rather than found.
+
+Added `club_wod` to `CLUB_MODULE_TOGGLES` (`clientOnly: true`, matching `directory`'s
+own reasoning - no RLS clause to pair a pure UI hide with; `club_wod_boards`/
+`club_wods_list` carry their own independent auth checks). Off hides the ongoing
+prompt/today-card and skips the round trip that would have populated it - past feed
+posts and boards a WOD already generated are untouched, the same "off hides new, not
+old" rule `achievements`/`challenges` already follow. `loadClubWods()` (the shared
+workout CATALOGUE feeding app.js's own WOD picker) is a separate, more foundational
+feature and was deliberately left alone - turning off the daily scheduling prompt
+should not also empty a member's personal workout catalogue.
+
+Asked in the same message to look at the feed's overall length: the existing
+`railInterleave()`/`RAIL_ABOVE_FEED` budget (only the first 2 non-empty rail cards
+render above the feed; the rest interleave a few posts down) already exists
+specifically for this, and correctly gets more effective for a club that turns this
+new toggle off. A second real, separate contributor was found but not touched without
+asking first: the announcements archive below the feed renders up to 20 full cards
+(title + complete body + author) with no cap or collapse - a deliberate placement
+("reference material," per its own comment) but an uncapped list length nobody
+decided on. Flagged for the product owner rather than assumed.
+
+Verified: the two directly affected test files (`community-club-wod-board.test.mjs`,
+`community-club-features.test.mjs`, whose 13-toggle count assertion is now 14) plus a
+new dedicated test proving the toggle actually skips the network call when off, not
+just the render - both green, full suite otherwise unaffected.
+
 ## Security hunt, round 3: authentication abuse, privilege escalation, and client-side posture — 2026-09-11
 
 Three more independent agents: authentication/account-recovery abuse, SECURITY DEFINER

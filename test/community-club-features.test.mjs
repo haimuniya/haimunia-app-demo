@@ -15,7 +15,9 @@ import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 const VERIFIED = new Date().toISOString();
 const MODULE_KEYS = ["announcements", "events", "challenges", "achievements", "feed", "leaderboards",
   // Redesign, Phase 2.
-  "directory", "coach_tools", "member_of_week", "welcome_flow", "monthly_recap"];
+  "directory", "coach_tools", "member_of_week", "welcome_flow", "monthly_recap",
+  // Real device feedback, 2026-09-11: the daily club-WOD strip's toggle.
+  "club_wod"];
 // A fresh set of row objects every call - tests must never share mutable
 // fixture objects, since a registered onRpc() handler in one test can
 // mutate ctx.db rows in place and a shared reference would leak that
@@ -65,8 +67,10 @@ test("an admin sees one toggle row per module, all checked when every module is 
   const rows = window.document.querySelectorAll('[data-club-feature]');
   // Community structure research, 2026-09-10: 8 community-content rows (the
   // original 7 plus "streak_risk_nudges") + 5 coach-tool rows (the original
-  // 4 plus "engagement_alerts") = 13.
-  assert.equal(rows.length, 13, "one row per module across both groups");
+  // 4 plus "engagement_alerts") = 13. Real device feedback, same date: the
+  // daily club-WOD strip (renderClubWodTodayStrip()) had no toggle at all -
+  // "club_wod" is the 9th community-content row, bringing the total to 14.
+  assert.equal(rows.length, 14, "one row per module across both groups");
   rows.forEach((el) => assert.equal(el.checked, true, `${el.dataset.clubFeature} starts checked`));
 });
 

@@ -829,6 +829,18 @@
     { key: "feed", label: "פיד (כולל תגובות ותגובות חיזוק)" },
     { key: "leaderboards", label: "טבלאות מובילים" },
     { key: "directory", label: "ספריית חברים", clientOnly: true },
+    // Real device feedback: this whole feature (a coach schedules a
+    // catalogue WOD for today; it gets one card on the feed and one board
+    // members attach their own logged results to) had no toggle at all -
+    // renderClubWodTodayStrip() rendered unconditionally, every day, for
+    // every club, with no way to turn it off. clientOnly because turning
+    // it off only stops the ONGOING prompt/today-card - past feed posts
+    // and boards a WOD already generated stay exactly as reachable as any
+    // other history, the same "off hides new, not old" rule achievements/
+    // challenges already follow; there is no RLS clause to pair with this
+    // one (club_wod_boards/club_wods_list carry their own auth checks,
+    // independent of this flag, same asymmetry 'directory' documents).
+    { key: "club_wod", label: "אימון יומי למועדון", clientOnly: true },
     // 202609100002. Not clientOnly: gated inside notif_streak_at_risk()
     // itself (club_feature_enabled('streak_risk_nudges')), a real
     // server-enforced off switch on a scheduled job, not a UI hide.
@@ -2657,7 +2669,11 @@
   // board from its feed card, which is still in the feed, rather than through
   // a fourteen-day fetch on every boot.
   async function loadClubWodBoards() {
-    if (!state.user) {
+    // Real device feedback: this feature had no toggle at all. Skipping the
+    // fetch (not just the render) when it is off means a club that
+    // doesn't use it stops paying for the round trip on every feed load,
+    // not just for the card on screen.
+    if (!state.user || !isModuleEnabled("club_wod")) {
       state.club.wodBoards = []; state.club.wodBoardsLoaded = false;
       state.club.wodBoardsLoading = false; state.club.wodBoardsError = false;
       clubWodSessionsToApp();
@@ -3065,7 +3081,7 @@
     return `${day} · ${d.getDate()}.${d.getMonth() + 1}`;
   }
   function renderClubWodTodayStrip() {
-    if (!state.user) return "";
+    if (!state.user || !isModuleEnabled("club_wod")) return "";
     const boards = state.club.wodBoards;
     const canProgram = clubWodCanProgram();
     if (!boards.length) {

@@ -255,6 +255,40 @@ async function logTheWod(window, minutes, seconds, rx, scaledWeight) {
   await window.saveWod();
 }
 
+// Real device feedback: this whole feature (renderClubWodTodayStrip() and
+// the coach's programming form inside it) rendered unconditionally, every
+// day, with no way for a club to turn it off - the exact "no toggle for
+// that function" complaint. "club_wod" is now its toggle, clientOnly
+// (matching "directory"'s own reasoning: no RLS clause to pair with a
+// pure UI hide). Off means the ongoing prompt/today-card disappears AND
+// the round trip that would have populated it is skipped entirely - past
+// feed posts and boards a WOD already generated are untouched, the same
+// "off hides new, not old" rule achievements/challenges already follow.
+test("with club_wod off, the today strip does not render and club_wod_boards is never called - on, it works exactly as before", async () => {
+  const sharedOff = {
+    club_wod_sessions: [{ id: SESSION_ID, wod_id: WOD_ID, session_date: TODAY, note: "", post_id: "post-1", published_at: VERIFIED, cancelled_at: null }],
+    club_features: [{ club_id: "club-1", module_key: "club_wod", enabled: false, config: {} }],
+  };
+  const offMock = personaMock("coach-1", sharedOff);
+  const offWindow = await bootCommunity(offMock, { syncEnabled: false });
+  await openCommunity(offWindow);
+  await waitFor(() => !!offWindow.document.getElementById("communityFeedFilters"), 5000);
+  // "מי כבר עשה" is the board's own fixed label (renderClubWodTodayStrip's
+  // wod-board-label, always present once ANY board renders) - the WOD's
+  // own title ("Dana's Chipper") is not a stable string to assert on, and
+  // the empty state's "לא נקבע אימון למועדון היום" only ever appears when
+  // there are zero sessions, which is not this fixture's shape either.
+  assert.doesNotMatch(offWindow.document.body.textContent, /מי כבר עשה/, "no today-strip content renders while the module is off");
+  assert.equal(offMock.callsTo("club_wod_boards").length, 0, "the round trip that would have populated the strip is skipped, not just hidden after the fact");
+
+  const sharedOn = Object.assign({}, sharedOff, { club_features: [{ club_id: "club-1", module_key: "club_wod", enabled: true, config: {} }] });
+  const onMock = personaMock("coach-1", sharedOn);
+  const onWindow = await bootCommunity(onMock, { syncEnabled: false });
+  await openCommunity(onWindow);
+  await waitFor(() => onMock.callsTo("club_wod_boards").length > 0, 5000);
+  await waitFor(() => /מי כבר עשה/.test(onWindow.document.body.textContent), 5000);
+});
+
 // ===========================================================================
 // THE LOOP. This is the feature; everything below it is an invariant it needs.
 // ===========================================================================
