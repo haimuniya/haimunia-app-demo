@@ -286,11 +286,14 @@ select is(
 -- typed uuid with a gen_random_uuid() default. No slug is uuid-shaped, so the
 -- two never collide - verified here rather than assumed.
 select tests.clear_auth();
+-- Security hunt round 6 (202609120001): metric:tenure_days makes
+-- member_achievements_verified_trg stamp the directly-inserted row below
+-- verified, which ach_share() now requires.
 insert into public.achievement_definitions
   (id, code, name, description, category, trigger_type, threshold, repeatable, visibility, icon, enabled, config)
 values
   ('a0870000-0000-4000-8000-000000000001', 'test_sibling_87', 'חמישים אימונים', 'חמישים ימי אימון',
-   'performance', 'PR_CREATED', 50, false, 'club', '🏅', true, '{"client_claimable": true}');
+   'performance', 'PR_CREATED', 50, false, 'club', '🏅', true, '{"client_claimable": true, "metric": "tenure_days"}');
 insert into public.member_achievements (id, user_id, achievement_id, visibility, unlocked_at)
 values
   ('b0870000-0000-4000-8000-000000000001', tests.uid('m3'),

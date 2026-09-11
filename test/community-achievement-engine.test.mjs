@@ -98,7 +98,14 @@ test("consistency tolerates a three-times-per-week schedule: four weeks at 3x pe
 });
 
 test("a claimed unlock shows a celebration and Share creates a POST_ACHIEVEMENT via ach_share, never before", async () => {
-  const mock = seededMock([def("first_pr", { category: "performance", trigger_type: "PR_CREATED", name: "השיא הראשון" })]);
+  // Security hunt round 6 (202609120001): ach_share() now refuses an
+  // unverified claim (member_achievements.verified, computed from the
+  // definition's own metric/trigger_type) - config: metric:tenure_days is
+  // this test's stand-in for "a genuinely verified achievement", the same
+  // shape the real fix's own pgTAP coverage uses. This test is about the
+  // Share UI mechanics, not about which metrics are independently
+  // checkable, which is exercised elsewhere.
+  const mock = seededMock([def("first_pr", { category: "performance", trigger_type: "PR_CREATED", name: "השיא הראשון", config: { client_claimable: true, metric: "tenure_days" } })]);
   const window = await bootReady(mock);
 
   await window.claimCommunityAchievements(["first_pr"]);

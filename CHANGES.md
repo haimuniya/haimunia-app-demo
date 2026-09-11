@@ -1,3 +1,40 @@
+## Security hunt, round 6: secrets/crypto handling and client-enforced-only checks — 2026-09-12
+
+Three more independent agents: secrets and cryptographic-material handling, controls that
+exist only on the client, and general authorization-boundary re-checks against real local
+Postgres.
+
+**Client-enforced-only checks: one confirmed high-severity gap, fixed.** Unlocking an
+achievement through the claim RPC and sharing it to the public feed are two separate
+steps. For most metrics the claim RPC has no server-side record of the underlying
+count to check against - a documented, pre-existing gap the codebase already called out
+in its own migration comments - so the claim step alone could not distinguish a real
+unlock from one requested for a metric that never actually happened. Confirmed live
+against real local Postgres: nothing on the sharing side re-checked this either, so a
+fabricated claim flowed straight through to a public, feed-ranked achievement post
+carrying full social proof, indistinguishable from a real one. Fixed at the layer
+that was actually missing a boundary, not by trying to reconstruct every metric
+server-side (the offline training log a member's own device syncs has no structural
+validation on its contents and can't safely be trusted as a verification source without
+much larger work, so that path was deliberately not used): a new column records,
+authoritatively and only at insert time, whether an achievement's own definition is one
+of the kinds the server can currently verify: those unlocks are marked verified and may
+still be shared, while any not currently server-checkable are marked unverified and the
+sharing step now refuses them outright. Nothing about a legitimate member's real
+unlocks changes; the earlier-flagged gap in claim-time verification for the
+not-yet-checkable metrics remains open and tracked, but can no longer turn into a
+public, permanent post.
+
+**Secrets/crypto handling and the rest of the authorization re-check found nothing to
+fix** - no secret material lives client-side beyond the intentionally public anon key,
+every credential-bearing table stays behind RLS scoped to its own owner, and the
+authorization boundaries re-walked this round all held.
+
+Verified: full suite 1639/1639 (new regression coverage for the verified-flag trigger
+and the share-time gate), full browser-check 43/43, `supabase test db` 3369/3369 against
+real local Postgres, including a direct-insert test proving the trigger is authoritative
+even when a caller bypasses the claim RPC entirely.
+
 ## Live bug hunt, round 10 (final): cross-feature interaction and the full-app sweep — 2026-09-11
 
 The tenth and final round of the live bug hunt: feature-interaction

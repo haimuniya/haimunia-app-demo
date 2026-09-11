@@ -97,11 +97,18 @@ insert into public.private_records (user_id, record_type, record_id, payload) va
   (tests.uid('m2'), 'strength_entry', 'set-97-real',
    '{"exerciseId":"mv-97","type":"reps","weight":80,"reps":5,"sets":1,"date":"2026-09-05","ts":3000}');
 
+-- Security hunt round 6 (202609120001): member_achievements.verified is
+-- now computed from this definition's own metric/trigger_type by
+-- member_achievements_verified_trg - config carries metric:tenure_days so
+-- the directly-inserted row below (this fixture predates ach_claim
+-- entirely; it is standing in for "member already has a real achievement",
+-- not exercising the claim path) is recognized as verified, which
+-- ach_share() now requires.
 insert into public.achievement_definitions
   (id, code, name, description, category, trigger_type, threshold, repeatable, visibility, icon, enabled, config)
 values
   ('a0970000-0000-4000-8000-000000000001', 'test_forgery_guard', 'עשרה אימונים', 'עשרה אימונים',
-   'performance', 'PR_CREATED', 10, false, 'club', '⭐', true, '{"client_claimable": true}');
+   'performance', 'PR_CREATED', 10, false, 'club', '⭐', true, '{"client_claimable": true, "metric": "tenure_days"}');
 insert into public.member_achievements (id, user_id, achievement_id, visibility, unlocked_at) values
   ('b0970000-0000-4000-8000-000000000001', tests.uid('m2'), 'a0970000-0000-4000-8000-000000000001', 'club', now());
 

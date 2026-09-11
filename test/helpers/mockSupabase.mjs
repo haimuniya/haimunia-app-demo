@@ -740,7 +740,17 @@ export function createMockSupabase(seedTables = {}) {
             if (!repeatable && ma.some((r) => r.user_id === uid && r.code === code)) continue;
             const id = `ma-${++uidCounter}`;
             const visibility = (def && def.visibility) || "club";
-            ma.push({ id, user_id: uid, achievement_id: def ? def.id : null, code, visibility, shared_at: null, unlocked_at: new Date().toISOString(), repeatable, achievement_definitions: { code, name: def ? def.name : code, icon: def ? def.icon : null } });
+            // Security hunt round 6 (202609120001): member_achievements.verified
+            // is now computed server-side (member_achievements_verified_trg),
+            // true only for an ATTENDANCE_RECORDED-triggered or
+            // metric:tenure_days definition - mirrored here so a node test
+            // exercising ach_claim()->ach_share() sees the same refusal a real
+            // client would. Unseeded (defs.length === 0) calls default to
+            // verified, matching this mock's existing "skip seeding" shortcut.
+            const verified = !defs.length || !def
+              ? true
+              : def.trigger_type === "ATTENDANCE_RECORDED" || (def.config && def.config.metric === "tenure_days");
+            ma.push({ id, user_id: uid, achievement_id: def ? def.id : null, code, visibility, verified, shared_at: null, unlocked_at: new Date().toISOString(), repeatable, achievement_definitions: { code, name: def ? def.name : code, icon: def ? def.icon : null } });
             out.push({ code, member_achievement_id: id, visibility });
           }
           return Promise.resolve({ data: out, error: null });
@@ -751,6 +761,8 @@ export function createMockSupabase(seedTables = {}) {
           if (!rec) return Promise.resolve({ data: null, error: { message: "achievement not found" } });
           if (rec.user_id !== uid) return Promise.resolve({ data: null, error: { message: "not the owner" } });
           if (rec.visibility === "only_me") return Promise.resolve({ data: null, error: { message: "private achievement" } });
+          // Security hunt round 6 (202609120001).
+          if (rec.verified === false) return Promise.resolve({ data: null, error: { message: "achievement not verified" } });
           rec.shared_at = new Date().toISOString();
           const id = `ach-post-${++uidCounter}`;
           rows("workout_posts").push({ id, author_id: uid, post_type: "POST_ACHIEVEMENT", source_type: "achievement", source_id: rec.achievement_id, created_at: rec.shared_at });

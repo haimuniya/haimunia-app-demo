@@ -38,16 +38,23 @@ insert into public.private_records (user_id, record_type, record_id, payload) va
   (tests.uid('m2'), 'strength_entry', 'set-83-m2',
    '{"exerciseId":"mv-99","type":"reps","weight":80,"reps":3,"date":"2026-09-01","ts":900}');
 
+-- Security hunt round 6 (202609120001): member_achievements.verified is
+-- computed from each definition's own metric/trigger_type by
+-- member_achievements_verified_trg - config carries metric:tenure_days so
+-- the directly-inserted rows below (this fixture predates ach_claim
+-- entirely; standing in for "member already has a real achievement", not
+-- exercising the claim path) are recognized as verified, which ach_share()
+-- now requires.
 insert into public.achievement_definitions
   (id, code, name, description, category, trigger_type, threshold, repeatable, visibility, icon, enabled, config)
 values
   ('a0830000-0000-4000-8000-000000000001', 'test_share_club', 'עשרה שיאים', 'עשרה שיאים אישיים',
-   'performance', 'PR_CREATED', 10, false, 'club', '⭐', true, '{"client_claimable": true}'),
+   'performance', 'PR_CREATED', 10, false, 'club', '⭐', true, '{"client_claimable": true, "metric": "tenure_days"}'),
   -- A second definition, because member_achievements_once_idx allows one
   -- unlock per member per non-repeatable definition and this file needs a
   -- club-visible one and a private one for the SAME member.
   ('a0830000-0000-4000-8000-000000000002', 'test_share_private', 'עיטור פרטי', 'עיטור שמוגדר פרטי',
-   'performance', 'PR_CREATED', 1, false, 'only_me', '🔒', true, '{"client_claimable": true}');
+   'performance', 'PR_CREATED', 1, false, 'only_me', '🔒', true, '{"client_claimable": true, "metric": "tenure_days"}');
 
 insert into public.member_achievements (id, user_id, achievement_id, visibility, unlocked_at) values
   ('b0830000-0000-4000-8000-000000000001', tests.uid('m1'), 'a0830000-0000-4000-8000-000000000001', 'club',  '2026-09-02T08:00:00Z'),
