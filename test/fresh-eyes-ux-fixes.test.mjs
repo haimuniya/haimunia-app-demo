@@ -139,3 +139,59 @@ test("a near-empty progress chart (1-2 points) explains itself instead of just l
   ]);
   assert.doesNotMatch(threeNote, /ותראו כאן מגמה/, "the hint drops away once there's enough to actually trend");
 });
+
+// Live bug hunt (2026-09-11): saveSet() had no in-flight guard at all - a
+// rapid double-tap on the save CTA (a real, easy-to-hit case on a
+// touchscreen, especially post-workout) fired it twice before the first
+// call's render() had visibly changed anything, each creating its own
+// fresh uid() entry. Calling it twice back-to-back with no await in
+// between, exactly as two overlapping click events would, is the most
+// direct way to prove the guard actually blocks re-entry rather than
+// merely "usually winning the race" in a real browser.
+test("real-user report: rapid double-tap on save-set creates exactly one entry, not two", async () => {
+  const window = await bootApp();
+  await window.addMovement("Test Double-Tap Squat", "Squat");
+  window.applyFieldValue("step", "weight", 60);
+  window.applyFieldValue("step", "reps", 5);
+  window.applyFieldValue("step", "sets", 1);
+  assert.equal(window.totalLoggedEntries(), 0);
+  const p1 = window.saveSet();
+  const p2 = window.saveSet(); // fired before p1 has awaited anything
+  await Promise.all([p1, p2]);
+  assert.equal(window.totalLoggedEntries(), 1, "the second, overlapping call must be a no-op, not a second entry");
+});
+
+test("real-user report: rapid double-tap on save-wod creates exactly one entry, not two", async () => {
+  const window = await bootApp();
+  const wod = window.allWods()[0];
+  window.document.getElementById("tabWodBtn").click();
+  window.choosePickedWod(wod.id);
+  window.render();
+  window.setWodRx(true);
+  assert.equal(window.totalLoggedEntries(), 0);
+  const p1 = window.saveWod();
+  const p2 = window.saveWod();
+  await Promise.all([p1, p2]);
+  assert.equal(window.totalLoggedEntries(), 1, "the second, overlapping call must be a no-op, not a second entry");
+});
+
+// Live bug hunt (2026-09-11): clearAllData() is triggered from inside the
+// Settings sheet, which is still open at the moment it runs. Wiping the
+// stored name re-triggers the mandatory Welcome modal - but it used to open
+// ON TOP of the still-open Settings overlay, leaving two modal-overlays
+// open at once (verified live via
+// document.querySelectorAll(".modal-overlay.open")), right at the exact
+// moment a member most needs a coherent, single-dialog screen.
+test("real-user report: wiping all data from inside Settings does not leave Settings and Welcome open at the same time", async () => {
+  const window = await bootApp();
+  window.document.getElementById("navMenuBtn").click();
+  window.document.querySelector('[data-action="open-settings"]').click();
+  assert.equal(window.document.getElementById("settingsOverlay").classList.contains("open"), true);
+
+  await window.clearAllData();
+
+  const openOverlays = [...window.document.querySelectorAll(".modal-overlay.open")].map((el) => el.id);
+  assert.equal(openOverlays.length, 1, `exactly one dialog should be open, found: ${openOverlays.join(", ") || "(none)"}`);
+  assert.equal(window.document.getElementById("welcomeOverlay").classList.contains("open"), true, "Welcome is the one dialog that should be open, since the name was just wiped");
+  assert.equal(window.document.getElementById("settingsOverlay").classList.contains("open"), false, "Settings must have been closed, not left open underneath");
+});

@@ -176,3 +176,31 @@ test("an expired announcement drops out of the feed top area defensively, but a 
   assert.ok(announcementSection);
   assert.doesNotMatch(announcementSection.textContent, /תוכן ישן/, "the expired announcement's own body is not rendered in the feed top area");
 });
+
+// Live bug hunt (2026-09-11): this composer's body textarea used to allow
+// 2000 characters (both its own maxlength attribute and postAnnouncement()'s
+// own client-side slice), but the announcement's own feed card
+// (POST_ANNOUNCEMENT, produced server-side from this row) renders through
+// postBodyHtml() same as every other post type, hard-capped at
+// POST_BODY_MAX (1000 chars) with no ellipsis and no "read more" - anything
+// past 1000 was silently invisible to every member reading the card, with
+// zero indication anything was missing. Fixed by capping the composer
+// itself to match what actually displays, same as every other
+// post-composing surface in this file.
+test("the announcement composer cannot accept more than the feed card will actually display (was silently truncating past 1000 with no warning)", async () => {
+  const mock = staffMock();
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openFeed(window);
+
+  const form = window.document.getElementById("communityAnnouncement");
+  const textarea = form.querySelector('textarea[name="body"]');
+  assert.equal(textarea.maxLength, 1000, "the input itself must not accept more than the card can show, so there is nothing left to silently lose");
+
+  const longBody = "א".repeat(1500);
+  form.querySelector('input[name="title"]').value = "הודעה ארוכה";
+  textarea.value = longBody.slice(0, 1000); // what a real textarea with this maxlength would actually hold
+  form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+
+  await waitFor(() => mock.db.announcements.length === 1, 3000);
+  assert.equal(mock.db.announcements[0].body.length, 1000, "the stored body is exactly what the card can display - nothing gets silently cut later");
+});

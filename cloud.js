@@ -191,6 +191,16 @@
       // other surface a member is shown.
       roles: {},
       blockedIds: [], blocksLoaded: false, profileView: null,
+      // Live bug hunt (2026-09-11): every follow button across the app
+      // (directory, welcome post, classmates card, member row, profile
+      // dialog) rendered unconditionally as "מעקב" with no notion of
+      // whether the viewer already follows that person, and follow() had
+      // no in-flight guard - a member's second, well-intentioned tap on a
+      // button that never visibly changed silently unfollowed them (the
+      // insert's 23505 conflict is deliberately turned into a delete),
+      // with an identical toast either way. Same shape as blockedIds/
+      // blocksLoaded just above, and followBusy mirrors suggestions.busy.
+      followingIds: [], followingLoaded: false, followBusy: {},
       // COMM-231 members directory. items is the paginated roster loaded so
       // far (display_name order, cursor = the last row's own display_name,
       // page size DIRECTORY_PAGE_SIZE). query is what the member typed, kept
@@ -654,7 +664,7 @@
       // hold the free-text inputs for the assign-by-handle and mark-contacted
       // note fields, keyed by member id, read only at click time (no rerender
       // on input, so typing never loses focus).
-      welcome: { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null },
+      welcome: { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null, welcomed: {} },
       // COMM-226/304. Gated on featureFlags.coachEngage (see the root).
       // profiles is a batched user_id -> {display_name,handle,avatar_url} map
       // for the open flags in .items, read the same way welcome.contactedIds
@@ -1329,7 +1339,7 @@
       // that at read time now (see weeklyChallengeIsValid), so there is no
       // ordering left to preserve and no reason to serialise a round trip in
       // front of thirteen parallel ones.
-      await Promise.all([loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubWods(), loadClubWodBoards(), loadClubSummary(), loadBlockedIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadEvents(), loadOnboardingProgress(), loadOnboardingStepContent()]);
+      await Promise.all([loadPermissions(), loadFeed(), loadStreaks(), loadAnnouncements(), loadWeeklyChallenge(), loadClubWods(), loadClubWodBoards(), loadClubSummary(), loadBlockedIds(), loadFollowingIds(), loadMyAchievements(), loadNotifUnread(), loadNotifPrefs(), loadPins(), loadEvents(), loadOnboardingProgress(), loadOnboardingStepContent()]);
       if (isStaff()) await Promise.all([loadInactiveMembers(), loadNewMembers(), loadActivitySignal()]);
       if (hasPerm(PERM.COMMENT_MODERATE) || isAdmin()) await loadModQueue();
       if (hasPerm(PERM.MEMBER_RESTRICT) || hasPerm(PERM.COMMENT_MODERATE) || isAdmin()) await loadRestrictions();
@@ -2172,7 +2182,18 @@
   async function postAnnouncement(form) {
     if (!state.user || !isStaff()) return;
     const title = String(form.elements.title.value || "").trim().slice(0, 120);
-    const body = String(form.elements.body.value || "").trim().slice(0, 2000);
+    // Live bug hunt (2026-09-11): this used to slice at 2000, but the
+    // announcement's OWN feed card (POST_ANNOUNCEMENT, produced server-side
+    // from this row) renders through the same postBodyHtml() every other
+    // post type does, hard-capped at POST_BODY_MAX (1000) with no ellipsis
+    // and no "read more" - anything past 1000 was silently invisible to
+    // every member reading the card, mid-word, with zero indication
+    // anything was missing. Capped at input time instead, matching every
+    // other post-composing surface in this file (the main composer's own
+    // textarea already uses maxlength="${POST_BODY_MAX}") - an admin now
+    // gets immediate feedback from the textarea's own maxlength (updated
+    // alongside this) rather than typing content that quietly vanishes.
+    const body = String(form.elements.body.value || "").trim().slice(0, POST_BODY_MAX);
     const priorityRaw = String((form.elements.priority && form.elements.priority.value) || "normal");
     const priority = ANNOUNCEMENT_PRIORITY_OPTIONS.some((o) => o.value === priorityRaw) ? priorityRaw : "normal";
     const expiresAtRaw = String((form.elements.expiresAt && form.elements.expiresAt.value) || "").trim();
@@ -3279,6 +3300,34 @@
     state.coach.welcome.loading = false;
     state.coach.welcome.loaded = true;
     rerender();
+    // Live bug hunt (2026-09-11): "ברכה" had no duplicate-send guard at
+    // all beyond the in-flight lock in coachWelcomeMember() below - once
+    // that call finished, the button was available again for a fresh,
+    // deliberate second tap (or the SAME data surviving a navigate-away-
+    // and-back), with nothing remembering "already welcomed". A coach
+    // could spam unlimited duplicate welcome comments on one member.
+    // Reconstructed from real server data, same shape as
+    // loadCoachCelebrate()'s own congratulated map just above: one
+    // unscoped POST_NEW_MEMBER fetch (mirrors findNewMemberPost()'s own
+    // query, batched here instead of once per member) to find each
+    // member's post, then one batched comment lookup for an exact-body
+    // match against WELCOME_TEMPLATE_BODY.
+    const { data: newMemberPosts } = await client.from("workout_posts").select("id,metadata").eq("post_type", "POST_NEW_MEMBER");
+    const postIdByMember = {};
+    for (const p of (newMemberPosts || [])) {
+      if (p.metadata && p.metadata.member_id) postIdByMember[p.metadata.member_id] = p.id;
+    }
+    const postIds = Object.values(postIdByMember);
+    const { data: welcomeComments } = postIds.length
+      ? await client.from("post_comments").select("post_id,body").in("post_id", postIds)
+      : { data: [] };
+    const welcomed = {};
+    for (const memberId of Object.keys(postIdByMember)) {
+      const pid = postIdByMember[memberId];
+      if ((welcomeComments || []).some((c) => c.post_id === pid && c.body === WELCOME_TEMPLATE_BODY)) welcomed[memberId] = true;
+    }
+    state.coach.welcome.welcomed = welcomed;
+    rerender();
   }
   // Same lookup shape ensureEventCompanionPost() below already uses for
   // "does a companion post already exist for this record": no stored
@@ -3309,7 +3358,12 @@
   // add_post_comment call with a near-duplicate template - one Hebrew
   // welcome string, one place it is sent from.
   async function coachWelcomeMember(memberId) {
-    if (!memberId || state.coach.welcome.busy) return;
+    // welcomeNewMember() itself is now the authoritative duplicate-send
+    // guard (its own comment explains why - two entry points share it);
+    // this proactive check is what keeps the dashboard button from ever
+    // reading "ברכה" for a member already welcomed in an earlier session,
+    // same as congratulated/reachedOut elsewhere in this file.
+    if (!memberId || state.coach.welcome.busy || state.coach.welcome.welcomed[memberId]) return;
     state.coach.welcome.busy = memberId;
     rerender();
     const post = await findNewMemberPost(memberId);
@@ -3319,7 +3373,8 @@
       rerender();
       return;
     }
-    await welcomeNewMember(post.id);
+    const welcomed = await welcomeNewMember(post.id);
+    if (welcomed) state.coach.welcome.welcomed[memberId] = true;
     state.coach.welcome.busy = null;
     rerender();
   }
@@ -5235,7 +5290,17 @@
       state.admin.pinError = (error.message || "") === "pin_limit_reached"
         ? "אפשר להצמיד עד שלושה פריטים. יש לבטל הצמדה קיימת קודם."
         : "לא ניתן היה לעדכן את ההצמדות.";
-      return rerender();
+      // Live bug hunt (2026-09-11): state.admin.pinError only ever renders
+      // inside renderPinnedStrip() (Feed tab's own club rail) - pinning is
+      // reachable from post/challenge/event surfaces too, so hitting the
+      // cap from any of THOSE looked like the tap did nothing at all unless
+      // the member happened to also be on the Feed tab. setMessage() is
+      // this app's global, viewport-anchored notice channel (see its own
+      // comment above) and already carries the SUCCESS case just below -
+      // the failure case belongs on the same channel, not a second,
+      // narrower one only success uses consistently.
+      setMessage(state.admin.pinError);
+      return;
     }
     await loadPins();
     setMessage("הפריט הוצמד");
@@ -5248,7 +5313,11 @@
     state.admin.pinError = "";
     const { error } = await client.rpc("pin_clear", { p_target_type: targetType, p_target_id: targetId });
     pinBusy[key] = false;
-    if (error) { state.admin.pinError = "לא ניתן היה לעדכן את ההצמדות."; return rerender(); }
+    if (error) {
+      state.admin.pinError = "לא ניתן היה לעדכן את ההצמדות.";
+      setMessage(state.admin.pinError);
+      return;
+    }
     await loadPins();
     setMessage("ההצמדה בוטלה");
   }
@@ -6074,6 +6143,24 @@
     state.members.blocksLoaded = true;
   }
   function isBlockedUser(userId) { return !!userId && state.members.blockedIds.indexOf(userId) >= 0; }
+
+  async function loadFollowingIds() {
+    if (!state.user) { state.members.followingIds = []; state.members.followingLoaded = true; return; }
+    const { data } = await client.from("follows").select("followed_id").eq("follower_id", state.user.id);
+    state.members.followingIds = (data || []).map((r) => r.followed_id);
+    state.members.followingLoaded = true;
+  }
+  function isFollowingUser(userId) { return !!userId && state.members.followingIds.indexOf(userId) >= 0; }
+  // Every "מעקב" button in the app shares this so the label/disabled-state/
+  // data-action stay identical everywhere rather than five copies drifting.
+  // Once already following, the button still triggers the same follow()
+  // toggle (an unfollow) - same control, no separate unfollow affordance to
+  // keep in sync with this one.
+  function followButtonHtml(userId) {
+    const following = isFollowingUser(userId);
+    const busy = !!state.members.followBusy[userId];
+    return `<button class="chip-btn${following ? " selected" : ""}" data-community-action="follow" data-id="${esc(userId)}"${busy ? " disabled" : ""}>${busy ? "…" : (following ? "עוקבים" : "מעקב")}</button>`;
+  }
 
   // ---- Reactions (COMM-120) ----------------------------------------------
 
@@ -7543,17 +7630,38 @@
   // are unaffected.
   async function follow(userId) {
     if (!state.user) return { error: { message: "not signed in" } };
+    // Live bug hunt (2026-09-11): no in-flight guard meant a fast double-tap
+    // (the natural reaction to a button that never visibly changed) fired
+    // this twice - the second call's insert always hits the first call's
+    // still-fresh row and 23505s, which the branch below turns into an
+    // unfollow. Same shape as reactionBusy on the cheer button.
+    if (state.members.followBusy[userId]) return { error: null };
+    state.members.followBusy[userId] = true;
+    rerender();
     const { error } = await client.from("follows").insert({ follower_id: state.user.id, followed_id: userId });
     let finalError = error || null;
+    let nowFollowing = !error;
     if (error && error.code === "23505") {
       const del = await client.from("follows").delete().eq("follower_id", state.user.id).eq("followed_id", userId);
       finalError = del.error || null;
+      nowFollowing = false;
     }
     // COMM-170. This control toggles: the 23505 branch above is an
     // unfollow, and a rejected insert is neither. Only a real new follow
     // edge is tracked, and there is no member_unfollowed in the event set.
     else if (!error) track(A.MEMBER_FOLLOWED, { user_id: userId });
-    await loadFeed(); setMessage(finalError ? "עדכון המעקב נכשל" : "המעקב עודכן");
+    if (!finalError) {
+      const ids = state.members.followingIds;
+      state.members.followingIds = nowFollowing
+        ? (ids.indexOf(userId) >= 0 ? ids : ids.concat([userId]))
+        : ids.filter((id) => id !== userId);
+    }
+    delete state.members.followBusy[userId];
+    await loadFeed();
+    // Distinct wording per direction - "המעקב עודכן" for both left a member
+    // with zero confirmation of which action just happened, on a button
+    // that itself never visibly changed either (see followButtonHtml()).
+    setMessage(finalError ? "עדכון המעקב נכשל" : (nowFollowing ? "התחלתם לעקוב" : "הפסקתם לעקוב"));
     return { error: finalError };
   }
   async function block(userId) {
@@ -8673,7 +8781,7 @@
     return { members: "חברים", events: "אירועים", challenges: "אתגרים" }[key] || key;
   }
   function searchMemberRowHtml(person) {
-    return `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32, person.avatar_url)}<div><div style="font-weight:700;">${nameHtml(person.display_name, person.handle)}${isCoachRole(memberRole(person.id)) ? " " + coachBadgeHtml(memberRole(person.id)) : ""}</div><div style="color:var(--steel);font-size:12px;"><bdi>@${esc(person.handle)}</bdi> ${bidiText(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="view-profile" data-id="${esc(person.id)}">פרופיל</button>${person.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${esc(person.id)}">מעקב</button>`}<button class="chip-btn" data-community-action="block" data-id="${esc(person.id)}">חסימה</button></div></div>`;
+    return `<div class="log-row"><div class="flex gap-10" style="align-items:center;">${avatarHtml(person.display_name || person.handle, 32, person.avatar_url)}<div><div style="font-weight:700;">${nameHtml(person.display_name, person.handle)}${isCoachRole(memberRole(person.id)) ? " " + coachBadgeHtml(memberRole(person.id)) : ""}</div><div style="color:var(--steel);font-size:12px;"><bdi>@${esc(person.handle)}</bdi> ${bidiText(person.bio || "")}</div></div></div><div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="view-profile" data-id="${esc(person.id)}">פרופיל</button>${person.allow_follows === false ? "" : followButtonHtml(person.id)}<button class="chip-btn" data-community-action="block" data-id="${esc(person.id)}">חסימה</button></div></div>`;
   }
   function searchEventRowHtml(ev) {
     // No event detail surface exists yet (COMM-213 builds it), so the row
@@ -10677,7 +10785,7 @@
           ${joined ? `<div style="color:var(--steel);font-size:12px;">${esc(String(joined).slice(0, 10))}</div>` : ""}
         </div>
       </div>`;
-    const extra = `${memberId ? `<button class="chip-btn" data-community-action="follow" data-id="${esc(memberId)}">מעקב</button>` : ""}<button class="chip-btn" data-community-action="welcome-member" data-id="${esc(post.id)}">ברכה</button>`;
+    const extra = `${memberId ? followButtonHtml(memberId) : ""}<button class="chip-btn" data-community-action="welcome-member" data-id="${esc(post.id)}">ברכה</button>`;
     return postCardShell(post, inner, { extra, authorless: true, clubName: "המועדון", hideMenu: true });
   }
 
@@ -11745,6 +11853,7 @@
     const sessions = Number(m.sessions_logged) || 0;
     const trained = sessions ? `${sessions} אימונים באפליקציה` : "לא רשמו אימון באפליקציה";
     const contacted = !!state.coach.welcome.contactedIds[m.id];
+    const welcomed = !!state.coach.welcome.welcomed[m.id];
     const busy = state.coach.welcome.busy === m.id;
     const assignDraft = (state.coach.welcome.assignDrafts || {})[m.id] || "";
     const contactDraft = (state.coach.welcome.contactDrafts || {})[m.id] || "";
@@ -11758,7 +11867,7 @@
         </div>
       </div>
       <div class="chip-row">
-        <button class="chip-btn" data-community-action="coach-welcome-member" data-id="${esc(m.id)}"${busy ? " disabled" : ""}>ברכה</button>
+        <button class="chip-btn" data-community-action="coach-welcome-member" data-id="${esc(m.id)}"${(busy || welcomed) ? " disabled" : ""}>${welcomed ? "ברכה נשלחה" : "ברכה"}</button>
         <button class="chip-btn" data-community-action="view-profile" data-id="${esc(m.id)}">צפייה בפרופיל</button>
         ${m.assigned_coach_id
           ? `<button class="chip-btn" data-community-action="coach-assign-clear" data-id="${esc(m.id)}"${busy ? " disabled" : ""}>ביטול שיוך מאמן/ת</button>`
@@ -13249,7 +13358,7 @@
         ${avatarHtml(name, 32, item.avatar_url)}
         <span style="min-width:0;"><span style="font-weight:700;display:block;">${esc(name)}</span>${item.handle ? `<span style="color:var(--steel);font-size:12px;"><bdi>@${esc(item.handle)}</bdi></span>` : ""}</span>
       </button>
-      <div class="chip-row" style="margin-top:0;"><button class="chip-btn" data-community-action="follow" data-id="${esc(item.user_id)}">מעקב</button></div>
+      <div class="chip-row" style="margin-top:0;">${followButtonHtml(item.user_id)}</div>
     </div>`;
   }
   function renderClassmatesTodayCard() {
@@ -13924,11 +14033,34 @@
     setMessage("הפוסט נמחק");
     rerender();
   }
+  const WELCOME_TEMPLATE_BODY = "ברוך/ה הבא/ה למועדון! 💪";
+  // Live bug hunt (2026-09-11): two entry points share this write
+  // (coachWelcomeMember() below, from the coach dashboard; and the direct
+  // "welcome-member" tap on a new-member feed card) and NEITHER guarded
+  // against a duplicate send - the dashboard's own busy flag only covered
+  // one in-flight call, not "already sent, ever", and the feed-card path
+  // had no guard at all. A coach could spam unlimited duplicate welcome
+  // comments on the same member. The check belongs here, in the one shared
+  // write path, so both callers are covered rather than fixing one and
+  // leaving the other exactly as broken. welcomeBusy is keyed by postId,
+  // same in-flight-guard shape as reactionBusy/followBusy elsewhere.
+  // Returns true when the post ends this call in a "welcomed" state
+  // (already was, or just now succeeded) so coachWelcomeMember() can update
+  // its own proactive welcomed map; false on a real failure.
+  const welcomeBusy = {};
   async function welcomeNewMember(postId) {
-    if (!state.user) return;
-    const { error } = await client.rpc("add_post_comment", { p_post_id: postId, p_body: "ברוך/ה הבא/ה למועדון! 💪" });
+    if (!state.user || welcomeBusy[postId]) return false;
+    welcomeBusy[postId] = true;
+    const already = await client.from("post_comments").select("id").eq("post_id", postId).eq("body", WELCOME_TEMPLATE_BODY).limit(1);
+    if (already.data && already.data.length) {
+      delete welcomeBusy[postId];
+      return true;
+    }
+    const { error } = await client.rpc("add_post_comment", { p_post_id: postId, p_body: WELCOME_TEMPLATE_BODY });
+    delete welcomeBusy[postId];
     setMessage(error ? "שליחת הברכה נכשלה" : "הברכה נשלחה");
     if (!error && typeof loadCommentsFor === "function") loadCommentsFor(postId);
+    return !error;
   }
 
   // ---- PR share prompt (COMM-105) --------------------------------------
@@ -15398,7 +15530,7 @@
     const badge = isCoachRole(memberRole(m.id)) ? " " + coachBadgeHtml(memberRole(m.id)) : "";
     const actionBtn = side === "following"
       ? `<button class="chip-btn" data-community-action="following-unfollow" data-id="${esc(m.id)}">הפסקת מעקב</button>`
-      : (m.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${esc(m.id)}">מעקב</button>`);
+      : (m.allow_follows === false ? "" : followButtonHtml(m.id));
     return `<div class="log-row"><button class="link-btn" data-community-action="view-profile" data-id="${esc(m.id)}" style="padding:0;display:flex;gap:10px;align-items:center;color:inherit;text-align:right;">${avatarHtml(name, 32, m.avatar_url)}<span style="font-weight:700;">${esc(name)}${badge}</span></button><div class="chip-row" style="margin-top:0;">${actionBtn}</div></div>`;
   }
   function followListSectionHtml(pv, side, label, count) {
@@ -15482,7 +15614,7 @@
       // pushed it above.
       bodyHtml = renderFollowingTab(pv, d);
     }
-    const followBtn = d.allow_follows === false ? "" : `<button class="chip-btn" data-community-action="follow" data-id="${esc(pv.userId)}">מעקב</button>`;
+    const followBtn = d.allow_follows === false ? "" : followButtonHtml(pv.userId);
     // 2026-09-05. A member's bio/display name were reportable nowhere - only
     // posts and comments were. Own profile has no report button.
     const reportProfileBtn = (state.user && pv.userId === state.user.id) ? "" : `<button class="chip-btn" data-community-action="report-profile" data-id="${esc(pv.userId)}">דיווח</button>`;
@@ -17095,7 +17227,7 @@
     // COMM-321. announcements_read already empties liveAnnouncements above
     // once the module is off; the composer form has no data of its own to
     // fall silent through, so it needs its own explicit gate.
-    const announceComposer = staff ? (!isModuleEnabled("announcements") ? "" : `<form id="communityAnnouncement" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">הודעה חדשה למועדון<span class="admin-tag">ניהול</span></div>${field("communityAnnouncement", "title", "כותרת", `<input class="text-input" name="title" placeholder="כותרת" required/>`)}${field("communityAnnouncement", "body", "תוכן", `<textarea class="text-input" name="body" maxlength="2000" placeholder="תוכן ההודעה" required></textarea>`)}<label class="field"><span class="field-label">רמת חשיבות</span><select class="text-input" name="priority">${ANNOUNCEMENT_PRIORITY_OPTIONS.map((o) => `<option value="${o.value}"${o.value === "normal" ? " selected" : ""}>${o.label}</option>`).join("")}</select></label>${dateTimeField("communityAnnouncement", "expiresAt", "תפוגה (אופציונלי)", `<input class="text-input" name="expiresAt" type="datetime-local" placeholder="ללא תפוגה"/>`)}<label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="pinToday"/><span style="font-size:12.5px;color:var(--steel);">סמן כהערת האימון להיום</span></label><button class="chip-btn primary" type="submit"${state.club.announcementSaving ? " disabled" : ""} style="margin-top:10px;">${state.club.announcementSaving ? "מפרסם…" : "פרסום הודעה"}</button></form>`) : "";
+    const announceComposer = staff ? (!isModuleEnabled("announcements") ? "" : `<form id="communityAnnouncement" class="chart-card admin-card" style="margin-top:10px;"><div style="font-weight:800;margin-bottom:10px;">הודעה חדשה למועדון<span class="admin-tag">ניהול</span></div>${field("communityAnnouncement", "title", "כותרת", `<input class="text-input" name="title" placeholder="כותרת" required/>`)}${field("communityAnnouncement", "body", "תוכן", `<textarea class="text-input" name="body" maxlength="${POST_BODY_MAX}" placeholder="תוכן ההודעה" required></textarea>`)}<label class="field"><span class="field-label">רמת חשיבות</span><select class="text-input" name="priority">${ANNOUNCEMENT_PRIORITY_OPTIONS.map((o) => `<option value="${o.value}"${o.value === "normal" ? " selected" : ""}>${o.label}</option>`).join("")}</select></label>${dateTimeField("communityAnnouncement", "expiresAt", "תפוגה (אופציונלי)", `<input class="text-input" name="expiresAt" type="datetime-local" placeholder="ללא תפוגה"/>`)}<label class="field flex gap-6" style="align-items:center;"><input type="checkbox" name="pinToday"/><span style="font-size:12.5px;color:var(--steel);">סמן כהערת האימון להיום</span></label><button class="chip-btn primary" type="submit"${state.club.announcementSaving ? " disabled" : ""} style="margin-top:10px;">${state.club.announcementSaving ? "מפרסם…" : "פרסום הודעה"}</button></form>`) : "";
     const otherAnnouncements = liveAnnouncements.filter((a) => a !== pinnedToday);
     // COMM-155. A staff holder of community.content.pin gets a pin toggle on
     // each announcement. Post, challenge and event pin affordances live on
@@ -19272,7 +19404,7 @@
         state.analytics.registrationFunnel = { loading: false, loaded: false, error: false, errorText: "", data: null };
         state.recaps.view = null; state.recaps.monthly = { loading: false, loaded: false, error: false, row: null };
         state.coach.celebrate = { items: [], loading: false, loaded: false, error: false, congratulated: {}, busy: null };
-        state.coach.welcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null };
+        state.coach.welcome = { members: [], loading: false, loaded: false, error: false, contactedIds: {}, assignDrafts: {}, contactDrafts: {}, busy: null, welcomed: {} };
         state.coach.engage = { items: [], loading: false, loaded: false, error: false, profiles: {}, reachedOut: {}, busy: null };
         state.coach.memberOfWeek = { loading: false, loaded: false, error: false, envelope: null, publishedProfile: null, previousProfile: null, pickHandle: "", pickReason: "", busy: null, publishErr: "" };
         state.coach.monthlyRecap = { loading: false, loaded: false, error: false, row: null, busy: null, publishErr: "" };

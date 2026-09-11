@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.18.10";
+const APP_VERSION = "4.19.0";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -1805,7 +1805,24 @@ function heaviestLoggedWeightFor(id, excludeId) {
 // after. This is a confirmation, never a rejection; "כן, לשמור" always saves
 // the number as typed, because the one thing worse than an unchallenged typo
 // is an app that refuses to believe a real PR.
+// Live bug hunt (2026-09-11): rapid double-tap on the save CTA - a real,
+// easy-to-hit case on a touchscreen, especially post-workout with tired/
+// sweaty hands - fired this function twice before the first call's render()
+// had visibly changed anything to signal "already saved", each creating its
+// own fresh uid() entry. Not a storage race (dbPut is awaited, but the
+// SYNCHRONOUS entry-creation/array-push above it runs to completion on
+// every call regardless); a plain in-flight guard around the whole
+// function is what's needed, same shape as cloud.js's reactionBusy for the
+// exact same class of bug on the cheer button. try/finally so every
+// existing early-return path (unchosen movement, invalid numbers, the
+// absurd-weight sanity-confirm prompt) still releases the guard - none of
+// those are "a save is in flight", only the path that reaches the actual
+// entries.unshift() below is.
+let savingSet = false;
 async function saveSet(sanityConfirmed) {
+  if (savingSet) return;
+  savingSet = true;
+  try {
   // COMM-360: refuse to save against the placeholder movement nobody
   // actually picked - the empty-state prompt has no save affordance of its
   // own, but defend anyway (same reasoning as saveWod()'s own guard).
@@ -1940,6 +1957,7 @@ async function saveSet(sanityConfirmed) {
     }
     if (emitPR && prDetail) emitCommunityPrCreated(entry, mov, prDetail);
   }
+  } finally { savingSet = false; }
 }
 // A ladder (working-set session: same exercise/day, different weight+reps
 // each rung) is just consecutive saveSet() calls tagged with one groupId —
@@ -2157,6 +2175,7 @@ function runAppConfirm() {
   if (c.action === "delete-entry") deleteEntry(c.payload.id);
   else if (c.action === "delete-wod-entry") deleteWodEntry(c.payload.id);
   else if (c.action === "delete-measure-type") deleteMeasureType(c.payload.id);
+  else if (c.action === "delete-measurement-entry") deleteMeasurementEntry(c.payload.id);
   else if (c.action === "save-set") saveSet(true);
   else render();
 }
@@ -2391,10 +2410,46 @@ async function saveMeasurement(typeId) {
   try { await dbPutMeasurement(entry); storageOK = true; } catch (e) { noteStorageError(e); }
   renderMeasureArea();
 }
+// Live bug hunt (2026-09-11): this deleted a single measurement value
+// immediately on tap, with no confirmation and no undo - the only
+// destructive action left in the app without either, next to every sibling
+// delete (a logged set, a WOD entry, an entire measure TYPE) which has both.
+// One accidental tap on the trash icon lost a real, hand-entered data point
+// with no recovery. Mirrors askDeleteEntry/deleteEntry/restoreEntry above.
+function askDeleteMeasurementEntry(id) {
+  const entry = measureEntries.find((e) => e.id === id);
+  if (!entry) return;
+  const type = measureTypes.find((t) => t.id === entry.typeId);
+  askAppConfirm({
+    title: "מחיקת מדידה",
+    message: `${type ? type.name : "המדידה"} — ${entry.value} ס"מ, ${fmtDate(entry.date)}. המדידה תימחק מהמכשיר; אפשר יהיה לבטל למשך כמה שניות.`,
+    confirmLabel: "מחיקה", destructive: true,
+    action: "delete-measurement-entry", payload: { id },
+    opener: { action: "delete-measurement-entry", id },
+  });
+}
 async function deleteMeasurementEntry(id) {
+  const removed = measureEntries.find((e) => e.id === id);
   measureEntries = measureEntries.filter((e) => e.id !== id);
   try { await dbDeleteMeasurement(id); } catch (e) { noteStorageError(e); }
-  renderMeasureArea();
+  if (removed) {
+    const type = measureTypes.find((t) => t.id === removed.typeId);
+    offerUndo(`${type ? type.name : "המדידה"} — ${removed.value} ס"מ נמחקה`, () => restoreMeasurementEntry(removed));
+  }
+  // Full render(), not renderMeasureArea(): the undo toast just offered
+  // above is part of #content's own outer shell (renderToastBar(), see
+  // render()), not the measurements section - renderMeasureArea() alone
+  // would leave the toast built in memory but never actually painted,
+  // exactly the same reason deleteMeasureType() (the sibling this mirrors)
+  // already calls the full render().
+  render();
+}
+// Same insert-and-resort shape restoreEntry() uses for a logged set.
+async function restoreMeasurementEntry(entry) {
+  measureEntries = measureEntries.filter((e) => e.id !== entry.id);
+  measureEntries.unshift(entry);
+  try { await dbPutMeasurement(entry); storageOK = true; } catch (e) { noteStorageError(e); }
+  render();
 }
 
 const USER_NAME_KEY = "haimunia-demo:userName";
@@ -2925,7 +2980,19 @@ async function clearAllData() {
   confirmClear = false;
   renderUserGreeting();
   render();
-  if (userName === null) openWelcomeModal();
+  // Live bug hunt (2026-09-11): "מחיקת כל הנתונים" is triggered from inside
+  // Settings, which is still open at this point - opening Welcome on top of
+  // it left TWO modal-overlays open at once (verified live:
+  // document.querySelectorAll(".modal-overlay.open") returned both ids
+  // simultaneously), violating the single-dialog-open invariant
+  // scene-dialog-stacking.mjs guards elsewhere. Welcome is escapable:false
+  // by design (a first run is meant to be stepped through, not dismissed),
+  // so with Settings still open underneath, a back-press/Escape right after
+  // a full data wipe silently closed the HIDDEN Settings sheet instead of
+  // doing anything the member could see - exactly the moment back doing
+  // nothing is most confusing. Close Settings first; closeSettings() is
+  // already a safe no-op if it wasn't the one that triggered this.
+  if (userName === null) { closeSettings(); openWelcomeModal(); }
 }
 
 // ---------- WOD helpers & actions ----------
@@ -3394,7 +3461,13 @@ function builderMovementsToDesc(movements) {
     .join(", ");
 }
 
+// Same in-flight guard as saveSet() above, same live-report double-tap bug
+// reproduced against the WOD save CTA too.
+let savingWod = false;
 async function saveWod() {
+  if (savingWod) return;
+  savingWod = true;
+  try {
   const w = wodById(selectedWodId);
   // COMM-360: no WOD chosen yet (selectedWodId now defaults to null, not a
   // real WOD) - the empty state has no save button, but defend anyway.
@@ -3451,6 +3524,7 @@ async function saveWod() {
   } else {
     celebrateAfterSave(isPR ? `${w.name} — ${formatWodEntry(entry)}` : null);
   }
+  } finally { savingWod = false; }
 }
 function startEditWodEntry(id) {
   const entry = wodEntries.find((e) => e.id === id);
@@ -4539,7 +4613,7 @@ function renderMeasureArea() {
         <div class="steppers" style="margin-top:14px; margin-bottom:0;">
           ${renderStepper(t.id, 'ס"מ', measureValues[t.id], 0.5, 0, "measure-step")}
         </div>
-        <button data-action="save-measurement" data-id="${esc(t.id)}" class="save-btn" style="max-width:none; margin-top:14px;">רישום מדידה — היום</button>
+        <button data-action="save-measurement" data-id="${esc(t.id)}" class="save-btn" style="max-width:none; margin-top:14px;"${measureValues[t.id] > 0 ? "" : " disabled"}>רישום מדידה — היום</button>
         ${recent.length ? `
         <div class="log-list" style="margin-top:14px;">
           ${recent.map((e) => `
@@ -4885,6 +4959,17 @@ const FIELD_ACTIONS = {
     sync: (field, value) => {
       const inp = document.querySelector(`.stepper-val[data-action="measure-step"][data-field="${cssSel(field)}"]`);
       if (inp) inp.value = value;
+      // Live bug hunt (2026-09-11): "רישום מדידה — היום" silently did
+      // nothing at value 0 (a fresh measure type's own default), with zero
+      // feedback - a member could tap it repeatedly thinking it was broken.
+      // The save button is disabled at 0 instead (see renderMeasureArea());
+      // this stepper action is the ::-related, in-place-DOM-patch path
+      // (see applyFieldValue() above - it calls only this sync(), never a
+      // full render()), so the button's disabled state has to be kept in
+      // sync here too, or it would stay stuck disabled after the member
+      // raises the value above 0.
+      const btn = document.querySelector(`[data-action="save-measurement"][data-id="${cssSel(field)}"]`);
+      if (btn) btn.disabled = !(value > 0);
     },
   },
 };
@@ -6473,7 +6558,7 @@ document.addEventListener("click", (e) => {
   }
   else if (action === "delete-measure-type") { askDeleteMeasureType(el.dataset.id); }
   else if (action === "save-measurement") { saveMeasurement(el.dataset.id); }
-  else if (action === "delete-measurement-entry") { deleteMeasurementEntry(el.dataset.id); }
+  else if (action === "delete-measurement-entry") { askDeleteMeasurementEntry(el.dataset.id); }
   else if (action === "save-user-name") { saveWelcomeForm(document.getElementById("welcomeNameInput").value); }
   else if (action === "skip-user-name") { saveWelcomeForm(""); }
   else if (action === "cancel-welcome-name") { closeWelcomeModal(); }

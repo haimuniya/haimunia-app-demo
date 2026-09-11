@@ -1,3 +1,52 @@
+## A full site-wide live bug hunt, three fresh agents actually using the app — 2026-09-11
+
+Asked to check the whole site again for live bugs. Ran three independent agents in
+parallel, each driving the real rendered app in Chromium against the mocked backend
+(never production) rather than reading code: core training log, Community's
+member-facing surfaces, and Community's coach/admin surfaces. Fixed all 8 confirmed,
+reproduced findings:
+
+- **Rapid double-tap on the save CTA created duplicate entries** - `saveSet()` and
+  `saveWod()` had no in-flight guard at all; two overlapping clicks each created their
+  own fresh entry. Same in-flight-guard shape as cloud.js's `reactionBusy`, via a
+  `try`/`finally` around each function so every existing early-return path still
+  releases it.
+- **A fresh measurement type's save button silently did nothing at its default 0
+  value** - now disabled at 0, kept in sync as the stepper moves (its own tap handler
+  patches the DOM in place rather than triggering a full render, so the button's
+  disabled state has to be updated from that same place).
+- **Deleting a single measurement value had no confirmation and no undo** - the only
+  destructive action left in the app without either. Mirrors `askDeleteEntry`/
+  `restoreEntry`.
+- **"מחיקת כל הנתונים" left Settings and the re-triggered Welcome modal open at the
+  same time** - Settings is now explicitly closed first.
+- **A club announcement could silently lose everything past 1000 characters, mid-word,
+  with no ellipsis** - the composer allowed 2000 while every feed card's own render
+  path (`postBodyHtml()`) has always capped display at 1000. Capped the composer to
+  match what actually displays, like every other post-composing surface already does.
+- **The Follow button never reflected whether you already followed someone, anywhere
+  in the app** (directory, welcome post, classmates card, member row, profile dialog)
+  **and had no in-flight guard** - a second, well-intentioned tap on a button that
+  never visibly changed silently unfollowed the person (the insert's 23505 conflict is
+  deliberately turned into a delete), with an identical toast either way. Added a
+  `followingIds` cache (loaded once, updated optimistically) and a `followBusy` guard,
+  both read through one shared `followButtonHtml()` every call site now renders
+  through, plus distinct follow/unfollow toast copy.
+- **The coach "Welcome" tool had no duplicate-send guard beyond one in-flight lock** -
+  once a call finished, a fresh tap (or the same state after navigating away and back)
+  could spam unlimited duplicate welcome comments on one member. The guard now lives
+  in `welcomeNewMember()` itself, the one write path both the dashboard button and a
+  separate feed-card button share, with the dashboard's own welcomed-state
+  reconstructed from real server data the same way Celebrate/Engage already are.
+- **Hitting the 3-pin cap failed silently outside the Feed tab** - the error only ever
+  rendered inside the Feed tab's own club rail, so pinning from a challenge/event
+  dialog just looked like the tap did nothing. Routed through `setMessage()`, this
+  app's one genuinely global, viewport-anchored notice channel - the same one the
+  success case already used.
+
+Verified: full suite 1565/1565 (12 new regression tests, one per fix plus a couple of
+paired controls), full browser-check 39/39.
+
 ## Edge-swipe-back was falling through to the OS on an ordinary screen — 2026-09-11
 
 Live report: "when I move my finger from the left side it opens another app or

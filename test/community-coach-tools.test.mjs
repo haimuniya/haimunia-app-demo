@@ -182,6 +182,52 @@ test("Welcome posts a coach comment on the member's POST_NEW_MEMBER card via add
   await waitFor(() => mock.db.post_comments && mock.db.post_comments.some((c) => c.post_id === "nm-1"), 3000);
 });
 
+// Live bug hunt (2026-09-11): "ברכה" had no duplicate-send guard beyond the
+// in-flight lock (busy) that only ever covered ONE overlapping call - once
+// that call finished, the button was available again for a fresh,
+// deliberate second tap, or the same state surviving a navigate-away-and-
+// back, with nothing remembering "already welcomed". A coach could spam
+// unlimited duplicate welcome comments on one member. Fixed by
+// reconstructing welcomed state from real server data (loadCoachWelcome())
+// and, since coachWelcomeMember() shares its actual write with the
+// separate feed-card "welcome-member" button, moving the authoritative
+// duplicate-send guard into welcomeNewMember() itself.
+test("tapping ברכה twice does not post two welcome comments, and the button reflects 'already welcomed' after a reload of the dashboard's own data", async () => {
+  const mock = seeded({
+    workout_posts: [{ id: "nm-1", post_type: "POST_NEW_MEMBER", author_id: null, metadata: { member_id: "u9", member_name: "נועה", joined_on: "2026-08-28" }, status: "active", created_at: VERIFIED }],
+  }, true);
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCoachTab(window);
+  await waitFor(() => !!window.document.querySelector('[data-community-action="coach-welcome-member"]'), 3000);
+
+  const btn = () => window.document.querySelector('[data-community-action="coach-welcome-member"]');
+  btn().click();
+  await waitFor(() => mock.db.post_comments && mock.db.post_comments.some((c) => c.post_id === "nm-1"), 3000);
+  assert.equal(mock.db.post_comments.filter((c) => c.post_id === "nm-1").length, 1);
+  assert.equal(btn().disabled, true, "the button disables itself once welcomed, not just while the request is in flight");
+  assert.match(btn().textContent, /נשלחה/, "the label reflects the already-sent state, distinct from the initial 'ברכה'");
+
+  // A second, deliberate tap on the now-disabled control must not somehow
+  // still fire (jsdom does not enforce `disabled` the way a real browser
+  // blocks the click, so this genuinely exercises the guard, not just the
+  // attribute).
+  btn().click();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(mock.db.post_comments.filter((c) => c.post_id === "nm-1").length, 1, "still exactly one welcome comment after a repeat tap");
+
+  // Reconstructed from real server data, not client memory: a whole fresh
+  // session (new window, new in-memory state, same underlying mock
+  // database) - the equivalent of closing and reopening the app - must
+  // still see this member as already welcomed, not offer to welcome them
+  // again.
+  const freshWindow = await bootCommunity(mock, { syncEnabled: false });
+  await openCoachTab(freshWindow);
+  await waitFor(() => !!freshWindow.document.querySelector('[data-community-action="coach-welcome-member"]'), 3000);
+  const freshBtn = freshWindow.document.querySelector('[data-community-action="coach-welcome-member"]');
+  assert.equal(freshBtn.disabled, true, "a fresh session reconstructs already-welcomed state from the server, not from this session's own memory");
+  assert.match(freshBtn.textContent, /נשלחה/);
+});
+
 test("Welcome's Welcome action fails gracefully when no POST_NEW_MEMBER card exists yet for that member (COMM-107's producer is not built)", async () => {
   const mock = seeded({}, true);
   const window = await bootCommunity(mock, { syncEnabled: false });

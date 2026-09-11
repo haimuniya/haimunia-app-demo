@@ -150,6 +150,70 @@ test("deleting a measure type with zero logged measurements does not falsely cla
   assert.doesNotMatch(dialogText, /יימחקו גם/, "no measurements exist, so the dialog should not claim any will be deleted with it");
 });
 
+// Live bug hunt (2026-09-11): unlike the measure TYPE above (and every
+// other destructive action in this app), deleting a single logged
+// measurement VALUE had no confirmation and no undo - one accidental tap
+// on the trash icon lost a real, hand-entered data point with no recovery.
+// Same askAppConfirm + offerUndo shape as the type-delete test above.
+test("tapping delete on a single measurement entry asks for confirmation, names it, and offers undo - not an immediate, unrecoverable delete", async () => {
+  const window = await bootApp();
+  window.document.getElementById("tabHistoryBtn").click();
+  await window.addMeasureType("Test Waist Entry");
+  const type = (await window.dbLoadMeasureTypes()).find((t) => t.name === "Test Waist Entry");
+  window.applyFieldValue("measure-step", type.id, 82.5);
+  await window.saveMeasurement(type.id);
+  window.renderMeasureArea();
+  const entry = (await window.dbLoadMeasurements()).find((e) => e.typeId === type.id);
+
+  window.document.querySelector(`[data-action="delete-measurement-entry"][data-id="${entry.id}"]`).click();
+
+  const overlay = window.document.getElementById("appConfirmOverlay");
+  assert.equal(overlay.classList.contains("open"), true, "a confirm dialog opens instead of deleting immediately");
+  assert.match(overlay.textContent, /Test Waist Entry/, "the dialog names the measurement type, not a generic message");
+  assert.match(overlay.textContent, /82\.5/, "the dialog names the value being deleted");
+  assert.ok((await window.dbLoadMeasurements()).some((e) => e.id === entry.id), "not deleted yet - confirm is still pending");
+
+  window.document.querySelector('[data-action="app-confirm-yes"]').click();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.ok(!(await window.dbLoadMeasurements()).some((e) => e.id === entry.id), "confirming deletes the entry");
+
+  const toastBtn = window.document.querySelector('[data-action="toast-action"]');
+  assert.ok(toastBtn, "a confirmed delete offers an undo, matching every other destructive action in this app");
+  toastBtn.click();
+  await new Promise((r) => setTimeout(r, 0));
+  const restored = (await window.dbLoadMeasurements()).find((e) => e.id === entry.id);
+  assert.ok(restored, "undo restores the exact measurement");
+  assert.equal(restored.value, 82.5);
+});
+
+// Live bug hunt (2026-09-11): a fresh measure type's stepper defaults to 0,
+// and saveMeasurement() has always silently no-op'd at value <= 0 - with no
+// UI feedback at all, a member could tap "רישום מדידה" repeatedly thinking
+// it was broken. The button is disabled at 0 instead, and stays correctly
+// in sync as the stepper moves (the stepper's own tap handler patches the
+// DOM in place rather than doing a full render() - see FIELD_ACTIONS
+// "measure-step".sync in app.js - so the disabled state has to be updated
+// from that same place or it would get stuck disabled forever, not just
+// while the value is genuinely 0).
+test("the save-measurement button is disabled at the default 0 value, and re-enables as soon as the stepper moves off it", async () => {
+  const window = await bootApp();
+  window.document.getElementById("tabHistoryBtn").click();
+  await window.addMeasureType("Test Calf");
+  const type = (await window.dbLoadMeasureTypes()).find((t) => t.name === "Test Calf");
+  window.renderMeasureArea();
+
+  const btn = () => window.document.querySelector(`[data-action="save-measurement"][data-id="${type.id}"]`);
+  assert.equal(btn().disabled, true, "a fresh type with no prior measurements starts at 0 and the button must not invite a no-op tap");
+
+  const stepUp = window.document.querySelector(`[data-action="measure-step"][data-field="${type.id}"][data-dir="1"]`);
+  assert.ok(stepUp, "the stepper's own increment control");
+  stepUp.click();
+  assert.equal(btn().disabled, false, "raising the value above 0 must re-enable the button immediately, via the same in-place DOM patch the stepper itself uses");
+
+  await window.saveMeasurement(type.id);
+  assert.ok((await window.dbLoadMeasurements()).some((e) => e.typeId === type.id && e.value > 0), "the now-enabled button actually saves a real value");
+});
+
 // Launch-readiness audit bug fix: applyRemotePrivateRecord() (app.js) had a
 // deleted branch for every synced record type except bodyweight - a
 // bodyweight row's remote deletion (e.g. deleted from another device, or by

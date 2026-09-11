@@ -614,6 +614,41 @@ test("a head_coach can pin a challenge to club home from its own detail view, an
   assert.equal(w2.document.querySelector('[data-community-action="pin"][data-type="challenge"]'), null, "a plain coach can edit but never sees a pin control");
 });
 
+// Live bug hunt (2026-09-11): pinTarget()'s failure (most commonly the
+// 3-pin cap) only ever set state.admin.pinError, which renders exclusively
+// inside renderPinnedStrip() - part of the FEED tab's own club rail. Pin
+// controls exist on posts/challenges/events too (this file's own test just
+// above pins a challenge from its detail dialog, never touching Feed) - so
+// hitting the cap from any of those surfaces looked like the tap did
+// nothing at all, unless the coach happened to also be on the Feed tab.
+// Fixed by also routing the failure through setMessage(), this app's one
+// genuinely global, viewport-anchored notice channel - the same channel
+// the SUCCESS case already used.
+test("hitting the pin cap from a challenge's own detail dialog (never having visited the Feed tab) still surfaces the error, not silence", async () => {
+  const mock = seeded({
+    invite_redemptions: [
+      { user_id: "u1", invite_id: "inv-1", role: "head_coach", redeemed_at: VERIFIED },
+    ],
+    challenges: [{ id: "c1", challenge_type: "individual_target", title: "12 אימונים החודש", description: "", metric_type: "session_count", target_value: 12, start_at: iso(-5), end_at: iso(20), status: "active", join_mode: "open", visibility: "club", created_by: "u1", config: {} }],
+    pins: [
+      { id: "pin1", target_type: "announcement", target_id: "a1", slot: 0, note: null, pinned_by: "u1", created_at: VERIFIED },
+      { id: "pin2", target_type: "announcement", target_id: "a2", slot: 1, note: null, pinned_by: "u1", created_at: VERIFIED },
+      { id: "pin3", target_type: "announcement", target_id: "a3", slot: 2, note: null, pinned_by: "u1", created_at: VERIFIED },
+    ],
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  // Never visits the Feed tab at all this session - straight to Boards,
+  // exactly the surface the bug's own repro used.
+  await openBoards(window);
+  await waitFor(() => !!window.document.querySelector(`[data-challenge-id="c1"]`), 3000);
+  openChallengeCard(window, "c1");
+  await waitFor(() => !!window.document.querySelector('[data-community-action="pin"][data-type="challenge"][data-id="c1"]'), 3000);
+  window.document.querySelector('[data-community-action="pin"][data-type="challenge"][data-id="c1"]').click();
+
+  await waitFor(() => /אפשר להצמיד עד שלושה פריטים/.test(window.document.body.textContent), 3000);
+  assert.equal(mock.db.pins.some((p) => p.target_type === "challenge" && p.target_id === "c1"), false, "the pin was correctly rejected, not silently applied past the cap");
+});
+
 // Launch-readiness audit item 4. submitChallengeForm's edit path used to
 // write `config` built fresh from only the CURRENT form type's fields
 // straight over the whole config column, so any key that form does not
