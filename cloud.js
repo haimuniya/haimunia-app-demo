@@ -7494,12 +7494,15 @@
 
   async function communityRpc(action, args, opts) {
     const options = opts || {};
+    // Security hunt (2026-09-11): userId - see src/outbox.js's enqueue()/
+    // flush() comments for the confirmed misattribution finding this closes.
+    const enqueueOpts = Object.assign({}, options, { userId: state.user && state.user.id });
     const key = missingIdempotencyParam[action] ? null : newIdempotencyKey();
     const withKey = key ? Object.assign({}, args, { p_idempotency_key: key }) : Object.assign({}, args);
     const canQueue = !!(window.HaimuniaOutbox && OUTBOX_ACTIONS.indexOf(action) >= 0);
 
     if (canQueue && typeof navigator !== "undefined" && navigator.onLine === false) {
-      await window.HaimuniaOutbox.enqueue(action, withKey, options);
+      await window.HaimuniaOutbox.enqueue(action, withKey, enqueueOpts);
       return { queued: true, data: null, error: null };
     }
     let { data, error } = await client.rpc(action, withKey);
@@ -7513,7 +7516,7 @@
     }
 
     if (error && canQueue && isOfflineError(error)) {
-      await window.HaimuniaOutbox.enqueue(action, withKey, options);
+      await window.HaimuniaOutbox.enqueue(action, withKey, enqueueOpts);
       return { queued: true, data: null, error: null };
     }
     // WHY A FAILED WRITE IS RECORDED.
@@ -7552,8 +7555,18 @@
   function registerOutboxHandlers() {
     if (!window.HaimuniaOutbox) return;
     OUTBOX_ACTIONS.forEach((action) => {
-      window.HaimuniaOutbox.registerHandler(action, async (args) => {
+      window.HaimuniaOutbox.registerHandler(action, async (args, row) => {
         if (!client || !state.user) throw new Error("session expired");
+        // Security hunt (2026-09-11): a second, cheap check right at the
+        // point of sending - flush()'s own check (src/outbox.js) already
+        // catches the real scenario Agent N confirmed (sign out, someone
+        // else signs in, the queue drains), but this closes the narrower
+        // window where the session itself changes mid-flush, between
+        // flush()'s check and this RPC actually going out. Matches
+        // AUTH_ERROR_RE ("session"), so the queue pauses on it rather than
+        // marking the row failed or, worse, retrying it under whoever is
+        // signed in next.
+        if (row && row.userId && row.userId !== state.user.id) throw new Error("session mismatch, queued for a different member");
         let { error } = await client.rpc(action, args);
         // Same un-migrated-server fallback communityRpc() carries. It
         // matters more here: the queue's PERMANENT_ERROR_RE matches "not
@@ -7574,7 +7587,10 @@
 
   async function flushCommunityOutbox() {
     if (!window.HaimuniaOutbox || !client || !state.user) return;
-    const result = await window.HaimuniaOutbox.flush();
+    // Security hunt (2026-09-11): userId here is what lets flush() refuse to
+    // send a row that was queued under a different member's session - see
+    // src/outbox.js's own flush() comment.
+    const result = await window.HaimuniaOutbox.flush({ userId: state.user.id });
     if (result && (result.sent || result.failed)) {
       await refreshOutboxState();
       // A queued post/comment/cheer that has now landed should appear.

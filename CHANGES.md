@@ -1,3 +1,120 @@
+## Security hunt, round 5: supply chain, PWA surface, and a full assume-breach pass — 2026-09-11
+
+Three more independent agents: third-party & supply-chain review, PWA/service-worker
+attack surface, and a final defense-in-depth verification pass re-testing today's own
+fixes directly at the RPC boundary. This is the fifth and final round of today's hunt.
+
+**Supply chain: no confirmed gap.** The vendored `supabase.js` integrity check
+was tested, not just read - three separate byte-level tampers of a scratch copy
+(a single flipped byte, an appended exfiltration payload, a subtle token edit)
+were all caught by the sha256 pin, and the check runs unconditionally in CI on
+every push. External CDN allowances (two CAPTCHA providers) are narrow,
+single-purpose, and currently dormant (CAPTCHA is off by a prior, documented
+decision). No unsafe postMessage/iframe surface, zero dependency CVEs in either
+`package.json`.
+
+**PWA/service-worker: two confirmed gaps, both fixed; one deeper lead recorded for
+follow-up.** The offline write queue for the Community layer carried no notion of
+who enqueued a row - confirmed live with two real members and the app's actual
+sign-out/sign-in flow: a comment or a coach's progress entry typed while offline
+and still queued when a *different* member signed in on the same device (a shared
+coach tablet is the real scenario) would drain under the second member's session,
+attributing the first member's words to someone who never sent them. Fixed by
+stamping the enqueuing member's own id onto every queued write and refusing to
+send a row for anyone else - it stays queued, untouched, rather than being sent
+under the wrong identity or silently dropped. Separately, the service worker's
+cache-write check didn't verify a revalidation response actually came from the
+requested URL rather than a same-origin redirect target - closed the same way
+round 3 closed a related gap, as a defense-in-depth tightening (no path was found
+by which this app's real hosting could produce such a redirect today). A related,
+deeper question - whether the separate, older private-training-log sync queue has
+the same identity-binding gap - was raised but not confirmed or fixed: it
+intersects with a broader question of how this app's local, single-device data
+model is meant to behave when more than one member uses the same device, which
+needs a product decision before a real fix, not a queue patch.
+
+**Final assume-breach verification pass: today's fixes hold.** Every guard closed
+across rounds 1-4 - the coach-congratulate claim, the PR/achievement forgery
+trigger and its one narrow exemption, Storage bucket path-ownership and size/type
+caps, moderation authorization and the new notification-redaction pin, the emom
+array size guard, and a coach-role-grant boundary chosen as a free pick - was
+re-tested by directly calling the real RPC as a real, unprivileged impersonated
+caller with zero client-side state, bypassing any UI assumption entirely. All of
+them refused or behaved correctly. One documented nuance, not a regression: the
+transaction-local "pins" several of today's fixes use are, as raw Postgres
+settings, technically settable by any database role - but there is no path from
+this app's real client surface (PostgREST exposes only specific granted
+functions, never arbitrary SQL) to ever reach that setting, confirmed by checking
+the actual API configuration rather than assumed.
+
+Verified: full suite 1612/1612 (7 new regression tests), full browser-check 41/41.
+
+---
+
+## Security hunt: five-round summary — 2026-09-11
+
+Fifteen independent agents across five rounds, run against this app's own codebase
+with production Supabase never touched at any point (every test ran against
+`installMockCloud()` and/or the local Postgres/Storage stack). Confirmed findings by
+severity, and how each was verified:
+
+**High:** one. A member could forge a PR or achievement share by writing directly to
+`workout_posts`, bypassing the RPCs that verify real training/achievement data -
+fixed with a server-side claim requiring proof of the real RPC, verified against real
+local Postgres.
+
+**Medium:** four. A coach's "congratulate once" cap had no real server-side
+enforcement (real local Postgres). Two related file-upload gaps - a spoofable
+Content-Type allowlist and client-only EXIF/GPS stripping - closed with a real
+magic-byte check and strip (real local Storage). A moderator-removed comment's exact
+text survived unredacted in the recipient's notifications indefinitely (real local
+Postgres). The offline write queue could send a queued write under the wrong
+member's identity if a device changed hands before it drained (a real two-member,
+real sign-out/sign-in reproduction, mock-verified).
+
+**Low:** three. A raw JS exception message could reach the screen (mock-verified).
+One RPC paid the full cost of an oversized array before its cap discarded the rest
+(real local Postgres, with real measured timing). A service-worker cache write
+didn't verify a revalidation response's actual URL, closed as defense-in-depth (real
+Chromium reproduction on the redirect gap this round; the earlier suffix-match gap
+in round 3 was also mock/live-verified).
+
+**Documented, not code-fixed, because the lever does not exist in this repository:**
+a login-timing side channel and a signup-based username-enumeration oracle, both
+properties of the underlying Supabase Auth service rather than this app's own code,
+and both downstream of an already-made, explicit product decision (CAPTCHA declined
+for a club this size) - reopening that decision is not this hunt's call to make
+silently.
+
+**Verified against real local Postgres** (preferred throughout for anything
+touching authorization, RLS, IDOR, or privilege escalation, per the hunt's own
+rule): the PR/achievement forgery guard, the coach-congratulate claim, the
+notification-redaction pin, the emom array guard, and the full round-5
+assume-breach re-verification of all of the above plus Storage RLS. **Mock-only**
+(browser-driven, `installMockCloud`): the render-error message fix, the CSP
+live-injection tests, and the outbox identity-binding fix (IndexedDB has no local
+Postgres equivalent to test against).
+
+**No confirmed gap, this hunt's most common outcome by round:** general
+authorization/RLS boundaries (round 1), IDOR/object-reference integrity (round 2),
+SECURITY DEFINER privilege-escalation paths and RLS-vs-key-secrecy (round 3),
+moderation block-enforcement and restricted-member RPC bypass beyond the
+notification finding (round 4), and third-party/supply-chain integrity (round 5).
+
+**Areas that would benefit from a follow-up round**, all explicitly flagged during
+the hunt rather than silently dropped:
+- The local, single-device training-log sync queue's own identity-binding question
+  (round 5's unconfirmed lead) - needs a product decision about multi-member,
+  single-device use before a real fix is possible.
+- A block's lack of retroactive redaction on pre-block notifications (round 4,
+  lower severity than the moderator-removal case that was fixed).
+- The image-upload pipeline's lack of a decoded-pixel-dimension cap, a plausible
+  decompression-bomb shape that could not be verified without real browser
+  image-decode tooling this environment didn't have (round 4).
+- Realtime (`postgres_changes`) authorization could not be exercised end-to-end in
+  this sandbox across all five rounds - the local Realtime container was never
+  available here.
+
 ## Capped the announcements archive, the second real "feed too long" contributor — 2026-09-11
 
 Follow-up to the club-WOD toggle fix: the previous entry named a second, separate

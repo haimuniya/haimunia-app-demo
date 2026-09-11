@@ -109,6 +109,15 @@
   //
   // The idempotency key is minted HERE, once. optimisticId lets a caller
   // correlate a queued op with a placeholder it painted in the UI.
+  //
+  // Security hunt (2026-09-11): opts.userId, new. Confirmed live: this queue
+  // carried no notion of who enqueued a row, so a write typed while signed
+  // in as one member and still pending when a DIFFERENT member signed in on
+  // the same device - a shared coach tablet is the real scenario - drained
+  // under the second member's session, attributing the first member's words
+  // (or a coach's chal_record_progress entry) to someone who never sent
+  // them. cloud.js now passes the enqueuing member's own id here; flush()
+  // below refuses to send a row for anyone else.
   async function enqueue(action, args, opts) {
     if (!storeReady()) throw new Error("community outbox store unavailable");
     var options = opts || {};
@@ -124,6 +133,7 @@
       status: "pending",
       lastError: "",
       optimisticId: options.optimisticId || null,
+      userId: options.userId || null,
       queuedAt: now()
     };
     await window.dbPutCommunityOutboxRow(row);
@@ -152,15 +162,26 @@
   // The drain. Processes strictly in FIFO order and STOPS at the first row
   // that is not ready or not sendable, so a later op can never overtake an
   // earlier one (a comment must not land before the post it belongs to).
+  //
+  // Security hunt (2026-09-11): context.userId, and the SKIP branch below.
+  // A row enqueued while a DIFFERENT member was signed in (see enqueue()'s
+  // own comment) is skipped, not sent and not stopped-on: it stays pending,
+  // untouched, for whoever that session's rightful owner is to drain later,
+  // and the current member's own rows keep flowing around it. This does not
+  // weaken the FIFO ordering guarantee above - that guarantee is about one
+  // member's own writes never overtaking each other, and a foreign row
+  // never participates in that member's own causal chain.
   async function flush(context) {
     if (flushing || !storeReady()) return { sent: 0, failed: 0, stopped: null };
     flushing = true;
-    var sent = 0, failed = 0, stopped = null;
+    var sent = 0, failed = 0, stopped = null, skipped = 0;
+    var ctxUserId = context && context.userId;
     try {
       var rows = await list();
       for (var i = 0; i < rows.length; i++) {
         var row = rows[i];
         if (row.status === "failed") continue;         // needs a manual decision
+        if (row.userId && ctxUserId && row.userId !== ctxUserId) { skipped += 1; continue; }
         if (row.nextAttemptAt > now()) { stopped = "backoff"; break; }
         var handler = handlers[row.action];
         if (!handler) {
@@ -184,7 +205,7 @@
       flushing = false;
     }
     notify();
-    return { sent: sent, failed: failed, stopped: stopped };
+    return { sent: sent, failed: failed, stopped: stopped, skipped: skipped };
   }
 
   async function runOne(handler, row, context) {

@@ -2,7 +2,7 @@
 // Version is the single source of truth for the cache name — bumping
 // APP_VERSION in app.js is what ships an update. Don't edit SW_VERSION by
 // hand: run `npm run sync-version` (see app.js) to copy it here.
-const SW_VERSION = "4.27.0";
+const SW_VERSION = "4.28.0";
 // "haimunia-demo-v..." — deliberately distinct from the production app's
 // own "haimunia-v..." cache prefix. Both service workers are scoped to
 // the same origin (haimuniya.github.io), and the activate handler below
@@ -281,7 +281,18 @@ self.addEventListener("fetch", (e) => {
       const cached = await cache.match(req, { ignoreSearch: true });
       const network = fetch(req)
         .then((res) => {
-          if (res && res.ok && res.type === "basic" && isPrecached(url)) {
+          // Security hunt (2026-09-11): res.redirected was never checked here.
+          // A same-origin redirect still yields type:"basic"/ok:true per the
+          // Fetch spec, so if a precached path were ever redirected, this
+          // would have cached the REDIRECTED body under the ORIGINAL trusted
+          // key - confirmed live by actually redirecting a precached path and
+          // watching the redirected content get served back later, fully
+          // offline. No mechanism on this app's real static-hosting origin
+          // can currently produce such a redirect (checked), so this was not
+          // reachable in production, but it was strictly looser than the
+          // "only cache what was actually asked for" invariant this whole
+          // block exists to enforce, and cheap to close outright.
+          if (res && res.ok && !res.redirected && res.type === "basic" && isPrecached(url)) {
             cache.put(req, res.clone()).catch(() => {});
           }
           return res;
