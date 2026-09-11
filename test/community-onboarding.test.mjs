@@ -129,6 +129,53 @@ test("after the first month: the personal summary aggregates the member's own we
   assert.doesNotMatch(text, /1 הישגים/);
 });
 
+// Live bug hunt, round 8 (2026-09-11): weekly_recaps.week_start is always
+// the MONDAY of its ISO week (DB check constraint), so a member who joins
+// on any day but Monday has a join-week row whose week_start falls BEFORE
+// redeemed_at - the query used to filter `week_start >= redeemedAt`, which
+// silently dropped that whole row, sessions/PRs/achievements included,
+// even though every one of them genuinely happened on or after the day
+// the member joined. Confirmed live with a Wednesday join; reproduced here
+// with a deterministic Wednesday computed relative to real "now" so this
+// test's own pass/fail never depends on which weekday it happens to run
+// on.
+function nearestWednesdayAtLeast(minDays) {
+  let d = new Date(Date.now() - minDays * DAY_MS);
+  while (d.getUTCDay() !== 3) d = new Date(d.getTime() - DAY_MS); // 3 = Wednesday
+  return d;
+}
+test("joining mid-week (not a Monday) still counts that join week's own sessions/PRs/achievements in the first-month summary", async () => {
+  const redeemedAt = nearestWednesdayAtLeast(31);
+  const joinWeekMonday = new Date(redeemedAt.getTime() - 2 * DAY_MS); // Wed - 2 = Monday
+  const mock = seeded({
+    invite_redemptions: [{ user_id: "u1", invite_id: "inv-1", role: "member", redeemed_at: redeemedAt.toISOString() }],
+    onboarding_progress: [{ user_id: "u1", welcomed_at: redeemedAt.toISOString(), first_week_shown_at: new Date(redeemedAt.getTime() + 7 * DAY_MS).toISOString(), first_month_shown_at: null }],
+    weekly_recaps: [
+      // The join week's own row - week_start (Monday) is BEFORE
+      // redeemedAt (Wednesday), which is exactly the shape the bug dropped.
+      {
+        id: "wr-join-week", user_id: "u1", week_start: joinWeekMonday.toISOString().slice(0, 10),
+        sessions_completed: 3, streak: 1,
+        prs: [{ movement: "סקוואט", result: "100", achieved_on: new Date(redeemedAt.getTime() + DAY_MS).toISOString() }],
+        achievements: [{ title: "שיא ראשון", badge_icon: "⭐", code: "first_pr", unlocked_at: new Date(redeemedAt.getTime() + DAY_MS).toISOString() }],
+        challenge_progress: [], club_challenge_progress: {}, upcoming_event: null, generated_at: new Date(redeemedAt.getTime() + 4 * DAY_MS).toISOString(),
+      },
+    ],
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openFeed(window);
+  await waitFor(() => !!stepCard(window, "first_month"), 3000);
+  // The card mounts immediately with a loading skeleton; the summary
+  // itself (the actual aggregation this test is about) resolves via a
+  // separate async fetch just after - poll for the real text directly
+  // rather than chaining a second waitFor off a substring of it.
+  await waitFor(() => /\d+ אימונ/.test(stepCard(window, "first_month").textContent), 3000);
+  const text = stepCard(window, "first_month").textContent;
+  assert.match(text, /3 אימונים/, "the join week's own 3 sessions must count, not be silently dropped");
+  assert.match(text, /שיא אחד/, "the join week's own PR must count");
+  assert.match(text, /הישג חדש אחד/, "the join week's own achievement must count");
+});
+
 test("dismissing an earlier step never blocks a later one already due on the same load", async () => {
   const mock = seeded({
     invite_redemptions: [{ user_id: "u1", invite_id: "inv-1", role: "member", redeemed_at: redeemedDaysAgo(10) }],

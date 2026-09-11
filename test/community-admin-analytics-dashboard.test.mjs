@@ -198,6 +198,46 @@ test("Loading: a distinct skeleton renders before the RPC resolves, then Populat
   assert.match(text, /feed/, "sub_tab_split by_tab breakdown key rendered verbatim");
 });
 
+// Live bug hunt (2026-09-11): loadAdminAnalyticsDashboard() set a.loading
+// but never cleared a.data on a period CHANGE (only the very first load
+// ever saw a.data falsy), so renderAdminAnalyticsDashboard()'s skeleton
+// guard (`a.loading && !a.data`) skipped straight to the populated branch
+// on every later period switch - the body kept showing the OLD period's
+// numbers while the period selector's own header already displayed the
+// NEW period's date range, for the whole duration of the second RPC.
+// Confirmed live: paging week -> month showed the old week's peak_weekly
+// under the new month's own date header. This test holds the second RPC
+// open to sample that exact mid-flight window.
+test("switching period shows the skeleton, not the previous period's stale numbers, while the new period's RPC is in flight", async () => {
+  const mock = seeded({}, "admin");
+  const weekFixture = dashboardFixture();
+  weekFixture.core.wcam.peak_weekly = 999; // a marker only the WEEK fixture carries
+  const monthFixture = dashboardFixture();
+  monthFixture.core.wcam.peak_weekly = 5;
+  let resolveMonth;
+  let call = 0;
+  mock.onRpc("analytics_dashboard", () => {
+    call++;
+    if (call === 1) return { data: weekFixture, error: null }; // resolves immediately
+    return new Promise((resolve) => { resolveMonth = resolve; }); // held open
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openAccountTab(window);
+  await waitFor(() => window.document.body.textContent.includes("999"), 3000);
+
+  window.document.querySelector('[data-community-action="admin-analytics-mode"][data-mode="month"]').click();
+  // The header already reflects the new (month) period synchronously...
+  await waitFor(() => /-01$/.test(window.document.querySelector('[data-admin-analytics-dashboard="1"]').textContent.match(/\d{4}-\d{2}-\d{2}/)?.[0] || ""), 3000);
+  // ...but the body must show the skeleton, not the stale week number,
+  // for as long as the month RPC is still pending.
+  assert.ok(window.document.querySelector('[data-admin-analytics-skeleton="1"]'), "the skeleton must reappear on a period switch, not just the first load");
+  assert.doesNotMatch(window.document.body.textContent, /999/, "the previous period's stale number must not render under the new period's header");
+
+  resolveMonth({ data: monthFixture, error: null });
+  await waitFor(() => window.document.body.textContent.includes("שיא שבועי5"), 3000);
+  assert.equal(window.document.querySelector('[data-admin-analytics-skeleton="1"]'), null, "the skeleton clears once the new period's real data arrives");
+});
+
 test("Empty: a genuinely quiet period renders honest zeros and a dash for a null ratio, not an error", async () => {
   const mock = seeded({}, "admin");
   const quiet = dashboardFixture();

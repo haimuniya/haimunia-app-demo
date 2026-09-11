@@ -1,3 +1,75 @@
+## Live bug hunt, round 8: analytics, dashboards, and numeric accuracy — 2026-09-11
+
+Three fresh agents: admin analytics dashboard accuracy, recap content
+accuracy, and leaderboard/ranking accuracy. Each hand-constructed a known
+dataset and verified the app's displayed numbers against a hand-computed
+expected value, rather than just confirming something rendered.
+
+**Misleading admin decision-making: switching the analytics period showed
+the old period's numbers under the new period's own date header.**
+`loadAdminAnalyticsDashboard()` set `a.loading = true` on every period
+change but never cleared `a.data`, so the skeleton guard
+(`a.loading && !a.data`) only ever fired on the very first load - every
+later mode toggle or prev/next page kept the previous period's numbers on
+screen, with no loading indicator, for the whole RPC round-trip, while the
+period selector's own header already showed the new dates. Confirmed live:
+paging week -> month displayed the old week's peak figure under a header
+already reading the new month's range. Fixed by clearing `a.data` the
+instant a new period load starts, so every re-fetch shows the skeleton, not
+a stale number that no longer matches what's labelled above it.
+
+**Misleading content to real members: joining mid-week silently dropped
+that week's own sessions/PRs/achievements from the "first month" card.**
+`weekly_recaps.week_start` is always the Monday of its ISO week (a DB
+constraint); the onboarding summary queried `week_start >= redeemedAt`,
+which excludes the entire join-week row whenever a member joins on any day
+but Monday - most real signups. Confirmed live: a Wednesday join with 3
+real sessions, a PR, and an achievement that same week rendered "0 שיאים
+ו-0 הישגים" and undercounted sessions by those 3. Fixed by lower-bounding
+the query at the Monday of the join week instead of the join instant
+itself, matching the DB's own week_start convention.
+
+**Unfair ranking, real DB fix: the legacy "אתגר השבוע" leaderboard ignored
+the in_leaderboards opt-out and had no deterministic tie-break.** Unlike
+every later ranked view (`feed_leaderboard`, `challenge_progress_view`),
+`weekly_challenge_leaderboard` (202608270001) predates both the
+`in_leaderboards` privacy toggle and this app's deterministic-tie-break
+convention. Confirmed live: a member with `in_leaderboards=false` and the
+week's highest score still rendered at rank #1 with the trophy - the same
+"hide my result" toggle gave a false sense of being hidden. Separately, two
+members tied on score rendered in whichever order Postgres happened to
+return rows in, which flipped between two loads of identical data, and the
+client's `.limit(50)` with no `.order()` meant a challenge with 51+ entrants
+could rank an arbitrary subset rather than the true top 50. New migration
+`202609110007_weekly_challenge_leaderboard_privacy_and_order.sql` adds the
+same `can_view_profile_field(author, 'in_leaderboards')` gate every later
+view already has, plus a deterministic `ORDER BY` (score by direction,
+then occurred_on/display_name/post id as a stable tie-break) - sufficient to
+fix both bugs without touching the client, since JS's `Array.prototype.sort`
+is stable and now receives rows in a deterministic order to begin with.
+Verified against real local Postgres (`supabase test db`, new pgTAP file
+`0100_weekly_challenge_leaderboard_privacy_and_order_test.sql`): an
+opted-out member's post never appears despite the highest score, and a
+genuine tie resolves identically with or without an explicit `ORDER BY` on
+the query.
+
+**Checked and found clean:** the admin dashboard's zero-activity rendering
+(honest zeros/em-dashes, no NaN), its ratio/count formatters distinguishing
+real 0 from null, per-member-vs-per-club field mapping across all 18
+metrics; the weekly recap dialog's quiet-week state and its DST-immune
+week-range label (verified across Israel's real 2026 spring-forward
+transition); the monthly club recap's zero-activity rendering; the modern
+`feed_leaderboard`-backed boards (consistency streak, challenge progress)
+under the identical tie/opt-out/moderation conditions that broke the legacy
+board - all three came back clean, including the moderated-content exclusion
+the legacy view already had right.
+
+Verified: full suite 1629/1629 (7 new/updated regression tests across
+`test/community-admin-analytics-dashboard.test.mjs`,
+`test/community-onboarding.test.mjs`), full browser-check 42/42, and
+`supabase test db` 3360/3360 against real local Postgres including the new
+migration and its pgTAP coverage.
+
 ## Live bug hunt, round 7: cross-tab, multi-window, and concurrent-session behavior — 2026-09-11
 
 Three fresh agents: same account in two tabs, interrupted async operations,

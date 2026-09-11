@@ -2013,6 +2013,25 @@
   // every session. Built from the same aggregation weekly_recaps uses
   // (COMM-220) over the member's own first month - not the Phase 3
   // club-wide monthly recap.
+  // Live bug hunt (2026-09-11): weekly_recaps.week_start is always the
+  // MONDAY of that ISO week (DB check constraint, extract(isodow from
+  // week_start) = 1) - a member who joins on any day but Monday has a join
+  // week whose week_start falls BEFORE redeemedAt, so filtering
+  // `week_start &gt;= redeemedAt` silently dropped their entire join-week row,
+  // sessions/PRs/achievements included, even though every session in it
+  // genuinely happened on or after the day they joined. Confirmed live: a
+  // Wednesday join with 3 real sessions/1 PR/1 achievement that same week
+  // rendered "0 שיאים ו-0 הישגים" and undercounted sessions by those 3 -
+  // most real signups aren't on a Monday, so this hit the majority case,
+  // not an edge one. Fixed by lower-bounding at the MONDAY of the join
+  // week instead of the join instant itself, matching the DB's own
+  // week_start convention.
+  function mondayOnOrBeforeIso(dateIso) {
+    const d = new Date(dateIso + "T00:00:00Z");
+    const day = d.getUTCDay(); // 0=Sun..6=Sat
+    d.setUTCDate(d.getUTCDate() - ((day + 6) % 7)); // back up to Monday
+    return d.toISOString().slice(0, 10);
+  }
   async function loadOnboardingFirstMonthSummary() {
     if (!state.user || !client || !state.redemption || !state.redemption.redeemed_at) return;
     state.onboarding.firstMonth = { loading: true, error: false, sessions: 0, prs: 0, achievements: 0 };
@@ -2020,7 +2039,7 @@
     const monthEnd = new Date(redeemedAt.getTime() + 30 * 86400000);
     const { data, error } = await client.from("weekly_recaps").select("sessions_completed,prs,achievements")
       .eq("user_id", state.user.id)
-      .gte("week_start", redeemedAt.toISOString().slice(0, 10))
+      .gte("week_start", mondayOnOrBeforeIso(redeemedAt.toISOString().slice(0, 10)))
       .lte("week_start", monthEnd.toISOString().slice(0, 10));
     if (!state.onboarding.firstMonth) return; // dismissed/torn down mid-flight
     if (error) { state.onboarding.firstMonth = { loading: false, error: true, sessions: 0, prs: 0, achievements: 0 }; return rerender(); }
@@ -5584,6 +5603,17 @@
     if (!state.user || !(hasPerm(PERM.ANALYTICS_VIEW) || isAdmin())) { state.analytics.dashboard.data = null; return; }
     const a = state.analytics.dashboard;
     if (!a.start || !a.end) Object.assign(a, adminAnalyticsDefaultPeriod(a.mode));
+    // Live bug hunt (2026-09-11): a.data used to stay truthy across a period
+    // switch, so renderAdminAnalyticsDashboard()'s skeleton guard
+    // (`a.loading && !a.data`) only ever fired on the very FIRST load - every
+    // later mode toggle or prev/next page showed the OLD period's numbers
+    // under the NEW period's already-updated date header for the whole RPC
+    // round-trip, with no loading indicator at all. Confirmed live: paging
+    // week -> month showed "שיא שבועי999" (the old week's fixture) under a
+    // header already reading the new month's date range. Clearing a.data
+    // here makes every re-fetch, not just the first, show the skeleton
+    // instead of a stale number that no longer matches the header above it.
+    a.data = null;
     a.loading = true; a.error = false; a.errorText = "";
     rerender();
     const { data, error } = await client.rpc("analytics_dashboard", { p_period_start: a.start, p_period_end: a.end });
