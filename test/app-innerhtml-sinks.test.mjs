@@ -39,6 +39,10 @@ const PROVEN_SAFE = new Map([
   // computeCurrentStreak(): `let streak = 0` incremented in a while loop
   // and returned. Provably an integer, never a string.
   ["streak", "integer counter from computeCurrentStreak()"],
+  // renderNotificationsList(): a ternary of two hardcoded Hebrew string
+  // literals, gated on RELEASE_NOTES.length (a const array's own length,
+  // not a value that can carry user input).
+  ["notifEmptyMessage", "ternary of two hardcoded literals in renderNotificationsList(), gated on RELEASE_NOTES.length"],
 ]);
 
 function sinkLines(src) {

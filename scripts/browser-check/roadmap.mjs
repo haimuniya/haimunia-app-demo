@@ -104,8 +104,21 @@ await page.click("[data-action='open-notifications']");
 await page.waitForTimeout(200);
 const notifOpen = await page.evaluate(() => document.getElementById("notificationsOverlay").classList.contains("open"));
 check("bell opens the notifications overlay", notifOpen);
-const notifHasEntry = await page.evaluate(() => document.getElementById("notificationsList").textContent.includes("."));
-check("notifications list actually renders a version entry", notifHasEntry);
+// Self-cleaning fix (live report: "currently it's super old" - the list
+// used to always dump RELEASE_NOTES' full history, forever, regardless of
+// what a member had already seen, since only the per-item "new" tag - not
+// what actually rendered - was gated on lastSeenVersion). A fresh install
+// has nothing to catch up on by definition (lastSeenVersion is set to the
+// current APP_VERSION the moment a fresh install boots, same fact the
+// "no what's-new popup" check above relies on), so manually opening the
+// bell here must now say so, not show history this member never lived
+// through.
+const notifEmptyState = await page.evaluate(() => document.getElementById("notificationsList").textContent.trim());
+check(
+  "a fresh install's notifications list says there's nothing new, not a wall of old history",
+  notifEmptyState === "אין עדכונים חדשים",
+  notifEmptyState,
+);
 await page.screenshot({ path: `${outDir}/roadmap-02-notifications.png` });
 // The bare selector matches both the overlay backdrop div and the explicit
 // close button inside it (both carry data-action="close-notifications");
@@ -114,6 +127,21 @@ await page.screenshot({ path: `${outDir}/roadmap-02-notifications.png` });
 // its center can land on real dialog content instead once that content
 // grows tall enough, same class of ambiguous-selector bug already fixed
 // once for the settings overlay. Scope to the real button.
+await page.click("#notificationsOverlay button[data-action='close-notifications']");
+await page.waitForTimeout(150);
+
+// ---- Control: a member who genuinely HAS something to catch up on still
+// sees real entries - proves the empty state just above is the seen/unseen
+// filter actually working, not the list quietly being broken. ----
+await page.evaluate(async () => {
+  await dbSetSetting("haimunia-demo:lastSeenVersion", "0.0.0");
+  await loadLastSeenVersion();
+  render();
+});
+await page.click("[data-action='open-notifications']");
+await page.waitForTimeout(200);
+const notifHasEntry = await page.evaluate(() => document.getElementById("notificationsList").textContent.includes("."));
+check("control: with something genuinely unseen, the list renders real version entries", notifHasEntry);
 await page.click("#notificationsOverlay button[data-action='close-notifications']");
 await page.waitForTimeout(150);
 

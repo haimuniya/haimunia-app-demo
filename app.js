@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.18.8";
+const APP_VERSION = "4.18.9";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -1338,19 +1338,38 @@ function unseenReleaseNotes() {
   if (!lastSeenVersion) return [];
   return RELEASE_NOTES.filter((r) => compareVersions(r.version, lastSeenVersion) > 0);
 }
+// Live report: opening "מה חדש" always dumped the FULL history back to the
+// oldest entry ever written (RELEASE_NOTES only ever grows), so a member
+// who had already caught up saw the exact same wall of months-old entries
+// every single time - "currently it's super old". lastSeenVersion already
+// existed (it drives the header badge and the one-time "חדש" tag below) but
+// nothing used it to stop SHOWING an entry once it had been seen - only to
+// stop highlighting it as new. Self-cleaning fix: render only entries newer
+// than lastSeenVersion, i.e. exactly what unseenReleaseNotes() already
+// computes for the badge count. Must be read before openNotifications()
+// calls markNotificationsSeen() (it already is - render happens first) or
+// this would always render empty.
 function renderNotificationsList() {
   const el = document.getElementById("notificationsList");
   if (!el) return;
-  if (!RELEASE_NOTES.length) {
-    el.innerHTML = `<div class="empty">אין עדכונים עדיין</div>`;
+  const toShow = unseenReleaseNotes();
+  if (!toShow.length) {
+    // Local var rather than the ternary inline: test/app-innerhtml-sinks.test.mjs
+    // (SEC-018) checks each innerHTML sink's ${...} expressions by exact
+    // text, and only recognizes esc()/Number()-wrapped values, bare digits,
+    // or an allow-listed identifier - not an inline ternary of literals.
+    const notifEmptyMessage = RELEASE_NOTES.length ? "אין עדכונים חדשים" : "אין עדכונים עדיין";
+    el.innerHTML = `<div class="empty">${notifEmptyMessage}</div>`;
     return;
   }
-  const unseen = new Set(unseenReleaseNotes().map((r) => r.version));
-  el.innerHTML = RELEASE_NOTES.slice().reverse().map((r) => `
+  // Every entry rendered here is by definition unseen (that is now the only
+  // way to reach this branch), so the old per-item "חדש" tag - previously
+  // needed to distinguish new from old within one long, undifferentiated
+  // list - would just repeat on every row and is dropped.
+  el.innerHTML = toShow.slice().reverse().map((r) => `
     <div class="cat-group">
       <div class="cat-head flex items-center gap-8">
         <span class="cat-name mono" style="direction:ltr; unicode-bidi:isolate;">${esc(r.version)}</span>
-        ${unseen.has(r.version) ? `<span style="background:var(--energy); color:#fff; font-size:10px; font-weight:800; border-radius:10px; padding:2px 8px;">חדש</span>` : ""}
         <span style="color:var(--steel); font-size:11px; margin-inline-start:auto;">${esc(fmtDate(r.date))}</span>
       </div>
       <ul style="margin:6px 0 4px; padding-inline-start:20px; color:var(--chalk); font-size:13.5px; line-height:1.6;">

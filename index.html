@@ -694,17 +694,22 @@
      collide with #userGreeting/#dateLabel - both were absolutely positioned
      into the same 0-90px band with nothing arbitrating between them.
      display:contents on the header's own first child (the existing
-     `<div class="flex items-center gap-8">` wrapping menu/logo/bell)
-     promotes its 3 children to be direct grid items of .header itself,
+     `<div class="flex items-center gap-8">` wrapping menu/logo/bell/medals)
+     promotes its children to be direct grid items of .header itself,
      in their existing DOM order - in a dir="rtl" document that auto-places
-     as menu→column 1 (visually RIGHT), logo→column 2 (center), bell→
-     column 3 (visually LEFT), exactly the required geometry, with no
-     explicit grid-column overrides needed. The header's SECOND child (the
-     userGreeting/dateLabel/achievements-link block) is hidden, not deleted
-     - its ids stay in the DOM exactly once, satisfying
+     as menu→column 1 (visually RIGHT), logo→column 2 (center), the rest→
+     visually LEFT, exactly the required geometry, with no explicit
+     grid-column overrides needed for menu/logo. The header's SECOND child
+     (the userGreeting/dateLabel/achievements-link block) is hidden, not
+     deleted - its ids stay in the DOM exactly once, satisfying
      SCREEN_ACCEPTANCE.md's "preserved IDs remain present exactly once" -
      the scene's own title/subtitle in .scene-page__intro is what carries
-     that information on scene pages instead. */
+     that information on scene pages instead.
+     A 5th column (44px 1fr 44px 8px 44px) was added for #medalsBtn - a
+     plain 4th `44px` column would butt it flush against #notificationsBellBtn
+     with zero gap between two REAL (not the ::after-expanded invisible kind
+     further down) 44px boxes; the empty spacer column reproduces the same
+     8px rhythm the base (non-scene) flex header already uses via gap-8. */
   /* position:relative on #app itself: without it, .header's position:
      absolute below resolves its containing block to the next positioned
      ancestor UP the tree - which at mobile widths happens to still be
@@ -718,7 +723,7 @@
   body[data-scene] .header{
     position:absolute; z-index:20; inset-block-start:env(safe-area-inset-top,0px); inset-inline:0;
     height:64px; padding-inline:16px; padding-block-start:0; margin:0;
-    display:grid; grid-template-columns:44px 1fr 44px; align-items:center;
+    display:grid; grid-template-columns:44px 1fr 44px 8px 44px; align-items:center;
     background:transparent;
   }
   body[data-scene] .header > div:first-child{ display:contents; }
@@ -732,13 +737,15 @@
      this. Explicit columns make the header correct whether the menu
      button is present (mobile) or not (desktop). */
   body[data-scene] .header-logo{ grid-column:2; justify-self:center; max-width:150px; max-height:34px; width:auto; height:auto; filter:brightness(0) invert(1) drop-shadow(0 1px 6px rgba(0,0,0,.4)); }
-  body[data-scene] .header #notificationsBellBtn{ grid-column:3; }
+  body[data-scene] .header #medalsBtn{ grid-column:3; }
+  body[data-scene] .header #notificationsBellBtn{ grid-column:5; }
   body[data-scene] .header #navMenuBtn{ grid-column:1; }
   /* 44x44 icon targets, frosted-glass fill per the redline's exact values.
      @supports fallback keeps a flat-opaque background on engines without
      backdrop-filter, so contrast never depends on the effect being
      available - same reasoning as the first blur pass, values updated. */
   body[data-scene] .header #navMenuBtn,
+  body[data-scene] .header #medalsBtn,
   body[data-scene] .header #notificationsBellBtn{
     width:44px; height:44px; border:1px solid rgba(255,255,255,.22);
     background:rgba(8,21,35,.32); color:#fff; box-shadow:0 6px 18px rgba(0,0,0,.18);
@@ -746,6 +753,7 @@
   }
   @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
     body[data-scene] .header #navMenuBtn,
+    body[data-scene] .header #medalsBtn,
     body[data-scene] .header #notificationsBellBtn{ background:rgba(8,21,35,.72); }
   }
   body[data-scene] .brand-stripe{ display:none; }
@@ -1032,19 +1040,24 @@
   #celebrationOverlay.arrival-card{ background:rgba(3,10,20,.96); }
   .modal-sheet{ background:var(--bg); border-top-left-radius:22px; border-top-right-radius:22px; width:100%; max-height:85%; padding-bottom:env(safe-area-inset-bottom,0px); display:flex; flex-direction:column; border:1px solid var(--border); border-bottom:none; overflow-x:hidden; }
   .modal-head{ display:flex; align-items:center; justify-content:space-between; padding:16px 16px 8px; }
-  /* #navMenuSheet and #settingsSheet are the only two .modal-sheet instances
-     that go full-height (align-items:stretch on their overlay, height:100%
-     on the sheet) - every other modal-sheet anchors to the bottom
-     (align-items:flex-end, the .modal-overlay default) and never reaches
-     the top of the screen, so this only needs to target these two. Without
-     it, their close button and title render flush against the very top
-     edge - the same status-bar collision #app's own padding and the
-     body::before scrim (above) exist to prevent, but neither helps a
-     position:fixed overlay with its own z-index:50, higher than the
-     scrim's 40. */
-  #navMenuSheet > .modal-head, #settingsSheet > .modal-head{ padding-top:calc(env(safe-area-inset-top,0px) + 16px); }
+  /* #navMenuSheet, #settingsSheet and #achievementsOverlay's sheet are the
+     .modal-sheet instances that go full-height (align-items:stretch on
+     their overlay, height:100%/100svh on the sheet) - every other
+     modal-sheet anchors to the bottom (align-items:flex-end, the
+     .modal-overlay default) and never reaches the top of the screen, so
+     this only needs to target these three. Without it, their close button
+     and title render flush against the very top edge - the same status-bar
+     collision #app's own padding and the body::before scrim (above) exist
+     to prevent, but neither helps a position:fixed overlay with its own
+     z-index:50, higher than the scrim's 40.
+     #achievementsOverlay was missing from this list until a live report
+     ("this button can't be reached") - its modal-head is additionally
+     position:absolute (line ~1907, for the scrolling-under-content look),
+     which does not opt out of this padding: an absolutely positioned box
+     still has its own top-edge collision with the status bar to solve. */
+  #navMenuSheet > .modal-head, #settingsSheet > .modal-head, #achievementsOverlay .modal-head{ padding-top:calc(env(safe-area-inset-top,0px) + 16px); }
   @media (display-mode: standalone){
-    #navMenuSheet > .modal-head, #settingsSheet > .modal-head{ padding-top:calc(max(env(safe-area-inset-top,0px), 28px) + 16px); }
+    #navMenuSheet > .modal-head, #settingsSheet > .modal-head, #achievementsOverlay .modal-head{ padding-top:calc(max(env(safe-area-inset-top,0px), 28px) + 16px); }
   }
   .modal-title{ color:var(--chalk); font-weight:800; font-size:16px; }
   .search-box{ display:flex; align-items:center; margin:0 16px 12px; background:var(--surface2); border:1px solid var(--border); border-radius:12px; padding:8px 12px; gap:8px; }
@@ -1865,7 +1878,7 @@
   .scene-page--history .cal-grid{ gap:2px; margin-bottom:12px; }
   .scene-page--history .cal-cell{ aspect-ratio:auto; min-height:44px; }
   .scene-page--history .cal-month-stats{ margin-top:8px; }
-  body[data-scene] .header #navMenuBtn, body[data-scene] .header #notificationsBellBtn{ background:rgba(8,21,35,.72); border-radius:50%; }
+  body[data-scene] .header #navMenuBtn, body[data-scene] .header #medalsBtn, body[data-scene] .header #notificationsBellBtn{ background:rgba(8,21,35,.72); border-radius:50%; }
   body[data-scene] #bottomTabBar{ background:rgba(8,21,35,.96); }
   body[data-scene] #bottomBar .save-btn{ background:#d92f2b; color:#fff; border-radius:16px; }
   body[data-scene] .cal-cell.selected .cal-daynum{ background:#d92f2b; }
@@ -2151,6 +2164,23 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
       </button>
       <img src="./assets/logo-full.png" alt="האימוניה" class="header-logo" width="900" height="323" />
+      <!-- Live report: "I want a medal icon... I can't see any change" - the
+           header's own achievements link (userGreeting button + the "לכל
+           המדליות וההישגים שלי" line below it) already exists, but both live
+           in the header's SECOND child, which is display:none on every
+           scene page (see body[data-scene] .header > div:last-child,
+           above) - and all 5 main tabs (PAGE_SCENES, app.js) are scene
+           pages; only the admin-only "manage" tab is not. So on every
+           screen a member actually spends time on, that entry point was
+           invisible. This one lives in the FIRST child instead, which
+           stays visible in scene mode - and, since there is effectively no
+           ordinary screen left to hide it FROM, it is simply always
+           visible (unlike the sparkle/bell button next to it, this one has
+           no per-mode CSS toggling anything besides its scene-mode grid
+           placement, below). -->
+      <button id="medalsBtn" data-action="open-achievements" aria-label="מדליות והישגים" class="icon-chip icon-chip-steel" style="flex-shrink:0;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="6"/><path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"/></svg>
+      </button>
       <!-- Usability pass: this used to be a second bell icon, one tap away
            from the Community tab's own bell (renderNotificationBell(),
            cloud.js) which opens real member notifications - two bells with

@@ -1,3 +1,37 @@
+## Three more live reports: a permanent medal icon, an unreachable close button, and a self-cleaning "what's new" — 2026-09-11
+
+Three issues reported live, back to back, against the changes above:
+
+- **"מה חדש" always dumped its FULL history, forever** - RELEASE_NOTES only ever
+  grows, and the render used lastSeenVersion solely to decide whether to tag an entry
+  "חדש", never to decide whether to show it at all - so a member who had already
+  caught up saw the exact same wall of months-old entries every time ("currently it's
+  super old"). `renderNotificationsList()` now renders only entries newer than
+  `lastSeenVersion` (what `unseenReleaseNotes()` already computed for the badge), with
+  an "אין עדכונים חדשים" empty state once there is nothing left to show - self-cleaning
+  per device, no manual pruning of the source array needed. The one now-redundant
+  per-item "חדש" tag is gone too, since everything rendered is unseen by construction.
+- **"I want a medal icon in the top left... I can't see any change."** The header's
+  existing achievements entry point (the greeting button + "לכל המדליות וההישגים שלי"
+  link) lives in the header's SECOND child, which is `display:none` on every scene
+  page - and all 5 main tabs are scene pages (`PAGE_SCENES`, app.js); only the
+  admin-only "ניהול" tab is not. So the entry point a member could actually find was
+  invisible everywhere they spend their time. New `#medalsBtn` lives in the header's
+  FIRST child instead, next to the existing bell/sparkle icon, and needed a real
+  spacer grid column in scene mode (not a 4th zero-gap column) so its box and the
+  bell's don't share overlapping tap targets - the same shape a comment elsewhere in
+  this header already warns about.
+- **"This button can't be reached"** (achievements' own close X, screenshotted
+  colliding with the device status bar). `#navMenuSheet`/`#settingsSheet` already had
+  a `padding-top: calc(env(safe-area-inset-top,0px) + 16px)` rule for exactly this -
+  `#achievementsOverlay`'s modal-head, also full-height with `position:absolute;
+  top:0`, was simply missing from that selector list.
+
+Verified: full suite 1553/1553 (including a new PROVEN_SAFE entry for
+`app-innerhtml-sinks.test.mjs`, SEC-018's sink-escaping check), full browser-check
+38/38 including two new scripts (`header-medals-icon.mjs`, and `roadmap.mjs`'s
+notifications section rewritten with a paired empty/control assertion).
+
 ## Four extended-use persona reviews, a live achievements bug report, and the stacking bug they found but didn't fix — 2026-09-11
 
 Ran four independent long-session agents (coach, member, admin, trainee) actually using
