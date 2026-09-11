@@ -42,6 +42,62 @@
 // check for exactly those three shapes so the next instance doesn't need
 // a fresh multi-agent research pass to be caught again.
 //
+// HONEST SCOPE, stated precisely rather than oversold, and revised twice
+// during this tool's own construction (both revisions were themselves
+// wrong in a way only caught by re-running against real history, not by
+// reasoning about the code - see below).
+//
+// CHECK 1 alone (a gate and its RPC found in the SAME render function)
+// does NOT catch the coach/restrict-button bug this whole tool is modeled
+// on: that bug is a TWO-STEP flow - clicking a decision (`mod-action`,
+// rendered by renderModeration()) only opens a confirm sheet; a SEPARATE
+// button (`mod-action-run`, rendered by a different function entirely)
+// reads the chosen decision back out of state and fires the RPC. A first
+// draft of this comment reported that as a known, accepted, unclosed gap.
+// It is now closed by CHECK 1B, which traces exactly this shape: a `{ id,
+// ... }` option array rendered with `data-community-action="X"
+// data-ATTR="${d.id}"`, linked (by the attribute name reappearing as an
+// RPC argument elsewhere - `data-decision` <-> `p_decision`, the one
+// naming convention this codebase applies consistently) to whichever RPC
+// actually fires, then resolved BRANCH-AWARE per option value via
+// serverFnPermsForArgValue() rather than one union over the whole
+// function (mod_review()'s OWN top-level check is comment.moderate for
+// every decision; only `restrict_temp`/`restrict_permanent` additionally
+// call mod_restrict_member(), which needs member.restrict - unioning the
+// whole function would make even `remove`/`warn`/`dismiss` look like they
+// need it too, which is false).
+//
+// Getting check 1B to actually re-catch the bug it was built for surfaced
+// two more real defects IN THIS SCRIPT, each found by re-running against
+// `git show b957780:cloud.js` (this repo's own pre-fix state) and refusing
+// to accept "it still doesn't reproduce" as someone else's problem:
+//   - A naive "first `end if;` after the branch's own `if`" search for the
+//     end of an `if/elsif` chain stopped at a NESTED if/end-if INSIDE the
+//     first branch (mod_review()'s `remove` branch has one), truncating
+//     the chain before it ever reached `restrict_temp`/`restrict_permanent`.
+//     Fixed with findMatchingEndIf(), a real depth-counting scan.
+//   - permsFromTextSlice()'s recursion pre-added a callee's name to `seen`
+//     in the CALLER, one line before calling serverFnPerms(callee, ...) -
+//     which then saw itself as "already visited" via its OWN entry guard
+//     and returned empty immediately, EVERY time, for ANY first-time
+//     transitive callee. This silently weakened check 1 itself, not just
+//     check 1B - any finding depending on a one-hop callee's own
+//     permission check (as opposed to a check written directly in the
+//     RPC's own body) was being under-counted this whole time.
+// Both are fixed. Re-run against the pre-fix tree, check 1B now correctly
+// flags `restrict_temp`/`restrict_permanent` and correctly does NOT flag
+// `remove`/`warn`/`dismiss` - the exact real bug, the exact real distinction.
+//
+// The remaining, still-real limitation: check 1B sees a render function's
+// OUTER gate and an option array's DECLARED values, not a per-value inner
+// `.filter(d => hasPerm(...))` narrowing those values further before they
+// render - so on the CURRENT, already-fixed tree it still flags
+// `restrict_temp`/`restrict_permanent`, exactly like check 1 still flags
+// the fixed `lift-restriction` button for the same reason. Verify every
+// finding against the actual code before treating it as real; that is
+// what this whole header keeps insisting on, and what closed every false
+// positive found while building this.
+//
 // A KNOWN, ACCEPTED LIMITATION OF CHECK 1, found the hard way while
 // building this: it only sees a render function's OUTER gate, not a
 // PER-BUTTON inner conditional inside it. After renderRestrictionsPanel()
@@ -134,15 +190,15 @@ const SERVER_FN_BODY = {};
     SERVER_FN_BODY[name] = MIGRATIONS.slice(from, to);
   }
 }
-// function name -> Set<permission required, INCLUDING transitively through
-// `public.other_fn(...)` calls its body makes>, depth-capped.
-const SERVER_FN_PERMS_CACHE = {};
-function serverFnPerms(name, depth = 0, seen = new Set()) {
-  if (SERVER_FN_PERMS_CACHE[name]) return SERVER_FN_PERMS_CACHE[name];
+// Shared core: extract required permissions from a raw body-of-SQL-text
+// slice, following `public.other_fn(...)` calls found IN THAT SLICE
+// transitively (depth-capped). Used both for a whole function's body
+// (serverFnPerms) and for one branch's own span (serverFnPermsForArgValue,
+// below) - a branch's callee still needs its own full-function
+// resolution, not just the callee's text re-sliced the same way.
+function permsFromTextSlice(text, depth, seen) {
   const result = new Set();
-  const body = SERVER_FN_BODY[name];
-  if (!body || depth > 4 || seen.has(name)) return result;
-  seen.add(name);
+  if (depth > 4) return result;
   // ONLY a blocking check counts as "required" - `if not ... has_perm(...)
   // then raise exception` (or `if not (has_perm(...) or ...) then raise`).
   // A PERMISSIVE early-return bypass - `if public.is_admin() then return
@@ -153,14 +209,105 @@ function serverFnPerms(name, depth = 0, seen = new Set()) {
   // looked like it required is_admin() solely because a function it calls,
   // can_view_profile_field(), has an unrelated admin bypass branch deep
   // inside it) - this distinction is why that finding does not reappear.
-  for (const m of body.matchAll(/if\s+not\s+\(?\s*(?:public\.)?has_perm\('([\w.]+)'\)/g)) result.add(m[1]);
-  if (/if\s+not\s+\(?\s*(?:public\.)?is_admin\(\)/.test(body)) result.add("is_admin()");
-  if (/if\s+not\s+\(?\s*(?:public\.)?is_staff\(\)/.test(body)) result.add("is_staff()");
-  for (const m of body.matchAll(/public\.(\w+)\(/g)) {
-    if (m[1] === name || !SERVER_FN_BODY[m[1]]) continue;
+  for (const m of text.matchAll(/if\s+not\s+\(?\s*(?:public\.)?has_perm\('([\w.]+)'\)/g)) result.add(m[1]);
+  if (/if\s+not\s+\(?\s*(?:public\.)?is_admin\(\)/.test(text)) result.add("is_admin()");
+  if (/if\s+not\s+\(?\s*(?:public\.)?is_staff\(\)/.test(text)) result.add("is_staff()");
+  for (const m of text.matchAll(/public\.(\w+)\(/g)) {
+    // Do NOT pre-add m[1] to `seen` here - serverFnPerms() does that itself
+    // right after its OWN entry guard (`if (... || seen.has(name)) return`).
+    // Adding it here first made that guard see the callee as "already
+    // visited" on its very first call, before it ever ran, returning an
+    // empty set for EVERY transitive one-hop callee - not just this
+    // script's own worked example (mod_review -> mod_restrict_member,
+    // which is exactly how this was found: a branch that plainly
+    // contained `public.mod_restrict_member(...)` kept resolving to zero
+    // permissions). This silently weakened check 1 for every finding that
+    // depends on a transitive callee, not only the branch-aware check.
+    if (!SERVER_FN_BODY[m[1]]) continue;
     for (const p of serverFnPerms(m[1], depth + 1, seen)) result.add(p);
   }
+  return result;
+}
+// function name -> Set<permission required, INCLUDING transitively through
+// `public.other_fn(...)` calls its body makes>, depth-capped.
+const SERVER_FN_PERMS_CACHE = {};
+function serverFnPerms(name, depth = 0, seen = new Set()) {
+  if (SERVER_FN_PERMS_CACHE[name]) return SERVER_FN_PERMS_CACHE[name];
+  const body = SERVER_FN_BODY[name];
+  if (!body || depth > 4 || seen.has(name)) return new Set();
+  seen.add(name);
+  const result = permsFromTextSlice(body, depth, seen);
   SERVER_FN_PERMS_CACHE[name] = result;
+  return result;
+}
+// Branch-aware: what does calling `name(...)` require when its argument
+// `argName` (a bare SQL identifier, e.g. "p_decision") is specifically
+// `value`? Built to close the exact gap found while validating this
+// script: mod_review()'s own TOP-LEVEL check only requires
+// comment.moderate, but its `restrict_temp`/`restrict_permanent` branches
+// each `perform` a DIFFERENT function (mod_restrict_member) that requires
+// member.restrict - a requirement that only applies to THOSE two decision
+// values, not to `remove`/`warn`/`dismiss`. Treating the whole function as
+// one unioned requirement (serverFnPerms's model) would make EVERY
+// decision look like it needs member.restrict, which is false and would
+// wrongly flag the (correctly coach-accessible) remove/warn/dismiss
+// buttons. This finds the `if argName = 'v1' then ... elsif argName =
+// 'v2' then ... end if;` chain, isolates each branch's own text (plus
+// whatever sits OUTSIDE the whole chain, which applies to every value),
+// and unions only the matching branch with that shared baseline.
+// Falls back to the whole-function serverFnPerms() if no such chain on
+// this exact argument name is found (either it isn't branched on, or the
+// branch shape doesn't match plain `if/elsif ARG = 'value' then` - a real,
+// accepted limitation for anything written differently).
+// Finds the "end if" that closes the `if` token AT exactly `startIdx` -
+// i.e. properly depth-aware, not just the first "end if;" found after it.
+// Needed because a branch's own body can contain a NESTED if/end if (found
+// the hard way: mod_review()'s 'remove' branch has `if v_tt = 'post' then
+// ... else ... end if;` inside it - a naive "first end if; after the
+// chain's own if" stopped at THAT inner one, truncating the chain before
+// it ever reached the restrict_temp/restrict_permanent branches, and
+// exactly why this function's first version returned only the baseline
+// permission for every value). "elsif" is deliberately never counted:
+// `\bif\b`'s word boundary does not match the "if" tail of "elsif" (no
+// boundary between two word characters), so an if/elsif/.../end if chain
+// - however many elsif arms it has - still nets to exactly one open and
+// one close, same as any single if statement.
+function findMatchingEndIf(body, startIdx) {
+  const tokenRe = /\bif\b|\bend\s+if\b/g;
+  tokenRe.lastIndex = startIdx;
+  let depth = 0;
+  let m;
+  while ((m = tokenRe.exec(body))) {
+    depth += m[0] === "if" ? 1 : -1;
+    if (depth === 0) {
+      const semi = body.indexOf(";", m.index + m[0].length);
+      return semi >= 0 ? semi + 1 : m.index + m[0].length;
+    }
+  }
+  return -1;
+}
+const BRANCH_PERMS_CACHE = {};
+function serverFnPermsForArgValue(name, argName, value) {
+  const cacheKey = `${name}:${argName}:${value}`;
+  if (BRANCH_PERMS_CACHE[cacheKey]) return BRANCH_PERMS_CACHE[cacheKey];
+  const body = SERVER_FN_BODY[name];
+  if (!body) return new Set();
+  const openRe = new RegExp(`if\\s+${argName}\\s*=\\s*'(\\w+)'\\s+then`);
+  const openMatch = body.match(openRe);
+  if (!openMatch) { const fallback = serverFnPerms(name); BRANCH_PERMS_CACHE[cacheKey] = fallback; return fallback; }
+  const chainStart = openMatch.index;
+  const matchedEnd = findMatchingEndIf(body, chainStart);
+  const chainEnd = matchedEnd >= 0 ? matchedEnd : body.length;
+  const chainText = body.slice(chainStart, chainEnd);
+  const baselineText = body.slice(0, chainStart) + body.slice(chainEnd);
+  const elsifRe = new RegExp(`elsif\\s+${argName}\\s*=\\s*'(\\w+)'\\s+then`);
+  const parts = chainText.split(elsifRe);
+  const branches = [{ value: openMatch[1], text: parts[0] }];
+  for (let i = 1; i + 1 <= parts.length; i += 2) branches.push({ value: parts[i], text: parts[i + 1] || "" });
+  const branch = branches.find((b) => b.value === value);
+  const result = permsFromTextSlice(baselineText, 0, new Set([name]));
+  if (branch) for (const p of permsFromTextSlice(branch.text, 0, new Set([name]))) result.add(p);
+  BRANCH_PERMS_CACHE[cacheKey] = result;
   return result;
 }
 
@@ -288,6 +435,110 @@ function actionRpcs(action) {
             "permission-gate-mismatch",
             `${fn.name}() gates a control that calls "${action}" -> ${rpc}(), but the RPC needs a stricter permission than the render gate`,
             `render gate: {${[...gatePerms].join(", ")}} (min rank ${gateRank}) < RPC requirement: {${[...reqPerms].join(", ")}} (min rank ${reqRank})`
+          );
+        }
+      }
+    }
+  }
+}
+
+// ===========================================================================
+// CHECK 1B - the SAME comparison as check 1, extended across a two-step
+// "pick a decision, then confirm" flow, closing the exact gap found while
+// validating this script against last session's own pre-fix code: check 1
+// alone requires the gated render function's OWN body to reach the RPC
+// (directly, or one named-function hop) - but a decision picker like
+// MOD_DECISIONS only sets which decision was picked; a SEPARATE "run"
+// button, rendered by a DIFFERENT function entirely, reads it back out of
+// state and fires the RPC. Check 1 cannot see across that gap. This can:
+//   1. Find every `{ id: "...", ... }` array (a decision/option list).
+//   2. Find where it's `.map((param) => ...)`'d into a real control -
+//      `data-community-action="ACTION" data-ATTR="${param.id}"`.
+//   3. If ACTION doesn't reach an RPC directly (check 1 already covers it
+//      if it does), search every `.rpc("RPC", ...)` call in the file for
+//      one whose ENCLOSING function's body contains `p_ATTR: something.
+//      ATTR` - not a fixed-size window after the call, since the args are
+//      often built into their own variable a few lines BEFORE the call
+//      (found the hard way: runModAction() builds `const args = { ...,
+//      p_decision: a.decision }` well before `client.rpc("mod_review",
+//      args)`, so a forward-only window missed it entirely). The same
+//      attribute name reappearing as an RPC argument is the thread
+//      connecting the two steps - the one naming convention this codebase
+//      applies consistently (data-decision -> p_decision, data-type ->
+//      p_target_type, etc).
+//   4. For each id value, resolve the RPC's requirement FOR THAT SPECIFIC
+//      VALUE via serverFnPermsForArgValue() (not the whole-function union,
+//      which would wrongly make every value look as strict as the
+//      strictest branch) and compare against the render function's gate.
+// KNOWN LIMITATION, same shape as check 1's own: this only sees the
+// render function's OUTER gate, not a per-value inner filter - a decision
+// array that has ALREADY been narrowed with its own `.filter(d => hasPerm
+// (...))` (exactly how the original bug this check is modeled on was
+// fixed) will still be flagged, because the fix is invisible to this
+// check the same way canLift's inner ternary is invisible to check 1.
+// Verify every finding by reading the code, same as everywhere else.
+// ===========================================================================
+{
+  function findRpcForArg(attr) {
+    // The args object is often built into its own variable a few lines
+    // BEFORE the `.rpc("name", args)` call, not passed inline - a fixed
+    // forward-looking window after the match misses it entirely (found
+    // the hard way: runModAction() builds `const args = { ...,
+    // p_decision: a.decision, ... }` and only then calls
+    // `client.rpc("mod_review", args)`). Search the whole ENCLOSING
+    // top-level function's body instead of a fixed-size window.
+    for (const m of CLOUD_JS.matchAll(/\.rpc\(\s*"(\w+)"/g)) {
+      const enclosing = CLIENT_FN_RANGES.find((f) => f.from <= m.index && m.index < f.to);
+      const scope = enclosing ? enclosing.body : CLOUD_JS.slice(Math.max(0, m.index - 800), m.index + 500);
+      if (new RegExp(`p_${attr}\\s*:\\s*\\S*\\.${attr}\\b`).test(scope)) return m[1];
+    }
+    return null;
+  }
+  const decisionArrayRe = /const (\w+) = \[\s*((?:\{\s*id:[\s\S]*?\},?\s*)+)\];/g;
+  for (const m of CLOUD_JS.matchAll(decisionArrayRe)) {
+    const [, arrayName, arrBody] = m;
+    const ids = [...arrBody.matchAll(/id:\s*"(\w+)"/g)].map((x) => x[1]);
+    if (ids.length < 2) continue;
+    // Window covers an intervening `.filter(...)` chain (commonly more than
+    // one, each with its own explanatory comment) between the array name
+    // and its eventual `.map((param) => ...)` - 400 chars was too tight
+    // once a second `.filter()` and comment landed here (found by
+    // comparing this check's result on the pre-fix tree against the fixed
+    // one: the window silently stopped matching at all, which looked like
+    // "the fix is understood" but was really "the regex gave up," a
+    // meaningfully different and much less trustworthy outcome).
+    const useRe = new RegExp(`\\b${arrayName}\\b[\\s\\S]{0,1200}?\\.map\\(\\((\\w+)\\)\\s*=>`, "g");
+    for (const useM of CLOUD_JS.matchAll(useRe)) {
+      const param = useM[1];
+      const windowStart = useM.index;
+      const windowText = CLOUD_JS.slice(windowStart, windowStart + 2000);
+      const actionM = windowText.match(/data-community-action="([\w-]+)"/);
+      const attrM = windowText.match(new RegExp(`data-(\\w+)="\\$\\{${param}\\.id\\}"`));
+      if (!actionM || !attrM) continue;
+      const action = actionM[1];
+      const attr = attrM[1];
+      if (actionRpcs(action).size > 0) continue; // check 1 already covers a direct/one-hop reach.
+      const rpc = findRpcForArg(attr);
+      if (!rpc) continue;
+      const fn = CLIENT_FN_RANGES.find((f) => f.from <= windowStart && windowStart < f.to && /^render/.test(f.name));
+      if (!fn) continue;
+      const gatePerms = new Set();
+      for (const gm of fn.body.matchAll(/hasPerm\(PERM\.(\w+)\)/g)) if (PERM_CONST[gm[1]]) gatePerms.add(PERM_CONST[gm[1]]);
+      if (/\bisAdmin\(\)/.test(fn.body)) gatePerms.add("is_admin()");
+      if (/\bisStaff\(\)/.test(fn.body)) gatePerms.add("is_staff()");
+      if (gatePerms.size === 0) continue;
+      const gateRank = Math.min(...[...gatePerms].map((p) => minRankHolding(new Set([p]))));
+      if (!Number.isFinite(gateRank)) continue;
+      for (const idVal of ids) {
+        const reqPerms = serverFnPermsForArgValue(rpc, `p_${attr}`, idVal);
+        if (reqPerms.size === 0) continue;
+        const reqRank = minRankHolding(reqPerms);
+        if (!Number.isFinite(reqRank)) continue;
+        if (gateRank < reqRank) {
+          flag(
+            "permission-gate-mismatch",
+            `${fn.name}() renders ${arrayName} value "${idVal}" (action "${action}", data-${attr}) which reaches ${rpc}() with p_${attr}='${idVal}' via a two-step confirm flow, needing a stricter permission than the render gate`,
+            `render gate: {${[...gatePerms].join(", ")}} (min rank ${gateRank}) < RPC requirement for this value: {${[...reqPerms].join(", ")}} (min rank ${reqRank})`
           );
         }
       }

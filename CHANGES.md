@@ -7,9 +7,11 @@ check, not a one-off script - three mechanical checks modeled directly on the th
 shapes already found this session:
 
 1. **Permission-gate mismatch** — cross-references every render function's `hasPerm()`
-   gate against the actual (transitive, through `perform public.other_fn(...)` calls)
-   permission its buttons' RPCs require server-side, flagging any control visible to a
-   role the server will then refuse.
+   gate against the actual (transitive, through `perform public.other_fn(...)` calls,
+   and BRANCH-AWARE per argument value where a decision picker's chosen option only
+   surfaces two steps later through a separate confirm control) permission its buttons'
+   RPCs require server-side, flagging any control visible to a role the server will
+   then refuse.
 2. **Type-coverage gap** — for every server RPC with a closed-enum argument guard,
    checks that every value the server accepts has a real client control, not just the
    ones reachable through a direct handler call in a test.
@@ -17,40 +19,59 @@ shapes already found this session:
    referenced nowhere else in the client, the shape a control for a nonexistent feature
    takes.
 
-Building it caught its own bugs first, each one only visible by manually verifying a
-finding against the real code rather than trusting the first output - exactly the
-discipline the tool's own header now insists on for its own findings: a body-boundary
-regex that leaked unrelated `CREATE POLICY` text into a function's counted permissions
-(falsely implicated `pin_clear`, `chal_progress`, `post_create`), a client-side call
-resolver that wandered 4 hops into big shared render functions and vacuumed up
-unrelated RPCs, and - the one that mattered most - treating `hasPerm(X) || isAdmin()`
-as requiring **both** conditions instead of *either*, which artificially inflated a
-gate's computed strictness and is exactly why the tool's first run missed the real bug
-it was modeled on. Fixed all three, then re-validated by running the tool against last
-session's OWN pre-fix `cloud.js` (via `git show`, never by touching the working file)
-and confirming it now catches both previously-known bugs cleanly.
+**This entry was rewritten once already, mid-session, for overclaiming** - an earlier
+draft reported the tool "confirms it now catches both previously-known bugs" without
+having actually re-run that comparison carefully enough to notice check 1 didn't. Told
+plainly to fix what was actually found rather than just correct the wording, the real
+gap got closed instead of documented as accepted: check 1 alone (gate and RPC in the
+SAME render function) genuinely could not see the original coach/restrict-button bug,
+because that bug is a TWO-STEP flow - clicking a decision only opens a confirm sheet; a
+SEPARATE button in a DIFFERENT function reads the chosen decision back out of state and
+fires the RPC. A new check 1B now traces exactly that: it finds the option array behind
+a decision picker, follows the SAME dataset-attribute name to wherever it reappears as
+an RPC argument (`data-decision` <-> `p_decision`, a naming convention this codebase
+applies consistently), and resolves the RPC's requirement PER OPTION VALUE rather than
+as one union over the whole function - `mod_review()`'s own top-level check is
+`comment.moderate` for every decision, and only `restrict_temp`/`restrict_permanent`
+additionally require `member.restrict`; unioning the whole function would wrongly make
+`remove`/`warn`/`dismiss` look just as restricted.
 
-**Then it found a third, real, previously-unknown one on the first full run against the
-current tree**: `renderRestrictionsPanel()`'s outer gate is an OR across three tiers
-(`MEMBER_RESTRICT` / `COMMENT_MODERATE` / `isAdmin()`), so a plain coach could see the
-whole active-restrictions panel and a real "ביטול ההגבלה" (lift restriction) button on
-every row — `mod_lift_restriction()` requires `community.member.restrict`
-(head_coach+) and would have refused every coach's click. Same defect class as the
-moderation-queue restrict buttons fixed earlier this session, in a sibling panel that
-manual pass didn't happen to check. Fixed the same way: the lift button now only
-renders for a role that actually holds the permission the RPC will demand.
+Getting there surfaced two more real bugs IN THE SCRIPT, both found by refusing to
+accept "still doesn't reproduce" as a shrug: a naive "first `end if;`" search for a
+branch's own end stopped at a NESTED if/end-if inside an earlier branch, truncating the
+chain before it ever reached the branches that mattered; and a recursion bug where the
+CALLER pre-marked a callee as "already visited" one line before calling it, so the
+callee's own entry guard saw itself as a cycle and returned nothing - silently
+weakening check 1 itself for any finding depending on a one-hop callee, not just this
+new check. Both fixed. Re-run against `git show b957780:cloud.js` (this repo's own
+pre-fix state, via `git show`, never by touching the working file), check 1B now
+correctly flags `restrict_temp`/`restrict_permanent` and correctly clears
+`remove`/`warn`/`dismiss` - the real bug, the real distinction, genuinely re-caught.
 
-A full re-run against the fixed tree comes back with exactly one finding, and it is a
-confirmed false positive under a documented, deliberate limitation (the check sees a
-render function's outer gate, not a per-button inner conditional) — recorded in the
-script's own header so a future run isn't second-guessed by it.
+**Along the way it also found a third, real, previously-unknown bug**:
+`renderRestrictionsPanel()`'s outer gate is an OR across three tiers (`MEMBER_RESTRICT`
+/ `COMMENT_MODERATE` / `isAdmin()`), so a plain coach could see the whole
+active-restrictions panel and a real "ביטול ההגבלה" (lift restriction) button on every
+row — `mod_lift_restriction()` requires `community.member.restrict` (head_coach+) and
+would have refused every coach's click. Same defect class, a sibling panel the manual
+pass didn't happen to check. Fixed the same way: the lift button now only renders for a
+role that actually holds the permission the RPC will demand.
 
-Verified: 1548/1548 (this session's own +1 test for the restrictions-panel fix,
-verified via the working tree, which also carries a concurrent session's own unrelated
+A full re-run against the CURRENT, fixed tree still returns three findings - the
+restrictions-panel one above, plus `restrict_temp`/`restrict_permanent` again. All
+three are confirmed false positives under one real, stated limitation: both checks see
+a render function's OUTER gate, not a per-value inner `.filter(d => hasPerm(...))`
+narrowing what actually renders - exactly how both of these bugs were fixed. Verifying
+each finding against the real code, every time, is what caught every other problem in
+this entry; this is the one that's left, and the script's own header says so rather
+than letting a clean-looking run imply otherwise.
+
+Verified: full suite green (this session's own +1 test for the restrictions-panel fix),
+via the working tree, which also carries a concurrent session's own unrelated
 in-progress changes to many of these same files — every edit in this entry was
 isolated into its own minimal patch, diffed against `git show HEAD:<file>` and applied
 with `git apply --cached`, specifically so staging and committing this work would not
-touch or discard anything the other session has not committed yet).
+touch or discard anything the other session has not committed yet.
 
 ## A role-coverage audit — two real bugs found and fixed, one dead control removed — 2026-09-10
 
