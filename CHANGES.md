@@ -1,3 +1,59 @@
+## Security hunt, round 3: authentication abuse, privilege escalation, and client-side posture — 2026-09-11
+
+Three more independent agents: authentication/account-recovery abuse, SECURITY DEFINER
+privilege-escalation testing, and client-side security posture.
+
+**SECURITY DEFINER / privilege-escalation: no confirmed gap.** Reviewed every
+multi-branch definer function where a lower-privilege caller might reach a
+higher-privilege code path via an argument combination the UI never sends -
+moderation, invite/role-escalation, club WOD, challenge-team, and coach-signal
+clusters. Every branch that does more than its own top-level gate justifies
+re-checks its own permission independently; the few genuinely asymmetric branches
+(attach vs. detach content, member vs. per-person invite role tiers) are asymmetric
+by explicit, commented design with the narrower side independently enforced. One
+combination not previously exercised by a real caller identity (`head_coach`/`staff`
+attempting the admin-only invite role) was verified live against real local
+Postgres and correctly refused.
+
+**Client-side security posture: no confirmed vulnerability; one defense-in-depth
+gap closed.** The CSP was tested with real injection attempts (inline scripts,
+external script/fetch/form-action/object loads) through a live Chromium page, not
+just read - every attempt was actually blocked, confirmed via CSP violation events
+and network-level request failures. Confirmed live against real local Postgres/REST
+that the public anon key alone, with no session, grants zero access to any table or
+function - RLS plus table-level grants, not key secrecy, is what protects data.
+Verbose server errors: none of today's newer code paths (this hunt's own round-2
+upload/coach-congratulate work included) let a raw database error reach a member;
+every error path already routes through this codebase's existing safe-fallback
+helpers. Service-worker cache-poisoning: the one theoretical mismatch (a cache
+lookup that ignored the query string paired with an exact-URL cache write) was
+built out as a real live test and found not exploitable, since the canonical app
+shell is always precached before the service worker can intercept anything. A
+separate, currently-unreachable looseness was found and closed anyway: the
+service worker decided whether a same-origin request was an app-shell file by
+checking whether its path merely *ended with* a precached filename (so
+`/anything/app.js` would have counted the same as the real `./app.js`), rather
+than matching the exact resolved path. No code path in this app currently
+constructs a request that could reach that gap, but it was strictly looser than
+the actual set of precached files and cheap to tighten outright.
+
+**Authentication & account-recovery abuse: two confirmed findings, both inherent to
+the underlying auth service rather than this app's own code, and both already
+covered by a deliberate, previously-recorded product decision.** A login-timing
+difference lets a caller distinguish a real member handle from a nonexistent one
+(the auth service's own credential-verification cost, not app logic), and the
+account-creation flow lets a caller confirm whether a given handle is already
+registered, with no throttling, before any invite code is presented - unlike this
+app's own invite-code redemption, which is real, server-side, rate-limited and
+already covered by tests. Both trace back to the same root cause already evaluated
+and knowingly accepted in an earlier hardening pass (CAPTCHA on the auth service's
+own signup endpoint, declined as disproportionate for a club this size) - there is
+no lever in this repo's own migrations or client code that closes either one
+without reopening that decision, so neither was patched this round; both are
+recorded here for visibility rather than left undocumented.
+
+Verified: full suite 1604/1604 (3 new regression tests), full browser-check 41/41.
+
 ## Security hunt, round 2: business-logic abuse, IDOR, and file-upload security — 2026-09-11
 
 Three more independent agents: business-logic abuse/rate-limit bypass, IDOR/object-reference

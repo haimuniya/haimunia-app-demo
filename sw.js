@@ -2,7 +2,7 @@
 // Version is the single source of truth for the cache name — bumping
 // APP_VERSION in app.js is what ships an update. Don't edit SW_VERSION by
 // hand: run `npm run sync-version` (see app.js) to copy it here.
-const SW_VERSION = "4.25.0";
+const SW_VERSION = "4.26.0";
 // "haimunia-demo-v..." — deliberately distinct from the production app's
 // own "haimunia-v..." cache prefix. Both service workers are scoped to
 // the same origin (haimuniya.github.io), and the activate handler below
@@ -215,11 +215,18 @@ self.addEventListener("notificationclick", (e) => {
 
 // Only app-shell files get written back to the cache, so a stray same-origin
 // request can't grow the cache without bound.
+// Security hunt (2026-09-11): this used to compare with url.pathname.endsWith("/"+rel),
+// a suffix match - a same-origin request to /anything/app.js would also count
+// as precached, not just the real ./app.js at the shell's own base path. No
+// code path in this app currently builds a fetch() URL like that (checked),
+// so it wasn't reachable, but the suffix match was strictly looser than the
+// exact set of files install() actually cached, and cheap to tighten. Each
+// asset is now resolved to its real absolute URL relative to this service
+// worker's own location (works at any deploy base path, same as ASSETS'
+// own "./"-relative entries already assumed) and compared for an exact
+// pathname match instead.
 function isPrecached(url) {
-  return ASSETS.some((a) => {
-    const rel = a.replace(/^\.\//, "");
-    return rel === "" ? url.pathname.endsWith("/") : url.pathname.endsWith("/" + rel);
-  });
+  return ASSETS.some((a) => new URL(a, self.location).pathname === url.pathname);
 }
 
 self.addEventListener("fetch", (e) => {
