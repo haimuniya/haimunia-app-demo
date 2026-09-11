@@ -44,6 +44,24 @@ function mockSupabaseSource() {
 // mock.setUser() before cloud.js's boot-time client.auth.getSession() call
 // runs, so the app boots already signed in as that member — the same
 // pattern every community-*.test.mjs uses via seeded()/mock.setUser().
+// Live bug hunt (2026-09-11): a round-7 agent testing interrupted async
+// operations found that once the real service worker (sw.js) is installed
+// and controlling a page, a page.reload() can have its ./vendor/supabase.js
+// request served from the SW'S OWN cache rather than by the page.route()
+// stub below - route interception attaches to the page's network layer, and
+// a Service Worker satisfying a fetch from its own Cache Storage does not
+// reliably go through the same layer. Confirmed: window.supabase.createClient
+// visibly became the REAL factory after such a reload. No request to
+// *.supabase.co was ever observed firing (the blanket route(/supabase\.co/)
+// abort below is a second, independent net and held throughout), so this
+// was not a confirmed production leak - but any script that calls
+// page.reload() after a service worker has activated should pass
+// `serviceWorkers: "block"` to browser.newPage()/newContext() to remove the
+// bypass vector entirely. Not defaulted here: scripts/browser-check/
+// update-flow.mjs deliberately exercises the REAL service-worker
+// install/update lifecycle against this same mock and would break if
+// service workers were blocked unconditionally for every installMockCloud
+// caller.
 export async function installMockCloud(page, seedTables = {}, opts = {}) {
   // Defensive net: if anything ever reaches past the stub below (a bug in
   // this harness, a future code path that bypasses window.supabase), fail

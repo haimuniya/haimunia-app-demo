@@ -11,6 +11,19 @@ const DB_NAME = "haimunia-demo-db", STORE = "entries", MOVSTORE = "movements", W
       // is an ordered, attempt-counted event queue. See src/outbox.js.
       COMMOUTBOXSTORE = "communityOutbox";
 let _dbPromise = null;
+// Live bug hunt (2026-09-11): confirmed live with two real tabs sharing one
+// origin - a v9 connection left open and idle in tab A (an entirely
+// ordinary "background PWA tab") permanently blocked tab B's v10 open
+// request the moment this app next ships a schema bump, because neither
+// half of the standard IndexedDB handshake existed: tab A's connection had
+// no onversionchange telling it to step aside, and tab B's request had no
+// onblocked to even notice it was stuck. Tab B sat on "טוען את היומן שלך…"
+// forever - no error, no timeout, no message - until the user manually
+// closed tab A. Fixed with the standard pair: every connection this module
+// opens closes itself the instant a newer version wants in (onversionchange
+// below), which is what stops the OTHER tab from blocking in the first
+// place; onblocked is a defensive log for the rare case a browser still
+// can't complete the handshake in time.
 function openDB() {
   if (_dbPromise) return _dbPromise;
   _dbPromise = new Promise((resolve, reject) => {
@@ -36,7 +49,15 @@ function openDB() {
       if (!db.objectStoreNames.contains(WODTAGSTORE)) db.createObjectStore(WODTAGSTORE, { keyPath: "name" });
       if (!db.objectStoreNames.contains(COMMOUTBOXSTORE)) db.createObjectStore(COMMOUTBOXSTORE, { keyPath: "id" });
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onblocked = () => { try { console.warn("IndexedDB open blocked by another open connection (see src/db.js openDB)"); } catch (e) {} };
+    req.onsuccess = () => {
+      const db = req.result;
+      // Step aside for a newer version opened elsewhere (another tab, or a
+      // future reload of this same tab after a deploy) instead of holding
+      // this connection open and blocking it indefinitely.
+      db.onversionchange = () => { db.close(); _dbPromise = null; };
+      resolve(db);
+    };
     req.onerror = () => { _dbPromise = null; reject(req.error); };
   });
   return _dbPromise;

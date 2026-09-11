@@ -17391,7 +17391,19 @@
     // resetting it halfway through one paint.
     resetTermMarkBudget();
     if (!configured) return `<div class="chart-card"><div style="font-weight:800;font-size:18px;margin-bottom:8px;">הקהילה מוכנה לחיבור</div><div style="color:var(--steel);font-size:13px;line-height:1.7;">יש ליצור פרויקט Supabase, להריץ את קובץ המיגרציה ולהכניס URL ומפתח publishable בקובץ cloud-config.js. אין להכניס מפתח secret.</div></div>`;
-    if (!state.user || (state.user.is_anonymous && !state.signupStarted)) {
+    // Live bug hunt (2026-09-11): state.signupStarted is in-memory-only and
+    // resets to false on reload - confirmed live, a real member whose
+    // invite-code redemption had already committed server-side (the RPC's
+    // response just never made it back before the reload) was bounced back
+    // to this neutral "start" screen as if signup had never begun. Re-typing
+    // the same (now-spent) code then failed with a generic "invalid/used"
+    // error, misleading someone who actually is mid-signup. A confirmed
+    // server-side redemption (state.redemption, loaded fresh by
+    // loadRedemption() regardless of this in-memory flag) is exactly as
+    // strong a signal as signupStarted that this session should skip the
+    // neutral gate - the post-gate flow below already branches on
+    // state.redemption to jump straight to the credentials step.
+    if (!state.user || (state.user.is_anonymous && !state.signupStarted && !state.redemption)) {
       // Two real entry points — log into an existing account, or start fresh
       // with a club invite code. Nothing happens silently *from this screen*
       // — but state.user can already be a real (anonymous) session by the

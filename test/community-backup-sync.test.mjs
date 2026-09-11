@@ -81,9 +81,12 @@ test("backup-enable clears the opt-out and starts or resumes sync; backup-optout
 test("the anonymous backup session and the Community join flow use the same underlying session without duplicating it", () => {
   // The Community tab's login-or-start gate has to keep showing for a
   // backup-only anonymous session (is_anonymous, signupStarted still
-  // false) rather than skipping straight past it as if start-signup had
-  // been clicked.
-  assert.match(cloudJs, /if \(!state\.user \|\| \(state\.user\.is_anonymous && !state\.signupStarted\)\) \{/);
+  // false, and no redemption on file either) rather than skipping straight
+  // past it as if start-signup had been clicked. Live bug hunt
+  // (2026-09-11) widened the condition to also fall through for a
+  // CONFIRMED server-side redemption (state.redemption) - a backup-only
+  // session has none, so it is unaffected and still hits this same gate.
+  assert.match(cloudJs, /if \(!state\.user \|\| \(state\.user\.is_anonymous && !state\.signupStarted && !state\.redemption\)\) \{/);
 });
 
 test("setCredentials (the anonymous-to-permanent-account upgrade) is reusable from the standalone backupCredentials form in Settings, not only the Community onboarding gate", () => {

@@ -40,7 +40,13 @@ test("the signed-out (or backup-only anonymous, pre-signup) render state trigger
   // time this renders, off the back of Settings > "protect my data" - the
   // same login-or-start screen still has to show until signupStarted is
   // explicitly set, rather than skipping straight past it.
-  const branch = cloudJs.slice(cloudJs.indexOf("if (!state.user || (state.user.is_anonymous && !state.signupStarted)) {"), cloudJs.indexOf("if (!state.redemption)"));
+  // Live bug hunt (2026-09-11): widened again to also fall through when a
+  // confirmed server-side redemption already exists (state.redemption) -
+  // signupStarted alone is in-memory-only and reset on reload, which used
+  // to bounce a member whose invite-code redemption had already committed
+  // back to this same neutral screen. See cloud.js's own comment at the
+  // condition for the live repro.
+  const branch = cloudJs.slice(cloudJs.indexOf("if (!state.user || (state.user.is_anonymous && !state.signupStarted && !state.redemption)) {"), cloudJs.indexOf("if (!state.redemption)"));
   assert.match(branch, /ensureAnonymousSession\(\);/);
   assert.doesNotMatch(branch, /type="email"/);
   assert.doesNotMatch(branch, /שליחת קישור/);

@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.29.0";
+const APP_VERSION = "4.30.0";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -1923,6 +1923,18 @@ async function saveSet(sanityConfirmed) {
     };
     celebrationLabel = `${weight} ק"ג × ${reps}`;
   }
+  // Live bug hunt (2026-09-11): dbPut() used to run AFTER entries was
+  // already mutated (unshift/sort) and nothing rolled that back on
+  // failure - confirmed live with a forced QuotaExceededError: the set
+  // still incremented entriesCount, still fired the full first-log
+  // celebration and PR flagging, and firstLogCelebrated still got
+  // permanently stamped true in a DIFFERENT (unaffected) store - all while
+  // the actual entry silently never persisted, so a reload showed it
+  // simply gone. Writing FIRST and bailing out before any in-memory
+  // mutation or celebration decision means a failed save has NO visible
+  // side effect beyond the existing storage-error banner - never a
+  // celebration for a set that doesn't exist.
+  try { await dbPut(entry); storageOK = true; } catch (e) { noteStorageError(e); render(); return; }
   // Three separate gates stand between "the arithmetic says record" and a
   // full-screen card, all from the same finding: praise that costs nothing
   // teaches the member that praise from this app means nothing.
@@ -1974,7 +1986,6 @@ async function saveSet(sanityConfirmed) {
   entries = entries.filter((e) => e.id !== entry.id);
   entries.unshift(entry);
   entries.sort((a, b) => (b.ts || 0) - (a.ts || 0));
-  try { await dbPut(entry); storageOK = true; } catch (e) { noteStorageError(e); }
   editingEntryId = null;
   // Mid-ladder, keep the date fixed so every rung lands on the same day —
   // otherwise this reset-to-today would silently misdate rungs 2+ of a
@@ -2395,16 +2406,32 @@ async function restoreEntry(entry) {
 }
 
 // ---------- Bodyweight ----------
+// Live bug hunt (2026-09-11): confirmed live with two tabs sharing one
+// IndexedDB origin - both booted with an empty in-memory bodyweightEntries,
+// tab A saved 80kg for today, tab B (never reloaded) then saved 82kg for
+// the same today and, because this upserted by scanning tab B's own STALE
+// in-memory array (never existing here), created a SECOND row instead of
+// updating tab A's - two permanent rows for one calendar date, the older
+// one silently orphaned and still feeding the weight chart. Re-reading the
+// on-disk store for today's row right before deciding update-vs-insert
+// closes it, the same shape startEditEntry() above already uses for the
+// strength-set edit version of this bug. Also now writes BEFORE mutating
+// in-memory state (same reasoning as saveSet()'s own fix above): a failed
+// write must have no visible side effect.
 async function saveBodyweight() {
   if (!isFinite(bwWeight)) return;
   const today = todayISO();
-  const existing = bodyweightEntries.find((e) => e.date === today);
+  let existing = bodyweightEntries.find((e) => e.date === today);
+  try {
+    const fresh = (await dbLoadBodyweight()).find((e) => e.date === today);
+    if (fresh) existing = fresh;
+  } catch (e) { /* offline/storage error - fall back to the in-memory copy above */ }
   const entry = existing
     ? { ...existing, weight: bwWeight, ts: Date.now() }
     : { id: uid("bw"), date: today, ts: Date.now(), weight: bwWeight };
+  try { await dbPutBodyweight(entry); storageOK = true; } catch (e) { noteStorageError(e); render(); return; }
   bodyweightEntries = bodyweightEntries.filter((e) => e.id !== entry.id);
   bodyweightEntries.unshift(entry);
-  try { await dbPutBodyweight(entry); storageOK = true; } catch (e) { noteStorageError(e); }
   render();
 }
 
@@ -2477,17 +2504,26 @@ async function restoreMeasureType(type, removedEntries) {
   } catch (e) { noteStorageError(e); }
   render();
 }
+// Live bug hunt (2026-09-11): same cross-tab duplicate-row race as
+// saveBodyweight() above (identical upsert-by-stale-in-memory-array shape),
+// confirmed live for a custom measurement type the same way. Same fix:
+// re-read the on-disk store for today's row before deciding
+// update-vs-insert, and write before mutating in-memory state.
 async function saveMeasurement(typeId) {
   const value = measureValues[typeId];
   if (typeof value !== "number" || !isFinite(value) || value <= 0) return;
   const today = todayISO();
-  const existing = measureEntries.find((e) => e.typeId === typeId && e.date === today);
+  let existing = measureEntries.find((e) => e.typeId === typeId && e.date === today);
+  try {
+    const fresh = (await dbLoadMeasurements()).find((e) => e.typeId === typeId && e.date === today);
+    if (fresh) existing = fresh;
+  } catch (e) { /* offline/storage error - fall back to the in-memory copy above */ }
   const entry = existing
     ? { ...existing, value, ts: Date.now() }
     : { id: uid("meas"), typeId, date: today, value, ts: Date.now() };
+  try { await dbPutMeasurement(entry); storageOK = true; } catch (e) { noteStorageError(e); renderMeasureArea(); return; }
   measureEntries = measureEntries.filter((e) => e.id !== entry.id);
   measureEntries.unshift(entry);
-  try { await dbPutMeasurement(entry); storageOK = true; } catch (e) { noteStorageError(e); }
   renderMeasureArea();
 }
 // Live bug hunt (2026-09-11): this deleted a single measurement value
@@ -3626,10 +3662,13 @@ async function saveWod() {
   const isPR = w.scoreType === "emom" ? false : (prevBest === null || (w.scoreType === "time" ? val < prevBest : val > prevBest));
   entry.isPR = isPR;
 
+  // Live bug hunt (2026-09-11): same write-before-mutate fix as saveSet()
+  // above - a failed write must have no visible side effect (no PR flash,
+  // no first-log celebration for a WOD entry that doesn't exist on disk).
+  try { await dbPutWodEntry(entry); storageOK = true; } catch (e) { noteStorageError(e); render(); return; }
   wodEntries = wodEntries.filter((e) => e.id !== entry.id);
   wodEntries.unshift(entry);
   wodEntries.sort((a, b) => (b.ts || 0) - (a.ts || 0));
-  try { await dbPutWodEntry(entry); storageOK = true; } catch (e) { noteStorageError(e); }
   wodNotes = "";
   wodPartnerTag = "";
   editingWodEntryId = null;

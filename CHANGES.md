@@ -1,3 +1,76 @@
+## Live bug hunt, round 7: cross-tab, multi-window, and concurrent-session behavior — 2026-09-11
+
+Three fresh agents: same account in two tabs, interrupted async operations,
+and storage-quota/IndexedDB edge cases. All three areas are specific to the
+offline training log's IndexedDB layer (`src/db.js`), since the Community
+layer's mock-backend harness turned out not to support genuine cross-tab
+shared state (documented, not fixed - a harness limitation, not a product
+gap).
+
+**Severe: a cross-tab IndexedDB schema-upgrade deadlock, silent and
+permanent.** `openDB()` had neither half of the standard IndexedDB
+version-upgrade handshake: no `onversionchange` telling an idle connection
+to step aside for a newer one opened elsewhere, and no `onblocked` on the
+side requesting the upgrade. Confirmed live with two real tabs: an entirely
+ordinary "left open in the background" tab A permanently blocked tab B's
+open request the moment a schema version bump (this app's own `v10 adds
+communityOutbox` comment shows this has already happened once) landed -
+tab B sat on "טוען את היומן שלך…" forever, no error, no timeout, until tab A
+was manually closed. Fixed with the standard pair: every connection now
+closes itself the instant a newer version wants in, which is what stops
+another tab from ever blocking for more than an instant in the first place.
+
+**Silent data loss + permanently corrupted one-time state: a failed
+IndexedDB write left the UI believing it had succeeded.** `saveSet()`/
+`saveWod()` mutated in-memory state and decided the whole
+celebration/PR-flagging flow *before* awaiting the actual write, with no
+rollback on failure. Confirmed live with a forced `QuotaExceededError`: the
+full-screen "first log arrival" celebration fired, a PR flag got set, and
+`firstLogCelebrated` was permanently stamped `true` in a *different*
+(unaffected) store - all while the entry silently never persisted, so a
+reload showed it simply gone and the one genuinely-first successful save
+would never see that celebration again. Fixed by writing to IndexedDB
+*first* and returning immediately (with the existing storage-error banner
+shown) on failure, before any in-memory mutation happens - a failed save now
+has no visible side effect at all, matching what "failed" should mean.
+
+**Silent data corruption: two tabs each logging today's bodyweight/
+measurement created two permanent, orphaned rows instead of one.**
+`saveBodyweight()`/`saveMeasurement()` upserted "today's" row by scanning
+each tab's own in-memory array. Confirmed live for both: tab A saves 80kg,
+tab B (never reloaded, in-memory array still empty) saves 82kg for the same
+date - two rows on disk, the older one silently orphaned and still feeding
+the weight chart as a duplicate point. Fixed the same way an earlier round
+fixed the identical class of bug for editing a strength set/WOD entry:
+re-read the on-disk row for today right before deciding update-vs-insert.
+
+**Minor: reload during invite-code redemption bounced an already-joined
+member back to the start screen.** `state.signupStarted` is in-memory-only
+and resets on reload; if the redemption RPC actually committed server-side
+before the reload cut off the response, the member landed back on the
+neutral "יש לי קוד הזמנה" screen as if signup had never begun - retyping the
+same (now-spent) code then failed with a generic error. Self-recovered via
+a second tap on the same entry point, but this closes it directly: a
+confirmed server-side redemption is now as strong a signal as
+`signupStarted` for skipping the neutral gate.
+
+**Documented, not code-fixed:** a round-7 agent found that once the real
+service worker is active, a `page.reload()` in a browser-check script can
+have `vendor/supabase.js` served from the SW's own cache rather than by
+`installMockCloud`'s `page.route()` stub - confirmed the mock client got
+silently replaced by the real factory after such a reload, though no actual
+request to production ever fired (the separate blanket `*.supabase.co`
+abort held throughout). Not defaulted into `installMockCloud` because
+`update-flow.mjs` deliberately exercises the real service-worker lifecycle
+against the same mock and would break; documented in `lib/mockCloud.mjs`
+with the `serviceWorkers: "block"` guidance for any future reload-heavy
+script.
+
+Verified: full suite 1627/1627 (9 new/updated regression tests across
+`test/live-bug-hunt-round7.test.mjs` and `test/bodyweight-measurements.test.mjs`,
+plus two pre-existing source-text-sweep tests updated to match the widened
+gate condition), full browser-check 42/42.
+
 ## Live bug hunt, round 6: Hebrew grammar/RTL depth, extreme content values, and units/dates/locale — 2026-09-11
 
 The 5-round hunt from earlier today was called "final" prematurely - the full

@@ -6,6 +6,35 @@ import { test } from "node:test";
 import assert from "node:assert";
 import { bootApp } from "./helpers/boot.mjs";
 
+// Live bug hunt (2026-09-11): saveBodyweight()/saveMeasurement() now do an
+// extra IndexedDB round-trip (re-reading today's row before deciding
+// update-vs-insert - see their own comments in app.js) before the actual
+// write, so a single fixed `setTimeout(r, 0)` tick is no longer guaranteed
+// to span the whole save. Polling (with an async check, unlike boot.mjs's
+// own sync-only waitFor) for the actual expected disk state is robust to
+// however many ticks the async chain now takes, and doubles as a timeout if
+// a save genuinely never completes.
+async function pollUntil(checkAsync, timeoutMs = 2000, intervalMs = 5) {
+  const start = Date.now();
+  for (;;) {
+    if (await checkAsync()) return;
+    if (Date.now() - start > timeoutMs) throw new Error("pollUntil timed out");
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+async function waitForBwWeight(window, weight) {
+  await pollUntil(async () => {
+    const rows = await window.dbLoadBodyweight();
+    return rows.some((r) => r.date === window.todayISO() && r.weight === weight);
+  });
+}
+async function waitForMeasurementValue(window, typeId, value) {
+  await pollUntil(async () => {
+    const rows = await window.dbLoadMeasurements();
+    return rows.some((r) => r.typeId === typeId && r.date === window.todayISO() && r.value === value);
+  });
+}
+
 test("logging today's bodyweight persists it and updates the collapsed row's summary", async () => {
   const window = await bootApp();
   window.document.getElementById("tabHistoryBtn").click();
@@ -13,7 +42,7 @@ test("logging today's bodyweight persists it and updates the collapsed row's sum
 
   window.applyFieldValue("bw-step", "bwWeight", 78.5);
   window.document.querySelector("[data-action='save-bw']").click();
-  await new Promise((r) => setTimeout(r, 0)); // saveBodyweight() is async
+  await waitForBwWeight(window, 78.5);
 
   const rows = await window.dbLoadBodyweight();
   assert.equal(rows.length, 1);
@@ -34,15 +63,60 @@ test("logging bodyweight again the same day overwrites today's entry instead of 
 
   window.applyFieldValue("bw-step", "bwWeight", 80);
   window.document.querySelector("[data-action='save-bw']").click();
-  await new Promise((r) => setTimeout(r, 0));
+  await waitForBwWeight(window, 80);
 
   window.applyFieldValue("bw-step", "bwWeight", 81);
   window.document.querySelector("[data-action='save-bw']").click();
-  await new Promise((r) => setTimeout(r, 0));
+  await waitForBwWeight(window, 81);
 
   const rows = await window.dbLoadBodyweight();
   assert.equal(rows.length, 1, "same-day saves should overwrite, not duplicate");
   assert.equal(rows[0].weight, 81);
+});
+
+// Live bug hunt (2026-09-11): confirmed live with two real tabs sharing one
+// IndexedDB origin - the test above only covers the SAME tab saving twice,
+// where the in-memory array is already up to date after the first save.
+// The real bug needs a tab whose in-memory bodyweightEntries never saw the
+// other tab's write - simulated here by writing "another tab's" row
+// straight to IndexedDB, bypassing this window's in-memory state entirely,
+// the same way a second, never-reloaded tab genuinely would.
+test("logging bodyweight when another tab already saved today's row updates that row instead of creating a duplicate", async () => {
+  const window = await bootApp();
+  const today = window.todayISO();
+  const otherTabsRow = { id: window.uid("bw"), date: today, ts: Date.now() - 60000, weight: 80 };
+  await window.dbPutBodyweight(otherTabsRow); // "tab A" - never reflected in this window's in-memory state
+
+  window.document.getElementById("tabHistoryBtn").click();
+  window.document.querySelector("[data-action='toggle-bodyweight']").click();
+  window.applyFieldValue("bw-step", "bwWeight", 82);
+  window.document.querySelector("[data-action='save-bw']").click();
+  await waitForBwWeight(window, 82);
+
+  const rows = await window.dbLoadBodyweight();
+  assert.equal(rows.length, 1, "must update the existing on-disk row for today, not create a second one");
+  assert.equal(rows[0].id, otherTabsRow.id, "the existing row's id must be preserved, not replaced with a new one");
+  assert.equal(rows[0].weight, 82);
+});
+
+test("logging a measurement when another tab already saved today's row updates that row instead of creating a duplicate", async () => {
+  const window = await bootApp();
+  window.document.getElementById("tabHistoryBtn").click();
+  await window.addMeasureType("Test Waist Two Tabs");
+  const type = (await window.dbLoadMeasureTypes()).find((t) => t.name === "Test Waist Two Tabs");
+
+  const today = window.todayISO();
+  const otherTabsRow = { id: window.uid("meas"), typeId: type.id, date: today, ts: Date.now() - 60000, value: 80 };
+  await window.dbPutMeasurement(otherTabsRow); // "tab A" - never reflected in this window's in-memory state
+
+  window.applyFieldValue("measure-step", type.id, 95);
+  window.document.querySelector(`[data-action='save-measurement'][data-id='${type.id}']`).click();
+  await waitForMeasurementValue(window, type.id, 95);
+
+  const rows = (await window.dbLoadMeasurements()).filter((m) => m.typeId === type.id);
+  assert.equal(rows.length, 1, "must update the existing on-disk row for today, not create a second one");
+  assert.equal(rows[0].id, otherTabsRow.id, "the existing row's id must be preserved, not replaced with a new one");
+  assert.equal(rows[0].value, 95);
 });
 
 test("adding a custom measure type, then logging and reading back a measurement", async () => {
@@ -59,7 +133,7 @@ test("adding a custom measure type, then logging and reading back a measurement"
   // addMeasureType() already expands the freshly-created type.
   window.applyFieldValue("measure-step", type.id, 82);
   window.document.querySelector(`[data-action='save-measurement'][data-id='${type.id}']`).click();
-  await new Promise((r) => setTimeout(r, 0));
+  await waitForMeasurementValue(window, type.id, 82);
 
   const entries = await window.dbLoadMeasurements();
   const saved = entries.find((e) => e.typeId === type.id);
@@ -225,7 +299,7 @@ test("a remote bodyweight deletion actually removes the local entry", async () =
   window.document.querySelector("[data-action='toggle-bodyweight']").click();
   window.applyFieldValue("bw-step", "bwWeight", 82);
   window.document.querySelector("[data-action='save-bw']").click();
-  await new Promise((r) => setTimeout(r, 0));
+  await waitForBwWeight(window, 82);
   const [entry] = await window.dbLoadBodyweight();
   assert.ok(entry, "the entry saved locally first");
 
