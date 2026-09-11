@@ -215,14 +215,23 @@ test("the panel never renders on a failed load, and never lets the client decide
 });
 
 test("the query asks only for the member's own unlifted rows, and never for a boolean the panel could not render", async () => {
+  // Security hunt round 10 (202609120012): this used to be a direct
+  // client.from("posting_restrictions") read with the scoping/filters
+  // expressed as query builder calls - RLS's self-read branch was the
+  // only thing stopping a direct read from also returning
+  // moderator_id/lifted_by/source_report_id/lift_reason, which RLS
+  // (row-level, not column-level) could never actually hide from a
+  // client asking for them directly. The scoping moved server-side, into
+  // my_posting_restrictions() itself (own-uid, unlifted-only, newest 5) -
+  // this now checks the loader calls THAT function and nothing broader.
   const loader = src.slice(src.indexOf("async function loadMyRestriction"), src.indexOf("async function loadMyRestriction") + 1400);
-  assert.match(loader, /from\("posting_restrictions"\)/);
-  assert.match(loader, /\.eq\("user_id", state\.user\.id\)/, "scoped to the caller, matching the select policy rather than leaning on it alone");
-  assert.match(loader, /\.is\("lifted_at", null\)/, "the half of the predicate that IS expressible as a filter");
-  assert.match(loader, /expires_at/, "and the expiry half is carried back for the client-side comparison");
-  // Code only: the function's own comment explains why it does NOT call the
-  // boolean RPC, and matching that prose would defeat the check.
+  assert.match(loader, /client\.rpc\("my_posting_restrictions"\)/,
+    "the loader calls the safe-column RPC, not a direct table read");
+  // Code only: the loader's own comment explains why this is no longer a
+  // direct table read, and matching that prose would defeat the check.
   const code = loader.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  assert.equal(/from\("posting_restrictions"\)/.test(code), false,
+    "no direct table read remains in the loader - a direct read exposes staff-internal columns RLS cannot hide");
   assert.equal(/is_posting_restricted/.test(code), false,
     "not the boolean RPC - a bare yes/no is exactly the shape that left the member uninformed");
 });

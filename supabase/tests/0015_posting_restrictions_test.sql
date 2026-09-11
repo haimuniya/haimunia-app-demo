@@ -114,10 +114,20 @@ select is_empty(
   $$ select 1 from public.posting_restrictions where user_id = tests.uid('m1') $$,
   'a plain member cannot read another member''s restriction');
 
+-- Security hunt round 10 (202609120012): a direct table SELECT of one's
+-- own restriction row used to also expose moderator_id/lifted_by/
+-- source_report_id/lift_reason - staff-internal columns RLS (row-level
+-- only) could never hide from a self-read the way the client's own
+-- column allowlist did. The self-read branch is gone from the policy
+-- entirely; my_posting_restrictions() is the replacement, returning only
+-- the safe columns loadMyRestriction() (cloud.js) already asked for.
 select tests.set_auth(tests.uid('m1'));
-select isnt_empty(
+select is_empty(
   $$ select 1 from public.posting_restrictions where user_id = tests.uid('m1') $$,
-  'the restricted member reads their own restriction');
+  'a direct table read of one''s own restriction is refused - the self branch was removed from the RLS policy, not narrowed');
+select isnt_empty(
+  $$ select 1 from public.my_posting_restrictions() $$,
+  'the restricted member still reads their own restriction, through the safe-column RPC instead of the raw table');
 
 select tests.set_auth(tests.uid('coach'));
 select isnt_empty(

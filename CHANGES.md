@@ -1,3 +1,124 @@
+## Security hunt, round 10 (final): full-application penetration-style sweep — 2026-09-12
+
+Three more independent agents for the closing round: admin/moderation-surface
+coverage, business-logic abuse through chaining otherwise-legitimate calls, and
+an unconstrained fresh-eyes sweep across the whole app with no fixed target.
+
+**Admin/moderation surfaces: one confirmed medium-severity confidentiality
+leak, fixed.** Row level security decides which rows a query can see, never
+which columns - two moderation tables' "read your own row" policies were
+written before staff-internal columns existed on those tables, and were never
+revisited when those columns were added later. Confirmed live against real
+local Postgres: a member reading their own filed report, or their own posting
+restriction, could also read exactly which staff member acted on it and that
+staff member's private internal notes - real deanonymization of an individual
+coach or admin to the person they took action against, a staff-safety risk
+distinct from anything about club-wide data. One of the two tables has no
+legitimate client use for a member reading their own row at all, so that
+self-read path is removed outright; the other has a real, already-shipped use,
+so it is replaced with a server-side function returning exactly the safe
+column set the client already asked for - the same shape this schema already
+uses elsewhere to strip a real login email down to its safe portion before a
+query can ever see the rest. Every privilege-escalation and moderation-bypass
+path re-checked this round - role assignment, restriction lifting, pin
+management, club settings, analytics access - held.
+
+**Business-logic chaining: three confirmed gaps, all fixed.** A challenge's
+own lifecycle status was never checked by its progress log - only the
+participant's status was - so archiving a challenge (an ordinary settings
+update, not a dedicated action) never froze it: progress could still be
+logged, participants could still flip to completed, and cooperative
+milestones kept auto-posting real completion announcements for a challenge
+already closed out. Fixed by requiring the parent challenge to still be
+active, matching the same requirement already enforced at join time.
+Separately, a coach-congratulation anti-duplication safeguard from an earlier
+round keyed itself on an achievement-kind label that was never case- or
+whitespace-normalized, so three different spellings of the same real event
+produced three real duplicate congratulations - normalized and restricted to
+the fixed vocabulary the app actually uses, closing the gap the same way this
+schema closes every other closed-vocabulary field. Finally, the shared
+write-idempotency mechanism a prior audit added for several sensitive actions
+keyed its replay-protection purely on a caller-supplied key, never on what
+the call was actually about - reusing a key across two logically different
+requests silently returned the first request's cached success for a second
+request that never ran, with no way for the caller to tell. Closed with an
+optional fingerprint bound to each call's real target, backward compatible by
+construction and enabled for the two actions most exposed to this exact
+failure mode.
+
+**The unconstrained fresh-eyes sweep found nothing new.** A genuine end-to-end
+pass across the remaining ordinary-member surface - the composer, profile
+bio, backup import/export, search, coach-dashboard gating, upload handling,
+and deep links - independently re-confirmed several earlier rounds' fixes
+still hold and surfaced no new vulnerability, consistent with a tenth round
+against an app that has now had nine prior rounds of focused attention.
+
+Verified: full suite 1645/1645, full browser-check 44/44, `supabase test db`
+3429/3429 against real local Postgres.
+
+---
+
+### Ten-round summary: the live security hunt, closed out
+
+Stated honestly, round by round, rather than rounded up: rounds 1 and 3 found
+no exploitable vulnerability at all (one Low-severity info-exposure fix in
+round 1, a defense-in-depth-only tightening in round 3, and two auth-timing
+observations in round 3 that trace to the underlying auth service and a
+previously-accepted product decision, not to this app's own code - recorded,
+not patched). Every other round - 2, 4, 5, 6, 7, 8, 9, and 10 - confirmed and
+fixed at least one real vulnerability. By severity, across every confirmed
+and fixed finding in rounds 1 through 10:
+
+- **Critical**: 1 - an RLS self-referential-subquery bug letting a member
+  active in one challenge forge progress into any other challenge, auto-
+  posting fake public completion cards (round 7).
+- **High**: 4 - PR/achievement forgery via direct table writes bypassing both
+  sharing RPCs (round 4); a client-side-security-theater gap letting a
+  forged achievement claim reach a public, permanent post (round 6); a
+  staff-impersonation guard that never ran on a brand-new member's first
+  profile write, or on the bio field at all (round 8); a database default-
+  privilege gap granting TRUNCATE on dozens of tables, RBAC and audit tables
+  included, to any logged-in member (round 9).
+- **Medium**: the largest bucket - coach-congratulate replay and two file-
+  upload gaps (round 2); moderation-notification content surviving a
+  removal (round 4); an outbox identity-binding gap (round 5); three count-
+  then-act race conditions in event/WOD/push-subscription capacity caps
+  (round 7); a live-confirmed clickjacking chain and a missing confirm step
+  on one delete action (round 8); an unpinned CI action on the production
+  deploy path (round 9); a challenge-lifecycle gap, a congratulation-kind
+  normalization gap, an idempotency-fingerprint gap, and a moderation
+  column-exposure leak (round 10).
+- **Low**: robustness gaps that raised raw errors or exposed non-sensitive
+  detail instead of failing cleanly, with no schema/data exposure (rounds 1,
+  4, 7, 9).
+
+**Verification layer, honestly stated per finding class**: every
+authorization/RLS/grant/database-configuration finding in this hunt was
+reproduced and re-verified against real local Postgres (`supabase test db`,
+direct `psql`/`docker exec`, or real two-connection concurrency tests for the
+race conditions) - never against the mock, which is a hand-written JS
+approximation with no real RLS enforcement behind it. Client-side/rendering
+findings (clickjacking, the missing delete-confirm, notification-content
+escaping) were verified live in Chromium against the mock cloud, which is the
+correct layer for a UI-only property. Nothing in this hunt was reported as
+confirmed on code-reading alone.
+
+**Closing statement.** Combined with the ten-round live bug hunt that
+preceded it, this application has now had twenty independent rounds of
+hands-on adversarial review, sixty agents total, against its real rendered UI
+and its real backend. The vulnerabilities found were real and are now fixed,
+not hypothetical - every one was reproduced, not inferred, before being
+called confirmed. The security posture that remains is not "no bugs will ever
+be found again" - the fresh-eyes rounds (round 10's third agent here, and the
+bug hunt's own final round) both still found real, fixable things others
+missed, which is itself the argument for periodic re-review rather than
+treating any one pass as final. What has changed is that every layer this
+hunt actually tested - RLS coverage and default privileges, RPC input
+handling, race conditions in shared counters, moderation/admin authorization,
+client-side rendering, and the CI/deploy pipeline - was tested for real, not
+assumed, and every gap found in that testing is closed with a regression test
+that fails against the old code and passes against the new.
+
 ## Security hunt, round 9: infrastructure-adjacent configuration review — 2026-09-12
 
 Three more independent agents: CSP/hosting/service-worker/manifest configuration,

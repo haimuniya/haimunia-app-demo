@@ -411,6 +411,30 @@ export function createMockSupabase(seedTables = {}) {
             .slice(0, limit);
           return Promise.resolve({ data, error: null });
         }
+        // Security hunt round 10 (202609120012). loadMyRestriction() used to
+        // read public.posting_restrictions directly, filtered to the
+        // caller's own unlifted rows - RLS's self-read branch was the only
+        // thing stopping a direct read from also returning moderator_id/
+        // lifted_by/source_report_id/lift_reason, which RLS (row-level, not
+        // column-level) could never actually hide. The scoping moved
+        // server-side into this definer function, which now returns only
+        // the six safe columns loadMyRestriction() already asked for. Same
+        // reasoning as member_roles/community_streaks above - this mock has
+        // no RLS to get wrong, so it answers from the seeded table
+        // directly, own-uid-only, and the real boundary is asserted in
+        // pgTAP (0109), not here.
+        if (name === "my_posting_restrictions") {
+          const data = rows("posting_restrictions")
+            .filter((r) => currentUser && r.user_id === currentUser.id && r.lifted_at == null)
+            .slice()
+            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+            .slice(0, 5)
+            .map((r) => ({
+              id: r.id, restriction_type: r.restriction_type, expires_at: r.expires_at,
+              reason: r.reason, created_at: r.created_at, lifted_at: r.lifted_at,
+            }));
+          return Promise.resolve({ data, error: null });
+        }
         if (name === "coach_new_members") {
           const within = Math.min(Math.max(Number((args && args.p_within_days) || 14), 1), 365);
           const dayMs = 86400000;

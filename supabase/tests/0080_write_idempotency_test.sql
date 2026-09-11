@@ -24,7 +24,11 @@ select is(
   (select has_table_privilege('authenticated', 'public.request_idempotency', 'SELECT')), false,
   'request_idempotency is not readable by a client role - only the definer helpers touch it');
 select is(
-  (select has_function_privilege('authenticated', 'public.idem_begin(text, uuid)', 'execute')), false,
+  -- Security hunt round 10 (202609120011): idem_begin() grew a third,
+  -- optional p_fingerprint parameter; the old 2-arg overload no longer
+  -- exists at all (dropped in that migration), so this now checks the
+  -- current signature.
+  (select has_function_privilege('authenticated', 'public.idem_begin(text, uuid, text)', 'execute')), false,
   'idem_begin() is not directly callable by a client either');
 select ok(
   (select relrowsecurity from pg_class where oid = 'public.request_idempotency'::regclass),

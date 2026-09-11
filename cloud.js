@@ -3987,7 +3987,6 @@
   // candidates because overlapping unlifted rows are possible (a permanent
   // one added over a temporary one that was never lifted) and the newest is
   // not automatically the one still in force.
-  const MY_RESTRICTION_CANDIDATES = 5;
   function activeRestrictionRow(rows) {
     const now = Date.now();
     return (Array.isArray(rows) ? rows : []).find((r) => {
@@ -4005,16 +4004,15 @@
     const s = state.myRestriction;
     s.loading = true;
     rerender();
-    // No club filter and no is_posting_restricted() RPC: the select policy is
-    // already `user_id = auth.uid()`, so this cannot return another member's
-    // row, and the RPC answers a bare boolean - which is precisely the shape
-    // that left the member uninformed in the first place.
-    const { data, error } = await client.from("posting_restrictions")
-      .select("id,restriction_type,expires_at,reason,created_at,lifted_at")
-      .eq("user_id", state.user.id)
-      .is("lifted_at", null)
-      .order("created_at", { ascending: false })
-      .limit(MY_RESTRICTION_CANDIDATES);
+    // Security hunt round 10: a direct table read (this used to be
+    // client.from("posting_restrictions").select(the-safe-columns)) only
+    // ever hid moderator_id/lifted_by/source_report_id/lift_reason at the
+    // CLIENT'S request - RLS is row-level, not column-level, so the same
+    // session's own devtools could ask for those columns anyway and get
+    // them, deanonymizing which staff member acted. my_posting_restrictions()
+    // is a SECURITY DEFINER function that returns exactly this safe column
+    // set server-side, so there is nothing left to ask for beyond it.
+    const { data, error } = await client.rpc("my_posting_restrictions");
     s.loading = false;
     // `loaded` is set even on failure, deliberately. The lazy gate in
     // afterRenderCommunity fires on `!loaded && !loading`, and this function
