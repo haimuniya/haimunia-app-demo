@@ -1,3 +1,72 @@
+## Four extended-use persona reviews, a live achievements bug report, and the stacking bug they found but didn't fix — 2026-09-11
+
+Ran four independent long-session agents (coach, member, admin, trainee) actually using
+the app rather than skimming it, each researching its own role first. Fixed everything
+they found except one deliberate design choice (Hebrew movement search stays
+substring-only, confirmed intentional, not a bug):
+
+- **עיטורים renamed to מדליות** end to end — title, celebration copy, share templates,
+  settings labels, audit-log action names — with every adjective/verb re-conjugated
+  (עיטור is masculine, מדליה is feminine; "עיטור חדש נפתח" → "מדליה חדשה נפתחה").
+- **Achievements was hard to find and, once open, hard to leave.** Root cause of "can't
+  close it": the nav menu stayed open underneath it, and the dialog-lookup that decides
+  which open dialog owns close/Escape returns the FIRST match by registration order —
+  the nav menu, not achievements. `openAchievements()`/`openSettings()` now close the
+  nav menu first. Findability: the header's greeting button and a new explicit "לכל
+  המדליות וההישגים שלי" link both open it with no menu at all; the nav menu's own
+  avatar row now carries a visible "מדליות" label + chevron instead of being an
+  unlabeled tap target.
+- **No back-button support anywhere in the app.** Neither dialog registry
+  (`APP_DIALOGS` in app.js, the separate `CLOUD_DIALOGS` in cloud.js) reserved a
+  history entry on open, so a hardware/gesture back press left the app entirely instead
+  of closing whatever was open — reported live as "we need to close the app for coming
+  back." Both registries now push a history entry on open and consume it on normal
+  close, with a `popstate` listener that closes the current dialog (or re-pushes if the
+  top dialog isn't escapable). Regression-tested by a new
+  `scripts/browser-check/dialog-back-button.mjs`.
+- **Coach Celebrate/Engage dedupe was client-memory-only**, so a reload or a second
+  coach re-showed an already-congratulated PR or an already-reached-out flag.
+  `congratulateCelebrateItem()`/`loadCoachCelebrate()` now reconstruct "already
+  congratulated" from a real duplicate-body check against server comments;
+  `coachEngageReachOut()`/`loadCoachEngageFlags()` do the same against a new
+  `member_contact_log` write.
+- **PR-share prompts had no cooldown per movement** — a member logging several PRs for
+  the same lift back to back got the share dialog every single time. Added a 7-day
+  per-movement cooldown.
+- **Achievements gave no "how close am I" signal.** Added `need`/`current` fields to
+  the PR/streak/session-milestone tiers and a "next up" nudge on the achievements
+  screen.
+- **WOD glossary was missing Snatch and Clean & Jerk**, the two lifts the benchmark
+  catalogue actually names most. Added both, plus a glossary link from the benchmarks
+  section that wasn't reachable before.
+- Admin: manage-tab area open/closed state now persists across renders instead of
+  re-collapsing on every interaction; the audit log resolves actor names instead of
+  showing a truncated UUID; member roster search was added (roster arriving empty vs.
+  a search matching nothing are deliberately different states — the former shows no
+  message at all, per an existing pinned rule).
+- Two mock-vs-real-backend gaps found along the way turned out NOT to be production
+  bugs once checked against real local Postgres (`supabase test db`): the "new member
+  welcome post" and a "stuck moderation report" case were both mock-fidelity gaps in
+  `test/helpers/mockSupabase.mjs`, now fixed there.
+
+**The one item the QA agent flagged but correctly left unfixed, fixed here:**
+`body[data-scene] main{ position:relative; z-index:1; }` gave `<main>` its own
+stacking context (position:relative + a real z-index does that; position:relative
+alone does not). `<header>` (z-index:20) and `#bottomNavWrap` (z-index:30) are main's
+siblings, not its descendants, so on every scene page (History, Progress, Library,
+Community, Achievements, Add) a dialog's own z-index:50 — rendered into `#content`,
+main's child — was capped at main's stacking level of 1 and never actually compared
+against the header/bottom-nav at all. The backdrop's top ~64px and bottom ~68px+
+safe-area silently ate no taps there. Fix: drop the z-index, keep position:relative —
+nothing depended on the z-index; `.scene-page` already has its own `isolation:isolate`
+and `.scene-sheet` its own scoped z-index for the photo/scrim layering this looked
+like it was meant for. New `scripts/browser-check/scene-dialog-stacking.mjs` hit-tests
+under the header and bottom nav with a live dialog open, paired with a control that
+re-adds the old rule and proves the same hit-tests fail under it.
+
+Verified: full suite 1553/1553, full browser-check 37/37 (including the two new
+scripts above), `check-version`/`check-vendor-version` clean.
+
 ## A rerunnable tool for the bugs manual audits keep missing — 2026-09-10
 
 Asked, pointedly: the previous role-coverage pass found two real bugs a fresh set of

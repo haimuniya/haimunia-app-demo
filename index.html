@@ -749,7 +749,21 @@
     body[data-scene] .header #notificationsBellBtn{ background:rgba(8,21,35,.72); }
   }
   body[data-scene] .brand-stripe{ display:none; }
-  body[data-scene] main{ position:relative; z-index:1; }
+  /* position:relative only, no z-index: a z-index here (as originally
+     shipped) makes position:relative create a real stacking context for
+     main as a whole - header (z-index:20) and #bottomNavWrap (z-index:30)
+     are main's SIBLINGS under #app, so main's own stacking level (1) is
+     what they compare against, not the z-index:50 any dialog rendered
+     into #content (main's child) carries. That traps every dialog's
+     backdrop below the persistent chrome near the top/bottom edges on
+     scene pages - confirmed live, QA-agent-flagged. Dropping z-index
+     removes the stacking context (position:relative alone never creates
+     one), so a dialog's own z-index is compared directly against the
+     header/bottom-nav instead of being capped at main's level; nothing
+     else relies on this rule; .scene-page's own isolation:isolate/
+     .scene-sheet's own z-index:1 already handle the scene photo/scrim
+     layering this was seemingly meant for. */
+  body[data-scene] main{ position:relative; }
   /* Bottom nav: dark grounded continuation of the scene, not the ordinary
      light .tabbar - only while a scene page is active, so non-immersive
      screens (Settings, Manage, dialogs) keep the existing light bar.
@@ -1007,6 +1021,15 @@
   .settings-warn{ display:flex; align-items:flex-start; gap:8px; background:color-mix(in srgb, var(--yellow) 14%, transparent); border:1px solid var(--yellow); border-radius:12px; padding:10px 12px; margin-bottom:10px; font-size:12.5px; color:var(--chalk); }
   .modal-overlay{ position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:50; display:none; align-items:flex-end; overflow:hidden; }
   .modal-overlay.open{ display:flex; }
+  /* Fresh-eyes audit, trainee persona: the first-log arrival card (app.js's
+     showCelebration({arrival:true}), fires exactly once per member) used
+     to sit on the same 60%-opacity scrim as every routine celebration, so
+     the still-interactive log form behind it (weight slider, %-of-1RM
+     chips) visibly competed with the one message this app most wants to
+     land cleanly. Scoped to this one card via a class, not a change to
+     .modal-overlay itself, which every other dialog in the app still uses
+     unchanged. */
+  #celebrationOverlay.arrival-card{ background:rgba(3,10,20,.96); }
   .modal-sheet{ background:var(--bg); border-top-left-radius:22px; border-top-right-radius:22px; width:100%; max-height:85%; padding-bottom:env(safe-area-inset-bottom,0px); display:flex; flex-direction:column; border:1px solid var(--border); border-bottom:none; overflow-x:hidden; }
   .modal-head{ display:flex; align-items:center; justify-content:space-between; padding:16px 16px 8px; }
   /* #navMenuSheet and #settingsSheet are the only two .modal-sheet instances
@@ -2453,7 +2476,7 @@
 <div class="modal-overlay" id="achievementsOverlay" data-action="close-achievements" role="dialog" aria-modal="true" aria-labelledby="achievementsTitle">
   <div class="modal-sheet">
     <div class="modal-head">
-      <span class="modal-title" id="achievementsTitle">עיטורים</span>
+      <span class="modal-title" id="achievementsTitle">מדליות</span>
       <button data-action="close-achievements" class="icon-btn" aria-label="סגירה" style="color:var(--steel);">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
       </button>

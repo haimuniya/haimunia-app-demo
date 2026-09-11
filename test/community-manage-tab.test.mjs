@@ -362,6 +362,48 @@ test("dashboard: the attention row counts only genuinely lapsed members, not the
 
 // ===== P2: booting straight into Manage triggers ensureCommunityDataLoaded() =
 
+// ===== Fresh-eyes audit: the five admin <details> areas must survive a rerender =
+
+test("opening an admin area (audit log, closed by default) survives an unrelated rerender elsewhere on the same tab", async () => {
+  const mock = seeded(null, "admin");
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabManageBtn").click();
+  await waitFor(() => !!window.document.getElementById("manageTab-moderation"), 3000);
+  window.document.getElementById("manageTab-moderation").click();
+  await waitFor(() => !!window.document.getElementById("manageArea-audit"), 3000);
+
+  const auditArea = () => window.document.getElementById("manageArea-audit");
+  assert.equal(auditArea().open, false, "audit log is closed by default, unlike moderation");
+  auditArea().open = true;
+  auditArea().dispatchEvent(new window.Event("toggle"));
+  assert.equal(auditArea().open, true);
+
+  // Any action that calls rerender() rebuilds the whole tab's HTML, wiping
+  // native DOM state - a filter click on the SAME open area is the exact
+  // scenario the admin-persona review reported ("fighting me while I work").
+  window.document.querySelector('[data-community-action="audit-filter"][data-type="content_delete"]')?.click();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(auditArea().open, true, "toggling a filter inside an open area must not silently re-collapse it");
+});
+
+test("a jump-row tap opens its target and that stays open across a later unrelated rerender", async () => {
+  const mock = seeded(null, "admin");
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabManageBtn").click();
+  await waitFor(() => !!window.document.getElementById("manageTab-moderation"), 3000);
+  window.document.getElementById("manageTab-moderation").click();
+  await waitFor(() => !!window.document.querySelector('[data-community-action="set-manage-tab"][data-scroll="manageArea-onboarding"]'), 3000);
+  window.document.querySelector('[data-community-action="set-manage-tab"][data-scroll="manageArea-onboarding"]').click();
+  await waitFor(() => window.document.getElementById("manageArea-onboarding")?.open === true, 3000);
+
+  // A real rerender-triggering action elsewhere on the tab (an audit filter
+  // click, same as the previous test) must not silently re-collapse
+  // onboarding's now-open state.
+  window.document.querySelector('[data-community-action="audit-filter"][data-type="content_delete"]')?.click();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(window.document.getElementById("manageArea-onboarding").open, true, "a jump-opened area must still be open after an unrelated rerender");
+});
+
 test("booting straight into ?tab=manage (staff) triggers ensureCommunityDataLoaded(), without ever visiting Community first", async () => {
   const mock = seeded(null, "admin");
   const window = await bootCommunity(mock, { syncEnabled: false, url: "https://example.test/index.html?tab=manage" });

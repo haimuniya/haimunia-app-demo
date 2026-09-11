@@ -53,12 +53,20 @@ try {
   console.log("\n--- Scenario 1: first-ever install must not self-reload ---");
   {
     const { ctx, page } = await freshPage();
-    let navCount = 0;
-    page.on("framenavigated", (f) => { if (f === page.mainFrame()) navCount++; });
+    // "load", not "framenavigated": the dialog back-button fix (app.js's
+    // APP_DIALOGS history layer — see dialog-back-button.mjs) calls
+    // history.pushState() the moment the welcome modal opens, which it does
+    // automatically on this exact fresh-install path within this test's own
+    // 4s window. Playwright counts that same-document history change as a
+    // "framenavigated" event, which is not what this check means by
+    // "reload" — see boot-smoke.mjs's identical fix for the same reason.
+    // "load" only fires for a genuine document (re)load.
+    let loadCount = 0;
+    page.on("load", () => loadCount++);
     await page.goto(url, { waitUntil: "networkidle" });
     await waitForControllerActive(page);
     await page.waitForTimeout(4000);
-    check("no reload within 4s of a fresh install", navCount === 1, `navCount=${navCount}`);
+    check("no reload within 4s of a fresh install", loadCount === 1, `loadCount=${loadCount}`);
     await ctx.close();
   }
 

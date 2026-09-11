@@ -303,6 +303,23 @@
       // shown once, cleared by close-password-reset-result.
       passwordResetResult: null,
       auditLog: [], auditCursor: null, auditLoading: false, auditError: false, auditLoaded: false, auditEnd: false, auditFilters: {},
+      // Fresh-eyes audit: admin_id -> {display_name,handle,avatar_url},
+      // batched by loadAuditLog() so renderAuditLog() can name an actor
+      // instead of printing a raw uuid fragment. Keyed by id so entries
+      // from earlier pages stay resolved as later pages load.
+      auditAdminProfiles: {},
+      // Fresh-eyes audit: manageAdminArea()'s five <details> sections used
+      // to take their open/closed state from nothing but a caller-literal
+      // default recomputed on every single render() - so any click INSIDE
+      // one of them (a filter chip, a toggle, anything that calls
+      // rerender()) rebuilt the whole tab and silently re-collapsed
+      // whichever area the admin had open, mid-task. area id -> open
+      // boolean, populated by a real `toggle` listener in
+      // afterRenderManage() and read back by manageAdminArea() instead of
+      // a hardcoded default - the same "state survives a render, the DOM
+      // node does not" rule every other interactive control in this file
+      // already follows.
+      openAreas: {},
 
       // ---- COMM-376. Invite and code management ---------------------
       // invites is the per-person panel: items is admin_invite_list()'s
@@ -337,7 +354,7 @@
       // cursor, a real gap between what this RPC returns and what its own
       // sort key needs (documented in docs/community/backlog.md's COMM-377
       // paragraph).
-      roster: { items: [], cursor: null, loading: false, loadingMore: false, loaded: false, error: false, end: false },
+      roster: { items: [], cursor: null, loading: false, loadingMore: false, loaded: false, error: false, end: false, search: "" },
 
       // ---- Five-persona UX audit, defect 3. Incomplete signups ---------
       // The accounts every roster surface is structurally blind to: a real
@@ -783,7 +800,7 @@
     { key: "announcements", label: "הודעות מועדון" },
     { key: "events", label: "אירועים" },
     { key: "challenges", label: "אתגרים" },
-    { key: "achievements", label: "הישגים ועיטורים" },
+    { key: "achievements", label: "הישגים ומדליות" },
     { key: "feed", label: "פיד (כולל תגובות ותגובות חיזוק)" },
     { key: "leaderboards", label: "טבלאות מובילים" },
     { key: "directory", label: "ספריית חברים", clientOnly: true },
@@ -1087,6 +1104,12 @@
     { id: "muscleup", term: "Muscle-up", gloss: "עלייה מהמתח אל מעל המוט", body: "מתח, ואז דחיפה שמעבירה את הגוף מעל המוט או הטבעות בתנועה אחת." },
     { id: "pistol", term: "Pistol", gloss: "סקוואט על רגל אחת", body: "יורדים לסקוואט מלא על רגל אחת, כשהשנייה מושטת קדימה." },
     { id: "superset", term: "סולם / סופרסט", gloss: "כמה סטים ברצף", body: "כמה סטים ברצף — אותו תרגיל במשקלים שונים, או שני תרגילים לסירוגין." },
+    // Fresh-eyes audit: a trainee-persona review named these two, from the
+    // WOD catalogue's own benchmark descriptions ("Isabel — 30 Snatches",
+    // "Grace — 30 Clean & Jerks"), as unexplained jargon this glossary
+    // never covered.
+    { id: "snatch", term: "Snatch", gloss: "מהרצפה ישר מעל הראש בתנועה אחת", body: "המוט עולה מהרצפה ישר מעל הראש, בתנועה רציפה אחת, בלי לעצור בכתפיים בדרך." },
+    { id: "cleanjerk", term: "Clean & Jerk", gloss: "לכתפיים, ואז דחיפה מעל הראש", body: "שתי תנועות: ה-Clean מרים את המוט מהרצפה לכתפיים, ואז ה-Jerk דוחף אותו מהכתפיים מעל הראש." },
   ]);
   const TERM_BY_ID = Object.create(null);
   for (const t of TERM_GLOSSARY) TERM_BY_ID[t.id] = t;
@@ -3101,7 +3124,32 @@
     state.coach.celebrate.loaded = true;
     if (error) { state.coach.celebrate.error = true; state.coach.celebrate.items = []; rerender(); return; }
     // The RPC already sorts newest-first; never re-sorted here.
-    state.coach.celebrate.items = data || [];
+    const items = data || [];
+    state.coach.celebrate.items = items;
+    // Fresh-eyes audit: without this, `congratulated` only ever reflected
+    // the current tab's memory, so a fresh load showed "ברכה" (not done)
+    // for an item a coach - possibly this same coach, in an earlier
+    // session - had already congratulated, inviting a real duplicate
+    // comment/post on the very next tap. Reconstructed the same way
+    // congratulateCelebrateItem()'s own pre-write check works: an exact
+    // match on celebrateTemplateBody()'s deterministic text against what's
+    // really on the post/feed, not client memory.
+    const postIds = items.filter((it) => it.post_id).map((it) => it.post_id);
+    const [commentRows, coachPostRows] = await Promise.all([
+      postIds.length ? client.from("post_comments").select("post_id,body").in("post_id", postIds) : Promise.resolve({ data: [] }),
+      client.from("workout_posts").select("body").eq("post_type", "POST_COACH"),
+    ]);
+    const comments = commentRows.data || [];
+    const coachPosts = coachPostRows.data || [];
+    const congratulated = {};
+    for (const it of items) {
+      const body = celebrateTemplateBody(it);
+      const already = it.post_id
+        ? comments.some((c) => c.post_id === it.post_id && c.body === body)
+        : coachPosts.some((p) => p.body === body);
+      if (already) congratulated[celebrateItemKey(it)] = true;
+    }
+    state.coach.celebrate.congratulated = congratulated;
     rerender();
   }
   // COMM-225 templates. Short, Hebrew, kind-specific, and well under the
@@ -3143,6 +3191,25 @@
     state.coach.celebrate.busy = key;
     rerender();
     const body = celebrateTemplateBody(item);
+    // Fresh-eyes audit: `congratulated` used to be pure client memory, so a
+    // reload (or a second coach, or the same coach on another device) saw
+    // "ברכה" again for an item already congratulated, and a second tap
+    // wrote a real, duplicate congratulation. celebrateTemplateBody() is
+    // deterministic per item, so an exact-body match against what would
+    // already be on the post/feed is a reliable, schema-change-free way to
+    // detect "this was already sent" from real data instead of memory -
+    // the same class of fix as coachEngageReachOut's member_contact_log
+    // check just above, adapted to the fact that a congratulation IS a
+    // public comment/post rather than a private contact-log row.
+    const already = item.post_id
+      ? (await client.from("post_comments").select("id").eq("post_id", item.post_id).eq("body", body).limit(1)).data
+      : (await client.from("workout_posts").select("id").eq("post_type", "POST_COACH").eq("body", body).limit(1)).data;
+    if (already && already.length) {
+      state.coach.celebrate.busy = null;
+      state.coach.celebrate.congratulated[key] = true;
+      rerender();
+      return;
+    }
     let ok = false;
     if (item.post_id) {
       const { error } = await client.rpc("add_post_comment", { p_post_id: item.post_id, p_body: body, p_parent_comment_id: null });
@@ -3220,14 +3287,19 @@
   // community-post-cards.test.mjs's fixture and renderNewMemberPostCard's
   // own reading of it both already assume) is the source of truth.
   //
-  // Follow-up worth flagging: COMM-107 (the POST_NEW_MEMBER producer) was
-  // never actually built as a server insert - 202608290004's own comment
-  // says so in as many words - so in a real club today this lookup finds
-  // nothing for any member yet. This function and coachWelcomeMember() are
-  // correct and ready; they are inert until COMM-107 or an equivalent
-  // producer ships. The standard error message covers "no matching post
-  // found" the same way it covers a failed RPC, rather than pretending the
-  // tap worked.
+  // COMM-107's producer shipped in 202608290014 (invite_redemptions_new_member_post,
+  // pgTAP-verified against real Postgres: supabase/tests/0033_new_member_post_test.sql,
+  // 26/26). This comment used to say the producer was never built - stale
+  // as of that migration, and worth a note for whoever finds this next:
+  // the mock backend (test/helpers/mockSupabase.mjs) does not simulate the
+  // trigger, so a mock-only session (a Playwright script, a manual QA pass
+  // against installMockCloud) will see "Welcome" fail exactly like the
+  // pre-fix bug described here, even though it works against a real
+  // project. Fresh-eyes audit: independently confirmed this the hard way -
+  // a coach-persona review reported it as dead on arrival before this
+  // comment was corrected, on a mock run. The standard error message still
+  // covers a genuine "no matching post found" the same way it covers a
+  // failed RPC, rather than pretending the tap worked.
   async function findNewMemberPost(memberId) {
     const { data, error } = await client.from("workout_posts").select("id,post_type,metadata").eq("post_type", "POST_NEW_MEMBER");
     if (error) return null;
@@ -3346,8 +3418,29 @@
     }
     const items = data || [];
     const { map: profiles } = await loadProfilesById(items.map((it) => it.user_id));
+    // Fresh-eyes audit: reachedOut used to be a purely in-memory dedupe that
+    // reset on every reload - a coach who reopened the dashboard saw "פנייה"
+    // again for a member already reached out to, and a second tap wrote a
+    // real, duplicate outreach post. member_contact_log is the exact table
+    // Welcome's own "mark contacted" already uses for the identical
+    // question ("has staff already reached this member"), any staff can
+    // read any row (member_contact_log_staff_select), so this reconstructs
+    // reachedOut from real data instead of client memory - correct across
+    // reloads AND across coaches/devices. Scoped to contacted_at >= this
+    // flag's own flagged_at, not "ever contacted": an old Welcome-era
+    // contact-log row from months ago must not silently mark a brand-new
+    // decline as already handled.
+    const flaggedIds = items.map((it) => it.user_id);
+    let reachedOut = {};
+    if (flaggedIds.length) {
+      const { data: contacts } = await client.from("member_contact_log").select("user_id,contacted_at").in("user_id", flaggedIds);
+      for (const it of items) {
+        if ((contacts || []).some((c) => c.user_id === it.user_id && c.contacted_at >= it.flagged_at)) reachedOut[it.id] = true;
+      }
+    }
     state.coach.engage.items = items;
     state.coach.engage.profiles = profiles;
+    state.coach.engage.reachedOut = reachedOut;
     state.coach.engage.loading = false;
     state.coach.engage.loaded = true;
     rerender();
@@ -3400,7 +3493,19 @@
       ok = !updErr;
     }
     state.coach.engage.busy = null;
-    if (ok) { state.coach.engage.reachedOut[flagId] = true; setMessage(""); }
+    // Fresh-eyes audit: this used to only flip client memory. Also writing
+    // a real member_contact_log row (the same table Welcome's "mark
+    // contacted" writes) is what makes loadCoachEngageFlags() able to
+    // reconstruct reachedOut correctly on the next load, instead of every
+    // reload forgetting this outreach ever happened. Best-effort: the
+    // outreach post itself already succeeded, so a failure to log it here
+    // must not be reported as the reach-out having failed - it only means
+    // a reload might show the button re-enabled, not that the member gets
+    // messaged twice on its own.
+    if (ok) {
+      client.from("member_contact_log").insert({ user_id: item.user_id, note: "פנייה יזומה בעקבות ירידה בפעילות" }).then(() => {});
+      state.coach.engage.reachedOut[flagId] = true; setMessage("");
+    }
     else setMessage("לא ניתן היה לשלוח פנייה. נסו שוב.");
     rerender();
   }
@@ -5465,6 +5570,15 @@
     state.admin.auditLog = reset ? rows : state.admin.auditLog.concat(rows);
     state.admin.auditCursor = rows.length ? rows[rows.length - 1].created_at : state.admin.auditCursor;
     state.admin.auditEnd = rows.length < 25;
+    // Fresh-eyes audit: admin_actions_page() returns admin_id as a bare
+    // uuid - renderAuditLog() used to print its first 8 characters
+    // verbatim ("מנהל/ת a1b2c3d4"), which tells an owner nothing about who
+    // actually did what. Batched the same way loadCoachEngageFlags()
+    // resolves flagged members: one extra query for the ids on THIS page,
+    // merged into the running map rather than replacing it, so names
+    // already resolved from an earlier page survive "load more".
+    const { map: moreAdmins } = await loadProfilesById(rows.map((r) => r.admin_id));
+    state.admin.auditAdminProfiles = Object.assign({}, state.admin.auditAdminProfiles, moreAdmins);
     rerender();
   }
   function setAuditFilter(key, value) {
@@ -5545,14 +5659,14 @@
     rerender();
   }
   async function publishAchievement(achievementId, title, rule) {
-    if (!state.user || !state.profile) return setMessage("התחברו לקהילה כדי לשתף עיטור");
-    const payload = { author_id: state.user.id, source_type: "achievement", source_record_id: achievementId, visibility: "followers", title: String(title || "עיטור חדש").slice(0, 120), result_text: String(rule || "עיטור חדש נפתח").slice(0, 240), occurred_on: todayIso() };
+    if (!state.user || !state.profile) return setMessage("התחברו לקהילה כדי לשתף מדליה");
+    const payload = { author_id: state.user.id, source_type: "achievement", source_record_id: achievementId, visibility: "followers", title: String(title || "מדליה חדשה").slice(0, 120), result_text: String(rule || "מדליה חדשה נפתחה").slice(0, 240), occurred_on: todayIso() };
     const { error } = await client.from("workout_posts").upsert(payload, { onConflict: "author_id,source_type,source_record_id" });
-    if (error) return setMessage(failText("שיתוף העיטור נכשל", error));
+    if (error) return setMessage(failText("שיתוף המדליה נכשל", error));
     // COMM-170. The app.js entry point (window.shareAchievementToCommunity),
     // distinct from the unlock sheet below and never both in one action.
     track(A.ACHIEVEMENT_SHARED, { member_achievement_id: null, code: null, source: "app_share_button" });
-    await loadFeed(); setMessage("העיטור שותף לעוקבים שלכם"); rerender();
+    await loadFeed(); setMessage("המדליה שותפה לעוקבים שלכם"); rerender();
   }
   async function uploadPostPhoto(file) {
     if (!file || !state.user) return null;
@@ -7364,7 +7478,7 @@
     { key: "visible_to_club", label: "הפרופיל שלי גלוי לחברי המועדון" },
     { key: "show_workout_results", label: "תוצאות האימונים שלי גלויות לחברי המועדון" },
     { key: "show_prs", label: "שיאים אישיים (PR) גלויים" },
-    { key: "show_achievements", label: "הישגים ועיטורים גלויים" },
+    { key: "show_achievements", label: "הישגים ומדליות גלויות" },
     { key: "show_attendance", label: "נוכחות בשיעורים גלויה" },
     { key: "show_upcoming_booking", label: "רישום קרוב לשיעור גלוי" },
     { key: "show_in_attendee_lists", label: "הופעה ברשימת הנרשמים לשיעור" },
@@ -8824,7 +8938,7 @@
     return {
       content_delete: "הסרת תוכן", content_hide: "הסתרת תוכן", member_restrict: "הגבלת חבר/ה",
       member_unrestrict: "ביטול הגבלה", role_change: "שינוי הרשאה", challenge_edit: "עריכת אתגר",
-      achievement_edit: "עריכת עיטור", privacy_config: "הגדרת פרטיות", content_pin: "הצמדת תוכן",
+      achievement_edit: "עריכת מדליה", privacy_config: "הגדרת פרטיות", content_pin: "הצמדת תוכן",
       content_unpin: "ביטול הצמדה", report_review: "בדיקת דיווח",
       // The three action types added after COMM-154. Without these the log
       // rendered the raw English action_type ("club_feature_toggle · club")
@@ -8854,7 +8968,7 @@
   function auditTargetLabel(t) {
     return {
       post: "פוסט", comment: "תגובה", member: "חבר/ה", role: "הרשאה", challenge: "אתגר",
-      achievement: "עיטור", event: "אירוע", announcement: "הודעה", report: "דיווח",
+      achievement: "מדליה", event: "אירוע", announcement: "הודעה", report: "דיווח",
       club: "מועדון", monthly_club_recap: "סיכום חודשי",
       challenge_participant: "משתתף/ת באתגר", challenge_team: "קבוצה באתגר",
       // 3 more target_type values already live in admin_actions_target_type_check
@@ -8897,6 +9011,15 @@
     }
     return groups;
   }
+  // Fresh-eyes audit: falls back to the old truncated-uuid text only when
+  // loadAuditLog()'s batched lookup genuinely found nothing (a deleted
+  // profile, a race with a page still loading) - never silently blank, so
+  // a gap is visible as a gap rather than read as "the system".
+  function auditActorName(adminId) {
+    const p = state.admin.auditAdminProfiles[adminId];
+    if (p) return (p.display_name || (p.handle ? "@" + p.handle : "")) || `מנהל/ת ${String(adminId || "").slice(0, 8)}`;
+    return `מנהל/ת ${String(adminId || "").slice(0, 8)}`;
+  }
   function renderAuditLog() {
     if (!hasPerm(PERM.ANALYTICS_VIEW)) return "";
     const selected = state.admin.auditFilters.action_type;
@@ -8921,7 +9044,7 @@
       const grouped = groupConsecutiveAuditActions(state.admin.auditLog);
       body = `<div class="log-list">${grouped.map((a) => `<div class="log-row" style="flex-direction:column;align-items:flex-start;gap:3px;">
         <div style="font-weight:700;">${esc(auditActionLabel(a.action_type))} · ${esc(auditTargetLabel(a.target_type))}${a.count > 1 ? ` <span class="mono" style="color:var(--steel);font-weight:400;">× ${a.count}</span>` : ""}</div>
-        <div style="color:var(--steel);font-size:11px;">מנהל/ת ${esc(String(a.admin_id || "").slice(0, 8))} · ${relativeTime(a.created_at)}</div>
+        <div style="color:var(--steel);font-size:11px;">${esc(auditActorName(a.admin_id))} · ${relativeTime(a.created_at)}</div>
       </div>`).join("")}</div>${state.admin.auditEnd ? "" : `<div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="audit-more"${state.admin.auditLoading ? " disabled" : ""}>${state.admin.auditLoading ? "טוען…" : "טעינת עוד"}</button></div>`}`;
     }
     return `<div class="ach-section" style="margin-top:18px;">${sectionHead("var(--steel)", "יומן פעולות ניהול", true)}${filterChips}${body}</div>`;
@@ -9038,6 +9161,22 @@
     r.cursor = last ? last.redeemed_at : r.cursor;
     rerender();
   }
+  // Fresh-eyes audit: an admin-persona review scrolled a ~15-member roster
+  // by hand looking for one member, unaware "ניהול חברים" above this
+  // section already searches (admin_search_members) - a real feature, just
+  // disconnected from the plain browse list it sits next to, and admin-only
+  // besides, so a coach viewing this SAME roster had no search at all. A
+  // client-side filter over whatever pages are already loaded fixes the
+  // actual roster a viewer is looking at, for coach and admin alike, with
+  // no new permission surface - it only ever filters what is_staff() (or
+  // is_admin()'s admin_search_members) already legitimately returned to
+  // this session. Filters loaded pages only; "טעינת עוד" still exists for
+  // a club whose member the search hasn't reached yet.
+  function rosterSearchMatches(m, q) {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return true;
+    return (m.display_name || "").toLowerCase().includes(needle) || (m.handle || "").toLowerCase().includes(needle);
+  }
   function renderMemberRoster() {
     if (!isStaff()) return "";
     const r = state.admin.roster;
@@ -9049,9 +9188,22 @@
       body = `<div class="empty">לא ניתן היה לטעון את רשימת החברים.<div class="chip-row" style="justify-content:center;"><button class="chip-btn primary" data-community-action="roster-retry">ניסיון חוזר</button></div></div>`;
     } else {
       const readOnly = !isAdmin();
-      body = `<div class="log-list">${r.items.map((m) => memberManagementRowHtml(m, { readOnly, showRemove: false })).join("")}</div>${r.end ? "" : `<div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="roster-more"${r.loadingMore ? " disabled" : ""}>${r.loadingMore ? "טוען…" : "טעינת עוד"}</button></div>`}`;
+      // COMM-377's own rule (see the zero-row-page test below) is that an
+      // empty ROSTER never gets a special empty message - only the section
+      // header. A search that matches nothing among what IS loaded is a
+      // different case (the data is real, the filter just excluded all of
+      // it), so only THAT gets an empty-state line.
+      const filtered = r.items.filter((m) => rosterSearchMatches(m, r.search || ""));
+      const searching = !!(r.search || "").trim();
+      const list = filtered.length
+        ? `<div class="log-list">${filtered.map((m) => memberManagementRowHtml(m, { readOnly, showRemove: false })).join("")}</div>`
+        : (searching ? `<div class="empty">לא נמצאו חברים תואמים בין החברים שכבר נטענו</div>` : "");
+      body = `${list}${r.end ? "" : `<div class="chip-row" style="justify-content:center;margin-top:8px;"><button class="chip-btn" data-community-action="roster-more"${r.loadingMore ? " disabled" : ""}>${r.loadingMore ? "טוען…" : "טעינת עוד"}</button></div>`}`;
     }
-    return `<div class="ach-section" style="margin-top:18px;" data-member-roster-section="1">${sectionHead("var(--teal)", "רשימת חברים", true)}${body}</div>`;
+    const searchBox = r.items.length || r.search
+      ? `<div class="search-box"><input id="rosterSearch" placeholder="חיפוש ברשימה הטעונה, לפי שם או handle" aria-label="חיפוש ברשימת החברים" value="${esc(r.search || "")}"/></div>`
+      : "";
+    return `<div class="ach-section" style="margin-top:18px;" data-member-roster-section="1">${sectionHead("var(--teal)", "רשימת חברים", true)}${searchBox}${body}</div>`;
   }
   // ==========================================================================
   // Five-persona UX audit, defect 3. Incomplete signups ("ghost accounts"),
@@ -13791,6 +13943,43 @@
       localStorage.setItem(PR_PROMPT_DISMISSED_KEY, JSON.stringify(Array.from(s).slice(-200)));
     } catch (e) {}
   }
+  // Fresh-eyes audit, regular-member persona: `trivial` (see onPrCreated's
+  // own comment below) only covers a movement's first few entries - once
+  // past that, this fires on EVERY set that edges past the prior best,
+  // which for anyone on a genuine, active upward trend (the exact member
+  // this feature is supposed to serve) is nearly every session. Reported
+  // as "stopped feeling special by session 4." A per-MOVEMENT cooldown
+  // keeps the feature honest without touching the underlying PR detection
+  // (which stays correct for the chart/badges/challenges, same reasoning
+  // as trivial's own scoping) - a real once-a-week milestone still gets
+  // asked about; a 1kg edge every single session does not.
+  const PR_PROMPT_MOVEMENT_COOLDOWN_KEY = "haimunia-demo:prPromptMovementLastShown";
+  const PR_PROMPT_MOVEMENT_COOLDOWN_DAYS = 7;
+  function prPromptMovementLastShownMap() {
+    try { return JSON.parse(localStorage.getItem(PR_PROMPT_MOVEMENT_COOLDOWN_KEY) || "{}"); } catch (e) { return {}; }
+  }
+  function prPromptOnCooldownFor(movement) {
+    if (!movement) return false;
+    const last = prPromptMovementLastShownMap()[movement];
+    if (!last) return false;
+    return (Date.now() - new Date(last).getTime()) < PR_PROMPT_MOVEMENT_COOLDOWN_DAYS * 86400000;
+  }
+  function rememberPrPromptShownForMovement(movement) {
+    if (!movement) return;
+    try {
+      const m = prPromptMovementLastShownMap();
+      m[movement] = new Date().toISOString();
+      // Capped the same way prPromptDismissedSet() caps its own list, so a
+      // member who logs many distinct movements over years never grows
+      // this without bound - drops the oldest entries first.
+      const keys = Object.keys(m);
+      if (keys.length > 200) {
+        keys.sort((a, b) => m[a].localeCompare(m[b]));
+        for (const k of keys.slice(0, keys.length - 200)) delete m[k];
+      }
+      localStorage.setItem(PR_PROMPT_MOVEMENT_COOLDOWN_KEY, JSON.stringify(m));
+    } catch (e) {}
+  }
   // Consumes PR_CREATED from the event bus (COMM-012). Detection itself is the
   // achievements agent's COMM-132; this only reacts to the record it passes.
   //
@@ -13804,7 +13993,8 @@
   // praise/invitation-to-share. onPrCreatedForChallenges, the event's other
   // consumer, deliberately does not check this field - challenge progress
   // must stay correct regardless of how many prior sets happen to be on
-  // file.
+  // file. The per-movement cooldown below is the same idea applied a
+  // second time, for members past the trivial window (see its own comment).
   function onPrCreated(payload) {
     const record = payload && (payload.record || payload);
     if (!record) return;
@@ -13812,8 +14002,10 @@
     const recordId = record.record_id || record.id;
     if (!recordId) return;
     if (prPromptDismissedSet().has(String(recordId))) return;
+    if (prPromptOnCooldownFor(record.movement)) return;
     if (!window.isCommunitySignedIn || !window.isCommunitySignedIn()) return;
     state.posts.prPrompt = { record: Object.assign({}, record, { record_id: recordId }), note: "", showNote: false, photo: null, publishing: false, error: "" };
+    rememberPrPromptShownForMovement(record.movement);
     rerender();
   }
   function dismissPrPrompt() {
@@ -13962,7 +14154,7 @@
     const name = def && def.name;
     const icon = def && def.icon;
     if (name) return { title: name, explanation: (def && def.description) || "", icon: icon || "🏅" };
-    return { title: code || "עיטור חדש", explanation: "", icon: icon || "🏅" };
+    return { title: code || "מדליה חדשה", explanation: "", icon: icon || "🏅" };
   }
   function achCodeOf(row) { return row && (row.code || (row.achievement_definitions && row.achievement_definitions.code)) || ""; }
 
@@ -14051,7 +14243,7 @@
     // this records that a member chose to share a decoration.
     track(A.ACHIEVEMENT_SHARED, { member_achievement_id: a.memberAchievementId, code: a.code || null, source: "unlock_sheet" });
     state.achievements.unlock = null;
-    setMessage("העיטור שותף למועדון");
+    setMessage("המדליה שותפה למועדון");
     if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.POST_CREATED) {
       try { window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.POST_CREATED, { post_id: data, post_type: "POST_ACHIEVEMENT" }); } catch (e) {}
     }
@@ -14070,7 +14262,7 @@
       <div class="modal-sheet" id="achUnlock" style="border-radius:22px;max-height:90vh;overflow:auto;">
         <div style="padding:22px 20px calc(env(safe-area-inset-bottom,0px) + 18px);text-align:center;">
           <div style="font-size:44px;line-height:1;margin-bottom:8px;" aria-hidden="true">${esc(a.icon)}</div>
-          <h2 id="achUnlockTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:18px;margin-bottom:4px;">עיטור חדש נפתח</h2>
+          <h2 id="achUnlockTitle" style="margin-top:0;color:var(--chalk);font-weight:800;font-size:18px;margin-bottom:4px;">מדליה חדשה נפתחה</h2>
           <div style="color:var(--brass);font-weight:800;font-size:15px;">${esc(a.title)}</div>
           ${a.explanation ? `<div style="color:var(--steel);font-size:12.5px;margin-top:6px;">${esc(a.explanation)}</div>` : ""}
           ${a.showNote ? `<label class="field" style="margin-top:10px;text-align:right;"><span class="field-label">הערה</span><textarea class="text-input" data-ach-note maxlength="${POST_BODY_MAX}" rows="3">${esc(a.note || "")}</textarea></label>` : ""}
@@ -14120,7 +14312,7 @@
       // and withheld for only_me, matching the club control beside it.
       const outward = r.visibility === "only_me"
         ? ""
-        : `<button class="chip-btn" data-community-action="outward-ach-earned" data-id="${esc(r.id)}" data-code="${esc(code)}" aria-label="שיתוף העיטור מחוץ לאפליקציה">↗</button>`;
+        : `<button class="chip-btn" data-community-action="outward-ach-earned" data-id="${esc(r.id)}" data-code="${esc(code)}" aria-label="שיתוף המדליה מחוץ לאפליקציה">↗</button>`;
       // data-achievement-id: the anchor a `target.achievement` notification
       // tap (navigateToNotifTarget) scrolls to and briefly highlights - the
       // same scrollIntoView pattern the `target.post` branch already uses
@@ -14278,7 +14470,7 @@
   // The headline over each kind of card, and the one-word chip beside it.
   const OUTWARD_KIND_COPY = Object.freeze({
     pr: Object.freeze({ headline: "שיא אישי חדש", chip: "PR" }),
-    achievement: Object.freeze({ headline: "עיטור חדש", chip: "הישג" }),
+    achievement: Object.freeze({ headline: "מדליה חדשה", chip: "הישג" }),
     workout: Object.freeze({ headline: "אימון הושלם", chip: "אימון" }),
   });
 
@@ -17531,7 +17723,12 @@
   // time-sensitive count (pendingReports) - so arriving on this tab still
   // shows something rather than five closed rows.
   function manageAdminArea(area, html, openByDefault) {
-    return `<details id="${esc(area.id)}" class="manage-area" data-manage-area="${esc(area.id)}"${openByDefault ? " open" : ""}>
+    // state.admin.openAreas is the real source of truth once it has an
+    // opinion (the admin has toggled this area, or a jump-row tap opened
+    // it - see afterRenderManage()); openByDefault only governs the very
+    // first render, before either has happened.
+    const open = Object.prototype.hasOwnProperty.call(state.admin.openAreas, area.id) ? state.admin.openAreas[area.id] : !!openByDefault;
+    return `<details id="${esc(area.id)}" class="manage-area" data-manage-area="${esc(area.id)}"${open ? " open" : ""}>
       <summary>${esc(area.label)}</summary>
       <div class="manage-area-body">${html}</div>
     </details>`;
@@ -17668,6 +17865,19 @@
   // active. app.js's own render() appends this unconditionally after
   // every tab's content (see index.html/app.js render()).
   window.renderCloudConfirmDialog = renderConfirmDialog;
+  // Fresh-eyes audit: the term glossary (WOD/AMRAP/Thruster/Snatch/...) was
+  // only reachable from Community Settings, three taps deep and behind
+  // Community membership entirely - useless to a trainee confused by
+  // benchmark-WOD jargon in the OFFLINE catalogue (app.js), which loads and
+  // is usable with no Community account at all. cloud.js's own IIFE runs
+  // unconditionally regardless of Community configuration (see the many
+  // other window.* exports around this one), so this is safe to call from
+  // app.js any time - mirrors the "term-glossary-open" action exactly.
+  window.openTermGlossary = function () {
+    state.ui.termSheet = TERM_GLOSSARY[0].id;
+    state.ui.termGlossaryOpen = true;
+    rerender();
+  };
   // app.js's stale-backup-export reminder (renderSettingsBody) reads this to
   // pick its threshold: someone already covered by automatic cloud sync
   // needs the local-export nudge far less urgently than someone who is not.
@@ -17901,6 +18111,55 @@
     }
     return null;
   }
+  // Same real-user report app.js's own history layer was built for (see its
+  // comment above APP_DIALOGS's registrations: the Android back
+  // gesture/button did nothing to close an open dialog, because this app
+  // never pushed a history entry for one opening). That fix only reaches
+  // APP_DIALOGS - CLOUD_DIALOGS is a wholly separate registry with its own
+  // open/close plumbing, so it had the exact same gap independently: a
+  // member with the composer, a challenge card, the notification centre,
+  // etc. open, and no in-dialog Escape (a phone has none), had to
+  // background or force-close the app to get out.
+  //
+  // app.js catches every transition with a MutationObserver on each
+  // overlay's own `class` attribute, because its overlay elements are
+  // permanent DOM nodes that toggle an "open" class. CLOUD_DIALOGS overlays
+  // are not - render() only emits a dialog's markup at all while its state
+  // flag says open (see cloudDialogEl() above: it queries for the element,
+  // it does not toggle a class on one that is always present) - so there is
+  // no permanent node for a MutationObserver to watch. syncCloudDialogFocus()
+  // is the equivalent hook here: it already runs after every single render
+  // this module can cause (afterRenderCommunity() for the Community tab,
+  // and directly from app.js's render() for every other tab - see that
+  // call's own comment: "the composer and PR/achievement prompts render in
+  // the global cloud overlay and can show on any tab") and already computes
+  // openKey fresh each time, so it sees every open/close transition exactly
+  // once, the same guarantee the observer gives app.js.
+  //
+  // Same reserve-one-back-press contract as app.js: pushState() on open
+  // claims exactly one history entry; closing the dialog any OTHER way (X,
+  // Escape, backdrop) consumes that same entry via history.back() so a
+  // later real back-press is never left pointing at a dead state that takes
+  // two presses to get past.
+  let cloudDialogHistoryPushed = false;
+  let cloudDialogClosingViaHistory = false;
+  function syncCloudDialogHistoryState(openKey) {
+    if (openKey && !cloudDialogHistoryPushed) {
+      try { history.pushState({ cloudDialog: true }, ""); cloudDialogHistoryPushed = true; } catch (e) { /* history API unavailable in this embedding */ }
+    } else if (!openKey && cloudDialogHistoryPushed && !cloudDialogClosingViaHistory) {
+      cloudDialogHistoryPushed = false;
+      try { history.back(); } catch (e) {}
+    }
+  }
+  window.addEventListener("popstate", () => {
+    if (!cloudDialogHistoryPushed) return;
+    cloudDialogHistoryPushed = false;
+    const dk = currentCloudDialog();
+    if (!dk) return;
+    const spec = CLOUD_DIALOGS.find((d) => d.key === dk);
+    if (spec) { cloudDialogClosingViaHistory = true; spec.close(); cloudDialogClosingViaHistory = false; }
+  });
+
   // Run after every community render. Moves focus into a dialog the first
   // time it appears and hands focus back to the opener once the last dialog
   // is gone. While the same dialog stays open across a re-render, focus is
@@ -17913,6 +18172,7 @@
   // outside it.
   function syncCloudDialogFocus() {
     const openKey = currentCloudDialog();
+    syncCloudDialogHistoryState(openKey);
     // One-shot: whatever was just clicked only ever explains *this* render
     // cycle's dialog transition, never a later one.
     const clickCandidate = cloudDialogClickCandidate;
@@ -18178,6 +18438,21 @@
     const mt = state.ui.manageTab;
     const adminInput = document.getElementById("adminMemberSearch");
     if (adminInput) adminInput.addEventListener("input", () => searchMembers(adminInput.value));
+    // Fresh-eyes audit: a pure client-side filter over already-loaded
+    // roster items, no RPC and so no debounce needed - see
+    // renderMemberRoster()'s own comment for why this is separate from
+    // adminMemberSearch/admin_search_members just above.
+    const rosterInput = document.getElementById("rosterSearch");
+    if (rosterInput) rosterInput.addEventListener("input", () => { state.admin.roster.search = rosterInput.value; rerender(); });
+    // COMM-228's own restore-focus-and-caret pattern (communityPeopleSearch,
+    // afterRenderCommunity()): a rerender replaces the box being typed
+    // into, dropping focus and the caret. This filters on every keystroke
+    // rather than debouncing, so without this a second character could
+    // never be typed - the first keystroke's rerender leaves the input
+    // unfocused before the next one lands.
+    if (rosterInput && rosterInput.value && (!document.activeElement || document.activeElement === document.body)) {
+      try { rosterInput.focus(); rosterInput.setSelectionRange(rosterInput.value.length, rosterInput.value.length); } catch (e) {}
+    }
     // COMM-321. Same per-element wiring shape as the privacy toggles in
     // afterRenderCommunity() - persists on change, no save button. Moved
     // here (not duplicated) since renderClubModulesPanel() only renders on
@@ -18232,10 +18507,25 @@
       // except moderation - a jump-row tap has to open its target before
       // scrolling to it, or it lands on a collapsed row showing nothing.
       // `"open" in target` is false for the plain manageArea() divs
-      // (roster, on the "members" tab), so this is a no-op there.
-      if (target && "open" in target) target.open = true;
+      // (roster, on the "members" tab), so this is a no-op there. Also
+      // recorded into state.admin.openAreas (fresh-eyes audit) - setting
+      // only the DOM property here left the very next unrelated rerender()
+      // free to collapse it straight back, since manageAdminArea() had no
+      // record that a jump had opened it.
+      if (target && "open" in target) { target.open = true; state.admin.openAreas[target.id] = true; }
       if (target && typeof target.scrollIntoView === "function") target.scrollIntoView({ block: "start" });
     }
+    // Fresh-eyes audit: captures every native open/close (a direct summary
+    // click, not only the jump row above) into state.admin.openAreas so
+    // manageAdminArea() can honor it on the next render - see that
+    // function's own comment and state.admin.openAreas' declaration for
+    // why this has to exist at all. One delegated listener per re-render
+    // is deliberate and cheap: there are at most five of these elements,
+    // and the alternative (a module-level listener with no element to
+    // remove it from between renders) risks firing against a detached node.
+    document.querySelectorAll(".manage-area").forEach((el) => {
+      el.addEventListener("toggle", () => { state.admin.openAreas[el.id] = el.open; });
+    });
   };
   window.handleCommunityClick = function (el) {
     const action = el.dataset.communityAction;

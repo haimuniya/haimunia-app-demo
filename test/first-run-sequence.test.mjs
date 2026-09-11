@@ -157,6 +157,28 @@ test("the first-ever logged entry is answered as arrival, with no medal and no �
   assert.deepEqual(openOverlayIds(window), ["celebrationOverlay"], "still one surface at a time");
 });
 
+test("fresh-eyes audit: the arrival card gets an opaque backdrop, unlike every routine celebration afterward", async () => {
+  const window = await bootApp();
+  window.saveWelcomeForm("רונית");
+  await window.addMovement("Backdrop Squat", "Squat");
+  await logASet(window, 40);
+
+  const overlay = window.document.getElementById("celebrationOverlay");
+  assert.equal(overlay.classList.contains("arrival-card"), true,
+    "the one-time arrival card must get the opaque scrim, not the standard translucent one");
+  window.closeCelebration();
+  assert.equal(overlay.classList.contains("arrival-card"), false, "the class does not linger once closed");
+
+  // A real, later PR (needs 3 real priors past the trivial window - see
+  // saveSet()'s own MIN_ENTRIES_BEFORE_PR) must NOT get the opaque
+  // backdrop - only the once-ever arrival moment does.
+  for (const kg of [45, 50]) { await logASet(window, kg); window.closeCelebration(); }
+  await logASet(window, 55);
+  assert.equal(window.document.getElementById("celebrationOverlay").classList.contains("open"), true, "a real PR still celebrates");
+  assert.equal(window.document.getElementById("celebrationOverlay").classList.contains("arrival-card"), false,
+    "a routine celebration keeps the standard translucent scrim");
+});
+
 test("the arrival card happens once in a member's life, not once per empty log", async () => {
   const window = await bootApp();
   window.saveWelcomeForm("רונית");

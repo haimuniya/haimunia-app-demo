@@ -273,6 +273,38 @@ test("remove content routes through mod_review, sets the post to removed and wri
   assert.ok(mock.db.admin_actions.some((a) => a.action_type === "content_delete" && a.target_id === "post-1"), "content_delete audit row");
 });
 
+// browser-check audit (dialog-back-button.mjs / mock-vs-real cross-check):
+// the real public.mod_review() migration applies its decision to every
+// `reports` row sharing this target_type+target_id ("Applies one decision
+// to the WHOLE group of reports on the target", per that function's own
+// comment, COMM-152/153) - not only the one report_id the queue happens to
+// pass. This mock used to close ONLY that single row, so a target reported
+// by two different members would leave the second reporter's row stuck at
+// 'open' forever after review - the exact "a report reopens stuck under a
+// second reporter's id" shape of bug a mock-driven review cannot catch
+// while the mock itself silently diverges from the real trigger it stands
+// in for. Two distinct reporters on post-1 here, same as the queue's own
+// "reporter count" test above; only ONE decision is ever run from the
+// (already-grouped) queue UI, on whichever report id it happened to carry.
+test("mod_review closes every report on the same target, not only the one report_id the queue passed", async () => {
+  const mock = baseMock({
+    reports: [
+      { id: "rep-1", reporter_id: "reporter-1", target_type: "post", target_id: "post-1", reason: "harassment", note: "", status: "open", created_at: VERIFIED },
+      { id: "rep-2", reporter_id: "reporter-2", target_type: "post", target_id: "post-1", reason: "spam", note: "", status: "open", created_at: VERIFIED },
+    ],
+  });
+  const window = await bootQueueAs(mock);
+  await runDecision(window, "remove");
+  await waitFor(() => mock.db.workout_posts.find((p) => p.id === "post-1").status === "removed", 3000);
+  const targetReports = mock.db.reports.filter((r) => r.target_id === "post-1");
+  assert.equal(targetReports.length, 2, "both reports are still on file");
+  assert.ok(
+    targetReports.every((r) => r.status === "action_taken"),
+    `every report on the reviewed target must close, not just the one passed as p_report_id: ${JSON.stringify(targetReports.map((r) => ({ id: r.id, status: r.status })))}`
+  );
+  assert.ok(targetReports.every((r) => r.reviewed_by && r.reviewed_at), "both reports carry the reviewer stamp, not just one");
+});
+
 test("warn routes through mod_review and writes an admin_actions row without touching the content", async () => {
   const mock = baseMock({ reports: [{ id: "rep-1", reporter_id: "reporter-1", target_type: "post", target_id: "post-1", reason: "other", note: "", status: "open", created_at: VERIFIED }] });
   const window = await bootQueueAs(mock);
@@ -381,6 +413,31 @@ test("the audit view is gated on community.analytics.view and reads admin_action
   assert.match(w2.document.body.textContent, /הצמדת תוכן/, "an audit row renders");
 });
 
+test("fresh-eyes audit: the audit log names the actual staff member who acted, not a raw admin_id fragment", async () => {
+  const mock = baseMock({
+    profiles: [
+      { id: "adm-1", handle: "mor", display_name: "מור", is_admin: true, recovery_verified_at: VERIFIED, visible_to_club: true },
+    ],
+    invite_redemptions: [{ user_id: "adm-1", invite_id: "i1", role: "member", redeemed_at: VERIFIED }],
+    admin_actions: [
+      { id: "aa-1", admin_id: "adm-1", action_type: "content_pin", target_type: "post", target_id: "post-1", before_data: null, after_data: { slot: 0 }, created_at: VERIFIED },
+      // A second actor whose profile row does not exist (deleted, or a
+      // race with a still-loading page) - must fall back to the old
+      // truncated-id text rather than rendering blank or crashing.
+      { id: "aa-2", admin_id: "ghost-actor-id", action_type: "content_pin", target_type: "post", target_id: "post-2", before_data: null, after_data: { slot: 1 }, created_at: VERIFIED },
+    ],
+  });
+  mock.setUser({ id: "adm-1", is_anonymous: false, email: "mor@members.haimuniya.invalid" });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openManageModeration(window);
+  const findAuditSection = () => Array.from(window.document.querySelectorAll(".ach-section")).find((s) => /יומן פעולות ניהול/.test(s.textContent));
+  await waitFor(() => findAuditSection()?.querySelectorAll(".log-list .log-row").length === 2, 3000);
+  const text = findAuditSection().textContent;
+  assert.match(text, /מור/, "the acting admin's real display name renders");
+  assert.doesNotMatch(text, /adm-1/, "the raw admin_id no longer leaks into the row for a resolved actor");
+  assert.match(text, /מנהל\/ת ghost-ac/, "an admin_id with no matching profile still falls back to the old truncated-id text, not a blank or a crash");
+});
+
 // Launch-readiness audit bug fix: 6 action_type values and 3 target_type
 // values already live in admin_actions' own CHECK constraints
 // (invite/shared-code/onboarding/password-reset actions, shipped across
@@ -471,10 +528,15 @@ test("consecutive repeats of the same action on the same target collapse into on
   await waitFor(() => /יומן פעולות ניהול/.test(window.document.body.textContent), 3000);
   // The filter chips render their static label list before the log itself
   // loads, so "שינוי סטטוס קוד שיתוף" appears as a chip well before
-  // admin_actions_page() resolves - wait for a row's actor text instead,
-  // which only exists once the real (grouped) rows have rendered.
-  await waitFor(() => /מנהל\/ת adm-1/.test(window.document.body.textContent), 3000);
-  const auditSection = Array.from(window.document.querySelectorAll(".ach-section")).find((s) => /יומן פעולות ניהול/.test(s.textContent));
+  // admin_actions_page() resolves - wait for the audit section's own row
+  // count to settle instead (fresh-eyes audit: the actor text used to
+  // always read "מנהל/ת adm-1", a raw id fragment; it now resolves to the
+  // admin's real profile name - "מנהל" here, since that IS adm-1's seeded
+  // display_name - so a body-wide text match on that isn't a reliable
+  // "did the real rows load" signal any more).
+  const findAuditSection = () => Array.from(window.document.querySelectorAll(".ach-section")).find((s) => /יומן פעולות ניהול/.test(s.textContent));
+  await waitFor(() => findAuditSection()?.querySelectorAll(".log-list .log-row").length === 3, 3000);
+  const auditSection = findAuditSection();
   const rows = Array.from(auditSection.querySelectorAll(".log-list .log-row"));
   // Newest first: aa-5 (lone), aa-4 (lone), group A collapsed (aa-3/aa-2/aa-1).
   assert.equal(rows.length, 3, "5 raw rows collapse to 3 rendered rows");

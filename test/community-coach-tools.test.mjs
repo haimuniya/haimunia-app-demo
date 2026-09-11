@@ -191,6 +191,27 @@ test("Welcome's Welcome action fails gracefully when no POST_NEW_MEMBER card exi
   await waitFor(() => window.document.body.textContent.includes("לא ניתן היה לבצע את הפעולה. נסו שוב."), 3000);
 });
 
+test("fresh-eyes audit: the mock now simulates the real POST_NEW_MEMBER producer, so Welcome works end to end for a member who actually redeemed", async () => {
+  // Distinct from the "fails gracefully" test above: that one seeds
+  // invite_redemptions directly (no workout_posts row, correctly testing
+  // the fallback). This one calls the real redemption RPC, the way a
+  // member actually joins, and expects the welcome post it should produce
+  // - the exact path a coach-persona review found "dead" because the mock
+  // used to skip this entirely, even though the real DB trigger
+  // (202608290014, pgTAP-verified) has always done this.
+  const mock = seeded({ profiles: [{ id: "u10", handle: "gil", display_name: "גיל", is_admin: false, recovery_verified_at: VERIFIED, visible_to_club: true }] }, true);
+  mock.setUser({ id: "u10", is_anonymous: false, email: "gil@members.haimuniya.invalid" });
+  await mock.client.rpc("redeem_invite_code", { p_code: "ABCD-1234" });
+  assert.ok(mock.db.workout_posts.some((p) => p.post_type === "POST_NEW_MEMBER" && p.metadata.member_id === "u10"), "redeeming an invite produces a real POST_NEW_MEMBER row in the mock, matching the real trigger");
+
+  mock.setUser({ id: "u1", is_anonymous: false, email: "dana@members.haimuniya.invalid" });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCoachTab(window);
+  await waitFor(() => !!window.document.querySelector('[data-community-action="coach-welcome-member"]'), 3000);
+  window.document.querySelector('[data-community-action="coach-welcome-member"]').click();
+  await waitFor(() => (mock.db.post_comments || []).some((c) => c.body.includes("ברוך")), 3000);
+});
+
 test("View profile opens the community_profile overlay for the listed member", async () => {
   const mock = seeded({}, true);
   mock.onRpc("community_profile", () => ({ data: { display_name: "נועה", role: "member", member_since: daysAgoIso(3) }, error: null }));
@@ -304,6 +325,26 @@ test("congratulating the same item twice is a no-op the second time - the contro
   btn().click();
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(mock.callsTo("add_post_comment").length, before, "a disabled control produces no second call");
+});
+
+test("fresh-eyes audit: a fresh load recognizes an item already congratulated in an EARLIER session and does not offer to send it again", async () => {
+  const mock = seeded({
+    post_comments: [{ id: "c-existing", post_id: "p-pr", author_id: "u1", body: "כל הכבוד לנועה על שיא חדש בסקוואט (100 ק\"ג)! 💪", created_at: daysAgoIso(0) }],
+  }, true);
+  mock.onRpc("coach_celebrate_feed", () => ({
+    data: [{ kind: "pr", user_id: "u9", handle: "noa", display_name: "נועה", avatar_url: null, occurred_at: daysAgoIso(1), post_id: "p-pr", detail: { movement: "סקוואט", result: "100 ק\"ג" } }],
+    error: null,
+  }));
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCoachTab(window);
+  await waitFor(() => !!window.document.querySelector('[data-community-action="coach-congratulate"]'), 3000);
+  const btn = window.document.querySelector('[data-community-action="coach-congratulate"]');
+  assert.equal(btn.textContent.includes("ברכתם"), true, "a fresh load must show this item as already congratulated, not offer to send it again");
+  assert.equal(btn.disabled, true);
+  const before = mock.callsTo("add_post_comment").length;
+  btn.click();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(mock.callsTo("add_post_comment").length, before, "a disabled control produces no call, so no duplicate comment can be written");
 });
 
 test("a failed Congratulate shows the standard error and leaves the control enabled to retry", async () => {
@@ -425,6 +466,47 @@ test("reaching out twice is a no-op the second time - the control is disabled an
   btn().click();
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(mock.callsTo("post_create").length, before, "a disabled control produces no second call");
+});
+
+test("a successful reach-out writes a real member_contact_log row, not only client memory", async () => {
+  const mock = seeded({ coach_engagement_flags: [{ id: "f1", user_id: "u9", level: "mild", status: "open", flagged_at: VERIFIED }] }, true);
+  mock.onRpc("post_create", (args, ctx) => {
+    const id = "engage-post-log";
+    ctx.db.workout_posts = ctx.db.workout_posts || [];
+    ctx.db.workout_posts.push({ id, author_id: ctx.currentUser.id, post_type: "POST_TEXT", body: args.body, visibility: args.visibility, metadata: {}, status: "active", created_at: new Date().toISOString() });
+    return { data: id, error: null };
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCoachTab(window);
+  await waitFor(() => !!window.document.querySelector('[data-community-action="coach-engage-reach-out"]'), 3000);
+  window.document.querySelector('[data-community-action="coach-engage-reach-out"]').click();
+  await waitFor(() => (mock.db.member_contact_log || []).some((r) => r.user_id === "u9"), 3000);
+});
+
+test("fresh-eyes audit: a fresh load recognizes a member already reached out to in an EARLIER session, but ignores a contact-log row from before this flag was raised", async () => {
+  const mock = seeded({
+    coach_engagement_flags: [
+      { id: "f-already", user_id: "u9", level: "mild", status: "open", flagged_at: daysAgoIso(2) },
+      { id: "f-stale", user_id: "coach2", level: "mild", status: "open", flagged_at: daysAgoIso(1) },
+    ],
+    member_contact_log: [
+      // Covers f-already: contacted the day AFTER this flag was raised.
+      { id: "log1", user_id: "u9", contacted_by: "coach2", contacted_at: daysAgoIso(1), note: "פנייה יזומה בעקבות ירידה בפעילות" },
+      // Does NOT cover f-stale: this contact predates the flag itself (e.g.
+      // an old Welcome-era "mark contacted" from months ago) and must not
+      // silently mark a brand-new decline as already handled.
+      { id: "log2", user_id: "coach2", contacted_by: "u1", contacted_at: daysAgoIso(5), note: "ברוך הבא" },
+    ],
+  }, true);
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openCoachTab(window);
+  await waitFor(() => window.document.querySelectorAll('[data-community-action="coach-engage-reach-out"]').length === 2, 3000);
+  const rows = [...window.document.querySelectorAll('[data-community-action="coach-engage-reach-out"]')];
+  const alreadyRow = rows.find((b) => b.closest(".log-row").textContent.includes("נועה"));
+  const staleRow = rows.find((b) => b.closest(".log-row").textContent.includes("יעל"));
+  assert.equal(alreadyRow.textContent.includes("פנייה נשלחה"), true, "a contact logged after this flag was raised must show as already reached out, on the very first load");
+  assert.equal(alreadyRow.disabled, true);
+  assert.equal(staleRow.disabled, false, "a contact-log row from BEFORE this flag was raised must not count as having addressed it");
 });
 
 test("a flagged user_id whose profile row cannot be resolved still renders a row with the generic fallback label, rather than dropping it", async () => {

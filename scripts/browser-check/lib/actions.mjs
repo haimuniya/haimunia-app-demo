@@ -275,6 +275,47 @@ export async function openSettings(page) {
   await page.waitForFunction(() => document.getElementById("settingsOverlay")?.classList.contains("open"), { timeout: 5000 });
 }
 
+// Clicks the dim backdrop of a modal-overlay - a point genuinely outside
+// the .modal-sheet, not the sheet itself - the same click a thumb makes
+// when it lands where the sheet obviously is not. Works for any overlay,
+// app.js's or cloud.js's, since both share the .modal-overlay/.modal-sheet
+// shape and the overlay element itself is what carries the close handler (a
+// direct click on it, not on anything it contains).
+//
+// Clicks just above the sheet's own top edge (derived from the SHEET's
+// rect, not the overlay's corner) rather than a fixed corner of the overlay.
+// dialog-back-button.mjs found a real, separate bug using a fixed
+// top-left-of-overlay point on a scene-page tab (Community):
+// `body[data-scene] main{position:relative;z-index:1}` (index.html) puts
+// <main> - the ancestor #content and every dialog appended after it live
+// inside - into its own stacking context, and that whole context (z-index:1)
+// paints BENEATH the persistent header (`body[data-scene]
+// .header{position:absolute;z-index:20}`) regardless of the dialog's own
+// z-index:50; a plain bottom-left corner has the mirror problem against
+// `#bottomNavWrap` (z-index:30, a sibling of #app per app.js's own render()
+// comment). The practical effect: on a scene-page tab, the TOP ~64px and
+// BOTTOM ~70-90px strips of the full-screen overlay are not real click
+// targets - they hit the header/tab bar underneath instead. That is a real,
+// reported, NOT-fixed-here bug (see the browser-check report). Deriving the
+// point from the sheet's own edge instead of the overlay's corners sidesteps
+// both chrome bars for every centered/bottom-anchored dialog this suite
+// actually tests, without needing to special-case each call site.
+export async function clickOverlayBackdrop(page, overlaySelector) {
+  const box = await page.evaluate((sel) => {
+    const overlay = document.querySelector(sel);
+    const sheet = overlay.querySelector(".modal-sheet");
+    const r = (sheet || overlay).getBoundingClientRect();
+    const x = Math.round(r.left + 6);
+    // 10px above the sheet's own top edge - inside the overlay (which always
+    // spans the full viewport, inset:0), outside the sheet, and clear of the
+    // header/tab-bar chrome for every sheet this suite opens (none starts
+    // within ~70px of the viewport top).
+    const y = Math.max(2, Math.round(r.top - 10));
+    return { x, y };
+  }, overlaySelector);
+  await page.mouse.click(box.x, box.y);
+}
+
 export async function consoleErrorCollector(page) {
   const errors = [];
   page.on("console", (msg) => {

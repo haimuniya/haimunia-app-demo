@@ -79,7 +79,45 @@ test("Not now dismisses with no post and does not re-prompt for the same record"
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(window.document.getElementById("prPrompt"), null, "same record does not nag again");
 
+  // Fresh-eyes audit: a DIFFERENT record on the SAME movement shortly after
+  // must also stay quiet now - the per-movement cooldown this pass added
+  // (see onPrCreated's own comment in cloud.js) is exactly what stops a
+  // member on a genuine weekly upward trend from being asked to share
+  // nearly every session. A genuinely different movement is unaffected,
+  // which the next test covers.
   emitPr(window, { ...RECORD, record_id: "rec-99" });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(window.document.getElementById("prPrompt"), null, "a new record on the same movement, shortly after, is suppressed by the per-movement cooldown");
+});
+
+test("a genuinely different movement is not suppressed by another movement's cooldown", async () => {
+  const mock = seeded();
+  const window = await bootReady(mock);
+  emitPr(window);
+  await waitFor(() => !!window.document.getElementById("prPrompt"), 3000);
+  window.document.querySelector('[data-community-action="pr-not-now"]').click();
+  await waitFor(() => !window.document.getElementById("prPrompt"), 3000);
+
+  emitPr(window, { ...RECORD, record_id: "rec-99", movement: "Back Squat" });
+  await waitFor(() => !!window.document.getElementById("prPrompt"), 3000);
+});
+
+test("the per-movement cooldown expires: a new PR on the same movement 8 days later prompts again", async () => {
+  const mock = seeded();
+  const window = await bootReady(mock);
+  emitPr(window);
+  await waitFor(() => !!window.document.getElementById("prPrompt"), 3000);
+  window.document.querySelector('[data-community-action="pr-share"]').click();
+  await waitFor(() => !window.document.getElementById("prPrompt"), 3000);
+
+  // Backdate the cooldown's own localStorage record past its 7-day window,
+  // rather than waiting 8 real days or reaching into cloud.js's closure.
+  const key = "haimunia-demo:prPromptMovementLastShown";
+  const map = JSON.parse(window.localStorage.getItem(key));
+  map[RECORD.movement] = new Date(Date.now() - 8 * 86400000).toISOString();
+  window.localStorage.setItem(key, JSON.stringify(map));
+
+  emitPr(window, { ...RECORD, record_id: "rec-77" });
   await waitFor(() => !!window.document.getElementById("prPrompt"), 3000);
 });
 

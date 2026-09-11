@@ -550,7 +550,29 @@ export function createMockSupabase(seedTables = {}) {
           return Promise.resolve({ data: null, error: null });
         }
         if (name === "redeem_invite_code") {
-          rows("invite_redemptions").push({ user_id: currentUser.id, invite_id: "inv-1", role: "member", redeemed_at: new Date().toISOString() });
+          const redeemedAt = new Date().toISOString();
+          rows("invite_redemptions").push({ user_id: currentUser.id, invite_id: "inv-1", role: "member", redeemed_at: redeemedAt });
+          // Fresh-eyes audit: this mock used to only write invite_redemptions,
+          // so any mock-driven session (a browser-check scenario, a manual
+          // Playwright pass against installMockCloud) could never find a
+          // POST_NEW_MEMBER post - even though the real producer trigger
+          // (202608290014_new_member_post.sql, pgTAP-verified) has existed
+          // and worked in real Postgres since before this comment was
+          // written. A coach-persona review reported "Welcome" as dead on
+          // arrival on exactly this gap. Mirrors post_new_member_on_join()'s
+          // own logic: one post per member ever, name omitted (not a
+          // placeholder) when no profile exists yet at redemption time.
+          const wp = rows("workout_posts");
+          if (!wp.some((p) => p.post_type === "POST_NEW_MEMBER" && p.metadata && p.metadata.member_id === currentUser.id)) {
+            const prof = rows("profiles").find((p) => p.id === currentUser.id);
+            const name = prof ? (prof.display_name || prof.handle) : null;
+            wp.push({
+              id: `new-member-${++uidCounter}`, author_id: null, post_type: "POST_NEW_MEMBER", visibility: "club",
+              body: `${name || "חבר/ה חדש/ה"} הצטרפ/ה למועדון`,
+              metadata: name ? { member_id: currentUser.id, joined_on: redeemedAt, member_name: name } : { member_id: currentUser.id, joined_on: redeemedAt },
+              status: "active", published_at: redeemedAt, created_at: redeemedAt,
+            });
+          }
           return Promise.resolve({ data: "member", error: null });
         }
         // COMM-016. The real RPC refuses unless Auth confirms a real email
@@ -849,6 +871,24 @@ export function createMockSupabase(seedTables = {}) {
           const report = rows("reports").find((r) => r.id === (args && args.p_report_id));
           if (!report) return Promise.resolve({ data: null, error: { message: "report not found" } });
           const before = { status: report.status };
+          // browser-check audit (dialog-back-button.mjs / mock-vs-real
+          // cross-check): the REAL public.mod_review() (see the migration)
+          // updates every row in `reports` matching this target_type +
+          // target_id, not only the one p_report_id it was called with -
+          // "Applies one decision to the WHOLE group of reports on the
+          // target", per that function's own comment (COMM-152/153). This
+          // mock used to close ONLY the single row found above, so a target
+          // reported by two different members would leave the SECOND
+          // reporter's row stuck at 'open' forever after review - exactly
+          // the class of bug a mock-driven test can't catch because the
+          // mock silently diverges from the real trigger it stands in for.
+          // The group is resolved before deciding on `report` again below,
+          // since report_review's own audit row still keys off the
+          // ORIGINALLY passed p_report_id, matching log_admin_action's own
+          // call in the real function.
+          const reportGroup = rows("reports").filter(
+            (r) => r.target_type === report.target_type && r.target_id === report.target_id
+          );
           // Content removal.
           if (decision === "remove") {
             if (report.target_type === "post") {
@@ -877,11 +917,19 @@ export function createMockSupabase(seedTables = {}) {
             rows("admin_actions").push(auditRow(uid, "member_restrict", "member", targetUser, null, { decision }));
           }
           // Every decision records the trusted transition and one audit row.
-          report.status = decision === "dismiss" ? "dismissed" : "action_taken";
-          report.reviewed_by = uid;
-          report.reviewed_at = new Date().toISOString();
-          report.review_note = String((args && args.p_note) || "").slice(0, 500);
-          rows("admin_actions").push(auditRow(uid, "report_review", "report", report.id, before, { status: report.status, decision }));
+          // Applied to the WHOLE group (see reportGroup's own comment above),
+          // not just `report` - the fix for the single-row bug this comment
+          // documents.
+          const newStatus = decision === "dismiss" ? "dismissed" : "action_taken";
+          const reviewedAt = new Date().toISOString();
+          const reviewNote = String((args && args.p_note) || "").slice(0, 500);
+          for (const r of reportGroup) {
+            r.status = newStatus;
+            r.reviewed_by = uid;
+            r.reviewed_at = reviewedAt;
+            r.review_note = reviewNote;
+          }
+          rows("admin_actions").push(auditRow(uid, "report_review", "report", report.id, before, { status: newStatus, decision }));
           return Promise.resolve({ data: null, error: null });
         }
         if (name === "pin_set") {

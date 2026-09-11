@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.18.7";
+const APP_VERSION = "4.18.8";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -214,10 +214,19 @@ function renderNavWho() {
   // keydown handler to be keyboard-operable, which "preserve keyboard
   // behavior" means doing correctly, not adding a second bespoke handler
   // for one control when the native element already does it.
+  // Real-user report: the only visible content on this card was the
+  // member's own avatar/name/streak - nothing on it looks like a button
+  // that leads anywhere, let alone to medals specifically, so the only
+  // signal it opens anything at all was a hidden aria-label nobody can see
+  // before tapping. Given the same visible language every other navigable
+  // row in this app already uses (icon-chip + label + chevron - see
+  // renderNavSettingsRow() immediately below this file's own copy of that
+  // pattern), so "this card goes somewhere, and here's where" reads the
+  // same way here as it does for Settings.
   return `
-    <button class="who" data-action="open-achievements" aria-label="פתיחת עיטורים והישגים" style="width:100%; text-align:inherit;">
+    <button class="who" data-action="open-achievements" aria-label="פתיחת מדליות והישגים" style="width:100%; text-align:inherit;">
       <div class="who-avatar">${esc(initial)}</div>
-      <div>
+      <div style="flex:1; min-width:0;">
         <div class="who-name">${userName ? bidiText(userName) : "אורח/ת"}</div>
         <!-- Design spec Appendix A.9: the zero-streak branch here used to
              read "בואו נתחיל להתאמן" - the THIRD instance of "בואו נתחיל" in
@@ -235,6 +244,10 @@ function renderNavWho() {
              streak lapsed - which "בואו נתחיל להתאמן" was not, and it leaves
              "בואו נתחיל" to the two buttons that actually ask for a tap. -->
         <div class="who-sub">${streak > 0 ? `${streak} ${streak === 1 ? "יום" : "ימים"} ברצף` : "הרצף מתחיל באימון הבא"}</div>
+      </div>
+      <div class="flex items-center gap-6" style="flex-shrink:0; color:var(--steel); font-size:12px; font-weight:700;" aria-hidden="true">
+        <span>מדליות</span>
+        <span style="transform:scaleX(-1); display:inline-flex;">${ICONS.chevron}</span>
       </div>
     </button>`;
 }
@@ -789,7 +802,7 @@ const ACHIEVEMENTS = [
   {
     id: "capstone", group: "capstone", glyph: "home",
     name: "אלוף האימוניה",
-    rule: "זהב בכל קבוצות השיאים + רצף זהב + אתלט שלם + כל עיטורי הוותק",
+    rule: "זהב בכל קבוצות השיאים + רצף זהב + אתלט שלם + כל מדליות הוותק",
     earned: capstoneEarned,
     points: CAPSTONE_POINTS,
   },
@@ -799,6 +812,12 @@ const ACHIEVEMENTS = [
     rule: `${t.need} ${t.need === 1 ? "שיא אישי" : "שיאים אישיים"} בקבוצת ${CATEGORY_LABELS[cat]}`,
     earned: () => (categoryPRCounts()[cat] || 0) >= t.need,
     points: TIER_POINTS[t.tier],
+    // need/current: fresh-eyes audit, "next up" nudge. Explicit fields
+    // (not re-derived from `rule`'s free text or `earned`'s closure) so
+    // nearestUpcomingAchievement() can compute a real distance-to-unlock
+    // generically across every countable achievement group, without
+    // parsing Hebrew strings or duplicating each group's own metric.
+    need: t.need, current: () => categoryPRCounts()[cat] || 0,
   }))),
   ...STREAK_TIERS.map((t) => ({
     id: `streak-${t.tier}`, group: "streak", tier: t.tier, glyph: "chevrons",
@@ -806,6 +825,7 @@ const ACHIEVEMENTS = [
     rule: `רצף של ${t.need} שבועות עם רישום`,
     earned: () => longestWeekStreak() >= t.need,
     points: TIER_POINTS[t.tier],
+    need: t.need, current: () => longestWeekStreak(),
   })),
   ...SESSION_MILESTONES.map((n) => ({
     id: `sessions-${n}`, group: "milestone", glyph: "home",
@@ -813,6 +833,7 @@ const ACHIEVEMENTS = [
     rule: `${n} ימי אימון מתועדים`,
     earned: () => totalSessions() >= n,
     points: MILESTONE_POINTS,
+    need: n, current: () => totalSessions(),
   })),
   ...TENURE_MILESTONES.map((m) => ({
     id: `tenure-${m.id}`, group: "milestone", glyph: "flame",
@@ -842,6 +863,40 @@ const ACHIEVEMENTS = [
   })),
 ];
 
+// Fresh-eyes audit, regular-member persona: 1/59 unlocked reads as a wall
+// of locked medals with no sense of what's actually reachable soon - real
+// motivation research on fitness apps names exactly this ("show the near
+// win") as the difference between an achievements screen someone checks
+// and one they stop looking at. Only the three countable groups (pr,
+// streak, milestone - see their own need/current fields just above) have
+// a generic distance-to-unlock; well-rounded/tenure/rx/capstone stay out
+// of this specifically because forcing a fake "3.2 away" onto a boolean
+// or calendar-driven achievement would be a worse kind of dishonesty than
+// not showing one.
+function nearestUpcomingAchievement() {
+  let best = null, bestRemaining = Infinity;
+  for (const a of ACHIEVEMENTS) {
+    if (typeof a.need !== "number" || typeof a.current !== "function") continue;
+    if (a.earned()) continue;
+    const remaining = a.need - a.current();
+    if (remaining > 0 && remaining < bestRemaining) { best = a; bestRemaining = remaining; }
+  }
+  return best ? { ach: best, remaining: bestRemaining } : null;
+}
+function renderNextAchievementNudge() {
+  const next = nearestUpcomingAchievement();
+  if (!next) return "";
+  const { ach, remaining } = next;
+  const pct = Math.min(100, Math.round((ach.current() / ach.need) * 100));
+  return `<div class="ach-section" style="margin-top:0;">
+    <div class="ach-section-head"><span class="ach-section-dot" style="background:var(--brass);"></span><h2 class="ach-section-title">המדליה הבאה שלך</h2></div>
+    <div class="chart-card" style="text-align:center;">
+      <div style="font-weight:800; font-size:14px; color:var(--chalk); margin-bottom:6px;">${esc(ach.name)}</div>
+      <div class="ach-level-bar"><div class="ach-level-fill" style="width:${pct}%;"></div></div>
+      <div class="ach-summary-label" style="margin-top:6px;">עוד ${remaining} להשלמה</div>
+    </div>
+  </div>`;
+}
 function renderMedal(ach, earned) {
   const shape = ach.group === "pr" || ach.group === "streak" ? "shield" : "circle";
   const glowMap = { bronze: "rgba(201,162,39,.7)", silver: "rgba(216,222,228,.8)", gold: "rgba(242,185,12,.8)" };
@@ -894,7 +949,7 @@ function renderAchievementsContent() {
 
   const boxStartPrompt = boxStartDate ? "" : `
     <button data-action="open-profile-from-achievements" class="card flex items-center justify-between gap-10" style="width:100%; text-align:right; margin-bottom:12px;">
-      <span style="font-size:12.5px; color:var(--chalk); font-weight:600;">הוסיפו תאריך התחלה בבוקס כדי לפתוח את עיטורי הוותק</span>
+      <span style="font-size:12.5px; color:var(--chalk); font-weight:600;">הוסיפו תאריך התחלה בבוקס כדי לפתוח את מדליות הוותק</span>
       <span style="color:var(--steel); flex-shrink:0;">${ICONS.chevronsLeft}</span>
     </button>`;
 
@@ -932,14 +987,15 @@ function renderAchievementsContent() {
     <section class="scene-page scene-page--achievements" aria-labelledby="achievementsSceneTitle">
       <div class="scene-page__media" aria-hidden="true"></div>
       <div class="scene-page__scrim" aria-hidden="true"></div>
-      <div class="scene-page__intro"><h2 id="achievementsSceneTitle" class="scene-page__title">עיטורים</h2></div>
+      <div class="scene-page__intro"><h2 id="achievementsSceneTitle" class="scene-page__title">מדליות</h2></div>
       <div class="scene-sheet">
     <div class="ach-summary">
       <div class="ach-summary-level">${esc(level.name)}</div>
       <div class="ach-summary-num mono">${score} נקודות</div>
       ${progressToNext}
-      <div class="ach-summary-label" style="margin-top:8px;">${earnedCount} / ${ACHIEVEMENTS.length} עיטורים</div>
+      <div class="ach-summary-label" style="margin-top:8px;">${earnedCount} / ${ACHIEVEMENTS.length} מדליות</div>
     </div>
+    ${renderNextAchievementNudge()}
     ${capstoneSection}
     ${prSections}${streakSection}${milestoneSection}${rxSection}
       </div>
@@ -947,7 +1003,21 @@ function renderAchievementsContent() {
   `;
 }
 let achievementsOpenerEl = null;
+// Real-user report, root cause: the "who" card that opens this lives
+// inside the nav menu, and nothing ever closed the menu when it did - so
+// navMenuOverlay stayed "open" (its own isOpen() check still true)
+// directly underneath achievements, and currentAppDialog() (used by both
+// Escape and the back-button history handler below) returns the FIRST
+// registered dialog whose isOpen() is true, in APP_DIALOGS' own
+// registration order - navMenu before achievements. Escape or the phone
+// back button then closed the hidden nav menu instead of the visible
+// achievements sheet, which from the tapping-it-repeatedly-and-nothing-
+// visibly-changing user's side of the screen reads exactly as "no way to
+// close this." closeNavMenu() is already a safe no-op when the menu isn't
+// open (checks navMenuOpen itself), so this costs nothing when
+// achievements is opened from userGreeting/the header link instead.
 function openAchievements() {
+  closeNavMenu();
   achievementsOpenerEl = document.activeElement;
   document.body.style.overflow = "hidden";
   document.getElementById("achievementsOverlay").classList.add("open");
@@ -1172,7 +1242,7 @@ function showCelebration(prLabel, badges, opts) {
   const sub = document.getElementById("celebrationSub");
   if (sub) {
     sub.textContent = (opts && opts.sub) ? opts.sub : (badges.length
-      ? (badges.length > 1 ? `${badges.length} עיטורים חדשים נפתחו — תמשיכו ככה!` : "עיטור חדש נפתח — תמשיכו ככה!")
+      ? (badges.length > 1 ? `${badges.length} מדליות חדשות נפתחו — תמשיכו ככה!` : "מדליה חדשה נפתחה — תמשיכו ככה!")
       : "תמשיכו ככה!");
   }
   document.body.style.overflow = "hidden";
@@ -1181,12 +1251,23 @@ function showCelebration(prLabel, badges, opts) {
   // opts, so closeCelebration() below can tell an arrival card from an
   // ordinary badge one without asking the DOM what it looks like.
   celebrationShowingArrival = !!(opts && opts.arrival);
-  document.getElementById("celebrationOverlay").classList.add("open");
+  const overlayEl = document.getElementById("celebrationOverlay");
+  // Fresh-eyes audit, trainee persona: this card fires exactly once per
+  // member, ever, and the report was specifically that it read over a
+  // busy, translucent scrim - the log form's weight slider and %-of-1RM
+  // chips were still visible (and, since the base .modal-overlay carries
+  // no pointer-events change, still genuinely interactive) directly behind
+  // the one message this app most wants to land cleanly. Every OTHER
+  // celebration keeps the standard scrim unchanged - only this one-time
+  // arrival gets the opaque backdrop, via a class rather than editing the
+  // shared .modal-overlay rule every dialog in the app uses.
+  overlayEl.classList.toggle("arrival-card", celebrationShowingArrival);
+  overlayEl.classList.add("open");
   setTimeout(() => focusFirstAppDialogEl("celebrationOverlay"), 50);
 }
 function closeCelebration() {
   document.body.style.overflow = "";
-  document.getElementById("celebrationOverlay").classList.remove("open");
+  document.getElementById("celebrationOverlay").classList.remove("open", "arrival-card");
   if (celebrationOpenerEl && typeof celebrationOpenerEl.focus === "function") celebrationOpenerEl.focus();
   celebrationOpenerEl = null;
   // THE moment S5 has been waiting for: not "the overlay stopped being
@@ -2307,7 +2388,7 @@ function renderUserGreeting() {
   // sink keeps a bare identifier.
   const greetingHtml = userName ? `<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">שלום ${bidiText(userName)}</span>${ICONS.chevronsLeft}` : "";
   el.innerHTML = greetingHtml;
-  if (userName) el.setAttribute("aria-label", `שלום ${userName} — פתיחת עיטורים והישגים`);
+  if (userName) el.setAttribute("aria-label", `שלום ${userName} — פתיחת מדליות והישגים`);
   else el.removeAttribute("aria-label");
 }
 let welcomeEditing = false;
@@ -4566,7 +4647,7 @@ function renderSettingsBody() {
         <button class="exercise-row" data-action="edit-box-start-date" style="margin-bottom:0;">
           <div style="text-align:right;">
             <div style="font-weight:700; font-size:13.5px;">מתי התחלתי להתאמן בבוקס</div>
-            <div style="color:var(--steel); font-size:12px; margin-top:2px;">${boxStartDate ? esc(fmtDate(boxStartDate)) : "לא הוגדר — פותח את עיטורי הוותק"}</div>
+            <div style="color:var(--steel); font-size:12px; margin-top:2px;">${boxStartDate ? esc(fmtDate(boxStartDate)) : "לא הוגדר — פותח את מדליות הוותק"}</div>
           </div>
           <span style="color:var(--steel); flex-shrink:0;">${ICONS.chevronsLeft}</span>
         </button>
@@ -4929,6 +5010,36 @@ function render() {
     // cloud overlay and can show on any tab, so their focus management runs
     // after every render, not only Community's.
     if (tab !== "community" && typeof window.syncCloudDialogFocus === "function") window.syncCloudDialogFocus();
+    // browser-check audit (dialog-back-button.mjs) found a real gap in the
+    // history/back-button fix above APP_DIALOGS: the boot-time loop that
+    // attaches a MutationObserver to each registered overlay
+    // (`for (const key in APP_DIALOGS) { const el = document.getElementById(...)... }`)
+    // only ever finds an overlay that is a PERMANENT node already in
+    // index.html at that point (navMenu, settings, picker, achievements,
+    // etc). appConfirmOverlay is not one of those - renderAppConfirmSheet()
+    // is generated fresh and concatenated into #content's innerHTML on
+    // every render, only while a confirm is open (see this function, a few
+    // lines above: `... + renderAppConfirmSheet()`) - so at boot time
+    // document.getElementById("appConfirmOverlay") is null, `if (el)`
+    // is false, and NO observer is ever attached for it. The practical
+    // effect measured in a real browser: opening the destructive-delete
+    // confirm sheet pushed NO history entry, so a back-press while it was
+    // open did not consume a reserved entry - it fell through to whatever
+    // real entry preceded this app's own page, which on a fresh tab is the
+    // browser's own initial about:blank, navigating the PWA away entirely.
+    // That is a worse outcome than the original bug (silently doing
+    // nothing): the single most safety-critical dialog in the app (it
+    // gates deleting a logged set - the one thing in this app that cannot
+    // be recreated) had no back-button protection at all, and a back-press
+    // on it could look like the app crashing to a blank screen.
+    // syncAppDialogHistoryState() itself is shape-agnostic (it reads
+    // currentAppDialog(), not any one overlay's node) - calling it here,
+    // after every render, the same call-based hook cloud.js's
+    // syncCloudDialogFocus() above already relies on for its OWN
+    // dynamically-rendered dialogs, closes the gap for appConfirm without
+    // requiring every future dynamically-rendered dialog to remember to
+    // reserve a permanent DOM node just to be observable.
+    if (typeof syncAppDialogHistoryState === "function") syncAppDialogHistoryState();
   } catch (err) {
     console.error("post-render error:", err);
   }
@@ -5393,11 +5504,28 @@ function renderWodHistorySection() {
 // and mixing WOD-library categories into it would blur two different
 // classification systems that happen to share the word "category".
 const WOD_LIBRARY_CATEGORY_LABELS = { Girls: "בנות", Heroes: "גיבורים" };
+// Fresh-eyes audit: a trainee-persona review named this exact screen -
+// "Isabel — 30 Snatches", "Diane — 21-15-9 Deadlifts & HSPU" - as pure
+// CrossFit jargon with nothing on it to explain a Thruster, an HSPU or a
+// Snatch to someone who has never heard the words. Community already
+// ships a real, maintained glossary covering exactly these terms
+// (cloud.js's TERM_GLOSSARY), just three taps deep in Community Settings
+// and useless to a trainee who has not joined Community at all - this
+// offline screen needs no Community account, so its own link to the same
+// glossary has to work with no Community account either.
+// window.openTermGlossary is undefined until cloud.js's own module-level
+// code runs (script order: cloud.js loads before app.js in index.html),
+// so it is always present by the time a render can happen - the
+// typeof guard only protects a test harness that loads app.js alone.
+function renderWodGlossaryLink() {
+  if (typeof window.openTermGlossary !== "function") return "";
+  return `<button class="link-btn" data-action="open-wod-glossary" style="display:block; margin:0 0 10px;">מילון מונחים — WOD, AMRAP, Thruster ועוד</button>`;
+}
 function renderWodBenchmarksSection() {
   const groups = Object.entries(
     WOD_LIBRARY.reduce((acc, w) => { (acc[w.category] = acc[w.category] || []).push(w); return acc; }, {})
   );
-  return groups.map(([cat, list]) => `
+  return renderWodGlossaryLink() + groups.map(([cat, list]) => `
     <div class="cat-group">
       <div class="cat-head"><span class="cat-name">${esc(WOD_LIBRARY_CATEGORY_LABELS[cat] || cat)}</span></div>
       ${list.map((w) => `<button class="movement-btn" data-action="select-benchmark" data-id="${esc(w.id)}">
@@ -5652,7 +5780,11 @@ function setSettingsInert(inert) {
   if (inert) overlay.setAttribute("inert", "");
   else overlay.removeAttribute("inert");
 }
+// Same fix, same root cause as openAchievements() just above: Settings is
+// also reached from a row inside the nav menu, and nothing closed the menu
+// underneath it either.
 function openSettings() {
+  closeNavMenu();
   settingsOpen = true;
   settingsOpenerEl = document.activeElement;
   document.body.style.overflow = "hidden";
@@ -5701,6 +5833,65 @@ registerAppDialog("celebration", { overlayId: "celebrationOverlay", isOpen: () =
 registerAppDialog("notifications", { overlayId: "notificationsOverlay", isOpen: () => document.getElementById("notificationsOverlay").classList.contains("open"), close: closeNotifications });
 registerAppDialog("onboarding", { overlayId: "onboardingOverlay", isOpen: () => document.getElementById("onboardingOverlay").classList.contains("open"), close: closeOnboarding, escapable: false });
 registerAppDialog("welcome", { overlayId: "welcomeOverlay", isOpen: () => document.getElementById("welcomeOverlay").classList.contains("open"), close: closeWelcomeModal, escapable: false });
+
+// Real-user report: on a phone, with an app dialog open (achievements was
+// the one caught, but the gap is every dialog registered above), the
+// Android back gesture/button did nothing - there is no Escape key on a
+// phone, and this app never pushed a history entry for a dialog opening,
+// so "back" had no state of its own to consume. Depending on the browser
+// that either does nothing or backgrounds/exits an installed PWA, which is
+// exactly "had to close the app to get back out." Escape-to-close (COMM-328
+// above) already does the right thing for a keyboard; this is the same
+// idea for hardware/gesture back.
+//
+// A MutationObserver on each registered overlay's own `class` attribute
+// (not a hook added to all dozen individual open()/close() functions)
+// catches every dialog transition centrally, including the several that
+// close by directly manipulating classList rather than going through render().
+// history.pushState() on open reserves exactly one back-press to close the
+// dialog; closing it any OTHER way (X, Escape, backdrop) consumes that same
+// reserved entry via history.back() so a later real back-press is never
+// left pointing at a dead state that requires two presses to get past.
+let appDialogHistoryPushed = false;
+let appDialogClosingViaHistory = false;
+function syncAppDialogHistoryState() {
+  const open = !!currentAppDialog();
+  if (open && !appDialogHistoryPushed) {
+    try { history.pushState({ appDialog: true }, ""); appDialogHistoryPushed = true; } catch (e) { /* history API unavailable in this embedding */ }
+  } else if (!open && appDialogHistoryPushed && !appDialogClosingViaHistory) {
+    appDialogHistoryPushed = false;
+    try { history.back(); } catch (e) {}
+  }
+}
+window.addEventListener("popstate", () => {
+  if (!appDialogHistoryPushed) return;
+  appDialogHistoryPushed = false;
+  const dlg = currentAppDialog();
+  if (!dlg) return;
+  // browser-check audit (dialog-back-button.mjs): the Escape handler right
+  // above this block already refuses to close a dialog whose def.escapable
+  // is false (onboarding/welcome opted out because a first-run flow is
+  // "meant to be stepped through deliberately, not dismissed by an
+  // accidental Escape" - see their own registerAppDialog() comments) but
+  // this handler, added afterward for the back-button gap, called dlg.close()
+  // unconditionally. On a real phone that meant a hardware back-press on the
+  // welcome sheet silently ran closeWelcomeModal() WITHOUT ever calling
+  // saveUserName() - the member's name was simply never recorded and the
+  // gate vanished, functionally worse than the bug this fix was written to
+  // close. Re-arm the same reserved history entry instead, so a
+  // non-escapable dialog treats back exactly like it already treats
+  // Escape - the press is swallowed, not treated as "leave" or "exit the
+  // app" on the NEXT press either.
+  if (!dlg.escapable) {
+    try { history.pushState({ appDialog: true }, ""); appDialogHistoryPushed = true; } catch (e) {}
+    return;
+  }
+  appDialogClosingViaHistory = true; dlg.close(); appDialogClosingViaHistory = false;
+});
+for (const key in APP_DIALOGS) {
+  const el = document.getElementById(APP_DIALOGS[key].overlayId);
+  if (el) new MutationObserver(syncAppDialogHistoryState).observe(el, { attributes: true, attributeFilter: ["class"] });
+}
 
 function renderPickerList(query) {
   const q = query.toLowerCase();
@@ -6143,6 +6334,7 @@ document.addEventListener("click", (e) => {
     renderWodContent();
   }
   else if (action === "delete-custom-wod") { deleteCustomWod(el.dataset.id); }
+  else if (action === "open-wod-glossary") { if (typeof window.openTermGlossary === "function") window.openTermGlossary(); }
   else if (action === "select-benchmark") {
     choosePickedWod(el.dataset.id);
     wodSubTab = "log";

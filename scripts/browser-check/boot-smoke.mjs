@@ -25,8 +25,21 @@ const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 420, height: 900 } });
 const errors = await consoleErrorCollector(page);
 
-let navCount = 0;
-page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) navCount++; });
+// "load" fired on the main frame, not "framenavigated": this app's dialog
+// back-button fix (app.js's registerAppDialog()/APP_DIALOGS history layer,
+// mirrored for cloud.js's CLOUD_DIALOGS — see dialog-back-button.mjs) calls
+// history.pushState() the moment ANY dialog opens, including the welcome
+// modal that opens automatically on a fresh boot within this test's own 4s
+// window. "framenavigated" fires for that too (Playwright counts any
+// same-document history change as a navigation), which made this check
+// fail on navCount===2 the moment that fix shipped even though nothing had
+// actually reloaded — confirmed live: two "framenavigated" events, same
+// URL, and exactly one "load" event, the whole time. "load" only fires for
+// a genuine document (re)load, never for pushState/replaceState/hashchange,
+// so it is the signal this check actually wants and is immune to how many
+// dialogs a future change teaches to reserve a history entry.
+let loadCount = 0;
+page.on("load", () => loadCount++);
 
 // COMM-333: cloud.js boots unconditionally regardless of which tab a
 // script visits, and cloud-config.js points at the real, live production
@@ -54,7 +67,7 @@ check("Rubik font actually loaded", fontInfo.hasRubik);
 // reload on every first-ever install — see CHANGES.md, "stop
 // self-reloading on first install". Give it a few seconds to (not) happen.
 await page.waitForTimeout(4000);
-check("no unexpected page reload in the first 4s", navCount === 1, `navCount=${navCount}`);
+check("no unexpected page reload in the first 4s", loadCount === 1, `loadCount=${loadCount}`);
 
 await dismissWelcomeModal(page);
 for (const id of ["tabHistoryBtn", "tabCalendarBtn", "tabWodBtn", "tabCommunityBtn", "tabAddBtn"]) {

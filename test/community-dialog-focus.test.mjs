@@ -145,7 +145,13 @@ test("PR share prompt: focus-in, trap, Escape restores focus, backdrop closes", 
   await waitFor(() => window.isCommunitySignedIn && window.isCommunitySignedIn(), 3000);
 
   const record = { record_id: "rec-42", movement: "Deadlift", new_result: '180 ק"ג', previous_result: '172.5 ק"ג', improvement: '+7.5 ק"ג' };
-  const emit = () => window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.PR_CREATED, { record: { ...record, record_id: "rec-" + Math.random().toString(36).slice(2) } });
+  // A distinct movement per call, not just a distinct record_id: cloud.js's
+  // per-movement PR-share cooldown (fresh-eyes audit) would otherwise
+  // suppress every emit() after the first for the same "Deadlift", and this
+  // test's own re-opens (via the `close` callback below) rely on emit()
+  // reliably reopening the dialog - this file is testing the shared
+  // focus/dialog contract, not the cooldown, so it must not trip it.
+  const emit = () => window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.PR_CREATED, { record: { ...record, record_id: "rec-" + Math.random().toString(36).slice(2), movement: "Deadlift-" + Math.random().toString(36).slice(2) } });
 
   const opener = makeOpener(window, {});
   // Add note so the prompt has a note field, guaranteeing >= 2 focusables

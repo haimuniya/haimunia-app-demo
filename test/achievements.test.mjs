@@ -157,6 +157,38 @@ test("fresh-eyes audit: the Progress tab's this-month PR count excludes a moveme
   assert.equal(prValue, "0", "three trivial first-of-movement entries in one session must read as 0 PRs, not 3");
 });
 
+test("fresh-eyes audit: the achievements screen shows a 'next medal' nudge naming the single closest countable badge", async () => {
+  const window = await bootApp();
+  await window.addMovement("Nudge Test Squat", "Squat");
+  window.applyFieldValue("step", "weight", 40);
+  window.applyFieldValue("step", "reps", 5);
+  window.applyFieldValue("step", "sets", 1);
+  // 4 entries: past the first_pr/trivial window (3), so the Squat bronze
+  // tier (needs 3 real PRs beyond the first) has genuine, nonzero progress
+  // to be the closest thing to unlock.
+  for (const kg of [40, 45, 50, 55]) {
+    window.applyFieldValue("step", "weight", kg);
+    await window.saveSet();
+    window.closeCelebration();
+  }
+  window.openAchievements();
+  const overlay = window.document.getElementById("achievementsOverlay");
+  assert.match(overlay.textContent, /המדליה הבאה שלך/, "the nudge section renders");
+  assert.match(overlay.textContent, /Squat/, "it names the closest real badge, not a generic placeholder");
+  assert.match(overlay.textContent, /עוד \d+ להשלמה/, "it states a concrete remaining count");
+});
+
+test("the next-medal nudge shows something meaningful even for a completely fresh account, not only once training history exists", async () => {
+  const window = await bootApp();
+  window.openAchievements();
+  const overlay = window.document.getElementById("achievementsOverlay");
+  // The lowest-threshold countable badges (a bronze PR tier needs only 3)
+  // are genuinely "closest" from square one too - the nudge is not gated
+  // on having any history at all, and must not silently disappear here.
+  assert.match(overlay.textContent, /המדליה הבאה שלך/);
+  assert.match(overlay.textContent, /עוד \d+ להשלמה/);
+});
+
 test("celebration offers a per-badge community share button once signed in, wired to shareAchievementToCommunity", async () => {
   const window = await bootApp();
   window.isCommunitySignedIn = () => true;

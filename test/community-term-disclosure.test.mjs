@@ -81,9 +81,14 @@ test("TIER 1: the four glosses the app already wrote are still there, verbatim, 
 
 // ---- The vocabulary itself ----------------------------------------------
 
-test("the glossary ships the spec's 18 terms, each with a one-line gloss and a sheet body", () => {
+test("the glossary ships the spec's 18 terms plus 2 later additions, each with a one-line gloss and a sheet body", () => {
   const entries = [...src.matchAll(/\{ id: "([a-z0-9]+)", term: "([^"]+)", gloss: "([^"]+)", body: "/g)];
-  assert.equal(entries.length, 18, "design spec 3.4 names 18 terms to ship first");
+  // Design spec 3.4 named 18 terms to ship first; "snatch" and "cleanjerk"
+  // were added afterward (fresh-eyes audit, trainee persona) once real
+  // use found them missing - both benchmark WODs in the catalogue that
+  // name them ("Isabel — 30 Snatches", "Grace — 30 Clean & Jerks") predate
+  // this glossary and were never covered by the original 18.
+  assert.equal(entries.length, 20, "18 from design spec 3.4 + snatch + cleanjerk");
   for (const id of ["wod", "amrap", "emom", "fortime", "rx", "scaled", "1rm", "pr", "repscheme", "superset"]) {
     assert.ok(entries.some((e) => e[1] === id), `the glossary is missing "${id}" - one of the terms a beginner meets first`);
   }
@@ -209,7 +214,7 @@ test("TIER 3: the sheet explains the term, offers the full glossary, and is a bo
   // ...and the way through to everything else.
   d.querySelector('[data-community-action="term-glossary"]').click();
   await waitFor(() => d.querySelectorAll(".term-glossary-item").length > 0, 3000);
-  assert.equal(d.querySelectorAll(".term-glossary-item").length, 18);
+  assert.equal(d.querySelectorAll(".term-glossary-item").length, 20);
 });
 
 test("TIER 3 never blocks: Escape closes the sheet and leaves the screen underneath exactly as it was", async () => {
@@ -282,7 +287,7 @@ test("one explicit switch overrides the counter in both directions, and says whi
   // the circles must not take the vocabulary away with them.
   d.querySelector('[data-community-action="term-glossary-open"]').click();
   await waitFor(() => d.querySelectorAll(".term-glossary-item").length > 0, 3000);
-  assert.equal(d.querySelectorAll(".term-glossary-item").length, 18);
+  assert.equal(d.querySelectorAll(".term-glossary-item").length, 20);
   // Browsing the glossary on purpose is not the same signal as tapping a `?`
   // you did not understand, so it must not advance the auto-retire counter.
   assert.equal(back.localStorage.getItem("haimunia-demo:termSheetOpens"), "9");
@@ -334,4 +339,23 @@ test("3.6: the Rx/Scaled control is styled for an explicit, glossed, >=44px choi
   // And the gloss adopts the chip's colour once selected, the same way the
   // format chips already do.
   assert.match(indexHtml, /\.rx-btn\.active-rx \.term-sub[^{]*\{[^}]*color:inherit/);
+});
+
+// ---- Fresh-eyes audit: the OFFLINE WOD catalogue reaches the same glossary ---
+
+test("the offline WOD catalogue (no Community account needed) opens the real Community term glossary, not a dead end", async () => {
+  // bootCommunity (not bootApp) specifically because this proves cloud.js's
+  // window.openTermGlossary is what the offline screen calls - the whole
+  // point is that this must work even though the member here has never
+  // opened Community; the catalogue itself lives entirely in app.js.
+  const mock = createMockSupabase({});
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.document.getElementById("tabWodBtn").click();
+  await waitFor(() => !!window.document.querySelector("button.subtabbtn[data-subtab='benchmarks']"), 3000);
+  window.document.querySelector("button.subtabbtn[data-subtab='benchmarks']").click();
+  await waitFor(() => !!window.document.querySelector("[data-action='open-wod-glossary']"), 3000);
+  window.document.querySelector("[data-action='open-wod-glossary']").click();
+  await waitFor(() => window.document.querySelectorAll(".term-glossary-item").length > 0, 3000);
+  assert.equal(window.document.querySelectorAll(".term-glossary-item").length, 20);
+  assert.match(window.document.body.textContent, /Snatch/, "the terms actually named in the catalogue's own benchmark WODs are covered");
 });

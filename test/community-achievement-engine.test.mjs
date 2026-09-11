@@ -104,7 +104,7 @@ test("a claimed unlock shows a celebration and Share creates a POST_ACHIEVEMENT 
   await window.claimCommunityAchievements(["first_pr"]);
   await waitFor(() => !!window.document.getElementById("achUnlock"), 3000);
   const modal = window.document.getElementById("achUnlock");
-  assert.match(modal.textContent, /עיטור חדש נפתח/);
+  assert.match(modal.textContent, /מדליה חדשה נפתחה/);
   assert.match(modal.textContent, /השיא הראשון/);
   assert.ok(modal.querySelector('[data-community-action="ach-share"]'), "Share to Club offered");
   assert.ok(modal.querySelector('[data-community-action="ach-not-now"]'), "Not now offered");
@@ -221,7 +221,7 @@ test("achMeta falls back to the definition's own name and icon before the bare c
   const fn = cloud.slice(cloud.indexOf("function achMeta(code, row)"), cloud.indexOf("function achCodeOf(row)"));
   assert.match(fn, /COMMUNITY_ACHIEVEMENT_META\[code\]/, "tier 1 is still the hand-written map");
   assert.match(fn, /row\.achievement_definitions/, "tier 2 is the definition row the caller already holds - no round trip");
-  assert.match(fn, /code \|\| "עיטור חדש"/, "tier 3, the bare code, is last rather than second");
+  assert.match(fn, /code \|\| "מדליה חדשה"/, "tier 3, the bare code, is last rather than second");
 });
 
 test("contracts.md documents ach_claim as a needed schema function", () => {

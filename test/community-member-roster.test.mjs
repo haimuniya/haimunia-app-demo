@@ -74,6 +74,39 @@ test("a coach (is_staff, not admin) sees the roster read-only", async () => {
   assert.equal(btn.disabled, true, "but it is disabled");
 });
 
+test("fresh-eyes audit: a coach can filter the loaded roster by name/handle, not only an admin", async () => {
+  const mock = seeded({}, "coach");
+  mock.onRpc("admin_member_roster", () => ({ data: [rosterRow("bob", { display_name: "בוב" }), rosterRow("noa", { display_name: "נועה" })], error: null }));
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openAccountTab(window);
+  // Scoped to the roster section itself, not document.body as a whole:
+  // "בוב" is a substring of "סיבובים" (rounds), already on screen from
+  // unrelated WOD-builder copy, so a body-wide text match is unreliable here.
+  const rosterSection = () => window.document.querySelector('[data-member-roster-section="1"]');
+  await waitFor(() => !!rosterSection() && rosterSection().textContent.includes("בוב"), 3000);
+  const input = window.document.getElementById("rosterSearch");
+  assert.ok(input, "the roster gets its own search box once it has rows, available to a coach too");
+  input.value = "נוע";
+  input.dispatchEvent(new window.Event("input", { bubbles: true }));
+  const section = rosterSection();
+  assert.match(section.textContent, /נועה/, "the matching member still renders");
+  assert.doesNotMatch(section.textContent, /בוב/, "a non-matching member is filtered out");
+});
+
+test("a roster search matching nothing among loaded members shows an empty state naming the search, distinct from the zero-row case", async () => {
+  const mock = seeded({}, "admin");
+  mock.onRpc("admin_member_roster", () => ({ data: [rosterRow("bob", { display_name: "בוב" })], error: null }));
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openAccountTab(window);
+  const rosterSection = () => window.document.querySelector('[data-member-roster-section="1"]');
+  await waitFor(() => !!rosterSection() && rosterSection().textContent.includes("בוב"), 3000);
+  const input = window.document.getElementById("rosterSearch");
+  input.value = "zzz-no-match";
+  input.dispatchEvent(new window.Event("input", { bubbles: true }));
+  const section = rosterSection();
+  assert.match(section.textContent, /לא נמצאו חברים תואמים/);
+});
+
 test("an admin sees the roster with live role controls, and no remove-member control on a roster row", async () => {
   const mock = seeded({}, "admin");
   mock.onRpc("admin_member_roster", () => ({ data: [rosterRow("bob")], error: null }));

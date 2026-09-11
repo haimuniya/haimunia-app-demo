@@ -7,6 +7,93 @@ import { test } from "node:test";
 import assert from "node:assert";
 import { bootApp } from "./helpers/boot.mjs";
 
+test("real-user report: the profile card that opens medals shows a visible 'מדליות' label, not only a hidden aria-label", async () => {
+  const window = await bootApp();
+  window.document.getElementById("navMenuBtn").click();
+  const who = window.document.querySelector("#navMenuList .who");
+  assert.ok(who, "the profile card renders in the nav menu");
+  assert.equal(who.getAttribute("data-action"), "open-achievements");
+  assert.match(who.textContent, /מדליות/, "the destination is named visibly, not only in aria-label");
+});
+
+test("the achievements screen title reads 'מדליות', not 'עיטורים'", async () => {
+  const window = await bootApp();
+  window.document.getElementById("navMenuBtn").click();
+  window.document.querySelector(".who").click();
+  await new Promise((r) => setTimeout(r, 20));
+  const overlay = window.document.getElementById("achievementsOverlay");
+  assert.equal(overlay.classList.contains("open"), true);
+  assert.match(window.document.getElementById("achievementsTitle").textContent, /מדליות/);
+  assert.doesNotMatch(overlay.textContent, /עיטור/, "the old wording is gone from the achievements screen entirely");
+});
+
+test("real-user report, root cause: opening medals or settings from the nav menu closes the menu, instead of leaving it open underneath", async () => {
+  // The menu staying open behind whatever was opened from it is what made
+  // Escape/back-button close the WRONG (hidden) dialog - currentAppDialog()
+  // returns the first APP_DIALOGS entry whose isOpen() is true, in
+  // registration order, and navMenu is registered before both achievements
+  // and settings.
+  const window = await bootApp();
+  window.document.getElementById("navMenuBtn").click();
+  window.document.querySelector(".who").click();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(window.document.getElementById("achievementsOverlay").classList.contains("open"), true);
+  assert.equal(window.document.getElementById("navMenuOverlay").classList.contains("open"), false,
+    "the nav menu must not still be open underneath achievements");
+
+  window.document.querySelector("[data-action='close-achievements']").click();
+  window.document.getElementById("navMenuBtn").click();
+  await new Promise((r) => setTimeout(r, 20));
+  window.document.querySelector("[data-action='open-settings']").click();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(window.document.getElementById("settingsOverlay").classList.contains("open"), true);
+  assert.equal(window.document.getElementById("navMenuOverlay").classList.contains("open"), false,
+    "the nav menu must not still be open underneath Settings either");
+});
+
+test("real-user report: the phone back button (browser history back) closes an open dialog instead of doing nothing", async () => {
+  // On a phone there is no Escape key - the equivalent gesture is the
+  // Android back button / swipe, which the browser surfaces as history
+  // navigation. Before this session's fix, no dialog in this app pushed
+  // any history state on open, so "back" had nothing of its own to
+  // consume and either did nothing or (on an installed PWA with no other
+  // history) backgrounded/exited the app - reported directly as "had to
+  // close the app to get back out" with achievements as the caught case,
+  // but the gap was every dialog registered in APP_DIALOGS.
+  const window = await bootApp();
+  window.document.getElementById("navMenuBtn").click();
+  window.document.querySelector(".who").click();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(window.document.getElementById("achievementsOverlay").classList.contains("open"), true);
+
+  window.history.back();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(window.document.getElementById("achievementsOverlay").classList.contains("open"), false,
+    "the back button must close the open dialog, not leave it stuck open");
+});
+
+test("closing a dialog normally (its own close button) consumes the reserved back-button history entry, so a later real back-press does not land on a dead state", async () => {
+  const window = await bootApp();
+  window.document.getElementById("navMenuBtn").click();
+  window.document.querySelector(".who").click();
+  await new Promise((r) => setTimeout(r, 20));
+
+  window.document.querySelector("#achievementsOverlay [data-action='close-achievements']").click();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(window.document.getElementById("achievementsOverlay").classList.contains("open"), false);
+
+  // The entry reserved on open must already be consumed - a further,
+  // genuinely unrelated back-press now must NOT re-trigger any dialog
+  // close (there is nothing left to close), proving the reserved state
+  // didn't linger for a future back-press to hit.
+  let popstateCount = 0;
+  window.addEventListener("popstate", () => { popstateCount++; });
+  window.history.back();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(window.document.getElementById("achievementsOverlay").classList.contains("open"), false,
+    "no dialog re-opens from a stray leftover history entry");
+});
+
 test("the nav menu shows an app version footer instead of ending in empty space", async () => {
   const window = await bootApp();
   window.document.getElementById("navMenuBtn").click();
