@@ -3284,45 +3284,38 @@
     state.coach.celebrate.busy = key;
     rerender();
     const body = celebrateTemplateBody(item);
-    // Fresh-eyes audit: `congratulated` used to be pure client memory, so a
-    // reload (or a second coach, or the same coach on another device) saw
-    // "ברכה" again for an item already congratulated, and a second tap
-    // wrote a real, duplicate congratulation. celebrateTemplateBody() is
-    // deterministic per item, so an exact-body match against what would
-    // already be on the post/feed is a reliable, schema-change-free way to
-    // detect "this was already sent" from real data instead of memory -
-    // the same class of fix as coachEngageReachOut's member_contact_log
-    // check just above, adapted to the fact that a congratulation IS a
-    // public comment/post rather than a private contact-log row.
-    const already = item.post_id
-      ? (await client.from("post_comments").select("id").eq("post_id", item.post_id).eq("body", body).limit(1)).data
-      : (await client.from("workout_posts").select("id").eq("post_type", "POST_COACH").eq("body", body).limit(1)).data;
-    if (already && already.length) {
-      state.coach.celebrate.busy = null;
-      state.coach.celebrate.congratulated[key] = true;
-      rerender();
-      return;
-    }
-    let ok = false;
-    if (item.post_id) {
-      const { error } = await client.rpc("add_post_comment", { p_post_id: item.post_id, p_body: body, p_parent_comment_id: null });
-      ok = !error;
-    } else {
-      const { data: postId, error } = await client.rpc("post_create", { body, visibility: "club", media: [], links: null });
-      if (!error && postId) {
-        const { error: updErr } = await client.from("workout_posts").update({ post_type: "POST_COACH" }).eq("id", postId);
-        ok = !updErr;
-      }
-    }
+    // Security hunt (2026-09-11): this used to be an exact-body-text SELECT
+    // against post_comments/workout_posts, followed by two direct RPCs
+    // (add_post_comment / post_create). Confirmed live against real local
+    // Postgres: calling either RPC directly - any member's own devtools,
+    // bypassing this file entirely - produced real duplicate congratulation
+    // comments with no server-side objection, since neither the SELECT nor
+    // the in-memory `congratulated` map is a server boundary.
+    // coach_congratulate() (202609110002) is the actual fix: it claims a
+    // unique (coach, kind, target member, occurred_at) row - the same triple
+    // celebrateItemKey() already uses - before writing anything, so a second
+    // call for the same real event, from any source, writes nothing and
+    // returns null instead of a new id. That claim is this function's whole
+    // duplicate check now; the SELECT above is gone, not duplicated.
+    const { data: resultId, error } = await client.rpc("coach_congratulate", {
+      p_kind: item.kind,
+      p_target_user_id: item.user_id,
+      p_occurred_at: item.occurred_at,
+      p_post_id: item.post_id || null,
+      p_parent_comment_id: null,
+      p_body: body,
+    });
     state.coach.celebrate.busy = null;
-    // COMM-233. After the write, and only on success. The row's user_id is
-    // the coach, which is what makes this count toward the coach's own WCAM
-    // and never the celebrated member's - being congratulated is not an
-    // action they took. `kind` is the celebrate item's own enum and `via`
-    // says which of the two write paths ran; neither the member nor the
-    // generated greeting is a prop.
-    if (ok) { state.coach.celebrate.congratulated[key] = true; setMessage(""); track(A.COACH_CONGRATULATE_SENT, { kind: item.kind || null, via: item.post_id ? "comment" : "post" }); }
-    else setMessage("לא ניתן היה לשלוח ברכה. נסו שוב.");
+    if (error) { setMessage("לא ניתן היה לשלוח ברכה. נסו שוב."); rerender(); return; }
+    // A null resultId means the claim was already taken - a genuine replay
+    // (reload, second coach, second device) - and nothing new was written.
+    // The item is still marked done, matching what a fresh loadCoachCelebrate()
+    // would show, but COMM-233's tracking below fires only on a REAL write:
+    // tracking a no-op replay would reopen the exact gameable-metric half of
+    // this finding the claim above just closed on the write side.
+    state.coach.celebrate.congratulated[key] = true;
+    setMessage("");
+    if (resultId) track(A.COACH_CONGRATULATE_SENT, { kind: item.kind || null, via: item.post_id ? "comment" : "post" });
     rerender();
   }
 

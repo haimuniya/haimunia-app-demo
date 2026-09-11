@@ -339,12 +339,6 @@ test("Congratulate on an item with no source post creates a POST_COACH post via 
     data: [{ kind: "anniversary", user_id: "coach2", handle: "yael", display_name: "יעל", avatar_url: null, occurred_at: daysAgoIso(1), post_id: null, detail: { code: "anniv_1y", title: "שנה במועדון", years: 1 } }],
     error: null,
   }));
-  mock.onRpc("post_create", (args, ctx) => {
-    const id = "coachpost-1";
-    ctx.db.workout_posts = ctx.db.workout_posts || [];
-    ctx.db.workout_posts.push({ id, author_id: ctx.currentUser.id, post_type: "POST_TEXT", body: args.body, visibility: args.visibility, metadata: {}, status: "active", created_at: new Date().toISOString() });
-    return { data: id, error: null };
-  });
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openCoachTab(window);
   await waitFor(() => !!window.document.querySelector('[data-community-action="coach-congratulate"]'), 3000);
@@ -367,10 +361,10 @@ test("congratulating the same item twice is a no-op the second time - the contro
   const btn = () => window.document.querySelector('[data-community-action="coach-congratulate"]');
   btn().click();
   await waitFor(() => btn().textContent.includes("ברכתם"), 3000);
-  const before = mock.callsTo("add_post_comment").length;
+  const before = mock.callsTo("coach_congratulate").length;
   btn().click();
   await new Promise((r) => setTimeout(r, 30));
-  assert.equal(mock.callsTo("add_post_comment").length, before, "a disabled control produces no second call");
+  assert.equal(mock.callsTo("coach_congratulate").length, before, "a disabled control produces no second call");
 });
 
 test("fresh-eyes audit: a fresh load recognizes an item already congratulated in an EARLIER session and does not offer to send it again", async () => {
@@ -387,10 +381,10 @@ test("fresh-eyes audit: a fresh load recognizes an item already congratulated in
   const btn = window.document.querySelector('[data-community-action="coach-congratulate"]');
   assert.equal(btn.textContent.includes("ברכתם"), true, "a fresh load must show this item as already congratulated, not offer to send it again");
   assert.equal(btn.disabled, true);
-  const before = mock.callsTo("add_post_comment").length;
+  const before = mock.callsTo("coach_congratulate").length;
   btn.click();
   await new Promise((r) => setTimeout(r, 30));
-  assert.equal(mock.callsTo("add_post_comment").length, before, "a disabled control produces no call, so no duplicate comment can be written");
+  assert.equal(mock.callsTo("coach_congratulate").length, before, "a disabled control produces no call, so no duplicate comment can be written");
 });
 
 test("a failed Congratulate shows the standard error and leaves the control enabled to retry", async () => {
@@ -399,7 +393,7 @@ test("a failed Congratulate shows the standard error and leaves the control enab
     data: [{ kind: "pr", user_id: "u9", handle: "noa", display_name: "נועה", avatar_url: null, occurred_at: daysAgoIso(1), post_id: "p-pr", detail: { movement: "סקוואט", result: "" } }],
     error: null,
   }));
-  mock.onRpc("add_post_comment", () => ({ data: null, error: { message: "rate_limited" } }));
+  mock.onRpc("coach_congratulate", () => ({ data: null, error: { message: "rate_limited" } }));
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openCoachTab(window);
   await waitFor(() => !!window.document.querySelector('[data-community-action="coach-congratulate"]'), 3000);

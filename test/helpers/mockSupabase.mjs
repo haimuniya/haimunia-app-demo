@@ -619,6 +619,34 @@ export function createMockSupabase(seedTables = {}) {
           for (const target of targets) cm.push({ comment_id: id, mentioned_user_id: target });
           return Promise.resolve({ data: id, error: null });
         }
+        // Security hunt round 2 (202609110002). congratulateCelebrateItem()
+        // (cloud.js) now calls this instead of add_post_comment/post_create
+        // directly - the real RPC claims a unique (coach, kind, target
+        // member, occurred_at) row before writing anything, so a mock that
+        // just delegated straight to add_post_comment/post_create would
+        // silently drop the one behaviour every "congratulate twice"
+        // test in community-coach-tools.test.mjs exists to check.
+        if (name === "coach_congratulate") {
+          if (!currentUser) return Promise.resolve({ data: null, error: { message: "not authorized" } });
+          const kind = args && args.p_kind;
+          const targetUserId = args && args.p_target_user_id;
+          const occurredAt = args && args.p_occurred_at;
+          if (!kind || !targetUserId || !occurredAt) return Promise.resolve({ data: null, error: { message: "invalid item" } });
+          const claims = rows("coach_congratulations");
+          const already = claims.some((c) => c.coach_id === currentUser.id && c.kind === kind && c.target_user_id === targetUserId && c.occurred_at === occurredAt);
+          if (already) return Promise.resolve({ data: null, error: null });
+          claims.push({ coach_id: currentUser.id, kind, target_user_id: targetUserId, occurred_at: occurredAt });
+          const postId = args && args.p_post_id;
+          const body = (args && args.p_body) || "";
+          if (postId) {
+            const id = `c-${++uidCounter}`;
+            rows("post_comments").push({ id, post_id: postId, author_id: currentUser.id, body, parent_comment_id: (args && args.p_parent_comment_id) || null, created_at: new Date().toISOString(), edited_at: null, deleted_at: null, status: "active" });
+            return Promise.resolve({ data: id, error: null });
+          }
+          const id = `coachpost-${++uidCounter}`;
+          rows("workout_posts").push({ id, author_id: currentUser.id, post_type: "POST_COACH", body, visibility: "club", metadata: {}, status: "active", created_at: new Date().toISOString() });
+          return Promise.resolve({ data: id, error: null });
+        }
         // Bug fix: deleteComment() used to hard-DELETE the row directly;
         // now it calls this real soft-delete RPC
         // (202608280021_comment_mentions_and_self_delete.sql), which keeps

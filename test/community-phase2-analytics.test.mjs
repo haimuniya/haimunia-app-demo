@@ -372,7 +372,7 @@ test("a failed congratulate records nothing", async () => {
     data: [{ kind: "pr", user_id: "u2", handle: "noam", display_name: "נועם", avatar_url: null, occurred_at: isoDays(-1), post_id: "p-pr", detail: { movement: "סקוואט", result: "100 ק\"ג" } }],
     error: null,
   }));
-  mock.onRpc("add_post_comment", () => ({ data: null, error: { message: "boom" } }));
+  mock.onRpc("coach_congratulate", () => ({ data: null, error: { message: "boom" } }));
   const window = await bootCommunity(mock, { syncEnabled: false });
   await openCommunity(window);
   clickTab(window, "coach");

@@ -1,3 +1,45 @@
+## Security hunt, round 2: business-logic abuse, IDOR, and file-upload security — 2026-09-11
+
+Three more independent agents: business-logic abuse/rate-limit bypass, IDOR/object-reference
+integrity, and file-upload security.
+
+**IDOR/object-reference integrity: no confirmed gap.** Every uuid-parameter RPC and
+foreign-key-scoped RLS policy checked resolves ownership/visibility server-side; no
+surface let a caller substitute another member's or another club's id to read or
+write across a boundary.
+
+**Business-logic abuse: one confirmed gap, fixed with a real server-side unique
+constraint, not a client-side idempotency key.** A coach's "congratulate once" cap
+on the Coach Dashboard's Celebrate feed was enforced entirely client-side - an
+exact-body-text lookup plus in-memory state. Confirmed live against real local
+Postgres: calling the underlying comment/post RPC directly (bypassing the UI
+entirely, the same thing any member's own devtools console can already do) produced
+real duplicate congratulation comments with no server-side objection, and inflated
+the exact metric the admin analytics dashboard reports per coach. A client-supplied
+idempotency key would not have closed this - the caller controls that value too, and
+can just omit or randomize it. The real fix is a dedicated table with a unique
+constraint on (coach, kind, target member, the actual moment being celebrated),
+claimed atomically before any comment/post is written, mirroring this codebase's own
+existing once-per-achievement pattern. A second call for the same real event, from
+any source, now claims nothing and writes nothing.
+
+**File-upload security: two confirmed gaps sharing one root cause, both closed with
+one new server-side backstop.** The composer/avatar upload pipeline's "images only"
+validation and its EXIF/GPS-stripping privacy behavior are both purely client-side
+properties of the browser upload path - confirmed live against the real local
+Storage container: a direct authenticated upload with a spoofed `image/jpeg` header
+got raw non-image bytes past the bucket allowlist, and a real photo with GPS EXIF
+was stored and later downloaded byte-for-byte untouched by a second member, despite
+the upload pipeline's own documented promise that this never survives the round
+trip. Closed with a new Edge Function, invoked asynchronously after every write to
+either photo bucket, that verifies the object by its actual bytes (not the header
+the uploader chose to send) and strips EXIF/metadata segments before anything else
+can read it back - a real signature check and a real strip, not a client-side
+promise with no server behind it.
+
+Verified: full suite 1601/1601 (7 new regression tests), full browser-check 41/41,
+`supabase test db` 3327/3327 against real local Postgres.
+
 ## Security hunt, round 1: authorization boundaries, injection, and data exposure — 2026-09-11
 
 Started a new, separate 5-round pass focused specifically on security (defensive
