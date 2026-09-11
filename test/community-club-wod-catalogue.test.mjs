@@ -22,7 +22,11 @@ import { bootApp, bootCommunity, waitFor, answerWodRx } from "./helpers/boot.mjs
 import { createMockSupabase } from "./helpers/mockSupabase.mjs";
 
 const VERIFIED = "2026-08-01T00:00:00.000Z";
-const TODAY = new Date().toISOString().slice(0, 10);
+// Live bug hunt (2026-09-11): must match cloud.js's own todayIso(),
+// which computes the LOCAL calendar date, not the UTC one - the two
+// disagree for 2-3 hours after local midnight every night (Israel is
+// always ahead of UTC), and this test file hit that exact window for real.
+const TODAY = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; })();
 // A real id from the client's own uid("customwod") shape - the catalogue
 // reuses the coach's id rather than minting a new one, which is what makes
 // their already-logged entries match the challenge from day one.

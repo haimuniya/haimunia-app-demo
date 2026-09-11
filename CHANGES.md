@@ -1,3 +1,151 @@
+## Live bug hunt, round 10 (final): cross-feature interaction and the full-app sweep — 2026-09-11
+
+The tenth and final round of the live bug hunt: feature-interaction
+combinations, a throttled-network walkthrough, and a final fresh-eyes
+sweep by an agent given no target beyond "use the app for real, end to
+end." Six confirmed bugs, the most of any single round.
+
+**High: 40 of the app's 59 achievement badges rendered as flat, colorless
+circles/shields with no glyph.** Every non-PR-tier medal (milestone/Rx/
+capstone) is drawn as `<use href="#medalCircle"/>` referencing a shared
+`<symbol>`, styled by CSS rules written as descendant selectors
+(`.tier-bronze .medal-rim{...}`) reaching from the outer wrapper down into
+the referenced content. This Chromium build does not match a descendant
+combinator across a `<use>` reference, so every one of those rules silently
+applied to nothing - only the PR/streak tiers were unaffected, because
+they were already migrated to plain PNG plate images. Fixed by moving
+every rule to a plain (non-descendant) selector fed by a CSS custom
+property inherited from the tier/type class - `currentColor` and custom
+properties DO reliably cross a `<use>` boundary even though descendant
+selectors don't, which is the standard fix for this exact class of SVG
+bug. Verified with a real pixel-sampled screenshot
+(`scripts/browser-check/medal-icon-colors.mjs`), since `<use>`-referenced
+content has no DOM a script can query directly.
+
+**Data loss: an achievement crossed while offline was marked claimed
+locally before the server had actually received it, and never retried.**
+`syncCommunityMilestones()` (app.js) persisted a freshly-crossed code as
+claimed and fired the claim RPC without awaiting it; a genuine network
+failure surfaced as an uncaught "Failed to fetch" rather than a clean
+failure the caller could see, and the code was never retried once
+connectivity returned - the real Community-side achievement record was
+permanently lost. Fixed by only marking a code claimed once the RPC
+confirms it actually ran (a network exception or a server error now both
+leave the code eligible for the next sync), matching every other
+offline-safe write path in this app.
+
+**Medium: the challenge list-card "Join" button had no busy guard, so a
+double-tap on a slow connection showed a false failure toast after a
+genuine success.** Only the open detail dialog's own button was guarded;
+the list card's could fire `joinChallenge()` twice, and the real
+`(challenge_id, user_id)` primary key let the second insert lose an
+honest 23505 race - overwriting "הצטרפת לאתגר" with "לא ניתן היה להצטרף"
+even though the member had joined. Fixed with a per-challenge busy guard
+shared by both buttons (matching `reactionBusy`/`followBusy` elsewhere in
+this file) and by treating a losing duplicate-key race as success, not
+failure - the member IS a participant either way. The same missing-guard
+shape on the feed's quick-action event-RSVP buttons was fixed too, though
+it had no visible symptom (`event_rsvp` is a real upsert).
+
+**Medium: a stalled anonymous sign-in could hang the Community tab forever
+with zero controls.** `ensureAnonymousSession()` awaited
+`signInAnonymously()` with no timeout; a connection that neither resolved
+nor rejected left "מתחברים לקהילה…" on screen indefinitely, with no retry,
+no cancel, and no recovery even from leaving and re-entering the tab for
+the rest of the session. A 15-second client-side timeout now gives a
+stall the same outcome an explicit sign-in error already had.
+
+**Medium: date labels never showed the year, making same-day-of-month
+entries from different years indistinguishable.** `fmtDate()` formatted
+every date as day/month only; a progress chart plotting a real 1RM gain
+three years apart showed two identical "11.03" x-axis points, with the
+same ambiguity in History rows and delete-confirmation dialogs. Fixed to
+append the year, but only when it differs from the current one, so the
+common (this-year) case is unchanged and no more cluttered than before.
+
+**Incidental, found while verifying the fixes above:** four test files
+computed "today" the same UTC way `todayIso()` used to (before round 6's
+fix) - once that fix correctly made the app's own "today" local, these
+fixtures started disagreeing with it for the same 2-3-hour nightly window
+the original bug was about, confirmed for real when this exact suite ran
+right through that window. Updated to match the app's own local-date
+convention.
+
+**Checked and found clean:** editing/deleting an unrelated entry while a
+celebration overlay is open (genuinely blocks all clicks underneath, no
+click-through); forcing Settings open on top of a celebration (closes the
+topmost dialog first, no trap); the WOD builder opened over an active
+undo toast; a deferred celebration flushing mid-edit of an unrelated,
+unsaved entry (all state survives); switching tabs mid-ladder and
+mid-superset across multiple detours (group state survives every
+scenario); every other busy-guarded action under a throttled connection
+(post publish, comments, reactions, invite redemption, report submission,
+feed/directory/invite-list pagination, challenge/event detail dialogs
+remaining closeable while loading); and, across both a zero-data and a
+multi-year fresh-eyes walkthrough, no console errors and no other
+confirmed defect beyond the two above.
+
+Verified: full suite 1639/1639 (9 new/updated regression tests across
+`test/live-bug-hunt-round10.test.mjs`,
+`test/community-achievement-engine.test.mjs`,
+`test/community-challenges.test.mjs`, `test/community-gate-order.test.mjs`,
+plus the four test-fixture date fixes), full browser-check 43/43 (new:
+`medal-icon-colors.mjs`, verified with real pixel sampling and a control).
+
+## Live bug hunt, ten-round summary — 2026-09-11
+
+Ten rounds, 30 fresh agents (3 per round, no memory of prior rounds),
+against this app's own real rendered UI in Chromium, mocked backend only,
+production Supabase never touched. Confirmed bugs by round, all fixed with
+a paired regression test (a node-level test for state/logic, a real-browser
+`scripts/browser-check/*.mjs` script with a control for anything CSS/
+rendering/geometry jsdom cannot see):
+
+- **Rounds 1-5** (already run and documented before this continuation):
+  15+ bugs across core training log, achievements/notifications/back-button,
+  Community member/admin surfaces, offline-sync/PWA lifecycle,
+  settings/a11y/keyboard nav, and Club WOD board/invites.
+- **Round 6** (Hebrew grammar/RTL, extreme content values, units/dates/
+  locale): cloud.js computed "today" from UTC instead of local time; a
+  multi-line session note silently lost its line breaks; an RTL-override
+  character spoofed a display name's rendered identity; nine Hebrew
+  singular/plural grammar bugs; raw ISO dates in admin UI; a DST drift in
+  one tenure-badge calculation; a long-name layout overflow.
+- **Round 7** (cross-tab/multi-window/concurrent-session): a severe, silent,
+  permanent IndexedDB cross-tab schema-upgrade deadlock; a
+  QuotaExceededError leaving the UI celebrating a save that never
+  persisted; bodyweight/measurement saves creating duplicate rows across
+  two tabs; a minor invite-redemption gate regression on reload.
+- **Round 8** (analytics/dashboards/numeric accuracy): the admin analytics
+  dashboard showing stale data under a just-switched period's own header;
+  the onboarding "first month" card silently dropping a mid-week joiner's
+  entire join-week activity; a legacy leaderboard ignoring the
+  `in_leaderboards` opt-out and lacking a deterministic tie-break, closed
+  with a real schema migration verified against local Postgres.
+- **Round 9** (long-term data lifecycle): ordinary app boot silently
+  discarding real data past 20,000 rows per store (an import-only cap
+  applied everywhere); "delete all data" leaving real records behind in
+  two write queues, with a real cloud-resurrection risk; session notes
+  excluded from every backup and wiped unrecoverably by delete-all; a
+  returning long-time member shown the fresh-install welcome sheet.
+- **Round 10** (feature interactions, throttled network, final sweep): 40 of
+  59 achievement badges rendering colorless (a `<use>`/CSS-descendant-
+  selector bug); an offline achievement claim silently and permanently
+  lost; a challenge-join race producing a false failure toast after a real
+  success; an anonymous sign-in that could hang forever with zero
+  controls; date labels never showing the year.
+
+**Lightly covered, worth a future pass:** Realtime (`postgres_changes`)
+behavior end-to-end (no local Realtime container was available in any
+round that touched it); the coach dashboard's Engage/decline-detection
+surfaces (explicitly scaffolded and deferred pending attendance data,
+per the coach-tools agent's own scope); push notification delivery on a
+real device (only the in-app center and preference plumbing were
+exercised); and the very largest data volumes (round 9 tested a confirmed
+20,000-row cap fix at a representative 50-row scale for suite speed, with
+the full 21,000-row live reproduction done once, in the browser, by the
+reporting agent rather than in the committed regression suite).
+
 ## Live bug hunt, round 9: long-term data lifecycle — 2026-09-11
 
 Three fresh agents: multi-year training-log performance/correctness, data

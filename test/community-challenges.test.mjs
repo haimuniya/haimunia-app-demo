@@ -789,3 +789,32 @@ test("the Boards pill carries no badge when nothing is ending soon", async () =>
   await waitFor(() => !!window.document.querySelector("#commTab-boards"), 3000);
   assert.ok(!window.document.querySelector("#commTab-boards .tab-badge"), "no badge renders when nothing is ending within 48h");
 });
+
+// Live bug hunt, round 10 (2026-09-11): the list-card "הצטרפות" button had
+// no busy/disabled guard at all (only the open detail dialog's own button
+// did) - a throttled double-tap fired joinChallenge() twice, and the
+// real (challenge_id, user_id) primary key let the second insert lose a
+// genuine 23505 race, overwriting the real success toast with a failure
+// one even though the member HAD joined. Confirmed live; reproduced here
+// by firing the club-side action twice without awaiting the first, the
+// same shape a fast double-tap produces.
+test("double-tapping Join on the list card only ever inserts one participant row and never shows the failure toast", async () => {
+  const mock = seeded({
+    challenges: [{ id: "c1", challenge_type: "individual_target", title: "12 אימונים החודש", description: "", metric_type: "session_count", target_value: 12, start_at: iso(-5), end_at: iso(20), status: "active", join_mode: "open", visibility: "club", created_by: "coach1", config: {} }],
+  });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  await openBoards(window);
+  await waitFor(() => !!window.document.querySelector('[data-challenge-id="c1"]'), 3000);
+
+  const btn = () => window.document.querySelector('[data-challenge-id="c1"] [data-community-action="join-challenge"]');
+  btn().click();
+  // Immediately, before the first request resolves - the exact double-tap
+  // window the missing guard used to leave open.
+  btn() && btn().click();
+
+  await waitFor(() => mock.db.challenge_participants.some((p) => p.challenge_id === "c1" && p.user_id === "u1"), 3000);
+  await new Promise((r) => setTimeout(r, 50)); // let any second, wrongly-fired request also settle
+  const mine = mock.db.challenge_participants.filter((p) => p.challenge_id === "c1" && p.user_id === "u1");
+  assert.equal(mine.length, 1, "exactly one participant row - the guard must prevent a second real insert, not just a second click");
+  assert.doesNotMatch(window.document.body.textContent, /לא ניתן היה להצטרף לאתגר/, "no failure toast for a join that actually succeeded");
+});

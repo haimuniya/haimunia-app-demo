@@ -44,8 +44,17 @@ const appJs = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const stripComments = (s) => s.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
 
 const VERIFIED = "2026-08-01T00:00:00.000Z";
-const TODAY = new Date().toISOString().slice(0, 10);
-const TOMORROW = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+// Live bug hunt (2026-09-11): must match cloud.js's own todayIso(),
+// which computes the LOCAL calendar date, not the UTC one - the two
+// disagree for 2-3 hours after local midnight every night (Israel is
+// always ahead of UTC), and this test file hit that exact window for real.
+const localIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const TODAY = localIso(new Date());
+// Same local-date reasoning as TODAY above - built by adding a day to
+// TODAY's own local components (setDate(), DST-safe), not by adding
+// 86400000ms to a UTC instant, which drifted a day out of step with TODAY
+// in exactly the same window.
+const TOMORROW = (() => { const d = new Date(); d.setDate(d.getDate() + 1); return localIso(d); })();
 const WOD_ID = "customwod-11111111-2222-3333-4444-555555555555";
 const SESSION_ID = "5e551011-0000-4000-8000-000000000001";
 

@@ -15,7 +15,7 @@ let barWeight = 20;
 // Single source of truth for the app version. After bumping this, run
 // `npm run sync-version` to copy it into SW_VERSION in sw.js — `npm test`
 // fails if the two drift apart.
-const APP_VERSION = "4.32.0";
+const APP_VERSION = "4.33.0";
 
 // A movement typed into the WOD builder that isn't in the built-in list
 // above - persisted (see WODTAGSTORE), same "custom X" pattern as
@@ -1173,14 +1173,28 @@ async function loadCommunityClaimed() {
 // Sends only the codes not sent before from this device. ach_claim is
 // idempotent for non-repeatable codes, so a stale local set never
 // double-writes server-side; the guard just keeps the call small and quiet.
-function syncCommunityMilestones() {
+// Live bug hunt, round 10 (2026-09-11): fresh codes used to be marked
+// claimed (and persisted to disk) BEFORE knowing whether the server had
+// actually received them, and the RPC call was never awaited - confirmed
+// live, an achievement crossed while offline was permanently marked
+// claimed on this device, the rejected RPC surfaced as an uncaught "Failed
+// to fetch", and the real Community-side record (member_achievements) was
+// never written - and never retried, even once connectivity came back,
+// because the code was already (wrongly) considered claimed. Now only
+// marks a code claimed once claimCommunityAchievements() confirms the
+// server actually processed the request (returns an array, even an empty
+// one) rather than failing (returns null, the same shape as an offline
+// fetch or a caught exception) - see that function's own comment.
+async function syncCommunityMilestones() {
   if (typeof window.isCommunitySignedIn !== "function" || !window.isCommunitySignedIn()) return;
   if (typeof window.claimCommunityAchievements !== "function") return;
   const fresh = communityMilestoneCodes().filter((c) => !communityClaimedCodes.has(c));
   if (!fresh.length) return;
+  let written;
+  try { written = await window.claimCommunityAchievements(fresh); } catch (e) { written = null; }
+  if (!Array.isArray(written)) return; // offline/failed - fresh stays unclaimed, retried on the next sync
   for (const c of fresh) communityClaimedCodes.add(c);
   dbSetSetting(COMMUNITY_CLAIMED_KEY, [...communityClaimedCodes]).catch(noteStorageError);
-  try { window.claimCommunityAchievements(fresh); } catch (e) { /* offline or not wired */ }
 }
 
 // Marks everything newly earned as seen (so nothing pops later out of

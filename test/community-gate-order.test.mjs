@@ -357,3 +357,38 @@ test("signing out returns a member to the choice screen, not to a bare login for
   assert.ok(d.querySelector('#content [data-community-action="start-signup"]'));
   assert.equal(d.getElementById("communityLogin"), null);
 });
+
+// Live bug hunt, round 10 (2026-09-11): a genuinely stalled
+// signInAnonymously() call (neither resolves nor rejects) used to leave
+// ensureAnonymousSession() awaiting forever, with its one-shot guard
+// (anonSignInAttempted) stuck true - confirmed live, the "מתחברים
+// לקהילה…" screen hung with zero controls, and re-entering the Community
+// tab re-showed the identical stuck screen for the rest of the session. A
+// client-side timeout (window.ANON_SIGNIN_TIMEOUT_MS, shrunk here instead
+// of waiting out the real 15s) now gives a stall the same outcome an
+// explicit sign-in error already had.
+test("a stalled anonymous sign-in times out instead of hanging forever, and the guard clears so a retry can actually happen", async () => {
+  const mock = createMockSupabase({ community_feed: [] });
+  const window = await bootCommunity(mock, { syncEnabled: false });
+  window.ANON_SIGNIN_TIMEOUT_MS = 20; // real bug used 15000 - shrunk only for this test
+  const realSignIn = mock.client.auth.signInAnonymously;
+  mock.client.auth.signInAnonymously = () => new Promise(() => {}); // never settles, the exact stall this bug is about
+
+  window.document.getElementById("tabCommunityBtn").click();
+  await waitForCommunityGate(window);
+  window.document.querySelector('[data-community-action="start-signup"]').click();
+  await waitFor(() => window.document.body.textContent.includes("מתחברים לקהילה"), 2000);
+
+  await waitFor(() => /לוקח יותר מדי זמן|לא ניתן להתחבר/.test(window.document.body.textContent), 2000);
+  assert.doesNotMatch(window.document.body.textContent, /^\s*מתחברים לקהילה/, "must not still be showing only the bare connecting screen after the timeout");
+
+  // The guard must have cleared: the render branch for this screen calls
+  // ensureAnonymousSession() again on every pass it's shown on (that's how
+  // it started in the first place), so the timeout's own rerender()
+  // already triggers a real retry automatically - restoring a working
+  // signInAnonymously() must let that retry actually reach the invite-code
+  // step, not leave the member stuck behind a message with no live path
+  // forward.
+  mock.client.auth.signInAnonymously = realSignIn;
+  await waitFor(() => !!window.document.getElementById("communityInviteCode"), 3000);
+});

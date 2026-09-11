@@ -224,6 +224,47 @@ test("achMeta falls back to the definition's own name and icon before the bare c
   assert.match(fn, /code \|\| "מדליה חדשה"/, "tier 3, the bare code, is last rather than second");
 });
 
+// Live bug hunt, round 10 (2026-09-11): syncCommunityMilestones() (app.js)
+// used to mark a freshly-crossed code claimed - and persist that to disk -
+// BEFORE knowing whether ach_claim() actually succeeded, and never awaited
+// the call at all. Confirmed live: an achievement crossed while offline
+// was permanently marked claimed locally even though the RPC rejected
+// (an uncaught "Failed to fetch"), so member_achievements never got the
+// row and the next sync never retried it, since the code already looked
+// claimed. This test drives the real offline app.js save path
+// (window.saveSet(), not a direct claimCommunityAchievements() call) so
+// it exercises syncCommunityMilestones() itself, not just the RPC layer.
+test("an achievement crossed while offline is not marked claimed, and is retried once the connection is back", async () => {
+  const mock = seededMock([def("first_workout")]);
+  let achClaimShouldFail = true;
+  mock.onRpc("ach_claim", (args) => {
+    if (achClaimShouldFail) throw new Error("Failed to fetch");
+    const codes = args.p_codes || [];
+    const written = codes.map((code) => ({ member_achievement_id: "ma-" + code, code, visibility: "club" }));
+    for (const w of written) mock.db.member_achievements.push({ id: w.member_achievement_id, user_id: "u1", achievement_definitions: { code: w.code }, visibility: "club", unlocked_at: new Date().toISOString() });
+    return { data: written, error: null };
+  });
+  const window = await bootReady(mock);
+
+  // A real save through the offline app.js path - the same trigger a real
+  // member hits, not a direct RPC call.
+  await window.addMovement("Test Offline Achievement Squat", "Squat");
+  const movement = window.allMovements().find((m) => m.name === "Test Offline Achievement Squat");
+  window.choosePickedMovement(movement.id);
+  window.applyFieldValue("step", "weight", 40);
+  window.applyFieldValue("step", "reps", 5);
+  await window.saveSet();
+  await new Promise((r) => setTimeout(r, 50)); // syncCommunityMilestones() fires fire-and-forget from the save path
+
+  assert.equal(mock.db.member_achievements.length, 0, "a failed (offline) claim must not write a Community-side record");
+
+  // Connectivity returns; the next sync must retry the SAME code rather
+  // than treating it as already handled.
+  achClaimShouldFail = false;
+  await window.syncCommunityMilestones();
+  await waitFor(() => mock.db.member_achievements.some((m) => m.achievement_definitions.code === "first_workout"), 3000);
+});
+
 test("contracts.md documents ach_claim as a needed schema function", () => {
   const contracts = readFileSync(path.join(ROOT, "docs", "community", "contracts.md"), "utf8");
   assert.match(contracts, /ach_claim\(p_codes text\[\]\)/);

@@ -7079,14 +7079,30 @@
   async function ensureAnonymousSession() {
     if (!client || state.user || anonSignInAttempted) return;
     anonSignInAttempted = true;
-    const { error } = await withCaptcha((captchaToken) =>
-      client.auth.signInAnonymously(captchaToken ? { options: { captchaToken } } : undefined));
+    // Live bug hunt, round 10 (2026-09-11): a genuinely stalled connection
+    // (the request neither resolves nor rejects) used to leave this awaiting
+    // forever, with anonSignInAttempted stuck true - confirmed live, the
+    // "מתחברים לקהילה…" screen hung with zero controls (no retry, no
+    // cancel), and leaving/returning to the Community tab re-showed the
+    // identical stuck screen, since the guard was only ever cleared inside
+    // the `error` branch below. A 15s client-side timeout gives a stall the
+    // same outcome an explicit error already has: the guard clears and the
+    // existing retry message/screen takes over.
+    // Read off window (not a bare const) so a test can shrink this to a
+    // few ms instead of a real 15s wait.
+    let timedOut = false;
+    const timeout = new Promise((resolve) => setTimeout(() => { timedOut = true; resolve({ error: { message: "timed_out" } }); }, window.ANON_SIGNIN_TIMEOUT_MS || 15000));
+    const { error } = await Promise.race([
+      withCaptcha((captchaToken) =>
+        client.auth.signInAnonymously(captchaToken ? { options: { captchaToken } } : undefined)),
+      timeout,
+    ]);
     if (error) {
       // A failed challenge is retryable: clear the one-shot guard so the
       // member can try again rather than being stuck for the session.
       anonSignInAttempted = false;
-      setMessage(error.message === "captcha_failed"
-        ? "אימות האבטחה נכשל, נסו שוב"
+      setMessage(error.message === "captcha_failed" ? "אימות האבטחה נכשל, נסו שוב"
+        : timedOut ? "החיבור לוקח יותר מדי זמן. בדקו את האינטרנט ונסו שוב"
         : "לא ניתן להתחבר לקהילה כרגע, נסו לרענן את הדף");
       return;
     }
@@ -11341,11 +11357,25 @@
   }
 
   // ---- Join / leave / team pick (COMM-204, COMM-207) -----------------------
+  // Live bug hunt, round 10 (2026-09-11): v.joining only ever guarded the
+  // OPEN DETAIL DIALOG's own join button - the list-card "הצטרפות" button
+  // (renderChallengeCard()) had no busy/disabled guard at all. Confirmed
+  // live on a throttled connection: two taps ~150ms apart fired
+  // joinChallenge() twice; challenge_participants' real primary key
+  // (challenge_id, user_id) let the first insert win and correctly rejected
+  // the second with a genuine 23505 duplicate-key error, which then
+  // overwrote the real "הצטרפת לאתגר" success toast with "לא ניתן היה
+  // להצטרף לאתגר" - a member told their join failed when it had actually
+  // succeeded. Same shape as reactionBusy/followBusy elsewhere in this
+  // file: a per-id guard both entry points share.
+  const challengeJoinBusy = {};
   async function joinChallenge(id, source) {
-    if (!state.user) return;
+    if (!state.user || challengeJoinBusy[id]) return;
+    challengeJoinBusy[id] = true;
     const v = state.challenges.view;
     const c = (v && v.challenge) || state.challenges.items.find((x) => x.id === id);
-    if (v && v.id === id) { v.joining = true; rerender(); }
+    if (v && v.id === id) v.joining = true;
+    rerender(); // shows the list-card's own busy state even when the detail dialog for this id isn't open
     // Launch-readiness audit item 5. challenge_progress is NOT deleted when
     // a member leaves - there is no FK from challenge_progress to
     // challenge_participants at all (only to challenges and profiles, both
@@ -11383,7 +11413,14 @@
     if (canComplete) { insertPayload.status = "completed"; insertPayload.completed_at = new Date().toISOString(); }
     const { error } = await client.from("challenge_participants").insert(insertPayload);
     if (v && v.id === id) v.joining = false;
-    if (error) { setMessage(failText("לא ניתן היה להצטרף לאתגר. נסו שוב.", error)); return rerender(); }
+    delete challengeJoinBusy[id];
+    // Live bug hunt, round 10 (2026-09-11): a losing duplicate-key race
+    // (23505 on the real (challenge_id, user_id) primary key) means the
+    // member IS a participant now - a second device, a retried request
+    // after a flaky response, or (before the busy guard above) a
+    // double-tap all land here having genuinely succeeded. Treat it the
+    // same as a win, not a failure.
+    if (error && error.code !== "23505") { setMessage(failText("לא ניתן היה להצטרף לאתגר. נסו שוב.", error)); return rerender(); }
     if (window.HaimuniaEvents && window.PRODUCT_EVENTS && window.PRODUCT_EVENTS.CHALLENGE_JOINED) {
       try { window.HaimuniaEvents.emit(window.PRODUCT_EVENTS.CHALLENGE_JOINED, { challenge_id: id, challenge_type: c && c.challenge_type }); } catch (e) {}
     }
@@ -12064,7 +12101,7 @@
       </div>
       <div class="chip-row" style="margin-top:8px;">
         <button class="chip-btn" data-community-action="open-challenge" data-id="${esc(c.id)}" data-source="boards">פרטים</button>
-        ${!isPast && c.status === "active" && !part ? `<button class="chip-btn primary" data-community-action="join-challenge" data-id="${esc(c.id)}">הצטרפות</button>` : ""}
+        ${!isPast && c.status === "active" && !part ? `<button class="chip-btn primary" data-community-action="join-challenge" data-id="${esc(c.id)}"${challengeJoinBusy[c.id] ? " disabled" : ""}>${challengeJoinBusy[c.id] ? "מצטרפ/ת…" : "הצטרפות"}</button>` : ""}
         ${!isPast && part ? `<span class="tag tag-brass">נרשמת/ה</span>` : ""}
       </div>
     </article>`;
@@ -13314,12 +13351,24 @@
   // registration_closed, or anything else) surfaces on the open detail
   // dialog when there is one, else as a toast, so a quick action from the
   // feed still tells the member why it failed.
+  // Live bug hunt, round 10 (2026-09-11): v.rsvpBusy only ever guarded the
+  // open detail dialog's own three RSVP buttons - the feed's quick-action
+  // card (renderUpcomingEventCard()) had no busy/disabled guard, so a
+  // throttled double-tap genuinely fired event_rsvp() twice. Unlike the
+  // sibling challenge-join bug, this one produces no visible member-facing
+  // symptom (event_rsvp is a real upsert - confirmed live, the resulting
+  // event_attendees row is correct either way) - fixed anyway, for
+  // consistency and to stop wasting a duplicate round trip on a slow
+  // connection, matching every other busy-guarded action in this file.
+  const eventRsvpBusy = {};
   async function rsvpEvent(eventId, response) {
-    if (!state.user || !eventId || !response) return;
+    if (!state.user || !eventId || !response || eventRsvpBusy[eventId]) return;
+    eventRsvpBusy[eventId] = true;
     const v = state.events.view && state.events.view.id === eventId ? state.events.view : null;
     if (v) { v.rsvpBusy = response; v.rsvpError = ""; }
     rerender();
     const { error, queued } = await communityRpc("event_rsvp", { p_event_id: eventId, p_response: response });
+    delete eventRsvpBusy[eventId];
     if (v) v.rsvpBusy = null;
     if (queued) {
       await refreshOutboxState();
@@ -13609,8 +13658,8 @@
         <div style="color:var(--steel);font-size:12px;margin-top:2px;">${esc(formatEventDate(e.start_at))} ${esc(formatEventTime(e.start_at))} · ${participantsLabel(going)}</div>
       </button>
       <div class="chip-row" style="margin-top:8px;">
-        <button class="chip-btn${mine === "going" ? " selected" : ""}" data-community-action="event-rsvp" data-id="${esc(e.id)}" data-response="going"${closed || full ? " disabled" : ""}>משתתפ/ת</button>
-        <button class="chip-btn${mine === "interested" ? " selected" : ""}" data-community-action="event-rsvp" data-id="${esc(e.id)}" data-response="interested"${closed ? " disabled" : ""}>מעוניינ/ת</button>
+        <button class="chip-btn${mine === "going" ? " selected" : ""}" data-community-action="event-rsvp" data-id="${esc(e.id)}" data-response="going"${closed || full || eventRsvpBusy[e.id] ? " disabled" : ""}>משתתפ/ת</button>
+        <button class="chip-btn${mine === "interested" ? " selected" : ""}" data-community-action="event-rsvp" data-id="${esc(e.id)}" data-response="interested"${closed || eventRsvpBusy[e.id] ? " disabled" : ""}>מעוניינ/ת</button>
       </div>
     </div>`;
   }
@@ -14658,8 +14707,17 @@
     if (!state.user || !state.profile) return [];
     const list = Array.from(new Set((codes || []).map((c) => String(c)).filter(Boolean))).slice(0, 50);
     if (!list.length) return [];
-    const { data, error } = await client.rpc("ach_claim", { p_codes: list });
-    if (error) return [];
+    // Live bug hunt, round 10 (2026-09-11): a genuine network failure
+    // (offline) makes client.rpc() itself REJECT rather than resolve with
+    // {error} - confirmed live as an uncaught "Failed to fetch" page error.
+    // Returning null (instead of letting the caller see either an
+    // exception or the same [] shape a real server error already used) is
+    // what lets syncCommunityMilestones() (app.js) tell "did not happen,
+    // retry later" apart from "happened, nothing new to claim".
+    let data, error;
+    try { ({ data, error } = await client.rpc("ach_claim", { p_codes: list })); }
+    catch (e) { return null; }
+    if (error) return null;
     const written = Array.isArray(data) ? data : (data ? [data] : []);
     if (written.length && Array.isArray(state.achievements.mine)) {
       for (const r of written) {

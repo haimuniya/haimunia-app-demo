@@ -1514,27 +1514,40 @@
     --silver-lo:#8A94A0; --silver-mid:#D8DEE4; --silver-hi:#FFFFFF;
     --gold-lo:#B8790A;  --gold-mid:#F2B90C; --gold-hi:#FFF3C4;
   }
-  .medal-face{ fill:var(--surface); }
-  .medal-glyph{ fill:none; stroke-linecap:round; stroke-linejoin:round; }
-  .medal-glyph-fill{ fill:currentColor; stroke:none; }
-  .medal-rim{ stroke:rgba(0,0,0,.3); stroke-width:1.5; }
+  /* Live bug hunt, round 10 (2026-09-11): every tier/color rule below used
+     to be a DESCENDANT selector (".tier-bronze .medal-rim") reaching from
+     the outer <svg class="tier-bronze"> down into <path class="medal-rim">
+     - but that path lives inside a <symbol>, only present via <use
+     href="#medalCircle"/>. Confirmed live (a minimal isolated repro) that
+     this Chromium build does not match a descendant combinator across a
+     <use> reference, even though the referenced content visually renders -
+     so every one of these color/glyph rules silently applied to nothing.
+     40 of the app's 59 achievements (every milestone/Rx/capstone badge -
+     everything except the PR/streak tiers, which were already migrated to
+     plain PNG plate images and never hit this path) rendered as a flat,
+     colorless circle/shield with no glyph, both in the unlock celebration
+     and the achievements screen. currentColor and CSS custom properties DO
+     reliably inherit across a <use> boundary (this is the standard,
+     documented fix for exactly this class of bug) even though descendant
+     SELECTORS matching into the referenced content do not - so every rule
+     below is now a plain, non-descendant selector on the class itself,
+     fed by a custom property inherited from whichever tier/type class is
+     on the outer wrapper. */
+  .medal-face{ fill:var(--medal-face-fill, var(--surface)); }
+  .medal-glyph{ fill:none; stroke:var(--medal-glyph-color, currentColor); stroke-linecap:round; stroke-linejoin:round; }
+  .medal-glyph-fill{ fill:var(--medal-glyph-color, currentColor); stroke:none; }
+  .medal-rim{ fill:var(--medal-rim-fill); stroke:rgba(0,0,0,.3); stroke-width:1.5; }
   .medal-shine{ fill:url(#gradShine); pointer-events:none; }
   @media (prefers-reduced-motion: no-preference){
     .medal-badge.earned .medal-shine{ animation:medalTwinkle 3.2s ease-in-out infinite; }
   }
   @keyframes medalTwinkle{ 0%,100%{ opacity:.65; } 50%{ opacity:1; } }
-  .tier-bronze .medal-rim{ fill:url(#gradBronze); } .tier-bronze .medal-face{ fill:url(#gradBronzeFace); }
-  .tier-bronze .medal-glyph{ stroke:var(--bronze-lo); } .tier-bronze .medal-glyph-fill{ color:var(--bronze-lo); }
-  .tier-silver .medal-rim{ fill:url(#gradSilver); } .tier-silver .medal-face{ fill:url(#gradSilverFace); }
-  .tier-silver .medal-glyph{ stroke:var(--silver-lo); } .tier-silver .medal-glyph-fill{ color:var(--silver-lo); }
-  .tier-gold .medal-rim{ fill:url(#gradGold); } .tier-gold .medal-face{ fill:url(#gradGoldFace); }
-  .tier-gold .medal-glyph{ stroke:var(--gold-lo); } .tier-gold .medal-glyph-fill{ color:var(--gold-lo); }
-  .medal-milestone .medal-rim, .medal-milestone .medal-face{ fill:var(--energy); }
-  .medal-milestone .medal-glyph{ stroke:#fff; } .medal-milestone .medal-glyph-fill{ color:#fff; }
-  .medal-rx .medal-rim, .medal-rx .medal-face{ fill:var(--blue); }
-  .medal-rx .medal-glyph{ stroke:#fff; } .medal-rx .medal-glyph-fill{ color:#fff; }
-  .medal-capstone .medal-rim{ fill:url(#gradCapstone); } .medal-capstone .medal-face{ fill:url(#gradCapstoneFace); }
-  .medal-capstone .medal-glyph{ stroke:#3A2410; } .medal-capstone .medal-glyph-fill{ color:#3A2410; }
+  .tier-bronze{ --medal-rim-fill:url(#gradBronze); --medal-face-fill:url(#gradBronzeFace); --medal-glyph-color:var(--bronze-lo); }
+  .tier-silver{ --medal-rim-fill:url(#gradSilver); --medal-face-fill:url(#gradSilverFace); --medal-glyph-color:var(--silver-lo); }
+  .tier-gold{ --medal-rim-fill:url(#gradGold); --medal-face-fill:url(#gradGoldFace); --medal-glyph-color:var(--gold-lo); }
+  .medal-milestone{ --medal-rim-fill:var(--energy); --medal-face-fill:var(--energy); --medal-glyph-color:#fff; }
+  .medal-rx{ --medal-rim-fill:var(--blue); --medal-face-fill:var(--blue); --medal-glyph-color:#fff; }
+  .medal-capstone{ --medal-rim-fill:url(#gradCapstone); --medal-face-fill:url(#gradCapstoneFace); --medal-glyph-color:#3A2410; }
   .ribbon{ fill:var(--stripe-a); }
 
   .medal-badge{ width:72px; text-align:center; flex-shrink:0; }
