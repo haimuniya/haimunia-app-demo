@@ -1,3 +1,69 @@
+## Security hunt, round 7: API/RPC contract abuse — 2026-09-12
+
+Three more independent agents: malformed or unexpected-type RPC parameters, race
+conditions in multi-step operations, and Supabase Edge Function security.
+
+**Malformed RPC parameters: one confirmed critical authorization bypass, one
+confirmed low-severity robustness gap, both fixed.** A policy meant to check
+"is the caller an active participant of THE CHALLENGE this row is for" had a
+self-referential subquery bug that silently degraded it to "is the caller an
+active participant of ANY challenge at all" - trivial to satisfy, since joining
+any open challenge is self-service. Confirmed live against real local Postgres:
+a member active in one challenge could write fabricated progress into a
+completely different, never-joined challenge, and a cooperative challenge's own
+completion trigger sums that log with no participation check, so a forged
+delta could push a challenge past its milestones and auto-post real,
+feed-visible "100% complete" cards nobody earned. Fixed by qualifying the
+policy's column reference so it actually checks the row being written, the
+same way this schema's other insert-self policies already guard against a
+subquery shadowing the outer column - closing the hole without narrowing the
+already-shipped, already-tested behavior of a completed participant still
+being allowed to log a compensating correction into their own challenge.
+Separately, two RPCs that build a jsonb-sourced row cast a handful of
+caller-supplied fields (a photo's position/width/height, a batch entry's
+post/session id) straight into a typed column with no validation, so a
+wrong-shaped value raised a raw, unhandled Postgres error instead of a clean
+outcome - confirmed not to leak schema/internal detail to the client, low
+severity, fixed by validating each field's shape first and falling back the
+same way a missing field already did, rather than letting a bad cast throw.
+
+**Race conditions: three confirmed count-then-act gaps, all fixed with the
+locking pattern this codebase already uses correctly elsewhere for the exact
+same shape.** Three separate count-then-insert caps - a capacity-limited
+event's RSVP cap, a per-day structural cap on how many programmed-WOD cards
+the feed can gain in one day, and a per-account cap on how many push
+subscriptions one member can hold - each read a count and compared it to a
+limit with no lock behind either read, so two requests arriving close together
+could both read the same pre-insert count and both pass. Confirmed live
+against real local Postgres with genuinely concurrent connections: all three
+caps could be oversold by exactly the number of concurrent callers. Fixed with
+row-level locking where a natural row exists to lock (the event being RSVP'd
+to, the same pattern this codebase's own cooperative-challenge progress
+trigger already uses correctly) and a transaction-scoped advisory lock keyed
+to the resource being capped where no such row exists yet (the day being
+programmed, the account registering a subscription) - serializing the
+count-check-write section per key instead of leaving it open to two readers
+racing the same stale count.
+
+**Edge Function security found nothing to fix.** All four functions
+(admin_reset_password, purge_abandoned_profiles, recap_weekly,
+sanitize_upload) were live-tested against the local stack: each correctly
+re-derives the caller's real privilege server-side rather than trusting a
+client-asserted role, none leaks cross-user data, no secret material lives
+client-side beyond the intentionally public anon key, and every credential
+check held under a non-admin token, a missing auth header, and a malformed
+JWT. One environment-level observation, not an app-code issue: the local
+Supabase CLI's own API gateway injects a permissive CORS header regardless of
+what the function itself returns - low practical impact against a
+Bearer-token endpoint (no cookie for a cross-origin page to ride), and worth a
+quick manual check against a real deployed instance, but nothing in this
+repository to fix.
+
+Verified: full suite 1639/1639, full browser-check 43/43, `supabase test db`
+3387/3387 against real local Postgres, including a live two-connection
+reproduction of all three race conditions before the fix and their absence
+after.
+
 ## Security hunt, round 6: secrets/crypto handling and client-enforced-only checks — 2026-09-12
 
 Three more independent agents: secrets and cryptographic-material handling, controls that
